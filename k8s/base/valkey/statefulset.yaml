@@ -1,0 +1,321 @@
+# Valkey StatefulSet — 3-replica HA-from-day-1 platform-wide cache.
+#
+# Architecture decisions encoded here:
+#
+#   1. Co-located Sentinel + Valkey containers in one Pod.
+#      Why: gives us Sentinel quorum=2 across pods 0/1/2 without a
+#      separate StatefulSet, and ensures sentinel and the local
+#      Valkey instance share lifecycle (one pod going down takes
+#      one of each off the network simultaneously).
+#
+#   2. No PVCs — pure in-memory.
+#      Why: cache state is recoverable (Stalwart pods rebuild
+#      coordinator state from Postgres source-of-truth on
+#      reconnect). Persistence on Longhorn-backed PVCs would add
+#      replication overhead AND tie cache loss to volume detach
+#      glitches, which is the OPPOSITE of resilience for a cache.
+#      RAM is fine; we run 3 replicas so rolling restarts retain
+#      hot data on the survivors.
+#
+#   3. DoNotSchedule across hostnames + anti-affinity.
+#      Why: forces one-pod-per-node so a node failure takes down
+#      at most 1/3 of the cluster — Sentinel quorum survives.
+#      Fresh single-node clusters: only replicas=1 placed by the
+#      reconciler (so DoNotSchedule never blocks).
+#
+#   4. Bootstrap primary = pod-0, replicas = pod-1+pod-2.
+#      Why: simplest topology that lets Sentinel handle ALL
+#      subsequent failovers without operator intervention. The
+#      init container appends `replicaof valkey-0...` to the
+#      rendered config for non-zero ordinals, so after first
+#      failover the live primary is decided by Sentinel and the
+#      stale config-line is overridden by Sentinel-driven
+#      REPLICAOF commands at runtime.
+#
+#   5. Reloader watches valkey-config + valkey-auth.
+#      Why: storage-policy reconciler patches maxmemory in the
+#      ConfigMap when HA toggles or readyServerCount changes;
+#      Reloader rolls the pods automatically so the new limit
+#      takes effect.
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+  namespace: redis-system
+  labels:
+    app: valkey
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: coordinator-cache
+  annotations:
+    # Reloader auto-rolls pods when valkey-config ConfigMap or
+    # valkey-auth Secret changes. The auth secret rotation flow
+    # depends on this for password rotation without operator-side
+    # `kubectl rollout` invocations.
+    reloader.stakater.com/auto: "true"
+spec:
+  # Replicas owned by the storage-policy reconciler — see
+  # backend/src/modules/platform-storage-policy/service.ts
+  # `valkeyReplicasForSystemTier()`. local mode = 1, HA mode =
+  # readyServerCount (capped at MAX_HA_REPLICAS).
+  #
+  # Fresh installs land at K8s default = 1 until reconciler fires.
+  # Apply HA scales 1→3.
+  serviceName: valkey-headless
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: coordinator-cache
+    spec:
+      # One-pod-per-node strict placement — see header comment.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: valkey
+      # Belt-and-braces — antiAffinity preferred (not required) so
+      # under-populated single-node clusters still come up. The
+      # topologySpreadConstraint above does the actual one-per-node
+      # enforcement when replicas <= node count.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: valkey
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # Valkey image runs as UID 999 (valkey user). Setting fsGroup
+        # so the emptyDir owned by the init container is writable by
+        # the main containers.
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # ── Render config templates from ConfigMap → emptyDir ──────
+        # Substitutes __REDIS_PASSWORD__ from the valkey-auth Secret,
+        # appends `replicaof` for non-primary pods (decided by
+        # POD_ORDINAL extracted from the pod name), then chmods the
+        # rendered files 600 to keep the password out of any process
+        # that doesn't run as fsGroup=999.
+        - name: setup-config
+          image: busybox:1.37
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # Pod ordinal is the trailing digit of HOSTNAME (set
+              # automatically by the StatefulSet to valkey-N).
+              ORDINAL=${HOSTNAME##*-}
+
+              # Render valkey.conf
+              sed "s|__REDIS_PASSWORD__|${REDIS_PASSWORD}|g" \
+                /tmpl/valkey.conf.tmpl > /etc/valkey/valkey.conf
+
+              # Pod-0 = primary; pods 1+ replicate from pod-0 via
+              # the headless service DNS. Sentinel takes over after
+              # first failover; the static replicaof line is then
+              # overridden at runtime by Sentinel REPLICAOF commands.
+              if [ "${ORDINAL}" != "0" ]; then
+                echo "replicaof valkey-0.valkey-headless.redis-system.svc.cluster.local 6379" \
+                  >> /etc/valkey/valkey.conf
+              fi
+
+              # Render sentinel.conf
+              sed "s|__REDIS_PASSWORD__|${REDIS_PASSWORD}|g" \
+                /tmpl/sentinel.conf.tmpl > /etc/valkey/sentinel.conf
+
+              # Lock down the rendered files — they contain the
+              # cleartext password.
+              chmod 600 /etc/valkey/valkey.conf /etc/valkey/sentinel.conf
+              echo "[setup-config] ordinal=${ORDINAL} config rendered"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-auth
+                  key: REDIS_PASSWORD
+          volumeMounts:
+            - name: config-tmpl
+              mountPath: /tmpl
+              readOnly: true
+            - name: config-rendered
+              mountPath: /etc/valkey
+      containers:
+        # ── Valkey server ─────────────────────────────────────────
+        - name: valkey
+          # Pin to a Valkey 8 LTS-like minor. Bump deliberately when:
+          #   1. CVE patches that affect us
+          #   2. Need a feature in a later minor
+          # Using the `valkey/valkey` Docker Hub image (Linux
+          # Foundation upstream — drop-in for redis:7.x on the
+          # protocol level; Stalwart's redis-rs client doesn't care
+          # whether the server identifies as redis or valkey).
+          image: valkey/valkey:8.0-alpine
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          command:
+            - valkey-server
+            - /etc/valkey/valkey.conf
+          ports:
+            - name: client
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            # Default for fresh installs / single-node mode. The
+            # storage-policy reconciler patches these values when
+            # HA mode toggles, scaling memory with readyServerCount
+            # so a 5-server cluster gets 256Mi cache headroom.
+            requests:
+              cpu: "25m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "96Mi"
+          volumeMounts:
+            - name: config-rendered
+              mountPath: /etc/valkey
+            # Sentinel REWRITES sentinel.conf at runtime — the conf
+            # dir must be writable. The emptyDir setup gives us
+            # that without committing rewrites to a PVC.
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+          readinessProbe:
+            # Auth-aware readiness — TCP probe alone would mark a
+            # pod ready before Valkey finishes loading config and
+            # accepting auth. PING with the password validates both.
+            #
+            # S2 hardening (2026-05-07 security review): pass the
+            # password via the REDISCLI_AUTH env var, NOT `-a $PW` on
+            # the command line. The env-var form keeps the password
+            # out of /proc/<pid>/cmdline (visible to any container
+            # in the pod via /proc, kubectl exec, or container
+            # breakout). REDISCLI_AUTH itself is in /proc/environ
+            # but that visibility is the same as the existing
+            # REDIS_PASSWORD env var, which the sentinel sidecar
+            # already needs.
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  valkey-cli --no-auth-warning ping | grep -q PONG
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-auth
+                  key: REDIS_PASSWORD
+            # valkey-cli reads REDISCLI_AUTH automatically — keeps
+            # the password out of any shell command line.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-auth
+                  key: REDIS_PASSWORD
+
+        # ── Sentinel ──────────────────────────────────────────────
+        # Co-located so each pod hosts exactly one sentinel; quorum=2
+        # of the 3 sentinels survives one pod outage.
+        - name: sentinel
+          image: valkey/valkey:8.0-alpine
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          command:
+            - valkey-sentinel
+            - /etc/valkey/sentinel.conf
+          ports:
+            - name: sentinel
+              containerPort: 26379
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "48Mi"
+          volumeMounts:
+            - name: config-rendered
+              mountPath: /etc/valkey
+            - name: sentinel-data
+              mountPath: /data
+          livenessProbe:
+            tcpSocket:
+              port: sentinel
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            # S1 hardening (2026-05-07 security review): Sentinel's
+            # 26379 is now password-protected, so the probe must
+            # AUTH. Same REDISCLI_AUTH env-var pattern as the valkey
+            # container — keeps the password out of /proc/cmdline.
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  valkey-cli -p 26379 --no-auth-warning ping | grep -q PONG
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          env:
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-auth
+                  key: REDIS_PASSWORD
+      volumes:
+        - name: config-tmpl
+          configMap:
+            name: valkey-config
+        - name: config-rendered
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: data
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: sentinel-data
+          emptyDir:
+            sizeLimit: 16Mi

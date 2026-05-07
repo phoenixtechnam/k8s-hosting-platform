@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: redis-system
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - statefulset.yaml
+  - service.yaml
+  - service-headless.yaml
+  - networkpolicy.yaml
+  # secret.example.yaml is NOT listed here — overlays must provide
+  # the real Secret. Including the example would push a placeholder
+  # password to every cluster.

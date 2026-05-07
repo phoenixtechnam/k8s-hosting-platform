@@ -1,0 +1,90 @@
+# NetworkPolicy locking the cache to system namespaces ONLY.
+#
+# Whitelisted ingress sources:
+#   - redis-system itself (intra-pod sentinel + replication traffic)
+#   - mail (Stalwart Coordinator client)
+#   - platform (platform-api / admin-panel — for future system caching
+#     if/when we add it; conservative pre-allow)
+#
+# Tenant namespaces (client-{client_id}) are EXPLICITLY NOT whitelisted.
+# They get their own per-tenant Redis pod from the workload catalog
+# when needed — no shared system cache.
+#
+# Egress: allow DNS only. Valkey itself doesn't need outbound
+# connectivity; Sentinel uses intra-cluster DNS and TCP to find
+# the other pods (covered by the in-namespace ingress rule on
+# the OTHER pods, not by egress here).
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey-allow
+  namespace: redis-system
+  labels:
+    app: valkey
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: valkey
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Intra-pod sentinel + replication — pods talk to each other on
+    # both 6379 (replication) and 26379 (sentinel quorum chatter).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: redis-system
+      ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 26379
+
+    # Stalwart Coordinator clients in the mail namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+      ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 26379
+
+    # platform-api / admin-panel future system-caching consumers.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+      ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 26379
+
+  egress:
+    # DNS for Sentinel to resolve peer hostnames.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Sentinel + replication peer connectivity within the namespace.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: redis-system
+      ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 26379

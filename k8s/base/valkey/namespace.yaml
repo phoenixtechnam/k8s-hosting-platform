@@ -1,0 +1,22 @@
+# Namespace for the platform-wide Valkey (Redis-protocol) coordinator
+# cache.
+#
+# Hosts a 3-replica Valkey StatefulSet + co-located Sentinel processes.
+# Used by:
+#   - Stalwart Coordinator (cross-pod cache invalidation + distributed
+#     rate-limit counters)
+#   - Future system-internal caching for platform-api / admin-panel
+#
+# NOT shared with tenant workloads — see networkpolicy.yaml for the
+# ingress allow-list. Tenant Redis-as-a-service is a separate workload-
+# catalog entry (one pod per client in their own namespace) — out of
+# scope for this namespace.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: redis-system
+  labels:
+    name: redis-system
+    kubernetes.io/metadata.name: redis-system
+    app.kubernetes.io/part-of: hosting-platform

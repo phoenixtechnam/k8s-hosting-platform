@@ -106,6 +106,62 @@ export function cnpgInstancesForSystemTier(tier: 'local' | 'ha', readyServerCoun
   return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
 }
 
+// Valkey (platform-wide Redis-protocol coordinator cache) lives in
+// redis-system. Single base manifest, replicas + maxmemory patched
+// here so HA toggles and growth from 1 → N servers are picked up
+// automatically.
+//
+// In `local` mode the StatefulSet shrinks to a single pod (no
+// Sentinel quorum, but a single-pod cluster has no failover need
+// either — the cache is purely in-memory and rebuilds on Pod
+// restart). HA mode scales to readyServerCount (capped) so each
+// server hosts one Valkey + Sentinel pair via DoNotSchedule
+// topologySpread.
+const VALKEY_NAMESPACE = 'redis-system';
+const VALKEY_STATEFULSET = 'valkey';
+const VALKEY_CONFIGMAP = 'valkey-config';
+
+export function valkeyReplicasForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
+  // In `local` mode, run a single replica regardless of node count —
+  // sentinel quorum requires 3 anyway, so 1 vs 2 makes no difference
+  // in failover capability and 1 saves resources.
+  if (tier === 'local') return 1;
+  // HA mode: ≥3 to give Sentinel a quorum (2 of 3) for failover
+  // elections. On a 2-server cluster (rare; HA threshold is 3+),
+  // fall back to 1 — Sentinel can't quorum on 2 anyway.
+  if (readyServerCount < HA_SERVER_THRESHOLD) return 1;
+  return Math.min(readyServerCount, MAX_HA_REPLICAS);
+}
+
+// Memory budget per Valkey pod. Scales with cluster size so a
+// 5-server install gets ~256 MiB total cache headroom while a
+// single-node install stays at ~32 MiB to leave RAM for tenant
+// workloads. Numbers chosen empirically from Stalwart's coordinator
+// cache footprint (≈4 MiB per active mailbox) plus headroom.
+//
+// The maxmemory directive is applied via ConfigMap + Reloader
+// rolling restart — see patchValkey() for the full path.
+export function valkeyMaxMemoryBytesForSystemTier(
+  tier: 'local' | 'ha',
+  readyServerCount: number,
+): number {
+  // local mode: 32 MiB — small but sufficient for a single-node lab.
+  if (tier === 'local') return 32 * 1024 * 1024;
+  // HA mode: 32 MiB / replica baseline + 32 MiB / additional server
+  // beyond the threshold. 3 servers → 96 MiB; 4 → 128 MiB; 5 → 160 MiB.
+  const replicas = valkeyReplicasForSystemTier(tier, readyServerCount);
+  return Math.max(32, replicas * 32) * 1024 * 1024;
+}
+
+/**
+ * Format a byte count as a Valkey-compatible memory directive
+ * (e.g. "96mb"). Valkey accepts decimal-MB, decimal-GB; we only
+ * emit "Nmb" since our budgets stay sub-GiB through MAX_HA_REPLICAS.
+ */
+export function formatValkeyMemoryBytes(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))}mb`;
+}
+
 const SINGLETON_ID = 'singleton';
 const HA_SERVER_THRESHOLD = 3;
 
@@ -385,10 +441,23 @@ export type CnpgClusterPatchResult = {
   error: string | null;
 };
 
+export type ValkeyPatchResult = {
+  namespace: string;
+  statefulSetName: string;
+  previousReplicas: number;
+  newReplicas: number;
+  previousMaxMemory: string | null;
+  newMaxMemory: string;
+  replicasPatched: boolean;
+  configPatched: boolean;
+  error: string | null;
+};
+
 export type ApplyPolicyOutcome = {
   volumes: ApplyPatchResult[];
   deployments: DeploymentPatchResult[];
   cnpgClusters: CnpgClusterPatchResult[];
+  valkey: ValkeyPatchResult | null;
 };
 
 // Apply the desired tier to:
@@ -411,6 +480,7 @@ export async function applyPolicy(
     volumes: await patchLonghornVolumes(k8s, state.volumes),
     deployments: await patchStatelessDeployments(k8s, tier, state.readyServerCount),
     cnpgClusters: await patchCnpgClusters(k8s, tier, state.readyServerCount),
+    valkey: await patchValkey(k8s, tier, state.readyServerCount),
   };
 }
 
@@ -757,3 +827,194 @@ async function patchCnpgClusters(
   }
   return results;
 }
+
+/**
+ * Reconcile the platform-wide Valkey StatefulSet.
+ *
+ * Two patches in one round:
+ *   1. /scale subresource — sets replicas to the tier-driven count.
+ *      Same approach as patchStatelessDeployments() to avoid SSA
+ *      conflicts with Flux's parent-object reconcile.
+ *   2. ConfigMap valkey-config — rewrites the maxmemory directive
+ *      in the valkey.conf.tmpl key. Reloader (annotation
+ *      reloader.stakater.com/auto: "true" on the StatefulSet) rolls
+ *      the pods automatically when the ConfigMap content hash
+ *      changes, so the new memory cap takes effect without an
+ *      operator-side `kubectl rollout restart`.
+ *
+ * Returns null if the StatefulSet doesn't exist (fresh install
+ * before Flux reconciles base/valkey/, or production overlay
+ * doesn't include it). The reconciler should not error in that
+ * case — the apply has nothing to do, and Flux will reconcile
+ * to the desired state once the manifest exists.
+ */
+async function patchValkey(
+  k8s: K8sClients,
+  tier: 'local' | 'ha',
+  readyServerCount: number,
+): Promise<ValkeyPatchResult | null> {
+  const idealReplicas = valkeyReplicasForSystemTier(tier, readyServerCount);
+  const desiredMaxMemoryBytes = valkeyMaxMemoryBytesForSystemTier(tier, readyServerCount);
+  const desiredMaxMemory = formatValkeyMemoryBytes(desiredMaxMemoryBytes);
+
+  let previousReplicas = 0;
+  let previousMaxMemory: string | null = null;
+
+  // Probe the StatefulSet first — if it doesn't exist, return null
+  // so the caller treats this as a no-op (e.g. production overlay
+  // pending the rollout, or fresh install pre-Flux-reconcile).
+  let live: { spec?: { replicas?: number } } | null = null;
+  try {
+    live = await k8s.apps.readNamespacedStatefulSet({
+      namespace: VALKEY_NAMESPACE, name: VALKEY_STATEFULSET,
+    }) as unknown as { spec?: { replicas?: number } };
+  } catch (err) {
+    const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    if (status === 404) return null;
+    return {
+      namespace: VALKEY_NAMESPACE,
+      statefulSetName: VALKEY_STATEFULSET,
+      previousReplicas: 0,
+      newReplicas: idealReplicas,
+      previousMaxMemory: null,
+      newMaxMemory: desiredMaxMemory,
+      replicasPatched: false,
+      configPatched: false,
+      error: `read sts failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  previousReplicas = live?.spec?.replicas ?? 0;
+
+  // Transient-flap guard: under HA tier, never shrink Valkey below
+  // the previous count when readyServerCount briefly drops under
+  // HA_SERVER_THRESHOLD. A scheduled OS reboot taking 1-2 servers
+  // NotReady for a few minutes would otherwise scale 3 → 1 and
+  // break Sentinel quorum on the next 5-min advisor tick. Scale-up
+  // (idealReplicas > previousReplicas) is unaffected — we only
+  // suppress shrink-during-flap.
+  const isFlapShrink =
+    tier === 'ha'
+    && readyServerCount < HA_SERVER_THRESHOLD
+    && previousReplicas >= HA_SERVER_THRESHOLD
+    && idealReplicas < previousReplicas;
+  const desiredReplicas = isFlapShrink ? previousReplicas : idealReplicas;
+
+  // Probe the ConfigMap so we can compare current maxmemory before
+  // rewriting it. Avoids touching Reloader's content hash when
+  // nothing changed (which would trigger a no-op rolling restart).
+  let cm: { data?: Record<string, string> } | null = null;
+  try {
+    cm = await k8s.core.readNamespacedConfigMap({
+      namespace: VALKEY_NAMESPACE, name: VALKEY_CONFIGMAP,
+    }) as unknown as { data?: Record<string, string> };
+  } catch (err) {
+    const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    if (status !== 404) {
+      return {
+        namespace: VALKEY_NAMESPACE,
+        statefulSetName: VALKEY_STATEFULSET,
+        previousReplicas,
+        newReplicas: idealReplicas,
+        previousMaxMemory: null,
+        newMaxMemory: desiredMaxMemory,
+        replicasPatched: false,
+        configPatched: false,
+        error: `read configmap failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  const tmpl = cm?.data?.['valkey.conf.tmpl'] ?? '';
+  const maxMemoryLine = tmpl.match(/^\s*maxmemory\s+(\S+)\s*$/m);
+  previousMaxMemory = maxMemoryLine ? maxMemoryLine[1] : null;
+
+  let replicasPatched = false;
+  let configPatched = false;
+
+  // ── 1. /scale subresource ──────────────────────────────────────
+  if (previousReplicas !== desiredReplicas) {
+    try {
+      await k8s.apps.replaceNamespacedStatefulSetScale({
+        namespace: VALKEY_NAMESPACE, name: VALKEY_STATEFULSET,
+        body: {
+          metadata: { name: VALKEY_STATEFULSET, namespace: VALKEY_NAMESPACE },
+          spec: { replicas: desiredReplicas },
+        },
+      } as unknown as Parameters<typeof k8s.apps.replaceNamespacedStatefulSetScale>[0]);
+      replicasPatched = true;
+    } catch (err) {
+      return {
+        namespace: VALKEY_NAMESPACE,
+        statefulSetName: VALKEY_STATEFULSET,
+        previousReplicas,
+        newReplicas: idealReplicas,
+        previousMaxMemory,
+        newMaxMemory: desiredMaxMemory,
+        replicasPatched: false,
+        configPatched: false,
+        error: `scale failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  // ── 2. ConfigMap maxmemory rewrite ─────────────────────────────
+  if (previousMaxMemory !== desiredMaxMemory && tmpl) {
+    const updatedTmpl = tmpl.replace(
+      /^(\s*maxmemory\s+)\S+\s*$/m,
+      `$1${desiredMaxMemory}`,
+    );
+    if (updatedTmpl !== tmpl) {
+      try {
+        await k8s.core.patchNamespacedConfigMap({
+          namespace: VALKEY_NAMESPACE, name: VALKEY_CONFIGMAP,
+          body: { data: { 'valkey.conf.tmpl': updatedTmpl } },
+        } as unknown as Parameters<typeof k8s.core.patchNamespacedConfigMap>[0], MERGE_PATCH);
+        configPatched = true;
+      } catch (err) {
+        return {
+          namespace: VALKEY_NAMESPACE,
+          statefulSetName: VALKEY_STATEFULSET,
+          previousReplicas,
+          newReplicas: idealReplicas,
+          previousMaxMemory,
+          newMaxMemory: desiredMaxMemory,
+          replicasPatched,
+          configPatched: false,
+          error: `configmap patch failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    } else {
+      // Template doesn't match the maxmemory line pattern at all —
+      // the regex replace was a no-op. The cap will never apply.
+      // Surface this as a structured error rather than silently
+      // marking configPatched=false.
+      return {
+        namespace: VALKEY_NAMESPACE,
+        statefulSetName: VALKEY_STATEFULSET,
+        previousReplicas,
+        newReplicas: desiredReplicas,
+        previousMaxMemory,
+        newMaxMemory: desiredMaxMemory,
+        replicasPatched,
+        configPatched: false,
+        error: `valkey-config has no recognisable "maxmemory" line — manual review needed (memory cap will not apply)`,
+      };
+    }
+  }
+
+  return {
+    namespace: VALKEY_NAMESPACE,
+    statefulSetName: VALKEY_STATEFULSET,
+    previousReplicas,
+    newReplicas: desiredReplicas,
+    previousMaxMemory,
+    newMaxMemory: desiredMaxMemory,
+    replicasPatched,
+    configPatched,
+    error: null,
+  };
+}
+
+// Public re-export so the scheduler tick can also call patchValkey
+// directly (without going through applyPolicy's full cluster-state
+// read). Used by the readyServerCount-change watch path.
+export { patchValkey };

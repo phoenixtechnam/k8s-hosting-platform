@@ -2252,6 +2252,115 @@ STALWART_USER=admin STALWART_PASSWORD=\$PW STALWART_URL=http://stalwart-mgmt.mai
   fi
 }
 
+scenario_redis() {
+  # Validates the platform-wide Valkey coordinator cache:
+  #   1. StatefulSet exists in redis-system namespace
+  #   2. Each pod is Ready and lands on a distinct node (DoNotSchedule
+  #      topology spread)
+  #   3. valkey-cli ping with the configured password returns PONG from
+  #      every pod (auth handshake works through the rendered config)
+  #   4. Sentinel quorum reports the expected number of sentinels +
+  #      knows about all replicas
+  #   5. NetworkPolicy blocks tenant-namespace access (negative test —
+  #      a probe pod inside a client namespace must time out hitting
+  #      6379)
+  #   6. Stalwart Coordinator points at our Redis URL (post-migration
+  #      verification — only fires if the migration script has run)
+  if [[ "${SKIP_REDIS_SCENARIO:-}" == "1" ]]; then
+    log "scenario redis skipped — SKIP_REDIS_SCENARIO=1"
+    return 0
+  fi
+
+  # ── 1. StatefulSet present + all pods Ready ──
+  local sts_ready_replicas
+  sts_ready_replicas=$(ssh_cp "kubectl -n redis-system get sts valkey -o jsonpath='{.status.readyReplicas}' 2>/dev/null" | tr -d '[:space:]')
+  if [[ -z "$sts_ready_replicas" ]]; then
+    fail "redis: StatefulSet redis-system/valkey not found — apply k8s/base/valkey/ first"
+    return 1
+  fi
+  if [[ "$sts_ready_replicas" -lt 1 ]]; then
+    fail "redis: StatefulSet has 0 ready replicas"
+    return 1
+  fi
+  ok "redis: StatefulSet valkey has ${sts_ready_replicas} ready replica(s)"
+
+  # ── 2. Pods one-per-node (DoNotSchedule topology spread) ──
+  local pod_nodes
+  pod_nodes=$(ssh_cp "kubectl -n redis-system get pods -l app=valkey -o jsonpath='{range .items[*]}{.spec.nodeName}{\"\\n\"}{end}' 2>/dev/null" | sort -u | wc -l | tr -d '[:space:]')
+  local pod_count
+  pod_count=$(ssh_cp "kubectl -n redis-system get pods -l app=valkey --no-headers 2>/dev/null | wc -l" | tr -d '[:space:]')
+  if [[ "$pod_count" -gt 1 ]] && [[ "$pod_nodes" -lt "$pod_count" ]]; then
+    fail "redis: ${pod_count} pods landed on only ${pod_nodes} node(s) — DoNotSchedule topology spread broken"
+  else
+    ok "redis: ${pod_count} pod(s) on ${pod_nodes} distinct node(s)"
+  fi
+
+  # ── 3. valkey-cli ping with auth from inside each pod ──
+  local pod_idx=0
+  while [[ "$pod_idx" -lt "$pod_count" ]]; do
+    local pong
+    pong=$(ssh_cp "kubectl -n redis-system exec valkey-${pod_idx} -c valkey -- /bin/sh -c 'valkey-cli -a \"\$REDIS_PASSWORD\" --no-auth-warning ping' 2>/dev/null" | tr -d '[:space:]')
+    if [[ "$pong" == "PONG" ]]; then
+      ok "redis: valkey-${pod_idx} responds to authenticated PING"
+    else
+      fail "redis: valkey-${pod_idx} did not return PONG (got: ${pong:-empty}) — auth or readiness issue"
+    fi
+    pod_idx=$((pod_idx + 1))
+  done
+
+  # ── 4. Sentinel quorum knows the primary + replicas ──
+  if [[ "$pod_count" -ge 3 ]]; then
+    local sentinel_master
+    sentinel_master=$(ssh_cp "kubectl -n redis-system exec valkey-0 -c sentinel -- /bin/sh -c 'valkey-cli -p 26379 sentinel get-master-addr-by-name mymaster' 2>/dev/null" | head -1 | tr -d '[:space:]')
+    if [[ -n "$sentinel_master" ]]; then
+      ok "redis: Sentinel knows the primary at ${sentinel_master}"
+    else
+      fail "redis: Sentinel did not return a primary address (quorum not yet formed?)"
+    fi
+    local sentinel_count
+    sentinel_count=$(ssh_cp "kubectl -n redis-system exec valkey-0 -c sentinel -- /bin/sh -c 'valkey-cli -p 26379 sentinel sentinels mymaster | grep -c name' 2>/dev/null" | tr -d '[:space:]')
+    # Sentinel reports OTHER sentinels (not itself) — count should be
+    # pod_count - 1.
+    local expected_others=$((pod_count - 1))
+    if [[ "${sentinel_count:-0}" -ge "$expected_others" ]]; then
+      ok "redis: Sentinel reports ${sentinel_count} other sentinel(s) (expected >= ${expected_others})"
+    else
+      fail "redis: Sentinel reports ${sentinel_count:-0} other sentinel(s), expected >= ${expected_others}"
+    fi
+  else
+    log "redis: pod_count=${pod_count} < 3 — skipping Sentinel quorum check (single-replica mode)"
+  fi
+
+  # ── 5. NetworkPolicy: tenant namespace cannot reach the cache ──
+  # Pick any client-* namespace as a probe origin. If none exists
+  # on this cluster, the test is informational (logged, not failed).
+  local tenant_ns
+  tenant_ns=$(ssh_cp "kubectl get ns -l client -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" | tr -d '[:space:]')
+  if [[ -n "$tenant_ns" ]]; then
+    local rc
+    rc=$(ssh_cp "kubectl -n ${tenant_ns} run redis-netpol-probe-\$(date +%s) --rm -i --restart=Never --image=alpine:3.20 --quiet --command --timeout=20s -- /bin/sh -c 'apk add --no-cache busybox-extras >/dev/null 2>&1; nc -z -w3 valkey.redis-system.svc.cluster.local 6379 && echo REACHED || echo BLOCKED' 2>&1 | tail -1" | tr -d '[:space:]')
+    if [[ "$rc" == "BLOCKED" ]] || [[ "$rc" == *"timed out"* ]]; then
+      ok "redis/netpol: tenant namespace ${tenant_ns} blocked from valkey:6379 (got: ${rc:-timeout})"
+    elif [[ "$rc" == "REACHED" ]]; then
+      fail "redis/netpol: tenant namespace ${tenant_ns} reached valkey:6379 — NetworkPolicy missing or misconfigured"
+    else
+      log "redis/netpol: probe from ${tenant_ns} returned: ${rc:-empty} (treating as inconclusive)"
+    fi
+  else
+    log "redis/netpol: no client-* namespace on cluster — skipping tenant-block test"
+  fi
+
+  # ── 6. Stalwart Coordinator wired (soft check) ──
+  # Only fire if the migration has been run; otherwise inform.
+  local coord_state
+  coord_state=$(ssh_cp "kubectl -n mail logs deploy/stalwart-mail --tail=200 2>/dev/null | grep -ciE 'coordinator.*redis|redis.*coordinator|connected.*redis' || echo 0" | tr -d '[:space:]')
+  if [[ "${coord_state:-0}" -gt 0 ]]; then
+    ok "redis/stalwart: Stalwart logs reference Redis Coordinator (${coord_state} hits)"
+  else
+    log "redis/stalwart: Stalwart logs show no Redis Coordinator activity yet — run scripts/migrate-valkey-bootstrap.sh"
+  fi
+}
+
 case "$SCENARIO" in
   all)
     prereq_dns || { echo "DNS prereq failed; aborting"; exit 1; }
@@ -2267,6 +2376,7 @@ case "$SCENARIO" in
     run_scenario mail_tls
     run_scenario webmail
     run_scenario system_backup
+    run_scenario redis
     ;;
   *)
     if [[ "$SCENARIO" == "https" || "$SCENARIO" == "all" ]]; then

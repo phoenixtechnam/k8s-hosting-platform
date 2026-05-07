@@ -1,0 +1,31 @@
+# Headless Service — required by the StatefulSet for stable
+# per-pod DNS (valkey-0.valkey-headless.redis-system.svc.cluster.local).
+#
+# The init container appends `replicaof valkey-0.valkey-headless...`
+# to non-zero pods, and Sentinel announces itself via these DNS
+# names (sentinel resolve-hostnames yes / announce-hostnames yes in
+# sentinel.conf). Sentinel needs the per-pod DNS to remain stable
+# across pod restarts; ClusterIP would NAT to a random pod each
+# time and break Sentinel's discovery.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-headless
+  namespace: redis-system
+  labels:
+    app: valkey
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: coordinator-cache
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: valkey
+  ports:
+    - name: client
+      port: 6379
+      protocol: TCP
+    - name: sentinel
+      port: 26379
+      protocol: TCP

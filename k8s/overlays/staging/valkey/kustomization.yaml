@@ -1,0 +1,22 @@
+# Staging overlay for the platform-wide Valkey coordinator cache.
+#
+# What this overlay does:
+#   - Imports the base manifests (namespace, configmap, statefulset,
+#     services, networkpolicy).
+#   - Does NOT ship the Secret — the valkey-auth Secret is created
+#     by bootstrap.sh on cluster install, and by
+#     scripts/migrate-valkey-bootstrap.sh for already-running clusters
+#     (one-shot, idempotent). Committing a placeholder Secret would
+#     either leak a known password or break Reloader's content-hash
+#     diff on every apply.
+#
+# Why no patches:
+#   The base StatefulSet ships replicas=<unset, K8s default=1>; the
+#   storage-policy reconciler patches replicas at runtime when HA
+#   toggles. Same pattern as Roundcube + CNPG — the policy owns the
+#   replica count, the manifest stays minimal.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../base/valkey

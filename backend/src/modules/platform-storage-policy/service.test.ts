@@ -285,3 +285,195 @@ describe('replicasForSystemTier — HA scales to readyServerCount, capped at MAX
     expect(deploymentReplicasForSystemTier('ha', 7)).toBe(5);
   });
 });
+
+describe('valkey scaling helpers — HA-only scaling, single-node fallback', () => {
+  it('local tier always returns 1 replica with the smallest memory budget', async () => {
+    const { valkeyReplicasForSystemTier, valkeyMaxMemoryBytesForSystemTier, formatValkeyMemoryBytes } = await import('./service.js');
+    expect(valkeyReplicasForSystemTier('local', 1)).toBe(1);
+    expect(valkeyReplicasForSystemTier('local', 5)).toBe(1);
+    // 32 MiB baseline for the local single-pod cluster.
+    expect(valkeyMaxMemoryBytesForSystemTier('local', 1)).toBe(32 * 1024 * 1024);
+    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('local', 5))).toBe('32mb');
+  });
+
+  it('HA tier with <3 servers stays at 1 replica (Sentinel quorum requires 3)', async () => {
+    const { valkeyReplicasForSystemTier } = await import('./service.js');
+    expect(valkeyReplicasForSystemTier('ha', 0)).toBe(1);
+    expect(valkeyReplicasForSystemTier('ha', 1)).toBe(1);
+    expect(valkeyReplicasForSystemTier('ha', 2)).toBe(1);
+  });
+
+  it('HA tier scales replicas + memory with readyServerCount (min 3, max 5)', async () => {
+    const { valkeyReplicasForSystemTier, valkeyMaxMemoryBytesForSystemTier, formatValkeyMemoryBytes } = await import('./service.js');
+    expect(valkeyReplicasForSystemTier('ha', 3)).toBe(3);
+    expect(valkeyReplicasForSystemTier('ha', 4)).toBe(4);
+    expect(valkeyReplicasForSystemTier('ha', 5)).toBe(5);
+    expect(valkeyReplicasForSystemTier('ha', 7)).toBe(5); // capped
+
+    // Memory budget: 32 MiB × replicas → 96/128/160 MiB.
+    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 3))).toBe('96mb');
+    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 4))).toBe('128mb');
+    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 5))).toBe('160mb');
+    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 10))).toBe('160mb'); // capped
+  });
+});
+
+describe('patchValkey — drift-driven reconcile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // The patchValkey reconciler is exposed via the service module — we
+  // pull it dynamically so adding/removing the export doesn't break
+  // unrelated tests.
+  function makeValkeyMock(opts: {
+    sts?: { replicas: number } | 'missing';
+    cm?: { tmpl: string };
+  }): K8sClients & {
+    apps: { readNamespacedStatefulSet: ReturnType<typeof vi.fn>; replaceNamespacedStatefulSetScale: ReturnType<typeof vi.fn> };
+    core: { readNamespacedConfigMap: ReturnType<typeof vi.fn>; patchNamespacedConfigMap: ReturnType<typeof vi.fn> };
+  } {
+    const readNamespacedStatefulSet = vi.fn(async () => {
+      if (opts.sts === 'missing') {
+        const err = new Error('not found') as Error & { code?: number };
+        err.code = 404;
+        throw err;
+      }
+      return { spec: { replicas: opts.sts?.replicas ?? 1 } };
+    });
+    const replaceNamespacedStatefulSetScale = vi.fn(async () => ({}));
+    const readNamespacedConfigMap = vi.fn(async () => ({
+      data: { 'valkey.conf.tmpl': opts.cm?.tmpl ?? '' },
+    }));
+    const patchNamespacedConfigMap = vi.fn(async () => ({}));
+    return {
+      apps: { readNamespacedStatefulSet, replaceNamespacedStatefulSetScale },
+      core: { readNamespacedConfigMap, patchNamespacedConfigMap },
+      custom: {},
+      networking: {},
+      batch: {},
+      rbac: {},
+      storage: {},
+    } as unknown as K8sClients & {
+      apps: { readNamespacedStatefulSet: ReturnType<typeof vi.fn>; replaceNamespacedStatefulSetScale: ReturnType<typeof vi.fn> };
+      core: { readNamespacedConfigMap: ReturnType<typeof vi.fn>; patchNamespacedConfigMap: ReturnType<typeof vi.fn> };
+    };
+  }
+
+  it('returns null when the StatefulSet does not exist (production overlay pre-rollout)', async () => {
+    const { patchValkey } = await import('./service.js');
+    const k8s = makeValkeyMock({ sts: 'missing' });
+    const out = await patchValkey(k8s, 'ha', 3);
+    expect(out).toBeNull();
+  });
+
+  it('scales replicas via /scale subresource and rewrites maxmemory in the ConfigMap', async () => {
+    const { patchValkey } = await import('./service.js');
+    const startingTmpl = `bind 0.0.0.0\nmaxmemory 32mb\nmaxmemory-policy allkeys-lru\nsave ""\n`;
+    const k8s = makeValkeyMock({ sts: { replicas: 1 }, cm: { tmpl: startingTmpl } });
+
+    const out = await patchValkey(k8s, 'ha', 3);
+
+    expect(out).not.toBeNull();
+    expect(out?.previousReplicas).toBe(1);
+    expect(out?.newReplicas).toBe(3);
+    expect(out?.previousMaxMemory).toBe('32mb');
+    expect(out?.newMaxMemory).toBe('96mb');
+    expect(out?.replicasPatched).toBe(true);
+    expect(out?.configPatched).toBe(true);
+    expect(out?.error).toBeNull();
+
+    expect(k8s.apps.replaceNamespacedStatefulSetScale).toHaveBeenCalledTimes(1);
+    expect(k8s.apps.replaceNamespacedStatefulSetScale).toHaveBeenCalledWith(
+      expect.objectContaining({
+        namespace: 'redis-system',
+        name: 'valkey',
+        body: expect.objectContaining({ spec: { replicas: 3 } }),
+      }),
+    );
+
+    // ConfigMap patch must use MERGE_PATCH content-type and supply the
+    // rewritten template — we don't snapshot the full string but assert
+    // the maxmemory line is updated and other lines preserved.
+    expect(k8s.core.patchNamespacedConfigMap).toHaveBeenCalledTimes(1);
+    const cmCall = k8s.core.patchNamespacedConfigMap.mock.calls[0][0] as {
+      body: { data: { 'valkey.conf.tmpl': string } };
+    };
+    expect(cmCall.body.data['valkey.conf.tmpl']).toContain('maxmemory 96mb');
+    expect(cmCall.body.data['valkey.conf.tmpl']).toContain('maxmemory-policy allkeys-lru');
+    expect(cmCall.body.data['valkey.conf.tmpl']).not.toContain('maxmemory 32mb');
+  });
+
+  it('skips the /scale call when replicas already match', async () => {
+    const { patchValkey } = await import('./service.js');
+    const tmpl = `maxmemory 96mb\n`;
+    const k8s = makeValkeyMock({ sts: { replicas: 3 }, cm: { tmpl } });
+
+    const out = await patchValkey(k8s, 'ha', 3);
+
+    expect(out?.replicasPatched).toBe(false);
+    expect(out?.configPatched).toBe(false);
+    expect(k8s.apps.replaceNamespacedStatefulSetScale).not.toHaveBeenCalled();
+    expect(k8s.core.patchNamespacedConfigMap).not.toHaveBeenCalled();
+  });
+
+  it('skips the ConfigMap patch when maxmemory already matches the desired value', async () => {
+    const { patchValkey } = await import('./service.js');
+    const tmpl = `maxmemory 96mb\n`;
+    const k8s = makeValkeyMock({ sts: { replicas: 1 }, cm: { tmpl } });
+
+    const out = await patchValkey(k8s, 'ha', 3);
+
+    expect(out?.replicasPatched).toBe(true);
+    expect(out?.configPatched).toBe(false);
+    expect(k8s.apps.replaceNamespacedStatefulSetScale).toHaveBeenCalledTimes(1);
+    expect(k8s.core.patchNamespacedConfigMap).not.toHaveBeenCalled();
+  });
+
+  it('transient-flap guard: refuses to shrink HA cluster below 3 when readyServerCount briefly drops', async () => {
+    // Simulates a node reboot / NotReady flap: previousReplicas=3
+    // (cluster is already in HA mode), readyServerCount=2 (one node
+    // currently NotReady). The naive desired count would be 1 (sub-
+    // threshold), but the guard should keep the live count to avoid
+    // breaking Sentinel quorum during the flap.
+    const { patchValkey } = await import('./service.js');
+    const tmpl = `maxmemory 96mb\n`;
+    const k8s = makeValkeyMock({ sts: { replicas: 3 }, cm: { tmpl } });
+
+    const out = await patchValkey(k8s, 'ha', 2);
+
+    expect(out?.previousReplicas).toBe(3);
+    expect(out?.newReplicas).toBe(3); // guard kept it at 3, NOT shrunk to 1
+    expect(out?.replicasPatched).toBe(false);
+    expect(k8s.apps.replaceNamespacedStatefulSetScale).not.toHaveBeenCalled();
+  });
+
+  it('transient-flap guard does NOT block scale-up when readyServerCount jumps above current', async () => {
+    // Cluster grew from 3 to 5 servers; live replicas=3 should scale
+    // to 5. Guard should NOT fire (idealReplicas > previousReplicas).
+    const { patchValkey } = await import('./service.js');
+    const tmpl = `maxmemory 96mb\n`;
+    const k8s = makeValkeyMock({ sts: { replicas: 3 }, cm: { tmpl } });
+
+    const out = await patchValkey(k8s, 'ha', 5);
+
+    expect(out?.newReplicas).toBe(5);
+    expect(out?.replicasPatched).toBe(true);
+    expect(out?.newMaxMemory).toBe('160mb');
+    expect(out?.configPatched).toBe(true);
+  });
+
+  it('returns a structured error when the ConfigMap has no maxmemory directive at all', async () => {
+    // Edge case: a manual `kubectl edit cm` removed the maxmemory
+    // line entirely. The cap will never apply if we silently no-op.
+    const { patchValkey } = await import('./service.js');
+    const tmpl = `bind 0.0.0.0\nport 6379\n`; // no maxmemory line
+    const k8s = makeValkeyMock({ sts: { replicas: 1 }, cm: { tmpl } });
+
+    const out = await patchValkey(k8s, 'ha', 3);
+
+    expect(out?.error).toMatch(/no recognisable.*maxmemory/);
+    expect(out?.configPatched).toBe(false);
+    expect(k8s.core.patchNamespacedConfigMap).not.toHaveBeenCalled();
+  });
+});

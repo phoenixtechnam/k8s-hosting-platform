@@ -2,7 +2,7 @@ import { eq, inArray } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { notifications, users, platformStoragePolicy } from '../../db/schema.js';
-import { getPolicy, readClusterState, applyPolicy } from './service.js';
+import { getPolicy, readClusterState, applyPolicy, valkeyReplicasForSystemTier } from './service.js';
 
 // M13 Phase 6: emit a one-time admin notification when the cluster
 // reaches HA size (>=3 Ready servers) AND policy is still 'local' AND
@@ -39,16 +39,41 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
       // spurious "drift detected" entries until Longhorn converges
       // naturally. Once attached we can safely diff currentReplicas
       // against desiredReplicas.
-      const drift = state.volumes.some(
+      const volumeDrift = state.volumes.some(
         (v) => v.phase === 'attached' && (v.currentReplicas !== v.desiredReplicas || v.hasOffSystemReplica),
       );
-      if (drift) {
-        console.log(`[storage-policy-advisor] drift detected — applying ${policy.systemTier} tier`);
+
+      // Also detect Valkey replica drift — the cluster may have grown
+      // a server (state.readyServerCount changed) without any volume
+      // delta, in which case `volumeDrift` stays false but Valkey
+      // should still scale 1→3 or 3→4. patchValkey() inside
+      // applyPolicy is idempotent: if neither replicas nor maxmemory
+      // changed, both inner branches no-op and the call is cheap.
+      const desiredValkeyReplicas = valkeyReplicasForSystemTier(policy.systemTier, state.readyServerCount);
+      let valkeyDrift = false;
+      try {
+        const sts = await k8s.apps.readNamespacedStatefulSet({
+          namespace: 'redis-system', name: 'valkey',
+        }) as unknown as { spec?: { replicas?: number } };
+        const live = sts.spec?.replicas ?? 0;
+        valkeyDrift = live !== desiredValkeyReplicas;
+      } catch (err) {
+        // 404 = StatefulSet not deployed (e.g. production overlay).
+        const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+        if (status !== 404) {
+          console.warn('[storage-policy-advisor] valkey sts probe failed:', (err as Error).message);
+        }
+      }
+
+      if (volumeDrift || valkeyDrift) {
+        console.log(`[storage-policy-advisor] drift detected (volume=${volumeDrift} valkey=${valkeyDrift}) — applying ${policy.systemTier} tier`);
         try {
           const outcome = await applyPolicy(k8s, db);
           const patched = outcome.volumes.filter((v) => v.patched).length
             + outcome.deployments.filter((d) => d.patched).length
-            + outcome.cnpgClusters.filter((c) => c.patched).length;
+            + outcome.cnpgClusters.filter((c) => c.patched).length
+            + (outcome.valkey?.replicasPatched ? 1 : 0)
+            + (outcome.valkey?.configPatched ? 1 : 0);
           console.log(`[storage-policy-advisor] reconciled ${patched} resource(s)`);
         } catch (err) {
           console.error('[storage-policy-advisor] reconcile failed:', (err as Error).message);

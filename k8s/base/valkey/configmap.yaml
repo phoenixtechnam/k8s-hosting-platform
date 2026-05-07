@@ -1,0 +1,105 @@
+# Valkey + Sentinel config templates.
+#
+# The init container (setup-config in statefulset.yaml) reads these
+# templates, substitutes ${REDIS_PASSWORD} from the valkey-auth
+# Secret, conditionally appends a `replicaof` line for non-primary
+# pods, and writes the rendered files into the emptyDir at /etc/valkey
+# where the main containers read them.
+#
+# Why two configs in one ConfigMap:
+#   The Valkey + Sentinel processes co-locate in the same Pod (one
+#   container each), so they share the rendered-config emptyDir. One
+#   ConfigMap means a single Reloader watch + one rolling restart on
+#   any config change, not two.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-config
+  namespace: redis-system
+  labels:
+    app: valkey
+    app.kubernetes.io/part-of: hosting-platform
+data:
+  # ─── Valkey server config ─────────────────────────────────────────
+  # No persistence (`save ""` + `appendonly no`) — coordinator state
+  # is recoverable from the Postgres source-of-truth (Stalwart pods
+  # repopulate on reconnect). 3-replica setup ensures at-least-1-alive
+  # across rolling restarts so cache state survives a pod reschedule.
+  #
+  # maxmemory + LRU eviction is the resource cap. Stay under K8s
+  # memory limit (96Mi) so Valkey evicts before the kernel OOM-kills.
+  #
+  # protected-mode + requirepass: cluster-wide consumers MUST present
+  # the password from valkey-auth. NetworkPolicy further restricts
+  # which namespaces can even reach the port.
+  #
+  # The replicaof line is APPENDED by the init container for non-zero
+  # ordinals (so pod-0 is the bootstrap primary, pods 1..N are
+  # replicas of pod-0). Sentinel takes over on first failover —
+  # subsequent primary changes are transparent to clients via the
+  # Sentinel-aware URL Stalwart uses.
+  valkey.conf.tmpl: |
+    bind 0.0.0.0 -::*
+    port 6379
+    protected-mode yes
+    requirepass __REDIS_PASSWORD__
+    masterauth __REDIS_PASSWORD__
+
+    # Cap at 64MiB by default. Storage-policy reconciler patches this
+    # value at apply-HA time (1 server → 32mb, 3 → 96mb, 5 → 160mb).
+    maxmemory 64mb
+    maxmemory-policy allkeys-lru
+
+    # No persistence — see comment above.
+    save ""
+    appendonly no
+
+    # Replication: replicas must reconnect quickly after a
+    # primary failover so they pick up the new primary's data set
+    # before serving reads.
+    repl-timeout 60
+    replica-read-only yes
+
+    # Logging: stdout so kubectl logs picks it up.
+    logfile ""
+    loglevel notice
+
+  # ─── Sentinel config ──────────────────────────────────────────────
+  # Quorum=2 across the 3 sentinel processes (one per pod). On primary
+  # failure, 2 of 3 sentinels must agree → new primary elected.
+  #
+  # down-after-milliseconds = 5000 — Sentinel marks the primary
+  # subjectively-down after 5s of unreachability. parallel-syncs=1
+  # keeps replicas in sync one at a time during failover so we don't
+  # saturate the network.
+  #
+  # Sentinel REWRITES this file at runtime to track known sentinels +
+  # replicas. The rendered version lives in the emptyDir, so
+  # restart-time the file is fresh; sentinel re-discovers the cluster
+  # via the seed entry below within ~5s.
+  sentinel.conf.tmpl: |
+    bind 0.0.0.0 -::*
+    port 26379
+    # protected-mode + requirepass: clients connecting to Sentinel
+    # MUST AUTH before issuing SENTINEL commands. Without this, any
+    # pod in a NetworkPolicy-allowed namespace could call SENTINEL
+    # FAILOVER, SENTINEL SET, or SENTINEL REMOVE and cripple the
+    # cache layer (S1 hardening, 2026-05-07 security review).
+    protected-mode yes
+    requirepass __REDIS_PASSWORD__
+    # sentinel sentinel-pass: shared secret for inter-sentinel
+    # quorum chatter. Same password as requirepass — Sentinel pods
+    # all live in redis-system and trust each other; the goal is to
+    # require AUTH for cross-pod sentinel ops, not to differentiate
+    # between sentinels.
+    sentinel sentinel-pass __REDIS_PASSWORD__
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel monitor mymaster valkey-0.valkey-headless.redis-system.svc.cluster.local 6379 2
+    sentinel auth-pass mymaster __REDIS_PASSWORD__
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 30000
+    sentinel parallel-syncs mymaster 1
+    logfile ""
+    loglevel notice

@@ -49,6 +49,12 @@ resources:
   # N concurrent SMTPS from a single in-cluster pod — default trips
   # the throttle. Production keeps the default.
   - stalwart-throttle-override-job.yaml
+  # Platform-wide Valkey (Redis-protocol) coordinator cache. 3-replica
+  # HA from day 1 + Sentinel co-located. Fresh installs land at K8s
+  # default replicas=1; storage-policy reconciler scales to 3 when HA
+  # mode is applied. NetworkPolicy locks the cache to redis-system /
+  # mail / platform namespaces — tenant namespaces explicitly blocked.
+  - valkey/
   # Flux Image Automation — auto-promotes newly-built timestamp-tagged
   # images to the staging branch. Requires the
   # image-reflector-controller + image-automation-controller Flux

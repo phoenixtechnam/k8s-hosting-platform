@@ -1,0 +1,34 @@
+# ClusterIP Service for client connections.
+#
+# Two ports:
+#   - 6379 (client): Direct Valkey connections. Phase-1 callers that
+#     don't speak Sentinel hit this round-robin across all 3 pods.
+#     A write to a replica returns a READONLY error — clients must
+#     handle it (redis-rs does).
+#   - 26379 (sentinel): Sentinel-aware clients connect to this port,
+#     ask "who is the primary right now?", then connect direct.
+#     Stalwart 0.16's Coordinator URL `redis+sentinel://...:26379/...`
+#     resolves through this Service.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  namespace: redis-system
+  labels:
+    app: valkey
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: coordinator-cache
+spec:
+  type: ClusterIP
+  selector:
+    app: valkey
+  ports:
+    - name: client
+      port: 6379
+      targetPort: client
+      protocol: TCP
+    - name: sentinel
+      port: 26379
+      targetPort: sentinel
+      protocol: TCP
