@@ -149,12 +149,15 @@ spec:
 ---
 # Stable Service alias. Keeps app connection strings unchanged
 # (postgres.platform.svc:5432) across CNPG instance scaling +
-# failover. ExternalName aliases to CNPG's auto-managed
-# postgres-rw Service which always routes to the current primary.
-# Using ExternalName instead of a selector-based Service avoids
-# CNPG version skew (instance-role label name has changed
-# between minor releases — the operator's own *-rw service is
-# the canonical truth).
+# failover AND across PG-major bumps (the externalName updates,
+# the Service name does not — apps' DATABASE_URL stays valid).
+# ExternalName aliases to CNPG's auto-managed <cluster>-rw Service
+# which always routes to the current primary.
+#
+# Bump history: postgres-rw (PG 17.5) → postgres-18-rw (PG 18.3,
+# 2026-05-07). The pre-PG18 `postgres` cluster is still alive in
+# its own namespace as a 24h-soak rollback point; deleting it is
+# a separate PR after the soak completes.
 apiVersion: v1
 kind: Service
 metadata:
@@ -165,7 +168,7 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
 spec:
   type: ExternalName
-  externalName: postgres-rw.platform.svc.cluster.local
+  externalName: postgres-18-rw.platform.svc.cluster.local
   ports:
     - name: postgres
       port: 5432

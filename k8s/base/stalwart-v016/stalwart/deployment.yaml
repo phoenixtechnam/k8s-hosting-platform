@@ -122,8 +122,13 @@ spec:
                 /tmpl/config.json > /etc/stalwart/config.json
               echo "Rendered /etc/stalwart/config.json"
           env:
+            # Bump history: mail-pg-rw (PG 16.9) → mail-pg-17-rw (PG 17.5,
+            # transient) → mail-pg-18-rw (PG 18.3, 2026-05-07). The
+            # pre-PG18 mail-pg + mail-pg-17 clusters survive in their
+            # namespace as 24h-soak rollback points; deleting their
+            # Cluster CRs is a separate PR after the soak.
             - name: STALWART_PG_HOST
-              value: "mail-pg-rw.mail.svc.cluster.local"
+              value: "mail-pg-18-rw.mail.svc.cluster.local"
             - name: STALWART_PG_DATABASE
               value: "stalwart_app"
             - name: STALWART_PG_USER

@@ -213,6 +213,15 @@ rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["backups"]
     verbs: ["get", "list"]
+  # Barman Cloud Plugin (cnpg-i): WAL archive enable/disable upserts an
+  # ObjectStore CR per cluster (`<cluster>-system-store`) alongside the
+  # ScheduledBackup. The plugin's own controller reconciles the
+  # ObjectStore against the actual S3 destination — platform-api just
+  # supplies the spec. Replaces the deprecated in-tree
+  # spec.backup.barmanObjectStore path (CNPG 1.30 will remove it).
+  - apiGroups: ["barmancloud.cnpg.io"]
+    resources: ["objectstores"]
+    verbs: ["get", "list", "create", "patch", "delete"]
   # PITR uses the external-snapshotter API (snapshot.storage.k8s.io)
   # to wrap a Longhorn snapshot as a CSI VolumeSnapshot that CNPG
   # bootstrap.recovery.volumeSnapshots can consume. VolumeSnapshot is

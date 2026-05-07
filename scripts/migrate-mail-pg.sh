@@ -177,11 +177,36 @@ if [[ -z "$src_pw" ]]; then
   echo "ERROR: ${SOURCE_SECRET} has no .data.password key." >&2
   exit 1
 fi
-auth_probe=$(kctl run "auth-probe-$RANDOM" --rm -i --restart=Never \
+# Use detached pod + kubectl logs instead of `kubectl run --rm -i`. The
+# latter raced with the kubelet output stream — `kubectl run --rm` deletes
+# the pod as soon as it terminates and the psql output was sometimes lost
+# before kubectl could read it (verified empirically on staging
+# 2026-05-07: probe falsely reported FATAL even though the same psql
+# command via separate kubectl run worked). Detached pod + logs is
+# deterministic.
+probe_name="auth-probe-$$-$RANDOM"
+kctl run "$probe_name" --restart=Never \
   -n "$NAMESPACE" --image=postgres:16-alpine \
   --env="PGPASSWORD=$src_pw" --command \
   -- psql -h "${SOURCE_CLUSTER}-rw.${NAMESPACE}.svc.cluster.local" \
-  -U "${DATABASE}" -d "${DATABASE}" -c "SELECT 1" 2>&1 || true)
+  -U "${DATABASE}" -d "${DATABASE}" -c "SELECT 1" >/dev/null 2>&1 || true
+# Wait up to 120s for pod to reach terminal phase before reading logs.
+# 20s was too short for clusters with image pulls or scheduling delays.
+pod_phase=""
+for _ in $(seq 1 60); do
+  pod_phase=$(kctl get pod -n "$NAMESPACE" "$probe_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+  [[ "$pod_phase" == "Succeeded" || "$pod_phase" == "Failed" ]] && break
+  sleep 2
+done
+if [[ "$pod_phase" != "Succeeded" && "$pod_phase" != "Failed" ]]; then
+  echo "ERROR: auth probe pod ${probe_name} did not reach terminal state in 120s." >&2
+  echo "  Last phase: ${pod_phase:-unknown}" >&2
+  kctl describe pod -n "$NAMESPACE" "$probe_name" 2>&1 | tail -20 >&2
+  kctl delete pod -n "$NAMESPACE" "$probe_name" --wait=false >/dev/null 2>&1 || true
+  exit 1
+fi
+auth_probe=$(kctl logs -n "$NAMESPACE" "$probe_name" 2>&1 || true)
+kctl delete pod -n "$NAMESPACE" "$probe_name" --wait=false >/dev/null 2>&1 || true
 if ! printf '%s' "$auth_probe" | grep -q "(1 row)"; then
   echo "ERROR: auth probe to ${SOURCE_CLUSTER}-rw failed using Secret ${SOURCE_SECRET}." >&2
   echo "  This means the Secret's password is stale relative to the in-DB" >&2

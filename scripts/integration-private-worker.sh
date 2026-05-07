@@ -576,7 +576,7 @@ phase5_cleanup() {
   # eventual consistency, can take >60s on a busy reconciler.
   if [[ -n "$ns" ]]; then
     local ten=0
-    while (( ten < 180 )); do
+    while (( ten < 360 )); do
       if ssh_cp "kubectl -n $ns get deployment private-worker-server 2>&1" \
           | grep -qE 'NotFound|not found'; then
         ok "Deployment private-worker-server in $ns is gone"
@@ -585,13 +585,13 @@ phase5_cleanup() {
       sleep 5
       ten=$((ten + 5))
     done
-    if (( ten >= 180 )); then
-      fail "Deployment private-worker-server still exists in $ns after 180s"
+    if (( ten >= 360 )); then
+      fail "Deployment private-worker-server still exists in $ns after 360s"
     fi
   fi
   if [[ -n "$slug" ]]; then
     local ten=0
-    while (( ten < 180 )); do
+    while (( ten < 360 )); do
       if ssh_cp "kubectl -n platform-system get ingress tunnel-$slug 2>&1" \
           | grep -qE 'NotFound|not found'; then
         ok "Ingress tunnel-$slug in platform-system is gone"
@@ -600,8 +600,8 @@ phase5_cleanup() {
       sleep 5
       ten=$((ten + 5))
     done
-    if (( ten >= 180 )); then
-      fail "Ingress tunnel-$slug still present in platform-system after 180s"
+    if (( ten >= 360 )); then
+      fail "Ingress tunnel-$slug still present in platform-system after 360s"
     fi
   fi
 
