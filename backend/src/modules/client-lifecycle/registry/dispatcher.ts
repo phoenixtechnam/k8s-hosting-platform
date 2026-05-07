@@ -99,6 +99,47 @@ export async function runTransition(
     detail: opts.detail ?? null,
   });
 
+  // 1b. Register a Task Tracker row so the chip lights up. Idempotent on
+  // (kind, ref_id) — re-runs of the same transitionId return the same
+  // task row. We only register when we have a triggering user (admin or
+  // tenant op); cron-driven transitions (scope='system') stay
+  // bell-only per the UX agreement.
+  if (opts.triggeredByUserId) {
+    try {
+      const { start: startTask } = await import('../../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      await startTask(db, {
+        kind: 'client.transition',
+        refId: transitionId,
+        scope: 'admin',
+        userId: opts.triggeredByUserId,
+        clientId: opts.clientId,
+        label: toSafeText(`${opts.transition} client (${opts.clientId.slice(0, 8)})`),
+        target: {
+          type: 'modal',
+          modal: 'transition',
+          // Mirror the TransitionProgressModal Props shape — clientId,
+          // transition (kind), since (op-trigger ms), and transitionId.
+          modalProps: {
+            clientId: opts.clientId,
+            transition: opts.transition,
+            since: startedAt.getTime(),
+            transitionId,
+          },
+        },
+        details: {
+          fromStatus: opts.fromStatus ?? null,
+          toStatus: opts.toStatus,
+        },
+      });
+    } catch (err) {
+      // Tasker registration failures must NEVER block a transition —
+      // log and continue. The retention cron will reap any orphan rows.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[client-lifecycle] task tracker enroll failed for ${transitionId}: ${msg}`);
+    }
+  }
+
   // 2. Resolve hooks (topo-sorted, deterministic).
   const hooks = opts.hooksOverride ?? topoSortForTransition(opts.transition);
 
@@ -231,6 +272,31 @@ export async function runTransition(
       completedAt: new Date(),
     })
     .where(eq(clientLifecycleTransitions.id, transitionId));
+
+  // Mirror the terminal state into the Task Tracker so the chip flips
+  // from running → succeeded/failed. We look up by ref_id (transitionId)
+  // — service.finish takes the task id, so we go through the helper's
+  // finishByRef variant via a direct update keyed on the index.
+  if (opts.triggeredByUserId) {
+    try {
+      const { finishByRef } = await import('../../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const taskStatus =
+        finalState === 'completed' ? 'succeeded'
+        : finalState === 'failed_blocking' ? 'failed'
+        : 'failed';
+      await finishByRef(db, 'client.transition', transitionId, {
+        status: taskStatus,
+        text: hooksFailed > 0
+          ? toSafeText(`${hooksOk}/${hooksOk + hooksFailed} hooks succeeded`)
+          : null,
+        error: finalState === 'completed' ? null : `Transition ended in state ${finalState}`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[client-lifecycle] task tracker finish failed for ${transitionId}: ${msg}`);
+    }
+  }
 
   return {
     transitionId,

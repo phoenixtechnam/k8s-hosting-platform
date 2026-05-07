@@ -6,7 +6,7 @@ import { useChangePassword } from '@/hooks/use-password';
 import { ApiError } from '@/lib/api-client';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
-import ActiveTasksIndicator from '@/components/ActiveTasksIndicator';
+import TaskCenterChip from '@/components/TaskCenterChip';
 
 interface HeaderProps {
   readonly onMenuClick: () => void;
@@ -68,7 +68,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <ActiveTasksIndicator />
+        <TaskCenterChip />
         <DarkModeToggle />
         <NotificationDropdown />
 

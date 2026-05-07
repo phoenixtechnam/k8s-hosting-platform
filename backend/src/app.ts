@@ -80,6 +80,8 @@ import { systemBackupWalArchiveRoutes } from './modules/system-backup/wal-archiv
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
+import { taskCenterRoutes } from './modules/tasks/routes.js';
+import { startTaskRetention } from './modules/tasks/retention.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
 import { backupsV2Routes } from './modules/tenant-bundles/routes.js';
 import { backupsV2InternalUploadRoutes } from './modules/tenant-bundles/internal-upload-route.js';
@@ -420,6 +422,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(systemBackupWalArchiveRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
+  await app.register(taskCenterRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2Routes, { prefix: '/api/v1' });
   await app.register(backupsV2InternalUploadRoutes, { prefix: '/api/v1' });
@@ -561,6 +564,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
       const webcronTimer = startWebcronScheduler(app.db);
       app.addHook('onClose', () => clearInterval(webcronTimer));
+
+      // Task tracker retention — reap orphans + delete old terminal rows.
+      const taskRetentionTimer = startTaskRetention(app.db);
+      app.addHook('onClose', () => clearInterval(taskRetentionTimer));
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const cleanupTimer = startIdleCleanup(kubeconfigPath);

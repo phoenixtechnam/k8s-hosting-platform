@@ -2399,3 +2399,41 @@ export type RestoreJob = typeof restoreJobs.$inferSelect;
 export type NewRestoreJob = typeof restoreJobs.$inferInsert;
 export type RestoreItem = typeof restoreItems.$inferSelect;
 export type NewRestoreItem = typeof restoreItems.$inferInsert;
+
+// ─── Top-bar Task Tracker (migration 0090) ────────────────────────────
+//
+// UI-projection of long-running operations for the chip in the admin /
+// client panel header. Helper-only writes — see backend/src/modules/tasks/.
+// Idempotent on (kind, ref_id); pg_notify trigger emits deltas to
+// `tasks_user_<id>` channels for SSE consumers.
+
+export const tasks = pgTable('tasks', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  kind: varchar('kind', { length: 64 }).notNull(),
+  refId: varchar('ref_id', { length: 64 }),
+  scope: varchar('scope', { length: 16 }).notNull(),
+  userId: varchar('user_id', { length: 36 }),
+  clientId: varchar('client_id', { length: 36 }),
+  label: text('label').notNull(),
+  status: varchar('status', { length: 16 }).notNull(),
+  progressPct: integer('progress_pct'),
+  progressText: text('progress_text'),
+  target: jsonb('target').$type<Record<string, unknown>>().notNull(),
+  errorMessage: text('error_message'),
+  details: jsonb('details').$type<Record<string, unknown>>(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  clearedAt: timestamp('cleared_at', { withTimezone: true }),
+  parentTaskId: varchar('parent_task_id', { length: 36 }),
+}, (table) => [
+  // Drizzle's index DSL doesn't model partial indexes; the migration
+  // (0090_tasks.sql) declares the partial indexes directly. These are
+  // covering indexes used by the schema dump only.
+  index('tasks_user_updated_idx').on(table.userId, table.updatedAt),
+  index('tasks_client_updated_idx').on(table.clientId, table.updatedAt),
+  index('tasks_parent_idx').on(table.parentTaskId),
+]);
+
+export type Task = typeof tasks.$inferSelect;
+export type NewTask = typeof tasks.$inferInsert;
