@@ -129,9 +129,9 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
         ],
       },
       pvcsByLabel: {
-        'platform|cnpg.io/cluster=postgres': [
-          { metadata: { name: 'postgres-1' }, spec: { volumeName: 'pvc-pg-1' } },
-          { metadata: { name: 'postgres-2' }, spec: { volumeName: 'pvc-pg-2' } },
+        'platform|cnpg.io/cluster=system-db': [
+          { metadata: { name: 'system-db-1' }, spec: { volumeName: 'pvc-pg-1' } },
+          { metadata: { name: 'system-db-2' }, spec: { volumeName: 'pvc-pg-2' } },
         ],
       },
       lhVolumes: {
@@ -153,8 +153,8 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
     expect(stalwart?.kind).toBe('statefulset');
 
     // Both CNPG PVCs surfaced as cnpg rows
-    const pg1 = state.volumes.find((v) => v.pvcName === 'postgres-1');
-    const pg2 = state.volumes.find((v) => v.pvcName === 'postgres-2');
+    const pg1 = state.volumes.find((v) => v.pvcName === 'system-db-1');
+    const pg2 = state.volumes.find((v) => v.pvcName === 'system-db-2');
     expect(pg1).toBeDefined();
     expect(pg2).toBeDefined();
     expect(pg1?.kind).toBe('cnpg');
@@ -179,7 +179,7 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
 
     // Service queried with the CNPG label selector.
     const calls = (k8s.core.listNamespacedPersistentVolumeClaim as ReturnType<typeof vi.fn>).mock.calls;
-    const labelCall = calls.find((c) => c[0]?.labelSelector === 'cnpg.io/cluster=postgres');
+    const labelCall = calls.find((c) => c[0]?.labelSelector === 'cnpg.io/cluster=system-db');
     expect(labelCall).toBeDefined();
     expect(labelCall?.[0].namespace).toBe('platform');
   });
@@ -190,8 +190,8 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
       nodes: [{ name: 's1', role: 'server', ready: true }],
       pvcsByNs: { mail: [] },
       pvcsByLabel: {
-        'platform|cnpg.io/cluster=postgres': [
-          { metadata: { name: 'postgres-1' }, spec: { volumeName: 'pvc-pg-1' } },
+        'platform|cnpg.io/cluster=system-db': [
+          { metadata: { name: 'system-db-1' }, spec: { volumeName: 'pvc-pg-1' } },
         ],
       },
       lhVolumes: {
@@ -201,7 +201,7 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
 
     const state = await readClusterState(k8s, db);
     expect(state.volumes).toHaveLength(1);
-    expect(state.volumes[0].pvcName).toBe('postgres-1');
+    expect(state.volumes[0].pvcName).toBe('system-db-1');
     expect(state.volumes[0].kind).toBe('cnpg');
     expect(state.volumes[0].desiredReplicas).toBe(1); // local tier
   });

@@ -28,7 +28,10 @@ import {
 } from '@k8s-hosting/api-contracts';
 
 const MAIL_NAMESPACE = 'mail';
-const MAIL_PVC_NAME = 'mail-pg-1';
+// Cluster renamed 2026-05-07: mail-pg → mail-pg-17 → mail-pg-18 → mail-db.
+// CNPG-managed PVCs follow the cluster name pattern <cluster>-<index>.
+// Single instance currently → mail-db-1.
+const MAIL_PVC_NAME = 'mail-db-1';
 const LAST_RESIZED_ANNOTATION = 'platform.phoenix-host.net/last-resized-at';
 
 export interface MailPvcOptions {
@@ -284,7 +287,7 @@ async function tryDfProbe(
 
     const pods = await core.listNamespacedPod({
       namespace: MAIL_NAMESPACE,
-      labelSelector: 'cnpg.io/cluster=mail-pg,role=primary',
+      labelSelector: 'cnpg.io/cluster=mail-db,role=primary',
       limit: 1,
     } as unknown as Parameters<typeof core.listNamespacedPod>[0]) as { items?: { metadata?: { name?: string } }[] };
 

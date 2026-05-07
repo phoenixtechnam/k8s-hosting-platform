@@ -88,9 +88,15 @@ export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', readyServe
 // snapshot/recovery cycle from platform-PG; same Apply-HA scaling
 // path so a single admin action scales both clusters together.
 // (Cut 2 / M6.2 — stalwart-v016 deploy layer.)
+// Cluster names track the role-based naming scheme (no version baggage).
+// Cluster name history (cleaned up 2026-05-07):
+//   platform: postgres → postgres-18 → system-db
+//   mail:     mail-pg  → mail-pg-17 → mail-pg-18 → mail-db
+// Future PG-major bumps follow the dump+restore-into-same-named-cluster
+// pattern (or transient-then-rename), so this list stays version-stable.
 const CNPG_CLUSTERS: ReadonlyArray<{ namespace: string; name: string }> = [
-  { namespace: 'platform', name: 'postgres' },
-  { namespace: 'mail', name: 'mail-pg' },
+  { namespace: 'platform', name: 'system-db' },
+  { namespace: 'mail', name: 'mail-db' },
 ];
 // CNPG instance count tracks the same readyServerCount-aware policy
 // so postgres replication fans out across every server in HA mode
