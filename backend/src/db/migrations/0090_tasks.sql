@@ -118,8 +118,4 @@ CREATE TRIGGER tasks_notify_trigger
   AFTER INSERT OR UPDATE ON tasks
   FOR EACH ROW EXECUTE FUNCTION tasks_notify();
 
-COMMENT ON TABLE tasks IS
-  'UI-projection of long-running operations for the top-bar Task Tracker. ' ||
-  'Source of truth lives in per-module tables; this row carries just enough ' ||
-  'to render the chip and route the click. Helper-only writes — see ' ||
-  'backend/src/modules/tasks/.';
+COMMENT ON TABLE tasks IS 'UI-projection of long-running operations for the top-bar Task Tracker. Source of truth lives in per-module tables; this row carries just enough to render the chip and route the click. Helper-only writes - see backend/src/modules/tasks/.';
