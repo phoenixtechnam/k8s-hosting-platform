@@ -75,12 +75,21 @@ spec:
       # with hostPort=containerPort below, traffic to <any-node>:25/587/etc
       # is bound directly by the local Stalwart process — no kube-proxy
       # DNAT round-trip across nodes (which can't work for hostPort anyway).
-      # ScheduleAnyway so Apply HA's replica scaling (1↔3) doesn't deadlock
-      # on a 1- or 2-node cluster.
+      #
+      # DoNotSchedule (changed from ScheduleAnyway 2026-05-07): the
+      # hostPort binding makes ScheduleAnyway strictly worse here. With
+      # ScheduleAnyway + replicas=3 on a 2-node cluster, K8s places two
+      # pods on one node — the second pod's hostPort=25/etc bind
+      # collides with the first and the pod CrashLoopBackOffs. With
+      # DoNotSchedule, the orphan pod stays Pending (visible alarm)
+      # until a third node returns. Apply HA scaling 1↔3 still works:
+      # K8s schedules as many pods as fit, the rest sit Pending — no
+      # deadlock, just a transparent under-scaled service. On a fully
+      # populated 3-node cluster, behavior is identical to ScheduleAnyway.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
               app: stalwart-mail

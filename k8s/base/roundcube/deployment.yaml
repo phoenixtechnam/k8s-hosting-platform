@@ -31,12 +31,17 @@ spec:
         app.kubernetes.io/component: webmail
     spec:
       # Spread replicas across server-role nodes so a node failure
-      # leaves at least one Roundcube pod scheduled. ScheduleAnyway lets
-      # single-node staging still bring up replicas if HA isn't applied.
+      # leaves at least one Roundcube pod scheduled. DoNotSchedule
+      # (changed from ScheduleAnyway 2026-05-07): keeps placement
+      # strictly one-per-node so a node-failure window doesn't leave
+      # 2 pods on one surviving node + 0 on another. Single-node /
+      # under-populated clusters still come up cleanly because Apply
+      # HA pegs replicas=readyServerCount; replicas <= node count
+      # means DoNotSchedule never blocks.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
               app: roundcube
