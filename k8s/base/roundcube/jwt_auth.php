@@ -81,7 +81,27 @@ class jwt_auth extends rcube_plugin
         $mailbox = $payload['mailbox'];
         $master = getenv('STALWART_MASTER_USER');
         if (!$master) {
-            $master = 'master';
+            $master = 'master@master.local';
+        }
+        // Strip whitespace BEFORE the FQDN check — a YAML editor that
+        // accidentally adds a trailing space or newline would
+        // produce `"master@master.local "`, which Stalwart rejects
+        // with the same opaque AUTHENTICATIONFAILED message as the
+        // bare-name case. trim() catches both the bare-name AND the
+        // whitespace-padded variants.
+        $master = trim($master);
+        // Stalwart 0.16's IMAP master-auth requires the FQDN form
+        // (verified empirically 2026-05-07: `master` returns
+        // AUTHENTICATIONFAILED localhost.local; `master@master.local`
+        // succeeds). Older deployments may have STALWART_MASTER_USER
+        // set to the bare `master` short name from secret.example.yaml
+        // before the 2026-05-07 fix landed — auto-promote to FQDN
+        // here so the plugin keeps working through the upgrade
+        // window. The bootstrap.sh + secret.example.yaml now write
+        // the FQDN form natively; this auto-promotion is a defence-
+        // in-depth safety-net.
+        if (strpos($master, '@') === false) {
+            $master = $master . '@master.local';
         }
         $master_pw = getenv('STALWART_MASTER_PASSWORD');
         if (!$master_pw) {

@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { getMailServerHostname } from '../webmail-settings/service.js';
+import { getMailServerHostname, getDefaultWebmailUrl } from '../webmail-settings/service.js';
 import { probeAllListeners } from './service.js';
 
 /**
@@ -55,10 +55,32 @@ export async function emailSslStatusRoutes(app: FastifyInstance): Promise<void> 
           500,
         );
       }
+
+      // Resolve the webmail HTTPS host so the SSL-status table also
+      // catches the nginx-ingress fake-cert fallback that bit
+      // webmail.staging.phoenix-host.net on 2026-05-07. Extracts the
+      // host from the configured webmail URL ("https://w.x/..." → "w.x")
+      // and validates it before handing to the TLS probe.
+      const webmailUrl = await getDefaultWebmailUrl(app.db);
+      let webmailHost: string | undefined;
+      try {
+        webmailHost = new URL(webmailUrl).hostname;
+        if (!isValidHostname(webmailHost)) {
+          // Don't fail the whole endpoint — the mail-listener probes
+          // are the primary signal. Log the bad webmail host and
+          // continue without it.
+          app.log?.warn?.({ webmailUrl, webmailHost }, 'webmail host failed RFC 1123 validation; skipping webmail probe row');
+          webmailHost = undefined;
+        }
+      } catch {
+        webmailHost = undefined;
+      }
+
       const bypassCache = request.query.refresh === '1' || request.query.refresh === 'true';
-      const statuses = await probeAllListeners(hostname, { bypassCache });
+      const statuses = await probeAllListeners(hostname, { bypassCache, webmailHost });
       return success({
         host: hostname,
+        webmailHost: webmailHost ?? null,
         listeners: statuses,
         cachedTtlMs: bypassCache ? 0 : 30_000,
       });

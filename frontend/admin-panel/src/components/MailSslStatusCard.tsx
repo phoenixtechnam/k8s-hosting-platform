@@ -24,7 +24,7 @@ interface CertInfo {
 }
 
 interface ListenerStatus {
-  listener: 'smtp' | 'submissions' | 'submission' | 'imap' | 'imaps' | 'managesieve';
+  listener: 'smtp' | 'submissions' | 'submission' | 'imap' | 'imaps' | 'managesieve' | 'webmail-https';
   port: number;
   host: string;
   tlsMode: 'implicit' | 'starttls';
@@ -38,6 +38,7 @@ interface ListenerStatus {
 
 interface SslStatusResponse {
   host: string;
+  webmailHost: string | null;
   listeners: ListenerStatus[];
   cachedTtlMs: number;
 }
@@ -49,6 +50,7 @@ const LISTENER_LABELS: Record<ListenerStatus['listener'], string> = {
   imap: 'IMAP (port 143 STARTTLS)',
   imaps: 'IMAPS (port 993)',
   managesieve: 'ManageSieve (port 4190 STARTTLS)',
+  'webmail-https': 'Webmail (HTTPS port 443)',
 };
 
 export default function MailSslStatusCard() {
@@ -102,9 +104,12 @@ export default function MailSslStatusCard() {
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
-        Per-listener TLS handshake against {probedHost ? <code>{probedHost}</code> : 'the configured mail-server hostname'}.
-        Reports cert subject + issuer + SAN + expiry on connect, or an error message on
-        failure. Lazy-loaded — click <strong>{enabled ? 'Refresh' : 'Check now'}</strong> to probe.
+        TLS handshake against {probedHost ? <code>{probedHost}</code> : 'the configured mail-server hostname'} on
+        every mail port (25 / 465 / 587 / 143 / 993 / 4190) plus the webmail
+        HTTPS endpoint
+        {data?.data?.webmailHost ? <> at <code>{data.data.webmailHost}:443</code></> : ''}.
+        Reports cert subject + issuer + SAN + expiry, or an error on failure.
+        Lazy-loaded — click <strong>{enabled ? 'Refresh' : 'Check now'}</strong> to probe.
       </p>
 
       {!enabled && !isFetching && (

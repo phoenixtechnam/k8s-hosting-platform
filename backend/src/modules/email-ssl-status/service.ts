@@ -42,7 +42,8 @@ export type ListenerKind =
   | 'submission'     // port 587 — STARTTLS
   | 'imap'           // port 143 — STARTTLS
   | 'imaps'          // port 993 — implicit TLS
-  | 'managesieve';   // port 4190 — STARTTLS
+  | 'managesieve'    // port 4190 — STARTTLS
+  | 'webmail-https'; // port 443 — implicit TLS, NOT Stalwart — Roundcube via nginx-ingress
 
 export interface CertInfo {
   readonly subject: string;
@@ -109,6 +110,14 @@ export interface ProbeOptions {
   readonly serviceHost?: string;
   /** Skip cache (for forced refresh). */
   readonly bypassCache?: boolean;
+  /**
+   * If set, append a webmail HTTPS probe (TLS handshake on
+   * webmailHost:443) to the listener list. The probe goes through
+   * the same nginx-ingress path that real browsers use, so it
+   * catches the "fake-cert fallback" failure mode that bit
+   * webmail.staging.phoenix-host.net on 2026-05-07.
+   */
+  readonly webmailHost?: string;
 }
 
 /**
@@ -119,7 +128,16 @@ export async function probeAllListeners(
   serverHostname: string,
   options: ProbeOptions = {},
 ): Promise<readonly ListenerStatus[]> {
-  const cacheKey = serverHostname;
+  // Cache key includes webmailHost so a status row for one mail
+  // hostname + webmail-A doesn't get reused when the operator
+  // rotates webmail to webmail-B (the cached row would silently
+  // serve the stale webmail-A handshake until TTL expires).
+  // The `|` separator is safe: RFC-1123 hostnames cannot contain
+  // it (label regex is `[a-z0-9-]`) so collision with a real host
+  // is impossible.
+  const cacheKey = options.webmailHost
+    ? `${serverHostname}|${options.webmailHost}`
+    : serverHostname;
   if (!options.bypassCache) {
     const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
@@ -146,6 +164,34 @@ export async function probeAllListeners(
     const results = await Promise.all(
       ALL_PORTS.map((spec) => probeListener(target, serverHostname, spec)),
     );
+
+    // Webmail HTTPS probe: webmail.${DOMAIN}:443 → nginx-ingress →
+    // Roundcube. NOT Stalwart — different cert (cert-manager-issued
+    // for the webmail hostname), different ingress path. Probe the
+    // public hostname directly because the failure mode we caught
+    // on 2026-05-07 (nginx-ingress fake-cert fallback) is invisible
+    // from inside the cluster.
+    //
+    // OPERATOR NOTE for egress-restricted clusters: this probe goes
+    // OUT to the public Internet (DNS round-robin → external IP
+    // → back to the cluster's nginx-ingress). If the platform-api
+    // pod's NetworkPolicy / firewall blocks egress to the cluster's
+    // own external IPs, the probe will time out after PROBE_TIMEOUT_MS
+    // and the row will render with `connected:false, error: tls
+    // timeout`. That's a false-negative for the cert state — the cert
+    // may be perfectly valid, the operator just can't reach it from
+    // inside. To suppress the row entirely, leave webmailHost
+    // unconfigured or set the platform-wide default webmail URL to
+    // empty in admin Email Settings.
+    if (options.webmailHost) {
+      const wm = await probeListener(options.webmailHost, options.webmailHost, {
+        listener: 'webmail-https',
+        port: 443,
+        tlsMode: 'implicit',
+      });
+      results.push(wm);
+    }
+
     const sorted = [...results].sort((a, b) => a.port - b.port);
     cache.set(cacheKey, { statuses: sorted, fetchedAt: Date.now() });
     return sorted;

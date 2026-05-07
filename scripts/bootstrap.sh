@@ -2736,7 +2736,12 @@ generate_platform_secrets() {
 # admin panel before going to production.
 STALWART_ADMIN_USER=admin
 STALWART_ADMIN_PASSWORD=${stalwart_admin_pw}
-STALWART_MASTER_USER=master
+# Stalwart 0.16 IMAP master-auth requires the FQDN form
+# (verified empirically 2026-05-07: short `master` returns
+# AUTHENTICATIONFAILED; `master@master.local` succeeds). The master
+# Account is provisioned by provision_stalwart_master_user() in the
+# `master.local` synthetic Domain.
+STALWART_MASTER_USER=master@master.local
 STALWART_MASTER_PASSWORD=${stalwart_master_pw}
 STALWART_EOF
     chmod 600 /etc/platform/stalwart-credentials
@@ -2862,7 +2867,7 @@ STALWART016_EOF
     kctl create secret generic roundcube-secrets \
       --namespace=mail \
       --from-literal=JWT_AUTH_SECRET="$rc_jwt" \
-      --from-literal=STALWART_MASTER_USER="master" \
+      --from-literal=STALWART_MASTER_USER="master@master.local" \
       --from-literal=STALWART_MASTER_PASSWORD="$rc_master_pw" \
       --from-literal=ROUNDCUBEMAIL_DES_KEY="$rc_des" \
       --from-literal=ROUNDCUBEMAIL_DB_HOST="postgres-rw.platform.svc.cluster.local" \
