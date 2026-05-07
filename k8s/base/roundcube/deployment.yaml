@@ -92,17 +92,17 @@ spec:
                 echo "[jwt_auth] plugin installed"
                 # Platform branding assets + plugin install. Apache's
                 # DocumentRoot is /var/www/html/public_html/ (Roundcube
-                # 1.6 reorganised) — files at /var/www/html/branding/
-                # are outside the docroot and 404 unless symlinked in.
-                # The plugins/ + skins/ dirs already use the same
-                # symlink pattern (see public_html/plugins → ../plugins).
-                mkdir -p /var/www/html/branding /var/www/html/plugins/platform_branding
-                cp -f /branding-src/branding.css /var/www/html/branding/branding.css
-                cp -f /branding-src/logo.svg /var/www/html/branding/logo.svg
+                # 1.6 reorganised). Roundcube's .htaccess sets
+                # `Options +SymLinksIfOwnerMatch` which refuses to
+                # follow symlinks whose target is owned by a different
+                # uid than the link itself — so we copy the assets
+                # DIRECTLY into the docroot rather than maintaining a
+                # parallel /var/www/html/branding/ + symlink.
+                mkdir -p /var/www/html/public_html/branding /var/www/html/plugins/platform_branding
+                cp -f /branding-src/branding.css /var/www/html/public_html/branding/branding.css
+                cp -f /branding-src/logo.svg /var/www/html/public_html/branding/logo.svg
                 cp -f /branding-src/platform_branding.php /var/www/html/plugins/platform_branding/platform_branding.php
-                # Expose /branding/ via the document root.
-                ln -sfn ../branding /var/www/html/public_html/branding
-                chown -R www-data:www-data /var/www/html/branding /var/www/html/plugins/platform_branding 2>/dev/null || true
+                chown -R www-data:www-data /var/www/html/public_html/branding /var/www/html/plugins/platform_branding 2>/dev/null || true
                 echo "[branding] assets + plugin installed"
               ) &
               exec /docker-entrypoint.sh apache2-foreground
@@ -250,9 +250,8 @@ spec:
                   test -f /var/www/html/index.php \
                     && test -f /var/www/html/plugins/jwt_auth/jwt_auth.php \
                     && test -f /var/www/html/plugins/platform_branding/platform_branding.php \
-                    && test -f /var/www/html/branding/branding.css \
-                    && test -f /var/www/html/branding/logo.svg \
-                    && test -L /var/www/html/public_html/branding
+                    && test -f /var/www/html/public_html/branding/branding.css \
+                    && test -f /var/www/html/public_html/branding/logo.svg
             failureThreshold: 30
             periodSeconds: 5
           readinessProbe:
