@@ -30,21 +30,38 @@ class platform_branding extends rcube_plugin
 
     public function init()
     {
-        $this->add_hook('html_head', [$this, 'inject_branding_css']);
+        // Roundcube has no `html_head` hook (verified empirically
+        // 2026-05-07: grep'd /var/www/html/program/include/
+        // rcmail_output_html.php for exec_hook calls; the rendering
+        // pipeline only exposes render_page / send_page /
+        // template_object_* / loginform_content). `send_page` fires
+        // with the full rendered HTML in $args['content'] just
+        // before flushing to the client, which is the cleanest
+        // injection point for an extra <link>.
+        $this->add_hook('send_page', [$this, 'inject_branding_css']);
     }
 
     /**
-     * Roundcube's html_head hook receives the rendered <head>
-     * content as $args['content']. Append a <link> for our
-     * stylesheet. Cache-bust by stable filename — the ConfigMap
-     * carries the file content; a content change triggers a new
-     * pod with a fresh emptyDir, so browsers naturally pick up
-     * the new CSS on next session.
+     * Inject /branding/branding.css just before </head> on every
+     * Roundcube page (login + post-login). Uses str_replace on the
+     * first </head> only so the body unchanged. If the page has
+     * no </head> (defensive — shouldn't happen), the original
+     * content is returned untouched.
      */
     public function inject_branding_css($args)
     {
+        if (empty($args['content']) || !is_string($args['content'])) {
+            return $args;
+        }
+        $needle = '</head>';
+        $pos = stripos($args['content'], $needle);
+        if ($pos === false) {
+            return $args;
+        }
         $link = '<link rel="stylesheet" href="/branding/branding.css">';
-        $args['content'] = (isset($args['content']) ? $args['content'] : '') . $link;
+        $args['content'] = substr($args['content'], 0, $pos)
+            . $link
+            . substr($args['content'], $pos);
         return $args;
     }
 }
