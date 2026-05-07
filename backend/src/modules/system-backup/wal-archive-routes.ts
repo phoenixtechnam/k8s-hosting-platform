@@ -31,13 +31,19 @@ import {
   readClusterCR,
   readScheduledBackup,
   extractStatus,
+  BARMAN_PLUGIN_NAME,
 } from './wal-archive.js';
 
 // Hardcoded list — same as the SystemDatabasesTab. Two known system
 // CNPG clusters; new clusters added here when the platform grows.
+//
+// Names track the PG-major bump cadence — postgres → postgres-18 (2026-
+// 05-07), mail-pg → mail-pg-17 (transient) → mail-pg-18. Old clusters
+// stay alive briefly post-cutover as rollback points, but the WAL-archive
+// admin UI only needs to manage the LIVE cluster. Update on every bump.
 const KNOWN_CLUSTERS = [
-  { clusterNamespace: 'platform', clusterName: 'postgres' },
-  { clusterNamespace: 'mail',     clusterName: 'mail-pg' },
+  { clusterNamespace: 'platform', clusterName: 'postgres-18' },
+  { clusterNamespace: 'mail',     clusterName: 'mail-pg-18' },
 ] as const;
 
 export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promise<void> {
@@ -78,7 +84,12 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
         readScheduledBackup(k8s, c.clusterNamespace, c.clusterName),
       ]);
       const status = extractStatus(cr);
-      const crHasBackup = Boolean(cr?.spec?.backup?.barmanObjectStore?.destinationPath);
+      // Plugin model: WAL archive is "attached" when the cluster's
+      // spec.plugins[] lists the barman-cloud plugin entry. Replaces
+      // the deprecated check on spec.backup.barmanObjectStore.
+      const crHasBackup = Boolean(
+        cr?.spec?.plugins?.some((p) => p.name === BARMAN_PLUGIN_NAME),
+      );
       const dbEnabled = state !== undefined;
       const baseBackupStatus = sb
         ? {

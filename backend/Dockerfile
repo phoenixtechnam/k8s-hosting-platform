@@ -33,16 +33,13 @@ FROM node:22-alpine
 # pg_dump must be >= the highest CNPG server version we dump FROM
 # (newer clients can dump from older servers; older clients refuse
 # newer servers with 'aborting because of server version mismatch').
-# Platform/postgres runs cnpg postgresql:17.5 → pin pg_dump to v17.
+# As of 2026-05-07 both CNPG clusters (platform postgres-18, mail
+# mail-pg-18) run cnpg postgresql:18.3-minimal-trixie → pin to v18.
 #
-# Caveat for mail-pg (currently cnpg 16.9): pg_dump 17 CAN export
-# from a 16 server, but the archive format is v1.15 which mail-pg's
-# pg_restore 16 cannot read directly. For in-place mail-pg recovery,
-# operators should pg_restore from inside the mail-pg pod itself
-# (which has its own version-matched pg_restore). The DR drill
-# harness handles this via kubectl exec. Bumping mail-pg's CNPG
-# image to 17 will eliminate this caveat.
-RUN apk add --no-cache openssl age postgresql17-client
+# Bump procedure for the next major: bump CNPG cluster imageName
+# first so all servers reach the new floor, then bump this pin.
+# Same shape as 16→17→18 over April-May 2026.
+RUN apk add --no-cache openssl age postgresql18-client
 
 WORKDIR /app
 
