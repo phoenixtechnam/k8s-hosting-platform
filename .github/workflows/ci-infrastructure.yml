@@ -116,6 +116,25 @@ jobs:
         # parse variable name" and the cluster freezes mid-cutover.
         run: ./scripts/ci-flux-envsubst-check.sh
 
+  empty-cluster-issuer-check:
+    name: Empty cluster-issuer guardrail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install python3 + PyYAML
+        run: |
+          python3 -m pip install --user pyyaml
+      - name: Verify no Ingress with TLS + empty/unresolved cluster-issuer
+        # Catches the silent-broken-cert class spotted on 2026-05-07:
+        # webmail.staging.phoenix-host.net was serving the nginx-
+        # ingress fake self-signed cert because the staging overlay
+        # used `${CLUSTER_ISSUER_NAME}` but platform-cluster-config
+        # didn't define that key, so Flux postBuild rendered an empty
+        # annotation. cert-manager skipped the cert; nginx fell back.
+        # ci-flux-envsubst-check only catches MALFORMED `${...`, not
+        # unresolved-variable patterns.
+        run: ./scripts/ci-empty-cluster-issuer-check.sh
+
   system-affinity-check:
     name: System node-affinity guardrail
     runs-on: ubuntu-latest

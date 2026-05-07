@@ -3,12 +3,24 @@
 #
 # The base k8s/base/roundcube-deployment.yaml ships a dev-only Ingress
 # (local-CA issuer, k8s-platform.test). Staging needs the LE prod
-# cluster issuer + nginx ingressClass. Production should ship its own
-# equivalent under k8s/overlays/production/.
+# cluster issuer + nginx ingressClass. Production overlay carries
+# the same shape with the same hardcoded issuer.
 #
 # Auth: NO admin-auth gate — webmail is end-user-facing. Authentication
 # is handled by Roundcube itself (IMAP LOGIN with Stalwart) and by the
 # JWT-SSO plugin when arriving via /api/v1/admin/mail/sso?to=...
+#
+# Why letsencrypt-prod-http01 is HARDCODED (not ${CLUSTER_ISSUER_NAME}):
+# Flux's postBuild substituteFrom on staging only resolves DOMAIN from
+# platform-cluster-config — CLUSTER_ISSUER_NAME isn't defined there, so
+# leaving the placeholder caused Flux to render the annotation as the
+# empty string. cert-manager treats `cert-manager.io/cluster-issuer: ""`
+# as "no issuer" → no Cert CR was created → the Secret
+# `platform-webmail-tls` never existed → nginx-ingress fell back to its
+# built-in "Kubernetes Ingress Controller Fake Certificate" self-signed.
+# Same pattern + reasoning as the staging stalwart-v016 overlay's
+# inline patch on the webadmin Ingress (k8s/overlays/staging/
+# stalwart-v016/kustomization.yaml).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -18,7 +30,7 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: webmail
   annotations:
-    cert-manager.io/cluster-issuer: "${CLUSTER_ISSUER_NAME}"
+    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     # Webmail attachments can be sizeable; align with Stalwart's
     # maxSizeAttachmentsPerEmail = 50 MB.
