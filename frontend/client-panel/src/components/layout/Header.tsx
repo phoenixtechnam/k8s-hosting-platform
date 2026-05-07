@@ -7,6 +7,7 @@ import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import { ApiError } from '@/lib/api-client';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
+import TaskCenterChip from '@/components/TaskCenterChip';
 import ResourceMetricsModal, { formatCpuCompact, formatBytesCompact } from '@/components/ResourceMetricsModal';
 
 interface HeaderProps {
@@ -69,6 +70,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
       <div className="ml-auto flex items-center gap-2">
         <ResourceUsageTags />
+        <TaskCenterChip />
         <DarkModeToggle />
         <NotificationDropdown />
 

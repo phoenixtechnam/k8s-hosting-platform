@@ -102,6 +102,14 @@ export async function start(db: Database, args: TaskStartArgs): Promise<TaskStar
         // already terminal — surfaces shouldn't restart a finished task
         // through the same refId, but if they do, treat it as a re-run
         // and reset status to running.
+        //
+        // INTENTIONALLY OMITTED: `parentTaskId`, `userId`, `scope`,
+        // `clientId`. These are set on INSERT and treated as immutable
+        // for the row's lifetime. A re-`start` against the same refId
+        // never re-parents the row or reassigns ownership — that would
+        // break the chip's fan-out fold + RBAC scoping. Surfaces that
+        // need to associate a row with a different parent must use a
+        // different refId.
         set: {
           status,
           label: args.label,
@@ -331,9 +339,16 @@ export async function snapshot(db: Database, filter: SnapshotFilter): Promise<Ta
      LIMIT ${limit}
   `);
 
-  return (rows.rows ?? rows as unknown as Array<typeof rows extends { rows: infer R } ? R : never>)
+  const all = (rows.rows ?? rows as unknown as Array<typeof rows extends { rows: infer R } ? R : never>)
     .map(toTaskRow)
     .filter((r): r is TaskRow => r !== null);
+
+  // Fan-out folding: when a parent task is visible in the result, hide
+  // its children. The popover can re-fetch children on click via the
+  // bulk modal which queries by bulkOpId. This keeps the chip tidy
+  // during a 50-client bulk op (1 parent vs. 51 rows).
+  const visibleIds = new Set(all.map((t) => t.id));
+  return all.filter((t) => !t.parentTaskId || !visibleIds.has(t.parentTaskId));
 }
 
 function toTaskRow(row: Record<string, unknown>): TaskRow | null {

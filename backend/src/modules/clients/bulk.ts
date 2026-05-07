@@ -39,6 +39,17 @@ export async function bulkUpdateClientStatus(
   const succeeded: PerClientResult[] = [];
   const failed: PerClientResult[] = [];
 
+  // Create the parent task for the chip — children carry parent_task_id
+  // so the snapshot endpoint can fold them under this row.
+  const parentTaskId = await createBulkParentTask(
+    db,
+    bulkOpId,
+    action === 'suspend' ? 'client.suspend.bulk' : 'client.reactivate.bulk',
+    `${action} ${clientIds.length} clients`,
+    clientIds.length,
+    triggeredByUserId ?? null,
+  );
+
   for (const id of clientIds) {
     try {
       const [client] = await db.select()
@@ -56,13 +67,18 @@ export async function bulkUpdateClientStatus(
         const { applySuspended } = await import('../client-lifecycle/cascades.js');
         const { runTransition } = await import('../client-lifecycle/registry/index.js');
         if (k8sClients) {
-          await applySuspended({ db, k8s: k8sClients }, id, client.kubernetesNamespace);
+          await applySuspended(
+            { db, k8s: k8sClients, triggeredByUserId, parentTaskId },
+            id,
+            client.kubernetesNamespace,
+          );
         } else {
           // No k8s — registry-only dispatch with namespace-only metadata.
           await runTransition(db, {} as never, {
             clientId: id, namespace: client.kubernetesNamespace,
             transition: 'suspended', toStatus: 'suspended',
             triggeredByUserId: triggeredByUserId ?? null,
+            parentTaskId,
             detail: { bulkOpId },
           });
         }
@@ -70,12 +86,17 @@ export async function bulkUpdateClientStatus(
         const { applyActive } = await import('../client-lifecycle/cascades.js');
         const { runTransition } = await import('../client-lifecycle/registry/index.js');
         if (k8sClients) {
-          await applyActive({ db, k8s: k8sClients }, id, client.kubernetesNamespace);
+          await applyActive(
+            { db, k8s: k8sClients, triggeredByUserId, parentTaskId },
+            id,
+            client.kubernetesNamespace,
+          );
         } else {
           await runTransition(db, {} as never, {
             clientId: id, namespace: client.kubernetesNamespace,
             transition: 'active', toStatus: 'active',
             triggeredByUserId: triggeredByUserId ?? null,
+            parentTaskId,
             detail: { bulkOpId },
           });
         }
@@ -91,6 +112,25 @@ export async function bulkUpdateClientStatus(
       const message = err instanceof Error ? err.message : 'Unknown error';
       failed.push({ id, transitionId: null, error: message });
     }
+
+    // Update parent progress as children complete.
+    if (parentTaskId) {
+      const total = clientIds.length;
+      const done = succeeded.length + failed.length;
+      const pct = total === 0 ? 100 : Math.round((done / total) * 100);
+      try {
+        const { progress } = await import('../tasks/service.js');
+        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        await progress(db, parentTaskId, {
+          pct,
+          text: toSafeText(`${done}/${total} processed`),
+        });
+      } catch { /* non-fatal */ }
+    }
+  }
+
+  if (parentTaskId) {
+    await finalizeBulkParentTask(db, parentTaskId, succeeded.length, failed.length);
   }
 
   return { bulkOpId, succeeded, failed };
@@ -116,6 +156,15 @@ export async function bulkDeleteClients(
   const succeeded: PerClientResult[] = [];
   const failed: PerClientResult[] = [];
 
+  const parentTaskId = await createBulkParentTask(
+    db,
+    bulkOpId,
+    'client.delete.bulk',
+    `delete ${clientIds.length} clients`,
+    clientIds.length,
+    triggeredByUserId ?? null,
+  );
+
   for (const id of clientIds) {
     try {
       const [client] = await db.select()
@@ -129,7 +178,11 @@ export async function bulkDeleteClients(
 
       if (k8sClients) {
         const { applyDeleted } = await import('../client-lifecycle/cascades.js');
-        await applyDeleted({ db, k8s: k8sClients }, id, client.kubernetesNamespace);
+        await applyDeleted(
+          { db, k8s: k8sClients, triggeredByUserId, parentTaskId },
+          id,
+          client.kubernetesNamespace,
+        );
       } else {
         // Without k8s, fall through to a DB-only delete (unit-test path).
         await db.delete(clients).where(eq(clients.id, id));
@@ -143,7 +196,90 @@ export async function bulkDeleteClients(
       const message = err instanceof Error ? err.message : 'Unknown error';
       failed.push({ id, transitionId: null, error: message });
     }
+
+    if (parentTaskId) {
+      const total = clientIds.length;
+      const done = succeeded.length + failed.length;
+      const pct = total === 0 ? 100 : Math.round((done / total) * 100);
+      try {
+        const { progress } = await import('../tasks/service.js');
+        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        await progress(db, parentTaskId, {
+          pct,
+          text: toSafeText(`${done}/${total} processed`),
+        });
+      } catch { /* non-fatal */ }
+    }
+  }
+
+  if (parentTaskId) {
+    await finalizeBulkParentTask(db, parentTaskId, succeeded.length, failed.length);
   }
 
   return { bulkOpId, succeeded, failed };
+}
+
+// ─── Task Tracker fan-out helpers ─────────────────────────────────────────
+
+async function createBulkParentTask(
+  db: Database,
+  bulkOpId: string,
+  kind: 'client.suspend.bulk' | 'client.reactivate.bulk' | 'client.delete.bulk',
+  labelText: string,
+  clientCount: number,
+  userId: string | null,
+): Promise<string | null> {
+  if (!userId) return null;
+  try {
+    const { start: startTask } = await import('../tasks/service.js');
+    const { toSafeText } = await import('@k8s-hosting/api-contracts');
+    const action: 'suspend' | 'reactivate' | 'delete' =
+      kind === 'client.suspend.bulk' ? 'suspend'
+      : kind === 'client.reactivate.bulk' ? 'reactivate'
+      : 'delete';
+    const { id } = await startTask(db, {
+      kind,
+      refId: bulkOpId,
+      scope: 'admin',
+      userId,
+      label: toSafeText(labelText),
+      target: {
+        type: 'modal',
+        modal: 'bulk',
+        modalProps: { bulkOpId, action, clientCount },
+      },
+      progressPct: 0,
+      details: { bulkOpId, clientCount },
+    });
+    return id;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[bulk] task tracker enroll failed for bulk ${bulkOpId}: ${msg}`);
+    return null;
+  }
+}
+
+async function finalizeBulkParentTask(
+  db: Database,
+  parentTaskId: string,
+  succeededCount: number,
+  failedCount: number,
+): Promise<void> {
+  try {
+    const { finish } = await import('../tasks/service.js');
+    const { toSafeText } = await import('@k8s-hosting/api-contracts');
+    const total = succeededCount + failedCount;
+    const status: 'succeeded' | 'failed' =
+      failedCount === 0 ? 'succeeded'
+      : succeededCount === 0 ? 'failed'
+      : 'failed'; // partial → failed (chip turns red, popover shows children)
+    await finish(db, parentTaskId, {
+      status,
+      text: toSafeText(`${succeededCount}/${total} succeeded`),
+      error: failedCount > 0 ? `${failedCount} client(s) failed — see children for detail` : null,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[bulk] task tracker finalize failed for parent ${parentTaskId}: ${msg}`);
+  }
 }

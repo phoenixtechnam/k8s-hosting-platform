@@ -39,6 +39,12 @@ export interface CascadeCtx {
    * failure, never in the chip).
    */
   readonly triggeredByUserId?: string | null;
+  /**
+   * When set, the per-client task row registered by the dispatcher
+   * carries this parent_task_id. Bulk ops pass the parent task id
+   * here so the chip can fold N children under one parent row.
+   */
+  readonly parentTaskId?: string | null;
 }
 
 /**
@@ -65,6 +71,7 @@ async function dispatchTransition(
     const result = await runTransition(ctx.db, ctx.k8s, {
       clientId, namespace, transition, fromStatus, toStatus,
       triggeredByUserId: ctx.triggeredByUserId ?? null,
+      parentTaskId: ctx.parentTaskId ?? null,
     });
     return result.transitionId;
   } catch (err) {

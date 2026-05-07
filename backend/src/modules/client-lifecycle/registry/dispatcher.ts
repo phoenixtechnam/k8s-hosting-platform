@@ -49,6 +49,13 @@ export interface DispatchOptions {
    * always uses the topo-sorted result of `listHooks()`.
    */
   readonly hooksOverride?: readonly LifecycleHook[];
+  /**
+   * When set, the per-client task row registered by the dispatcher
+   * carries this `parent_task_id`. Bulk ops use it to fan out a
+   * single parent task with N children — the snapshot endpoint
+   * filters children out of the chip when their parent is visible.
+   */
+  readonly parentTaskId?: string | null;
 }
 
 function envelopeFromError(err: unknown): HookErrorEnvelope {
@@ -114,6 +121,7 @@ export async function runTransition(
         scope: 'admin',
         userId: opts.triggeredByUserId,
         clientId: opts.clientId,
+        parentTaskId: opts.parentTaskId ?? null,
         label: toSafeText(`${opts.transition} client (${opts.clientId.slice(0, 8)})`),
         target: {
           type: 'modal',

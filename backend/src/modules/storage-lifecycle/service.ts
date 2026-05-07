@@ -90,6 +90,94 @@ async function updateOp(
   patch: Partial<typeof storageOperations.$inferInsert>,
 ) {
   await db.update(storageOperations).set(patch).where(eq(storageOperations.id, opId));
+  // Mirror to the Task Tracker chip — best-effort, never throws.
+  await mirrorOpToTaskTracker(db, opId).catch((err) => {
+    console.warn(`[storage-lifecycle] task tracker mirror failed for ${opId}: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
+/**
+ * Sync a `storage_operations` row into the Task Tracker chip via the
+ * tasks helper. Idempotent on `(kind='storage.<opType>', ref_id=opId)`,
+ * so multiple `updateOp` calls within the same operation just refresh
+ * the existing task row's progress / status.
+ *
+ * Cron-driven snapshot/scheduled ops have triggered_by_user_id=null —
+ * we skip those (scope='system' tasks never appear in any chip per the
+ * UX agreement; failures land in notifications instead).
+ */
+async function mirrorOpToTaskTracker(db: Database, opId: string): Promise<void> {
+  const [op] = await db
+    .select({
+      id: storageOperations.id,
+      clientId: storageOperations.clientId,
+      opType: storageOperations.opType,
+      state: storageOperations.state,
+      progressPct: storageOperations.progressPct,
+      progressMessage: storageOperations.progressMessage,
+      lastError: storageOperations.lastError,
+      triggeredByUserId: storageOperations.triggeredByUserId,
+    })
+    .from(storageOperations)
+    .where(eq(storageOperations.id, opId))
+    .limit(1);
+  if (!op || !op.triggeredByUserId) return;
+
+  // The op's `state` is the storage-lifecycle FSM (snapshotting, growing,
+  // shrinking, restoring, suspending, resuming, idle, failed). Map to
+  // the task's three terminal-or-running statuses.
+  const isTerminal = op.state === 'idle' || op.state === 'failed';
+  const taskStatus: 'running' | 'succeeded' | 'failed' =
+    !isTerminal ? 'running'
+    : op.state === 'failed' ? 'failed'
+    : 'succeeded';
+
+  const kind = `storage.${op.opType}`;
+  const labelText = `${op.opType} storage (${op.clientId.slice(0, 8)})`;
+  const target = {
+    type: 'route' as const,
+    href: `/clients/${op.clientId}?tab=storage`,
+  };
+
+  const { start: startTask, finishByRef } = await import('../tasks/service.js');
+  const { toSafeText } = await import('@k8s-hosting/api-contracts');
+
+  if (taskStatus === 'running') {
+    await startTask(db, {
+      kind,
+      refId: op.id,
+      scope: 'admin',
+      userId: op.triggeredByUserId,
+      clientId: op.clientId,
+      label: toSafeText(labelText),
+      target,
+      progressPct: op.progressPct ?? null,
+      progressText: op.progressMessage ? toSafeText(op.progressMessage) : null,
+      details: { opType: op.opType, state: op.state },
+    });
+    return;
+  }
+
+  // Terminal — also runs through start() once if the row didn't exist
+  // yet (e.g. an op that completed in a single tick before any updateOp
+  // call mirrored the running state).
+  await startTask(db, {
+    kind,
+    refId: op.id,
+    scope: 'admin',
+    userId: op.triggeredByUserId,
+    clientId: op.clientId,
+    label: toSafeText(labelText),
+    target,
+    progressPct: op.progressPct ?? null,
+    progressText: op.progressMessage ? toSafeText(op.progressMessage) : null,
+    details: { opType: op.opType, state: op.state },
+  });
+  await finishByRef(db, kind, op.id, {
+    status: taskStatus,
+    text: op.progressMessage ? toSafeText(op.progressMessage) : null,
+    error: taskStatus === 'failed' ? (op.lastError ?? 'Storage operation failed') : null,
+  });
 }
 
 // ─── Manual snapshot ────────────────────────────────────────────────────
