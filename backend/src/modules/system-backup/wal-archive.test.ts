@@ -96,17 +96,29 @@ function makeK8sStub(opts: {
   return { k8s, calls };
 }
 
-function makeDbStub(activeS3Target = {
-  id: 'cfg-1', storageType: 's3', s3Bucket: 'staging-bucket',
-  s3Prefix: 'platform', s3Endpoint: 'https://s3.example.com',
-  s3Region: 'eu-west-1', active: true, name: 'primary-s3',
-}): {
+function makeDbStub(opts: {
+  activeS3Target?: {
+    id: string; storageType: string; s3Bucket: string | null; s3Prefix: string | null;
+    s3Endpoint: string | null; s3Region: string | null; active: boolean | null; name: string | null;
+  };
+  // Pre-existing systemWalArchiveState row to simulate a re-enable.
+  priorState?: { targetConfigId: string; destinationPath: string; retentionDays: number };
+} = {}): {
   db: Parameters<typeof enableWalArchive>[0]['db'];
   inserts: { values: unknown }[];
   deletes: { count: number }[];
+  // Counter is a getter so the test sees the updated value after
+  // enableWalArchive runs (destructuring captures values, not refs).
+  readonly state: { advisoryLocks: number };
 } {
   const inserts: { values: unknown }[] = [];
   const deletes: { count: number }[] = [];
+  const state = { advisoryLocks: 0 };
+  const activeS3Target = opts.activeS3Target ?? {
+    id: 'cfg-1', storageType: 's3', s3Bucket: 'staging-bucket',
+    s3Prefix: 'platform', s3Endpoint: 'https://s3.example.com',
+    s3Region: 'eu-west-1', active: true, name: 'primary-s3',
+  };
 
   // Drizzle's chainable builders return objects with a known set of
   // methods at each step. We don't need the table identity here —
@@ -121,6 +133,14 @@ function makeDbStub(activeS3Target = {
       }),
     }),
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      execute: async () => { state.advisoryLocks++; },
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => opts.priorState ? [opts.priorState] : [],
+          }),
+        }),
+      }),
       insert: () => ({
         values: (vals: unknown) => ({
           // Some call sites use .values(...).onConflictDoUpdate(...);
@@ -138,7 +158,7 @@ function makeDbStub(activeS3Target = {
     }),
   } as unknown as Parameters<typeof enableWalArchive>[0]['db'];
 
-  return { db, inserts, deletes };
+  return { db, inserts, deletes, state };
 }
 
 describe('buildDestinationPath', () => {
@@ -298,8 +318,10 @@ describe('enableWalArchive — plugin model', () => {
   it('rejects non-S3 storage targets', async () => {
     const { k8s } = makeK8sStub({});
     const { db } = makeDbStub({
-      id: 'cfg-1', storageType: 'sftp', s3Bucket: null, s3Prefix: null,
-      s3Endpoint: null, s3Region: null, active: true, name: 'sftp-target',
+      activeS3Target: {
+        id: 'cfg-1', storageType: 'sftp', s3Bucket: null, s3Prefix: null,
+        s3Endpoint: null, s3Region: null, active: true, name: 'sftp-target',
+      },
     });
 
     await expect(enableWalArchive({
@@ -351,8 +373,10 @@ describe('enableWalArchive — plugin model', () => {
   it('rejects inactive backup configurations', async () => {
     const { k8s } = makeK8sStub({});
     const { db } = makeDbStub({
-      id: 'cfg-1', storageType: 's3', s3Bucket: 'b', s3Prefix: null,
-      s3Endpoint: null, s3Region: null, active: false, name: 'inactive',
+      activeS3Target: {
+        id: 'cfg-1', storageType: 's3', s3Bucket: 'b', s3Prefix: null,
+        s3Endpoint: null, s3Region: null, active: false, name: 'inactive',
+      },
     });
 
     await expect(enableWalArchive({
@@ -361,6 +385,50 @@ describe('enableWalArchive — plugin model', () => {
       targetConfigId: 'cfg-1', retentionDays: 30,
       operatorUserId: 'admin', operatorIp: null,
     })).rejects.toThrow(/not active/);
+  });
+
+  it('takes pg_advisory_xact_lock + records previous state in audit changes (re-enable)', async () => {
+    const { k8s } = makeK8sStub({});
+    const { db, inserts, state } = makeDbStub({
+      priorState: {
+        targetConfigId: 'cfg-OLD',
+        destinationPath: 's3://old-bucket/wal-archive/platform-system-db',
+        retentionDays: 7,
+      },
+    });
+
+    await enableWalArchive({
+      db, k8s,
+      clusterNamespace: 'platform', clusterName: 'system-db',
+      targetConfigId: 'cfg-1', retentionDays: 30,
+      operatorUserId: 'admin', operatorIp: null,
+    });
+
+    expect(state.advisoryLocks).toBe(1);
+
+    // The audit-log insert is the SECOND insert (after the state row).
+    const auditInsert = inserts[1];
+    expect(auditInsert).toBeDefined();
+    const audit = auditInsert?.values as { changes?: { previousTargetConfigId?: string; previousDestinationPath?: string; previousRetentionDays?: number } };
+    expect(audit.changes?.previousTargetConfigId).toBe('cfg-OLD');
+    expect(audit.changes?.previousDestinationPath).toBe('s3://old-bucket/wal-archive/platform-system-db');
+    expect(audit.changes?.previousRetentionDays).toBe(7);
+  });
+
+  it('records null previous-state on first-ever enable (no prior row)', async () => {
+    const { k8s } = makeK8sStub({});
+    const { db, inserts } = makeDbStub({ /* no priorState */ });
+
+    await enableWalArchive({
+      db, k8s,
+      clusterNamespace: 'platform', clusterName: 'system-db',
+      targetConfigId: 'cfg-1', retentionDays: 30,
+      operatorUserId: 'admin', operatorIp: null,
+    });
+
+    const audit = inserts[1]?.values as { changes?: { previousTargetConfigId?: string | null; previousDestinationPath?: string | null } };
+    expect(audit.changes?.previousTargetConfigId).toBeNull();
+    expect(audit.changes?.previousDestinationPath).toBeNull();
   });
 });
 

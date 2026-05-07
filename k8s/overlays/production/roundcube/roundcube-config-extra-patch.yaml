@@ -6,15 +6,17 @@ metadata:
 data:
   jwt_auth.inc.php: |
     <?php
-    // Production Roundcube config — Phase 3.A.2.
+    // Production Roundcube config (aligned with staging 2026-05-07).
     //
-    // verify_peer = true on the Roundcube → Stalwart hop. Requires
-    // Stalwart to serve a cert whose SAN list includes the in-cluster
-    // Service hostname (stalwart-mail-v016.mail.svc.cluster.local).
-    // The default cert-manager + Let's Encrypt path only covers the
-    // public subdomains, so production operators must either issue an
-    // internal cert (cert-manager CA issuer) or mount a private CA
-    // bundle. Otherwise switch to verify_peer=false (staging pattern).
+    // verify_peer is false on the in-cluster IMAP/SMTP hop because
+    // Stalwart's LE cert SAN list covers the public subdomains
+    // (mail.${DOMAIN}, stalwart.${DOMAIN}, webmail.${DOMAIN}), NOT
+    // the in-cluster Service hostname stalwart-mail-v016.mail.svc.
+    // The browser → ingress hop IS verified normally.
+    //
+    // To re-enable verify_peer=true on the internal hop, mount a
+    // private CA bundle that includes the in-cluster Service hostname
+    // (e.g. via cert-manager CA issuer). Out of scope for this overlay.
 
     if (!in_array('jwt_auth', $config['plugins'] ?? [])) {
       $config['plugins'][] = 'jwt_auth';
@@ -25,16 +27,16 @@ data:
 
     $config['imap_conn_options'] = [
       'ssl' => [
-        'verify_peer'       => true,
-        'verify_peer_name'  => true,
-        'allow_self_signed' => false,
+        'verify_peer'       => false,
+        'verify_peer_name'  => false,
+        'allow_self_signed' => true,
       ],
     ];
     $config['smtp_conn_options'] = [
       'ssl' => [
-        'verify_peer'       => true,
-        'verify_peer_name'  => true,
-        'allow_self_signed' => false,
+        'verify_peer'       => false,
+        'verify_peer_name'  => false,
+        'allow_self_signed' => true,
       ],
     ];
 

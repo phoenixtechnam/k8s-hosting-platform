@@ -225,6 +225,18 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
       return v;
     })();
 
+    // Plugin-shape recovery (replaces deprecated in-tree
+    // barmanObjectStore externalCluster). The source cluster's
+    // ObjectStore (`<name>-system-store`) was created by enable;
+    // the recovery cluster references it by name and the plugin
+    // operator pulls WAL/base from the S3 destination configured there.
+    //
+    // Side benefit: no destinationPath interpolation in this YAML →
+    // the security-reviewer's MEDIUM concern about unquoted YAML
+    // interpolation is gone (recoveryName + namespace + sourceName
+    // + objectStoreName are all dnsLabel-validated; targetTime is
+    // ISO-8601 validated and explicitly quoted).
+    const objectStoreName = `${name}-system-store`;
     const yaml = [
       `# Apply with: kubectl apply -f <this-file>`,
       `# CNPG will provision a fresh cluster that replays WAL from S3`,
@@ -236,28 +248,24 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
       `  namespace: ${ns}`,
       `spec:`,
       `  instances: 1`,
-      `  imageName: ghcr.io/cloudnative-pg/postgresql:17.5`,
+      `  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie`,
+      `  plugins:`,
+      `    - name: barman-cloud.cloudnative-pg.io`,
+      `      parameters:`,
+      `        barmanObjectName: ${objectStoreName}`,
       `  bootstrap:`,
       `    recovery:`,
       `      source: ${name}`,
       ...(targetTime ? [`      recoveryTarget:`, `        targetTime: "${targetTime}"`] : []),
       `  externalClusters:`,
       `    - name: ${name}`,
-      `      barmanObjectStore:`,
-      `        destinationPath: ${state.destinationPath}`,
-      `        s3Credentials:`,
-      `          accessKeyId:`,
-      `            name: backup-credentials`,
-      `            key: AWS_ACCESS_KEY_ID`,
-      `          secretAccessKey:`,
-      `            name: backup-credentials`,
-      `            key: AWS_SECRET_ACCESS_KEY`,
-      `        wal:`,
-      `          compression: gzip`,
-      `        data:`,
-      `          compression: gzip`,
+      `      plugin:`,
+      `        name: barman-cloud.cloudnative-pg.io`,
+      `        parameters:`,
+      `          barmanObjectName: ${objectStoreName}`,
+      `          serverName: ${name}`,
       `  storage:`,
-      `    size: 5Gi`,
+      `    size: 10Gi`,
       `    storageClass: longhorn-system-local`,
     ].join('\n');
 

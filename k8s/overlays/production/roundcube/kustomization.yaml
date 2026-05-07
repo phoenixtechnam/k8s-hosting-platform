@@ -1,20 +1,16 @@
-# Phase 3.A.2 — production Roundcube overlay.
+# Production Roundcube overlay — aligned with staging 2026-05-07.
 #
-# Re-enables TLS peer verification on the Roundcube → Stalwart IMAP/SMTP
-# connections. In dev we disable it because Stalwart uses a self-signed
-# cert (see k8s/base/roundcube/configmap-config.yaml).
+# Webmail is always deployed alongside Stalwart on staging and
+# production — operator-bootstrapped Secret `roundcube-secrets` plus a
+# `roundcube` Postgres database/role on the platform CNPG cluster
+# (`system-db`) are created by `scripts/bootstrap.sh` (see
+# generate_roundcube_secrets + create_roundcube_db).
 #
-# Prerequisite: Stalwart must be serving a CA-issued cert whose SANs
-# include the in-cluster service hostname Roundcube connects to. With
-# the default cert-manager + Let's Encrypt path the SANs only cover
-# the public subdomains, NOT *.svc.cluster.local — operators wanting
-# verify_peer=true must mount a private CA bundle (or use an internal
-# issuer like cert-manager's CA issuer).
-#
-# Cut 3 (2026-05-04): switched from configMapGenerator behavior:merge
-# to a strategic-merge ConfigMap patch because the base ships
-# roundcube-config-extra as a directly-declared ConfigMap, not via a
-# generator. Generator-merge only targets generator-produced ConfigMaps.
+# In-cluster IMAP/SMTP from Roundcube → stalwart-mail-v016 uses
+# verify_peer=false because Stalwart's LE cert has SANs for the public
+# subdomains, NOT the in-cluster Service hostname. The browser →
+# ingress hop IS verified normally. See roundcube-config-extra-patch
+# header for the rationale and the path to re-enable verify_peer.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

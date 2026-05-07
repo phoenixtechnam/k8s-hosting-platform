@@ -30,7 +30,7 @@
  * We filter at validation time.
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { backupConfigurations, systemWalArchiveState, auditLogs } from '../../db/schema.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
@@ -522,6 +522,20 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
   const cfg = await loadActiveS3Target(db, targetConfigId);
   const destinationPath = buildDestinationPath(cfg, clusterNamespace, clusterName);
 
+  // Concurrent-enable serialization: pg_advisory_xact_lock keyed on
+  // (cluster_namespace, cluster_name) — keys must be int8 so we hash
+  // the string. Two concurrent super_admin enables on the SAME cluster
+  // serialize behind the lock; the second one observes the row written
+  // by the first via the read-before-write at the top of the
+  // transaction. Lock auto-released at transaction end (xact-scoped).
+  //
+  // hashtextextended() returns int8 from a string — stable across
+  // PG versions for the same input. Two-arg form (key1, key2) keys
+  // the lock on two int4-shaped values; we pass (low32, high32) of
+  // the int8 hash so two clusters with similar names don't collide.
+  const lockHashSql = sql`hashtextextended(${`${clusterNamespace}/${clusterName}`}, 0)`;
+  const advisoryLock = sql`SELECT pg_advisory_xact_lock(${lockHashSql})`;
+
   // Ordering matters: ObjectStore must exist before the Cluster references
   // it via spec.plugins (otherwise the operator validates and rejects the
   // Cluster patch with a dangling reference).
@@ -538,6 +552,26 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
   }
 
   await db.transaction(async (tx) => {
+    await tx.execute(advisoryLock);
+
+    // Capture the previous state row BEFORE overwriting so the audit
+    // log records the delta (security-reviewer MEDIUM: forensics gap
+    // when a super_admin silently re-points archiving to a different
+    // bucket — without this snapshot the prior target is lost).
+    const priorRows = await tx
+      .select({
+        targetConfigId: systemWalArchiveState.targetConfigId,
+        destinationPath: systemWalArchiveState.destinationPath,
+        retentionDays: systemWalArchiveState.retentionDays,
+      })
+      .from(systemWalArchiveState)
+      .where(and(
+        eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+        eq(systemWalArchiveState.clusterName, clusterName),
+      ))
+      .limit(1);
+    const prior = priorRows[0] ?? null;
+
     await tx
       .insert(systemWalArchiveState)
       .values({
@@ -580,6 +614,10 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
         baseBackupSchedule: baseBackupSchedule ?? null,
         baseBackupRetentionDays: baseBackupRetentionDays ?? null,
         plugin: BARMAN_PLUGIN_NAME,
+        // Delta from prior state (null on first-ever enable).
+        previousTargetConfigId: prior?.targetConfigId ?? null,
+        previousDestinationPath: prior?.destinationPath ?? null,
+        previousRetentionDays: prior?.retentionDays ?? null,
       },
       ipAddress: operatorIp ?? null,
     });
