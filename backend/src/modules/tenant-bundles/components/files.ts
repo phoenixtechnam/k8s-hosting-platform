@@ -1,5 +1,5 @@
 /**
- * `files` component capture (Phase 3).
+ * `files` component capture (Phase 3 + 2026-05-07 streaming refactor).
  *
  * Pattern: HTTP-upload-from-tenant-Job-to-platform-api.
  *
@@ -9,18 +9,28 @@
  *   k8s does NOT support cross-namespace PVC sharing, so the Job
  *   cannot write directly into a PVC the platform-api manages.
  *
- *   Instead, the Job tars + gzips the PVC contents and POSTs the
- *   stream over HTTP to a new internal endpoint on platform-api
- *   (`/api/v1/internal/bundles/:id/components/:component/:artifact`).
- *   The endpoint authenticates via a short-lived HMAC token issued by
- *   the orchestrator, bound to the (bundleId, component, artifact)
- *   tuple, and streams the request body straight into
- *   BackupStore.writeComponent. No buffering on the platform-api side.
+ *   Instead, the Job streams `tar | gzip | tee(sha256-via-fifo) |
+ *   curl --upload-file -` straight to platform-api's internal upload
+ *   endpoint (`/api/v1/internal/bundles/:id/components/:component/:artifact`).
+ *   The archive NEVER lands on emptyDir — bytes flow PVC → tar → gzip
+ *   → tee → curl → platform-api → S3 multipart in real time. Memory
+ *   footprint stays ~tens of MiB regardless of PVC size; node disk
+ *   stays clean. (Earlier revisions materialised the archive on a
+ *   50 GiB emptyDir before upload; switching to streaming dropped the
+ *   scratch volume to 1 GiB and removed the largest source of node
+ *   disk pressure during a backup window.)
+ *
+ *   The internal-upload endpoint authenticates via a short-lived HMAC
+ *   token issued by the orchestrator, bound to the (bundleId,
+ *   component, artifact) tuple, and pipes the request body straight
+ *   into BackupStore.writeComponent. No buffering on the platform-api
+ *   side either.
  *
  *   Two HTTP uploads happen per files-component capture:
- *     1. archive.tar.gz   (large)
+ *     1. archive.tar.gz   (large; streamed)
  *     2. tree.jsonl.gz    (tens of KB; per-file path/size/mode/mtime
- *        lines, used by Phase-4 file-tree restore UI)
+ *        lines for the Phase-4 file-tree restore UI; small enough to
+ *        stage on disk)
  *
  *   Each upload uses its own HMAC token. Tokens expire after 30 min
  *   so a stuck Job can't replay forever.
@@ -29,9 +39,15 @@
  *   + Works uniformly for S3 + SSH targets (the platform-api streams
  *     to whichever BackupStore is configured).
  *   + Keeps SSH key out of the tenant Job entirely.
+ *   + No node-disk staging — backups of multi-GiB PVCs no longer
+ *     pressure /var/lib/kubelet during the backup window.
  *   - Bytes traverse platform-api once. For large tenant PVCs this
  *     adds I/O on the backend pod. Acceptable for now; can optimise
  *     to a Job→S3-presigned-URL fast-path in a later phase.
+ *   - Mid-stream upload failures cannot be retried without re-tar'ing
+ *     the PVC. Bundle is tracked as a backup_jobs row → operator
+ *     re-triggers the whole bundle; tar is idempotent against a PVC
+ *     read-only mount.
  */
 
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
@@ -88,29 +104,54 @@ const ARCHIVE_FILENAME = 'archive.tar.gz';
 const TREE_FILENAME = 'tree.jsonl.gz';
 
 function buildScript(opts: { uploadBase: string; archiveToken: string; treeToken: string }): string {
-  // The Job script:
-  //   1. tar+gzip /source → /tmp/archive.tar.gz, computing sha256 alongside
-  //   2. find /source → /tmp/tree.tsv, awk into JSONL, gzip → /tmp/tree.jsonl.gz
-  //   3. curl PUT both files with HMAC tokens. The internal endpoint
-  //      validates the token + streams the body to BackupStore.
-  //   4. echo FILES_DONE + FILES_TREE_COUNT for the orchestrator to parse
+  // The Job script (fully streaming, 2026-05-07):
+  //   1. tar | gzip | tee(sha256-via-fifo) | curl --upload-file -
+  //      The archive NEVER lands on emptyDir — bytes flow PVC → tar →
+  //      gzip → tee → curl → platform-api → S3 multipart in real time.
+  //      Memory footprint stays ~tens of MiB regardless of PVC size.
+  //   2. find /source → /tmp/tree.tsv → awk → JSONL → gzip → tree.jsonl.gz
+  //      (small, <100KB for typical PVCs; staying on disk is fine).
+  //   3. curl PUT tree.jsonl.gz.
+  //   4. echo FILES_DONE + FILES_TREE_COUNT for the orchestrator.
   //
-  // alpine image — busybox tar + curl + sha256sum + awk all available.
+  // Why a fifo rather than `tee >(sha256sum)` process-substitution:
+  //   alpine's `sh` is busybox ash, NOT bash. Process substitution is
+  //   a bash-only feature; busybox ash chokes on `>(...)`. mkfifo +
+  //   backgrounded sha256sum < fifo achieves the same fan-out without
+  //   bash. `set -o pipefail` is supported by busybox 1.30+ (alpine
+  //   3.20 ships 1.36).
+  //
+  // alpine image — busybox tar + curl + sha256sum + awk + mkfifo + wait
+  // all available; we only `apk add` GNU findutils (busybox find lacks
+  // -printf) + curl (sometimes missing in minimal images).
   return [
     'set -e',
-    // Install GNU findutils + curl up front. alpine:3.20 ships
-    // busybox find which does NOT support `-printf` (GNU-find
-    // feature). Without findutils the tree-index pipeline below
-    // fails with `find --help` dumped to stderr and the whole Job
-    // crashes with no upload. Caught E2E 2026-05-02.
+    'set -o pipefail',
     'command -v curl >/dev/null 2>&1 || apk add --no-cache curl >/dev/null 2>&1 || { echo "ERROR: curl install failed"; exit 1; }',
     'apk add --no-cache findutils >/dev/null 2>&1 || { echo "ERROR: findutils install failed"; exit 1; }',
     'cd /source',
-    'echo "Tarballing tenant PVC..."',
-    'tar cf - . 2>/tmp/tar.err | gzip -1 > /tmp/archive.tar.gz',
-    'TAR_RC=$?',
-    '[ "$TAR_RC" = "0" ] || { echo "tar failed (rc=$TAR_RC):"; cat /tmp/tar.err; exit 1; }',
-    'sha256sum /tmp/archive.tar.gz | awk \'{print $1}\' > /tmp/archive.sha256',
+    'echo "Streaming archive to platform-api..."',
+    // Streaming pipeline: tar → gzip → tee(fifo) → curl --upload-file -
+    //
+    // CORRECTNESS NOTE — tar exit code via side-channel:
+    //   If tar dies mid-stream (e.g. a file vanishes during read),
+    //   gzip/tee/curl all see clean EOF and exit 0. `set -o pipefail`
+    //   then sees no failure. The truncated archive (validly
+    //   gzipped, just incomplete) lands in S3 with HTTP 200 and the
+    //   bundle is recorded as successful — silent corruption.
+    //
+    //   The fix is to capture tar's exit code into a side-file from
+    //   inside a subshell, then assert on it after the pipeline.
+    //   This is busybox-ash-safe (PIPESTATUS is bash-only).
+    'mkfifo /tmp/hash.fifo',
+    '( sha256sum < /tmp/hash.fifo | awk \'{print $1}\' > /tmp/archive.sha256 ) &',
+    'HASH_PID=$!',
+    `( tar cf - . 2>/tmp/tar.err; echo $? > /tmp/tar.exit ) | gzip -1 | tee /tmp/hash.fifo | curl --fail-with-body -sS --upload-file - -H "Content-Type: application/gzip" "${opts.uploadBase}/${ARCHIVE_FILENAME}?token=${opts.archiveToken}"`,
+    'wait $HASH_PID',
+    'TAR_EXIT=$(cat /tmp/tar.exit 2>/dev/null || echo "missing")',
+    '[ "$TAR_EXIT" = "0" ] || { echo "ERROR: tar exited $TAR_EXIT; tar.err:"; cat /tmp/tar.err 2>/dev/null || true; exit 1; }',
+    '[ -s /tmp/archive.sha256 ] || { echo "ERROR: sha256 capture failed"; exit 1; }',
+    'rm -f /tmp/hash.fifo /tmp/tar.exit',
     'echo "Building tree index..."',
     'find . -type f -printf \'%p\\t%s\\t%m\\t%T@\\n\' > /tmp/tree.tsv',
     'awk -F"\\t" \'{ ' +
@@ -122,14 +163,11 @@ function buildScript(opts: { uploadBase: string; archiveToken: string; treeToken
     '}\' /tmp/tree.tsv | gzip -1 > /tmp/tree.jsonl.gz',
     'TREE_COUNT=$(wc -l < /tmp/tree.tsv)',
     'echo "FILES_TREE_COUNT=$TREE_COUNT"',
-    'echo "Uploading archive.tar.gz..."',
-    // --upload-file streams from disk; --data-binary @file would
-    // read the whole archive into memory and OOM the 512Mi Job pod
-    // on any non-trivial PVC. Phase-3 review HIGH catch.
-    `curl --fail-with-body -sS --upload-file /tmp/archive.tar.gz \\\n      -H "Content-Type: application/gzip" \\\n      "${opts.uploadBase}/${ARCHIVE_FILENAME}?token=${opts.archiveToken}"`,
     'echo "Uploading tree.jsonl.gz..."',
     `curl --fail-with-body -sS --upload-file /tmp/tree.jsonl.gz \\\n      -H "Content-Type: application/gzip" \\\n      "${opts.uploadBase}/${TREE_FILENAME}?token=${opts.treeToken}"`,
-    'echo "FILES_DONE sha256=$(cat /tmp/archive.sha256) size=$(stat -c%s /tmp/archive.tar.gz)"',
+    // size is dropped from the FILES_DONE line — store.stat is the
+    // authoritative source (we re-stat S3 right after the Job exits).
+    'echo "FILES_DONE sha256=$(cat /tmp/archive.sha256)"',
   ].join('\n');
 }
 
@@ -187,7 +225,10 @@ export function buildFilesComponentJobSpec(input: {
     }],
     volumes: [
       { name: 'source', persistentVolumeClaim: { claimName: input.pvcName, readOnly: true } },
-      { name: 'scratch', emptyDir: { sizeLimit: '50Gi' } },
+      // Scratch is now tiny (tree index + sha256 file, < 100 KiB) since
+      // the archive streams straight to the platform-api. Keeping a
+      // small sizeLimit catches accidental disk-staging regressions.
+      { name: 'scratch', emptyDir: { sizeLimit: '1Gi' } },
     ],
   };
   if (input.pinToNode) {
