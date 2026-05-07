@@ -33,6 +33,16 @@ class jwt_auth extends rcube_plugin
     {
         $this->add_hook('startup', array($this, 'on_startup'));
         $this->add_hook('logged_in', array($this, 'on_logged_in'));
+        // template_object_username fires whenever Roundcube renders the
+        // top-right "username" template object. We swap the rendered
+        // string from the master-form to the clean mailbox address —
+        // see the docblock above on_template_object_username for why
+        // this must NOT touch $_SESSION['username'].
+        $this->add_hook('template_object_username', array($this, 'on_template_object_username'));
+        // render_page is a defence-in-depth filter against any
+        // template that leaks the master form into the rendered HTML
+        // (e.g. the From: dropdown if the identity-rewrite missed it).
+        $this->add_hook('render_page', array($this, 'on_render_page'));
     }
 
     /**
@@ -142,10 +152,24 @@ class jwt_auth extends rcube_plugin
             return $args;
         }
 
-        // Stash the clean mailbox address so on_logged_in can rewrite the
-        // displayed username in the Roundcube UI.
+        // Stash the clean mailbox address so on_logged_in can rewrite
+        // the user's primary identity AND so on_template_object_username
+        // / on_render_page can substitute the clean form into the
+        // rendered HTML on every subsequent request.
+        //
+        // CRITICAL: do NOT write `$_SESSION['username'] = $mailbox`
+        // here. Roundcube's IMAP layer reads $_SESSION['username']
+        // verbatim on EVERY request to authenticate the IMAP
+        // connection — overwriting it to the clean form makes the
+        // first AUTH PLAIN succeed (the master_pw + master form was
+        // used in rcmail::login() above) but every subsequent IMAP
+        // operation reuses session values, sees clean form +
+        // master_pw, and Stalwart returns "AUTHENTICATE PLAIN:
+        // Authentication failed" — which the user sees as
+        // "Connection to storage server failed" + "Server Error:
+        // AUTHENTICATE PLAIN: Authentication failed". Verified
+        // empirically 2026-05-07.
         $_SESSION['jwt_auth::clean_user'] = $mailbox;
-        $_SESSION['username'] = $mailbox;
 
         // Mirror index.php's post-login sequence (see /var/www/html/index.php
         // around line 120): remove the 'temp' flag, regenerate session id
@@ -171,15 +195,96 @@ class jwt_auth extends rcube_plugin
     }
 
     /**
-     * After a JWT-driven login succeeds, rewrite the displayed username so
-     * the UI shows the clean mailbox address instead of "<mailbox>%<master>".
+     * After a JWT-driven login succeeds, rewrite the user's primary
+     * identity so the From: dropdown shows the clean mailbox address
+     * (rcmail::login() auto-creates an identity with email = the
+     * raw IMAP-auth username, which would otherwise leak the master
+     * suffix into outgoing mail).
+     *
+     * We do NOT overwrite $_SESSION['username'] here — see the
+     * comment in on_startup() above for why that breaks IMAP auth.
+     * The clean-form display is handled by on_template_object_username.
      */
     function on_logged_in($args)
     {
+        if (empty($_SESSION['jwt_auth::clean_user'])) {
+            return $args;
+        }
+        $clean = $_SESSION['jwt_auth::clean_user'];
+        $rcmail = rcmail::get_instance();
+        if (!$rcmail->user || !$rcmail->user->ID) {
+            return $args;
+        }
+        $identities = $rcmail->user->list_identities();
+        if (empty($identities)) {
+            return $args;
+        }
+        // Pick the standard (default) identity if there is one,
+        // otherwise the first.
+        $primary = null;
+        foreach ($identities as $ident) {
+            if (!empty($ident['standard'])) {
+                $primary = $ident;
+                break;
+            }
+        }
+        if ($primary === null) {
+            $primary = $identities[0];
+        }
+        // Idempotent: only update if the email field still carries
+        // the master suffix.
+        if (!empty($primary['email']) && strpos($primary['email'], '%') !== false) {
+            $local = strpos($clean, '@') !== false ? substr($clean, 0, strpos($clean, '@')) : $clean;
+            $rcmail->user->update_identity($primary['identity_id'], array(
+                'email' => $clean,
+                'name'  => $local,
+            ));
+        }
+        return $args;
+    }
+
+    /**
+     * Replace the rendered top-right username string with the clean
+     * mailbox form. The plugin hook `template_object_username` fires
+     * whenever Roundcube renders the `username` template object
+     * (top-right corner of the toolbar in every template).
+     *
+     * MUST NOT mutate $_SESSION['username'] — that field is read on
+     * every request to authenticate the IMAP connection, so changing
+     * it from the master-form `<mailbox>%<master>@master.local` to
+     * the clean form breaks AUTH PLAIN on subsequent requests.
+     */
+    function on_template_object_username($args)
+    {
         if (!empty($_SESSION['jwt_auth::clean_user'])) {
-            $clean = $_SESSION['jwt_auth::clean_user'];
-            $_SESSION['username'] = $clean;
-            unset($_SESSION['jwt_auth::clean_user']);
+            $args['content'] = $_SESSION['jwt_auth::clean_user'];
+        }
+        return $args;
+    }
+
+    /**
+     * Defence-in-depth: substitute any leaked master-form occurrences
+     * in the rendered HTML with the clean form. Catches strings that
+     * the template-object hook misses (e.g. tooltips, hidden inputs,
+     * the Settings → Identities row that pre-populates from the user
+     * record before the on_logged_in identity-rewrite has run).
+     */
+    function on_render_page($args)
+    {
+        if (empty($_SESSION['jwt_auth::clean_user'])) {
+            return $args;
+        }
+        $clean  = $_SESSION['jwt_auth::clean_user'];
+        $master = getenv('STALWART_MASTER_USER') ?: 'master@master.local';
+        $master = trim($master);
+        if (strpos($master, '@') === false) {
+            $master = $master . '@master.local';
+        }
+        // The master-form substring we must scrub: `<clean>%<master>`.
+        // Compose it once and replace every literal occurrence.
+        $needle = $clean . '%' . $master;
+        if (isset($args['content']) && is_string($args['content']) && strpos($args['content'], $needle) !== false) {
+            $args['content'] = str_replace($needle, $clean, $args['content']);
         }
         return $args;
     }
