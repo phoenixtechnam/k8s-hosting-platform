@@ -32,7 +32,16 @@ class jwt_auth extends rcube_plugin
     function init()
     {
         $this->add_hook('startup', array($this, 'on_startup'));
-        $this->add_hook('logged_in', array($this, 'on_logged_in'));
+        // Roundcube does NOT expose a `logged_in` hook (verified
+        // empirically 2026-05-07: grep'd /var/www/html/program/ for
+        // exec_hook calls; only `login_after`, `login_failed`,
+        // `loginform_content`, and `oauth_login` exist for the auth
+        // flow). The `login_after` hook fires after rcmail::login()
+        // succeeds, by both the regular form-login path AND our own
+        // on_startup() JWT path (which dispatches login_after at the
+        // end of its flow). Register here so the user.username +
+        // identity rewrite runs on every successful authentication.
+        $this->add_hook('login_after', array($this, 'on_logged_in'));
         // template_object_username fires whenever Roundcube renders the
         // top-right "username" template object. We swap the rendered
         // string from the master-form to the clean mailbox address —
