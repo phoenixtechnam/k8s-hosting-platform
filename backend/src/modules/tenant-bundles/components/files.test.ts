@@ -56,6 +56,65 @@ describe('buildFilesComponentJobSpec', () => {
     expect(cmd).toContain('FILES_TREE_COUNT=');
   });
 
+  it('streams the archive (never materialises /tmp/archive.tar.gz on disk)', () => {
+    // Streaming refactor 2026-05-07: tar | gzip | tee(fifo) | curl --upload-file -.
+    // Pin: the archive must NEVER be written to /tmp/archive.tar.gz again
+    // (earlier revision did, which forced a 50 GiB emptyDir on every node
+    // hosting a backup Job). Regressions here would silently re-introduce
+    // node-disk pressure.
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).not.toMatch(/>\s*\/tmp\/archive\.tar\.gz/);
+    expect(cmd).not.toMatch(/--upload-file\s+\/tmp\/archive\.tar\.gz/);
+    // Pin the new shape: fifo-fed sha256 + curl reading stdin.
+    expect(cmd).toContain('mkfifo /tmp/hash.fifo');
+    expect(cmd).toContain('sha256sum < /tmp/hash.fifo');
+    expect(cmd).toContain('tee /tmp/hash.fifo');
+    expect(cmd).toContain('--upload-file -');
+    expect(cmd).toContain('set -o pipefail');
+    expect(cmd).toContain('wait $HASH_PID');
+  });
+
+  it('captures tar exit code via /tmp/tar.exit side-channel (pipefail can\'t see it)', () => {
+    // If tar dies mid-stream, gzip/tee/curl all see clean EOF and
+    // exit 0 — pipefail silently passes. The script must capture
+    // tar's actual exit code separately and assert on it. Caught by
+    // typescript-reviewer 2026-05-07 before deploy.
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).toContain('echo $? > /tmp/tar.exit');
+    expect(cmd).toContain('TAR_EXIT=$(cat /tmp/tar.exit');
+    expect(cmd).toContain('[ "$TAR_EXIT" = "0" ]');
+  });
+
+  it('does NOT use bash process substitution (busybox ash compatibility)', () => {
+    // alpine:3.20 ships busybox sh, NOT bash. Process substitution
+    // `>(...)` is a bash-only feature; using it here would make every
+    // Job crash with a syntax error at runtime. The fifo pattern is
+    // the busybox-safe equivalent.
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).not.toMatch(/>\s*\(/);
+    expect(cmd).not.toMatch(/<\s*\(/);
+  });
+
+  it('caps scratch emptyDir at 1Gi (was 50Gi when the archive was disk-staged)', () => {
+    // Streaming means we only need a tiny scratch for tree.tsv +
+    // tree.jsonl.gz + tar.err + archive.sha256. Catch regressions
+    // that would push the limit back up.
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { volumes: Array<{ name: string; emptyDir?: { sizeLimit?: string } }> } } };
+    };
+    const scratch = spec.spec.template.spec.volumes.find((v) => v.name === 'scratch');
+    expect(scratch?.emptyDir?.sizeLimit).toBe('1Gi');
+  });
+
   it('installs GNU findutils up front (alpine busybox find lacks -printf)', () => {
     // Pinned: caught E2E 2026-05-02 when files-Job crashed with
     // `find --help` dump because busybox find doesn't support
@@ -71,11 +130,14 @@ describe('buildFilesComponentJobSpec', () => {
     // Streaming upload is non-negotiable: a 50 GiB tenant PVC would
     // OOM the 512Mi Job pod with --data-binary @file. Pin this so the
     // next refactor doesn't accidentally flip back.
+    //
+    // 2026-05-07: archive now streams from stdin (`-`), tree.jsonl.gz
+    // still uploads from disk (small file).
     const spec = buildFilesComponentJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
     };
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
-    expect(cmd).toContain('--upload-file /tmp/archive.tar.gz');
+    expect(cmd).toContain('--upload-file -');
     expect(cmd).toContain('--upload-file /tmp/tree.jsonl.gz');
     expect(cmd).not.toContain('--data-binary @');
   });
