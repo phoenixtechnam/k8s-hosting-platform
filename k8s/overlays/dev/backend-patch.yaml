@@ -68,10 +68,17 @@ spec:
               value: development
             - name: DISABLE_RATE_LIMIT
               value: "true"
+            # Strategic-merge merges by env name. The base sets these via
+            # valueFrom: secretKeyRef (platform-admin-seed). Without an
+            # explicit `valueFrom: null` the merged result has BOTH `value`
+            # and `valueFrom`, which Kubernetes rejects with
+            #   "valueFrom may not be specified when value is not empty".
             - name: ADMIN_EMAIL
               value: admin@${DOMAIN}
+              valueFrom: null
             - name: ADMIN_PASSWORD
               value: admin
+              valueFrom: null
             - name: ADMIN_NAME
               value: "Platform Admin"
             - name: DATABASE_URL

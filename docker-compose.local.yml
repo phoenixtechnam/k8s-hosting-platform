@@ -93,10 +93,18 @@ services:
         echo "Checking StorageClass..."
         kubectl get storageclass
 
-        # Install NGINX Ingress + cert-manager in parallel — both are independent
-        # downloads + pod rollouts, and each waits ~30-40s for Ready. Running
-        # them concurrently roughly halves the k3s infra phase on a cold start.
-        echo "Installing NGINX Ingress Controller + cert-manager (parallel)..."
+        # Install NGINX Ingress + cert-manager + CNPG in parallel — all three
+        # are independent downloads + pod rollouts. Running them concurrently
+        # cuts the k3s infra phase from ~3min to ~90s on a cold start.
+        #
+        # CNPG (CloudNative-PG operator) is REQUIRED — k8s/base/database.yaml
+        # declares a Cluster CR. Without the operator the CR is accepted by
+        # the API but never reconciled; Postgres pods/PVCs are never created
+        # and platform-api crashes (500) on every login because it can't reach
+        # the DB. This was the root cause of the 2026-05-07 broken-DinD
+        # incident — fixed here by installing the operator at infra time
+        # alongside ingress + cert-manager.
+        echo "Installing NGINX Ingress Controller + cert-manager + CNPG operator (parallel)..."
         (
           kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/cloud/deploy.yaml 2>/dev/null \
             || echo "NGINX ingress already installed or network unavailable"
@@ -124,7 +132,18 @@ services:
             || echo "cert-manager webhook not ready — continuing"
         ) &
         CERTMGR_PID=$$!
-        wait "$$NGINX_PID" "$$CERTMGR_PID"
+        (
+          # CNPG 1.24 is the minor that supports Postgres 17 (which our
+          # base/database.yaml pins via imageName). Bump in lockstep when
+          # bumping postgresql image.
+          kubectl apply --server-side -f \
+            https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.0.yaml 2>/dev/null \
+            || echo "CNPG operator already installed or network unavailable"
+          kubectl rollout status deployment/cnpg-controller-manager -n cnpg-system --timeout=120s 2>/dev/null \
+            || echo "CNPG operator not ready — continuing"
+        ) &
+        CNPG_PID=$$!
+        wait "$$NGINX_PID" "$$CERTMGR_PID" "$$CNPG_PID"
 
         # Create self-signed CA for local development
         echo "Creating local CA issuer..."

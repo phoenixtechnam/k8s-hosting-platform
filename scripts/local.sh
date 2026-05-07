@@ -316,17 +316,26 @@ _ensure_k3s_running() {
       fi
       sleep 2
     done
-    # Skip init if ingress-nginx + cert-manager already installed (volumes preserved)
+    # Skip init if ingress-nginx + cert-manager + cnpg already installed
+    # (volumes preserved). Otherwise run the heavyweight init Job.
     if k3s_exec kubectl get deploy ingress-nginx-controller -n ingress-nginx >/dev/null 2>&1 \
-       && k3s_exec kubectl get deploy cert-manager -n cert-manager >/dev/null 2>&1; then
+       && k3s_exec kubectl get deploy cert-manager -n cert-manager >/dev/null 2>&1 \
+       && k3s_exec kubectl get deploy cnpg-controller-manager -n cnpg-system >/dev/null 2>&1; then
       echo "k3s infra already installed — skipping init"
     else
-      echo "Running k3s init (ingress, cert-manager, namespaces)..."
+      echo "Running k3s init (ingress, cert-manager, cnpg, namespaces)..."
       compose up k3s-init
     fi
   else
     echo "k3s already running"
   fi
+  # Label the single DinD node with the production "system" role label
+  # so manifests that pin via nodeSelector
+  # `platform.phoenix-host.net/node-role=server` (CNPG cluster, system
+  # Deployments) actually schedule. Without this, postgres-1 stays Pending
+  # forever and nothing comes up. Idempotent — kubectl label --overwrite.
+  k3s_exec kubectl label node --all \
+    platform.phoenix-host.net/node-role=server --overwrite >/dev/null 2>&1 || true
 }
 
 _sync_manifests() {
@@ -338,7 +347,70 @@ _sync_manifests() {
 _apply_dev_overlay() {
   echo "Applying dev overlay..."
   _sync_manifests
-  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev 2>&1 | grep -v "^$" | sed 's/^/  /'
+  # Production deploys via Flux Kustomization with postBuild.substituteFrom
+  # which expands ${DOMAIN} from the cluster-config ConfigMap. Plain
+  # `kubectl apply -k` does NOT do that — the literal "${DOMAIN}" survives
+  # into the API server which rejects it as an invalid hostname. We render
+  # locally with kustomize then envsubst-only-DOMAIN, then apply.
+  #
+  # We use `envsubst '${DOMAIN}'` (with the explicit allowlist) instead of
+  # bare `envsubst` so other dollar-sign sequences in the manifests
+  # (Stalwart's ${...} that Flux escapes, shell snippets in CronJobs, etc.)
+  # pass through untouched.
+  #
+  # The `kubectl apply -f -` runs INSIDE the k3s container so the cluster
+  # sees the envsubst-expanded YAML; we copy the rendered file in via
+  # docker exec stdin.
+  #
+  # Pre-create namespaces that the base manifest references but only exist
+  # in production (calico-system, longhorn-system, tigera-operator). The
+  # LimitRange resources targeting those namespaces are no-ops in DinD but
+  # we want apply to be clean (no NotFound errors in the log).
+  k3s_exec kubectl create namespace calico-system 2>/dev/null || true
+  k3s_exec kubectl create namespace longhorn-system 2>/dev/null || true
+  k3s_exec kubectl create namespace tigera-operator 2>/dev/null || true
+
+  local rendered
+  rendered=$(k3s_exec kubectl kustomize /tmp/k8s-sync/overlays/dev 2>&1) || {
+    echo "  kustomize build failed:"
+    echo "$rendered" | sed 's/^/    /'
+    return 1
+  }
+  # Substitute only the exact token ${DOMAIN}. Using sed instead of envsubst
+  # (which is not always installed) and matching the literal token only
+  # avoids accidentally rewriting other shell-style variables (Stalwart
+  # bootstrap CronJob escapes, etc.).
+  rendered=$(echo "$rendered" | sed "s|\${DOMAIN}|${PLATFORM_BASE_DOMAIN}|g")
+  # Stage the rendered manifest on the workspace side then docker-cp into
+  # the k3s container. Piping via `docker exec ... sh -c 'cat > file'`
+  # silently fails when -i is missing (no stdin attached) — we hit that
+  # exact bug in the 2026-05-07 broken-DinD recovery.
+  local staged="${PROJECT_DIR}/.local.k8s-rendered.yaml"
+  echo "$rendered" > "$staged"
+  docker cp "$staged" "${K3S_CONTAINER}:/tmp/k8s-rendered.yaml"
+  k3s_exec kubectl apply -f /tmp/k8s-rendered.yaml 2>&1 | grep -v "^$" | sed 's/^/  /'
+}
+
+_wait_for_cnpg_cluster() {
+  # CNPG bootstrap creates a Cluster CR which the operator reconciles into:
+  # 1) PVC for instance-1, 2) initdb Job pod, 3) Pod for instance-1.
+  # Cold start with image pull (postgresql:17.5 is ~250 MiB) takes 90-180s.
+  # We wait on the operator's `Ready` condition rather than pod-Ready because
+  # CNPG's bootstrap Pods come and go — a single `kubectl wait pod --all`
+  # races those transitions and reports false negatives.
+  local ns="${1:-platform}"
+  local name="${2:-postgres}"
+  if ! k3s_exec kubectl -n "$ns" get cluster.postgresql.cnpg.io "$name" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Waiting for CNPG Cluster ${ns}/${name} to be Ready (up to 300s)..."
+  if ! k3s_exec kubectl -n "$ns" wait --for=condition=Ready \
+       cluster.postgresql.cnpg.io/"$name" --timeout=300s 2>/dev/null; then
+    echo "CNPG Cluster ${ns}/${name} not Ready. Status:"
+    k3s_exec kubectl -n "$ns" get cluster.postgresql.cnpg.io "$name" -o wide | sed 's/^/  /'
+    k3s_exec kubectl -n "$ns" get pvc,pods -l cnpg.io/cluster="$name" | sed 's/^/  /'
+    return 1
+  fi
 }
 
 _wait_for_pods() {
@@ -476,6 +548,9 @@ cmd_up() {
     echo "Rolling out: ${changed_deploys[*]}"
     k3s_exec kubectl rollout restart "${changed_deploys[@]}" -n platform
   fi
+
+  _phase "wait for CNPG cluster"
+  _wait_for_cnpg_cluster platform postgres
 
   _phase "wait for pods"
   _wait_for_pods platform
