@@ -96,4 +96,18 @@ describe('buildMailboxesComponentJobSpec', () => {
     const spec = buildMailboxesComponentJobSpec(baseInput) as { spec: { backoffLimit: number } };
     expect(spec.spec.backoffLimit).toBe(0);
   });
+
+  it('sets activeDeadlineSeconds when supplied so a hung mbsync is force-killed', () => {
+    const spec = buildMailboxesComponentJobSpec({ ...baseInput, activeDeadlineSeconds: 3660 }) as {
+      spec: { activeDeadlineSeconds?: number };
+    };
+    expect(spec.spec.activeDeadlineSeconds).toBe(3660);
+  });
+
+  it('omits activeDeadlineSeconds when not supplied or non-positive', () => {
+    const spec = buildMailboxesComponentJobSpec(baseInput) as { spec: { activeDeadlineSeconds?: number } };
+    expect(spec.spec.activeDeadlineSeconds).toBeUndefined();
+    const spec2 = buildMailboxesComponentJobSpec({ ...baseInput, activeDeadlineSeconds: 0 }) as { spec: { activeDeadlineSeconds?: number } };
+    expect(spec2.spec.activeDeadlineSeconds).toBeUndefined();
+  });
 });

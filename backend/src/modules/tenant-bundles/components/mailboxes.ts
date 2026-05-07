@@ -81,6 +81,11 @@ export interface CaptureMailboxesComponentOpts {
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
 const UPLOAD_TOKEN_TTL_SEC = 60 * 60;
+// K8s `activeDeadlineSeconds` is set to orchestrator timeout MINUS
+// this buffer so K8s force-kills first; the orchestrator's next poll
+// then reports a real "DeadlineExceeded" reason rather than its own
+// generic timeout error.
+const JOB_DEADLINE_BUFFER_SEC = 60;
 const MAIL_NAMESPACE_DEFAULT = 'mail';
 const IMAP_HOST_DEFAULT = 'stalwart-mail.mail.svc.cluster.local';
 const IMAP_PORT_DEFAULT = 993;
@@ -139,6 +144,10 @@ export function buildMailboxesComponentJobSpec(input: {
   masterSecretKey: string;
   uploadBase: string;
   uploads: ReadonlyArray<{ address: string; token: string }>;
+  /** Hard wall-clock deadline. K8s force-kills past this with reason
+   *  `DeadlineExceeded`. Without it a hung mbsync can keep the Job
+   *  alive indefinitely. */
+  activeDeadlineSeconds?: number;
 }): Record<string, unknown> {
   // Defence-in-depth: addresses come from the platform DB, but we
   // re-validate before composing the for-loop so a malformed address
@@ -213,6 +222,9 @@ export function buildMailboxesComponentJobSpec(input: {
     spec: {
       backoffLimit: 0,
       ttlSecondsAfterFinished: 600,
+      ...(input.activeDeadlineSeconds && input.activeDeadlineSeconds > 0
+        ? { activeDeadlineSeconds: input.activeDeadlineSeconds }
+        : {}),
       template: {
         metadata: {
           labels: {
@@ -283,6 +295,7 @@ export async function captureMailboxesComponent(
   const uploadBase = `${opts.platformApiUrl.replace(/\/$/, '')}/api/v1/internal/bundles/${opts.backupId}/components/mailboxes`;
   const jobName = `bk-mbox-${opts.backupId}`.slice(0, 63);
 
+  const orchestratorTimeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spec = buildMailboxesComponentJobSpec({
     jobName,
     mailNamespace,
@@ -296,13 +309,14 @@ export async function captureMailboxesComponent(
     masterSecretKey: opts.masterSecretKey ?? MASTER_SECRET_KEY_DEFAULT,
     uploadBase,
     uploads,
+    activeDeadlineSeconds: Math.max(60, Math.ceil(orchestratorTimeoutMs / 1000) - JOB_DEADLINE_BUFFER_SEC),
   });
 
   await (opts.k8s.batch as unknown as {
     createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
   }).createNamespacedJob({ namespace: mailNamespace, body: spec });
 
-  await waitForJob(opts.k8s, mailNamespace, jobName, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts.onProgress);
+  await waitForJob(opts.k8s, mailNamespace, jobName, orchestratorTimeoutMs, opts.onProgress);
 
   const refs = await opts.store.listArtifacts(opts.handle, 'mailboxes');
   const sizeBytes = refs.reduce((s, r) => s + r.sizeBytes, 0);

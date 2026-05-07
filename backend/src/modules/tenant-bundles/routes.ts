@@ -32,6 +32,27 @@ import { Readable } from 'node:stream';
 // (LocalHostPathBackupStore still exists for unit tests via mkdtemp;
 // it is never used by the route layer in production.)
 
+/**
+ * Redact credentials before writing an error message to a UI-facing
+ * column (`backup_jobs.last_error`). The orchestrator may catch
+ * driver-level exceptions whose `message` includes the full DSN —
+ * Drizzle/pg in particular tends to surface connection strings on
+ * pool errors. Operator UIs surface this verbatim, so anything that
+ * looks like a credential gets masked. Server logs receive the raw
+ * unredacted message separately.
+ */
+export function redactCredentialsForUi(message: string): string {
+  return message
+    // <scheme>://user:password@host  →  <scheme>://user:***@host
+    .replace(/([a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^:@/\s]+):[^@\s]+@/g, '$1:***@')
+    // password=<value> / pwd=<value> in URL query / log strings
+    .replace(/(password|pwd|secret|token)=[^\s&"']+/gi, '$1=***')
+    // AWS access-key-id pattern
+    .replace(/AKIA[A-Z0-9]{12,}/g, 'AKIA***')
+    // 32+ char hex blobs (likely raw key material)
+    .replace(/\b[0-9a-f]{32,}\b/gi, '***');
+}
+
 export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requirePanel('admin'));
@@ -281,16 +302,51 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       // Async path: return as soon as the orchestrator has reserved
       // the bundle (row inserted + off-site dir reserved). The frontend
       // polls GET /:id every 2 s and renders per-component progress.
-      // Errors are surfaced via that detail endpoint
-      // (backup_components.last_error per row, backup_jobs.last_error
-      // for whole-bundle failures).
+      //
+      // Failure handling:
+      //   - Per-component errors are recorded by the orchestrator on
+      //     each backup_components row and aggregated into
+      //     backup_jobs.last_error.
+      //   - An *unexpected* throw from runBundle itself (e.g. lost DB
+      //     connection mid-orchestration, OOM kill) bypasses that path.
+      //     We catch here and force the row into `failed` so the
+      //     polling modal stops spinning forever and the operator sees
+      //     a real error. Without this the row stays at `running`
+      //     indefinitely (caught E2E 2026-05-07: 32-min hang).
+      let reservedBundleId: string | null = null;
       const reserved = new Promise<string>((resolve) => {
-        runBundle(orchDeps, { ...orchInput, onBundleReserved: (id) => resolve(id) }).catch((err) => {
-          // The orchestrator's per-component failure path already
-          // writes status='failed' + last_error to the row, so the
-          // operator sees the failure in the polling modal. Log here
-          // so we have an audit trail beyond the row.
-          app.log.error({ err: err instanceof Error ? err.message : String(err) }, 'tenant-bundles: async runBundle failed');
+        runBundle(orchDeps, {
+          ...orchInput,
+          onBundleReserved: (id) => {
+            reservedBundleId = id;
+            resolve(id);
+          },
+        }).catch(async (err) => {
+          const rawMsg = err instanceof Error ? err.message : String(err);
+          // Full message goes to server logs only.
+          app.log.error({ err: rawMsg, bundleId: reservedBundleId }, 'tenant-bundles: async runBundle failed');
+          if (reservedBundleId) {
+            // Operator-visible message: redact connection-string
+            // credentials a misbehaving driver might surface in
+            // err.message (Drizzle/pg, mysql, redis, etc.). The full
+            // unredacted trace is in server logs above.
+            const operatorMsg = redactCredentialsForUi(rawMsg).slice(0, 2000);
+            try {
+              await app.db
+                .update(backupJobs)
+                .set({
+                  status: 'failed',
+                  lastError: operatorMsg,
+                  finishedAt: new Date(),
+                })
+                .where(eq(backupJobs.id, reservedBundleId));
+            } catch (updateErr) {
+              app.log.error(
+                { err: updateErr instanceof Error ? updateErr.message : String(updateErr) },
+                'tenant-bundles: failed to mark async bundle as failed',
+              );
+            }
+          }
         });
       });
       const bundleId = await reserved;
