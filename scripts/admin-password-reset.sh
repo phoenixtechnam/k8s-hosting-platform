@@ -194,16 +194,25 @@ BEGIN;
 WITH updated AS (
   UPDATE users
     SET password_hash = '${HASH_ESC}',
-        -- Operator escape-hatch is scoped to 2fa mode only:
-        --   * passkey_mode = '2fa'         → cleared (user locked
+        -- Operator escape-hatch is scoped to second_factor mode only:
+        --   * passkey_mode = 'second_factor' → cleared (user locked
         --     into 2FA + lost passkeys; CLI reset must be enough to
         --     log them back in with a password alone).
-        --   * passkey_mode = 'alternative' → preserved (passkey is
+        --   * passkey_mode = 'alternative'   → preserved (passkey is
         --     an additional sign-in path, not a gate; resetting the
         --     password shouldn't disturb that, the user still has
         --     their passkey login working).
-        --   * passkey_mode IS NULL         → no-op.
-        passkey_mode = CASE WHEN passkey_mode = '2fa' THEN NULL ELSE passkey_mode END,
+        --   * passkey_mode IS NULL           → no-op.
+        --
+        -- The earlier revision compared against the placeholder literal
+        -- '2fa' (per migration 0061's docstring style) but the canonical
+        -- column value is 'second_factor'. That mismatch silently turned
+        -- the CASE into a no-op for every value — alternative was
+        -- accidentally preserved (intended behaviour), but second_factor
+        -- was ALSO preserved (broken: the operator could never use the
+        -- CLI to recover a 2FA-locked-out user). Fixed by switching to
+        -- the real enum value.
+        passkey_mode = CASE WHEN passkey_mode = 'second_factor' THEN NULL ELSE passkey_mode END,
         updated_at = NOW()
     WHERE email = '${EMAIL_ESC}'
     RETURNING id
