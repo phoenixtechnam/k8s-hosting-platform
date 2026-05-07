@@ -39,16 +39,8 @@ const MAIL_SERVER_IP = (): string => {
   return '127.0.0.1';
 };
 
-/**
- * MEDIUM-2: deterministic MTA-STS policy ID derived from the domain
- * name. Collisions across different domains are astronomically
- * unlikely (16-hex-char hash prefix) and the result is 100%
- * reproducible, so every call to buildBaseRecords returns the same
- * value for the same domain.
- */
-function mtaStsPolicyId(domainName: string): string {
-  return crypto.createHash('sha256').update(domainName).digest('hex').slice(0, 16);
-}
+// mtaStsPolicyId() helper removed 2026-05-06 along with the MTA-STS
+// records — see the comment block where the records were dropped.
 
 export async function syncRecordToProviders(
   db: Database,
@@ -441,8 +433,9 @@ export async function deprovisionEmailDns(
   db: Database,
   domainId: string,
 ): Promise<void> {
-  // Find all email-related DNS records for this domain
-  const emailRecordTypes = ['MX', 'TXT'];
+  // Find all email-related DNS records for this domain. The filter
+  // below picks them by (type, name-pattern, value-prefix) — so a
+  // generic recordType allowlist is unnecessary.
   const allRecords = await db
     .select()
     .from(dnsRecords)
