@@ -151,32 +151,26 @@ export STALWART_PASSWORD="${STALWART_RECOVERY_PASSWORD}"
 URL="http://stalwart-mgmt.mail.svc.cluster.local:8080"
 
 echo "=== Current Coordinator state ==="
-/tmp/swcli/stalwart-cli --url "$URL" --user admin query Coordinator --json 2>&1 || true
+# Coordinator is a singleton — no `query` support. Use `get` to read.
+/tmp/swcli/stalwart-cli --url "$URL" --user admin get Coordinator 2>&1 || true
 
-# Stalwart 0.16 ships an in-process default Coordinator on fresh
-# bootstrap. We set the @type to Redis and provide the URL. If the
-# row already has @type=Redis pointing at our cluster, the apply is
-# a no-op.
+# Coordinator is a singleton (always exists, defaults to in-memory
+# Disabled/Default variant). We update its discriminator to `Redis`
+# and supply the connection URL. The Redis variant on Stalwart 0.16
+# accepts only `url` (+ pool/timeout fields); fields like `keyPrefix`
+# are not supported here — the cluster name-spacing is done at the
+# Stalwart application layer, not the Coordinator config.
 echo
 echo "=== Applying Redis Coordinator ==="
 cat > /tmp/coord.json <<PLAN
-{"@type":"update","object":"Coordinator","value":{"@type":"Redis","url":"${REDIS_URL}","keyPrefix":"sw"}}
+{"@type":"update","object":"Coordinator","value":{"@type":"Redis","url":"${REDIS_URL}"}}
 PLAN
 
-# Some Stalwart minors require `create` for a Coordinator that
-# previously held an in-process default. If `update` fails with
-# "not found", retry as `create`.
-if ! /tmp/swcli/stalwart-cli --url "$URL" --user admin apply --file /tmp/coord.json 2>&1; then
-  echo "update failed — retrying as create"
-  cat > /tmp/coord.json <<PLAN
-{"@type":"create","object":"Coordinator","value":{"redis":{"@type":"Redis","url":"${REDIS_URL}","keyPrefix":"sw"}}}
-PLAN
-  /tmp/swcli/stalwart-cli --url "$URL" --user admin apply --file /tmp/coord.json
-fi
+/tmp/swcli/stalwart-cli --url "$URL" --user admin apply --file /tmp/coord.json
 
 echo
 echo "=== Final Coordinator state ==="
-/tmp/swcli/stalwart-cli --url "$URL" --user admin query Coordinator --json 2>&1
+/tmp/swcli/stalwart-cli --url "$URL" --user admin get Coordinator 2>&1
 echo
 echo "Coordinator wired — roll the Stalwart pod for the new client to attach:"
 echo "  kubectl -n mail rollout restart deploy stalwart-mail"
@@ -231,8 +225,14 @@ WIRE
 EOF
 )
 
+  # --override-type=strategic so the named-container merge composes
+  # with kubectl run's auto-generated container spec (image, command,
+  # stdin) rather than replacing it entirely. Default `merge` (JSON
+  # merge patch, RFC 7386) replaces array fields wholesale and drops
+  # the image / command we set on the CLI.
   $KUBECTL run "$pod_name" -n "$NAMESPACE_MAIL" --rm -i --restart=Never \
     --image="$alpine_image" \
+    --override-type=strategic \
     --overrides="$overrides" \
     --command -- /bin/sh -c "$wire_script" \
     || err "Coordinator wiring pod failed"
