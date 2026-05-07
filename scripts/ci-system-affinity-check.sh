@@ -39,6 +39,9 @@ WORKLOADS=(
   # the v016 Deployment `stalwart-mail` replaces it.
   "mail|Deployment|stalwart-mail|1"
   "platform|Deployment|dex|1"
+  # Valkey/Sentinel coordinator cache — staging-only until production
+  # overlay folds in k8s/base/valkey/. StatefulSet (not Deployment).
+  "redis-system|StatefulSet|valkey|1"
 )
 # postgres is a CNPG Cluster (postgresql.cnpg.io/v1). Its spec.affinity
 # has its own schema (no .spec.template.spec.* path) so it is verified

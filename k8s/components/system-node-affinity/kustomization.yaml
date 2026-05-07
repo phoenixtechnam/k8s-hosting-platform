@@ -62,3 +62,12 @@ patches:
   # v016 ships as a Deployment named `stalwart-mail`.
   - target: { kind: Deployment, name: stalwart-mail, namespace: mail }
     path: affinity-patch.yaml
+
+  # ── redis-system namespace ────────────────────────────────────────
+  # Valkey/Sentinel coordinator cache shipped 2026-05-07. Without this
+  # patch, replicas land on tenant-bearing worker nodes and a worker
+  # outage takes a third of the cache offline. Pinning to system nodes
+  # also keeps the cache pods inside the system-only NetworkPolicy
+  # zone where their NetworkPolicy assumes pods originate.
+  - target: { kind: StatefulSet, name: valkey, namespace: redis-system }
+    path: affinity-patch.yaml
