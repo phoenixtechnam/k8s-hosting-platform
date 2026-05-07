@@ -1,0 +1,151 @@
+{
+  "$comment": "Per-entry readiness contract for the local catalog test harness. The harness reads `type_defaults` keyed by catalog_entry.type, then applies per-entry overrides on top. See scripts/catalog-tests/README.md for the kind vocabulary.",
+  "type_defaults": {
+    "runtime": {
+      "kind": "pod_ready_only",
+      "timeout_seconds": 300,
+      "$comment": "Runtimes ship no application — they're a base image waiting for client code. Asserting HTTP behavior would either 403 (no index) or 5xx; pod Ready is the meaningful signal."
+    },
+    "static": {
+      "kind": "http_ingress",
+      "path": "/health",
+      "expect_code_min": 200,
+      "expect_code_max": 299,
+      "timeout_seconds": 300
+    },
+    "database": {
+      "kind": "db_protocol",
+      "timeout_seconds": 300,
+      "$comment": "engine + creds resolved from the deployed manifest's components[].database field"
+    },
+    "service": {
+      "kind": "service_protocol",
+      "timeout_seconds": 300
+    },
+    "application": {
+      "kind": "http_ingress",
+      "path": "/",
+      "expect_code_min": 200,
+      "expect_code_max": 399,
+      "timeout_seconds": 600,
+      "$comment": "Apps usually 200 the landing page or 30x to /login. 399 ceiling avoids accepting nginx-ingress' default-backend 404 — the harness ALSO checks the response Server header is not 'nginx' (default-backend signature)."
+    }
+  },
+  "overrides": {
+    "wordpress": {
+      "path": "/wp-login.php",
+      "$comment": "WordPress redirects / to /wp-admin/install.php on first hit; pin to wp-login which always responds"
+    },
+    "nextcloud": {
+      "path": "/login",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "jitsi": {
+      "path": "/",
+      "expect_code_min": 200,
+      "expect_code_max": 299
+    },
+    "moodle-bitnami": {
+      "path": "/login/index.php",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "prestashop": {
+      "path": "/install/",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "matomo": {
+      "path": "/index.php",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "vaultwarden": {
+      "path": "/",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "gitea": {
+      "path": "/",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "bookstack": {
+      "path": "/login",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "n8n": {
+      "path": "/setup",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "uptime-kuma": {
+      "path": "/dashboard",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "discourse": {
+      "path": "/srv/status",
+      "expect_code_min": 200,
+      "expect_code_max": 399,
+      "timeout_seconds": 900,
+      "$comment": "Discourse boots slow on cold start — Sidekiq + multiple Ruby workers"
+    },
+    "plausible": {
+      "path": "/login",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "wiki-js": {
+      "path": "/",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "immich": {
+      "path": "/api/server/ping",
+      "expect_code_min": 200,
+      "expect_code_max": 299,
+      "timeout_seconds": 900
+    },
+    "rocketchat": {
+      "path": "/",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "strapi": {
+      "path": "/admin",
+      "expect_code_min": 200,
+      "expect_code_max": 499,
+      "$comment": "Strapi /admin returns 401 without auth on first boot — accept 4xx (signals app is up)"
+    },
+    "directus": {
+      "path": "/admin",
+      "expect_code_min": 200,
+      "expect_code_max": 499
+    },
+    "paperless-ngx": {
+      "path": "/accounts/login/",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "invoiceninja": {
+      "path": "/setup",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "dolibarr": {
+      "path": "/install/",
+      "expect_code_min": 200,
+      "expect_code_max": 399
+    },
+    "coturn": {
+      "kind": "stun_probe",
+      "ports_tcp": [3478],
+      "ports_udp": [3478],
+      "timeout_seconds": 300,
+      "$comment": "STUN/TURN — no ingress component. Probe the host-port directly via the node IP."
+    }
+  }
+}

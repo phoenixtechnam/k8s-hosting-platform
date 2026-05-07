@@ -1,0 +1,61 @@
+{
+  "$comment": "Resource-aware tier classification for the local catalog test harness. Run order: small first (pod scheduling + image pulls fastest), medium next, large last (multi-component apps that take longer + need more RAM). Tier filter is order-preserving inside the 'entries' array — that determines run order within each tier.",
+  "tiers": {
+    "small": {
+      "$comment": "Sub-300 MiB RSS, fast image pulls, simple readiness. 24 entries.",
+      "entries": [
+        "static-nginx",
+        "static-apache",
+        "redis-7",
+        "memcached-alpine",
+        "mariadb",
+        "mysql",
+        "postgresql",
+        "nginx-php",
+        "apache-php",
+        "nodejs",
+        "python-312",
+        "ruby-33",
+        "golang-122",
+        "java-21",
+        "dotnet-8",
+        "bun-latest",
+        "rust-stable",
+        "vaultwarden",
+        "uptime-kuma",
+        "wiki-js",
+        "gitea",
+        "bookstack",
+        "coturn",
+        "n8n"
+      ]
+    },
+    "medium": {
+      "$comment": "300 MiB - 1 GiB or multi-component apps that bundle a DB. 12 entries.",
+      "entries": [
+        "wordpress",
+        "matomo",
+        "plausible",
+        "prestashop",
+        "dolibarr",
+        "invoiceninja",
+        "paperless-ngx",
+        "strapi",
+        "directus",
+        "rocketchat",
+        "mongodb-7",
+        "minio"
+      ]
+    },
+    "large": {
+      "$comment": ">1 GiB or many components or very slow boot. 5 entries.",
+      "entries": [
+        "nextcloud",
+        "jitsi",
+        "immich",
+        "discourse",
+        "moodle-bitnami"
+      ]
+    }
+  }
+}
