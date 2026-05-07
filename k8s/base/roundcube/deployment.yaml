@@ -197,7 +197,14 @@ spec:
           resources:
             requests:
               cpu: "50m"
-              memory: "128Mi"
+              # 2026-05-07: dropped from 128Mi → 64Mi after staging
+              # measurement showed idle pods at 36-39Mi resident.
+              # Roundcube is sessionless (Phase 3.A.5 moved sessions
+              # to Postgres) so memory scales with concurrent active
+              # webmail users, not total mailboxes. The 512Mi limit
+              # gives headroom for burst load; the request only
+              # needs to cover idle + a few connections.
+              memory: "64Mi"
             limits:
               cpu: "500m"
               memory: "512Mi"
