@@ -559,6 +559,96 @@ harden_ssh() {
   log "SSH hardened."
 }
 
+configure_node_logging_caps() {
+  # Cap node-side log + dump growth so a crashlooping container or
+  # noisy daemon can't fill the host disk and trigger kubelet's
+  # eviction-hard threshold (which pulls Longhorn-csi-plugin off the
+  # node and brings tenant PVCs down with it).
+  #
+  # Three sources of unbounded growth, three caps:
+  #
+  #   1. core dumps. The 2026-05-08 worker incident: Calico Felix
+  #      crash-looped for 10 days; kernel default core_pattern=core
+  #      wrote ~5000 × 5.7MB core files into the calico-node container's
+  #      writable layer until the worker hit DiskPressure. Fix:
+  #      core_pattern=|/bin/false drops dumps on the floor (matches
+  #      `ulimit -c 0`). Operators who need real cores can override
+  #      via /etc/sysctl.d/99-platform-cores.conf.
+  #
+  #   2. systemd journal. Default unit on Debian is "auto-detected"
+  #      which can grow to 4GB+ on a busy node. Cap to 2GB so a
+  #      log-spam loop is bounded.
+  #
+  #   3. logrotate / /var/log/calico. Calico's host-mounted log volume
+  #      is rotated by the calico-node DaemonSet itself, but only when
+  #      the pod is healthy. If the pod is stuck (image-pull, OOMKill
+  #      loop) logs grow unbounded. Add a host-side daily rotate so
+  #      they're capped regardless of pod state.
+  if [[ "$SKIP_HARDENING" == true ]]; then
+    log "Skipping node-logging caps (--skip-hardening)."
+    return 0
+  fi
+  if marker_exists "node-logging-caps"; then
+    log "Node logging caps already configured, skipping."
+    return 0
+  fi
+
+  log "Configuring node-side logging caps (cores, journald, calico logs)..."
+
+  # 1. core dumps: drop by default
+  install -d -m 0755 /etc/sysctl.d
+  cat > /etc/sysctl.d/99-platform-no-core-dumps.conf <<'EOF'
+# Drop core dumps on the floor. Set by bootstrap.sh
+# (configure_node_logging_caps). Override by deleting this file
+# and setting core_pattern manually if you genuinely need cores
+# for a specific debug session — but watch the disk.
+kernel.core_pattern = |/bin/false
+EOF
+  sysctl --system >/dev/null
+
+  install -d -m 0755 /etc/security/limits.d
+  cat > /etc/security/limits.d/99-platform-no-cores.conf <<'EOF'
+# Belt + suspenders for kernel.core_pattern=|/bin/false above.
+* soft core 0
+* hard core 0
+root soft core 0
+root hard core 0
+EOF
+
+  # 2. journald cap
+  install -d -m 0755 /etc/systemd/journald.conf.d
+  cat > /etc/systemd/journald.conf.d/99-platform-cap.conf <<'EOF'
+[Journal]
+# Cap journald to 2GB. Default is auto-detected (≤ 4GB on Debian)
+# which is too much for a 38GB Hetzner CX21. Operators who need
+# more journal history should override per-host.
+SystemMaxUse=2G
+SystemKeepFree=4G
+SystemMaxFileSize=128M
+RuntimeMaxUse=200M
+EOF
+  systemctl restart systemd-journald.service || true
+
+  # 3. logrotate for /var/log/calico (host-mounted by calico-node)
+  install -d -m 0755 /etc/logrotate.d
+  cat > /etc/logrotate.d/calico <<'EOF'
+/var/log/calico/*.log /var/log/calico/*/*.log {
+  daily
+  rotate 5
+  size 50M
+  compress
+  delaycompress
+  missingok
+  notifempty
+  copytruncate
+  su root root
+}
+EOF
+
+  marker_set "node-logging-caps"
+  log "Node logging caps configured (cores=disabled, journal=2GB cap, calico=daily rotate)."
+}
+
 install_packages() {
   log "Installing base packages (family=${OS_FAMILY})..."
   case "$OS_FAMILY" in
@@ -4291,6 +4381,9 @@ main() {
     harden_ssh
   fi
   install_packages
+  if [[ "$DRY_RUN" != true ]]; then
+    configure_node_logging_caps
+  fi
   if [[ "$DRY_RUN" == true ]]; then
     log ""
     log "════════════════════════════════════════════════"

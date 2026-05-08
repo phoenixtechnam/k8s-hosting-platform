@@ -11,8 +11,9 @@ import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import StorageUsageTab from '@/components/StorageUsageTab';
+import NodeHealthPanel from '@/components/NodeHealthPanel';
 
-type Tab = 'active-alerts' | 'alert-history' | 'system-metrics' | 'storage' | 'pods';
+type Tab = 'active-alerts' | 'alert-history' | 'system-metrics' | 'storage' | 'pods' | 'node-health';
 
 interface Alert {
   readonly id: string;
@@ -80,6 +81,7 @@ function splitAlerts(entries: readonly AuditLogEntry[]): {
 const TABS: readonly { readonly key: Tab; readonly label: string }[] = [
   { key: 'active-alerts', label: 'Active Alerts' },
   { key: 'alert-history', label: 'Alert History' },
+  { key: 'node-health', label: 'Node Health' },
   { key: 'system-metrics', label: 'System Metrics' },
   { key: 'storage', label: 'Storage Usage' },
   { key: 'pods', label: 'Pods' },
@@ -273,6 +275,7 @@ export default function Monitoring() {
         )}
         {activeTab === 'system-metrics' && <SystemMetrics />}
         {activeTab === 'storage' && <StorageUsageTab />}
+        {activeTab === 'node-health' && <NodeHealthPanel />}
         {activeTab === 'pods' && (
           <PodsTab
             pods={podsData?.data?.pods ?? []}
@@ -281,7 +284,7 @@ export default function Monitoring() {
           />
         )}
 
-        {activeTab !== 'system-metrics' && activeTab !== 'storage' && activeTab !== 'pods' && (
+        {activeTab !== 'system-metrics' && activeTab !== 'storage' && activeTab !== 'pods' && activeTab !== 'node-health' && (
           <PaginationBar
             totalCount={totalCount}
             pageSize={pagination.limit}

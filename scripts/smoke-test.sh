@@ -125,6 +125,25 @@ check_status "GET /healthz (unauthenticated)" "200" "$STATUS"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/status")
 check_status "GET /admin/status (authenticated)" "200" "$STATUS"
 
+# Node-health gate: hit the per-node summary the 5-min reconciler
+# writes; if any node is critical, fail the smoke run with the bad
+# nodes listed. Skipped silently on local/dev where the reconciler
+# may not have ticked yet (lastTickAt is null on a fresh boot).
+NH_BODY=$(curl -s -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/node-health/summary" 2>/dev/null || true)
+if echo "$NH_BODY" | jq -e '.data.lastTickAt != null' >/dev/null 2>&1; then
+  NH_OVERALL=$(echo "$NH_BODY" | jq -r '.data.overallSeverity // "unknown"')
+  if [[ "$NH_OVERALL" == "critical" ]]; then
+    BAD=$(echo "$NH_BODY" | jq -r '.data.nodes[] | select(.severity=="critical") | "\(.name): pressures=[\(.pressures|join(","))] csiMissing=[\(.csiDriversMissing|join(","))] evictions/h=\(.evictionsLastHour)"')
+    check_status "GET /admin/node-health/summary (critical node(s) detected)" "200" "FAIL"
+    echo "    critical nodes:"
+    echo "$BAD" | sed 's/^/      /'
+  else
+    check_status "GET /admin/node-health/summary (overall=${NH_OVERALL})" "200" "200"
+  fi
+else
+  log "  node-health: no tick yet — skipping (cluster fresh-booted)"
+fi
+
 # ─── Clients (same params as frontend) ─────────────────────────────────────────
 
 log "── Clients ──"

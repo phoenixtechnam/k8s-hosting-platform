@@ -2437,3 +2437,40 @@ export const tasks = pgTable('tasks', {
 
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
+
+// ─── Node-health monitor (migration 0092) ────────────────────────────────────
+//
+// Persistent state for the 5-min node-health reconciler. See
+// backend/src/modules/node-health/scheduler.ts for the writer +
+// notification-throttling logic.
+const stringArray = customType<{ data: string[]; driverData: string }>({
+  dataType() { return 'text[]'; },
+  toDriver(v: string[]) {
+    // Postgres array literal: {a,b,c} with quoting on items containing commas/quotes.
+    return '{' + v.map((s) => '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"').join(',') + '}';
+  },
+  fromDriver(v: unknown) {
+    if (Array.isArray(v)) return v as string[];
+    if (typeof v !== 'string' || v.length === 0) return [];
+    const inner = v.replace(/^\{|\}$/g, '');
+    if (inner === '') return [];
+    return inner.split(',').map((s) => s.replace(/^"|"$/g, '').replace(/\\"/g, '"').replace(/\\\\/g, '\\'));
+  },
+});
+
+export const nodeHealthState = pgTable('node_health_state', {
+  nodeName: text('node_name').primaryKey(),
+  ready: boolean('ready').notNull().default(true),
+  pressures: stringArray('pressures').notNull().default(sql`'{}'::text[]`),
+  csiDriversPresent: integer('csi_drivers_present').notNull().default(0),
+  csiDriversExpected: integer('csi_drivers_expected').notNull().default(0),
+  csiDriversMissing: stringArray('csi_drivers_missing').notNull().default(sql`'{}'::text[]`),
+  evictionsLastHour: integer('evictions_last_hour').notNull().default(0),
+  diskUsedPct: numeric('disk_used_pct', { precision: 5, scale: 2 }),
+  severity: varchar('severity', { length: 16 }).notNull().default('normal'),
+  lastNotifiedAt: timestamp('last_notified_at', { withTimezone: true }),
+  observedAt: timestamp('observed_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type NodeHealthState = typeof nodeHealthState.$inferSelect;
+export type NewNodeHealthState = typeof nodeHealthState.$inferInsert;
