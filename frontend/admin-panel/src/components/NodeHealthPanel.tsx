@@ -1,6 +1,8 @@
-import { Loader2, RefreshCw, AlertCircle, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, RefreshCw, AlertCircle, AlertTriangle, CheckCircle2, Wrench } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useNodeHealth, useReconcileNodeHealth, type NodeHealthEntry, type NodeHealthSeverity } from '@/hooks/use-node-health';
+import NodeRecoveryModal from '@/components/NodeRecoveryModal';
 
 const SEVERITY_BADGE: Record<NodeHealthSeverity, 'error' | 'warning' | 'healthy'> = {
   critical: 'error',
@@ -42,6 +44,7 @@ function pressureSummary(entry: NodeHealthEntry): string {
 export default function NodeHealthPanel() {
   const { data, isLoading, isError, error } = useNodeHealth();
   const reconcile = useReconcileNodeHealth();
+  const [recoveryNode, setRecoveryNode] = useState<NodeHealthEntry | null>(null);
 
   if (isLoading) {
     return (
@@ -115,6 +118,7 @@ export default function NodeHealthPanel() {
                 <th className="px-3 py-2 font-medium">CSI drivers</th>
                 <th className="px-3 py-2 font-medium text-right">Evictions/h</th>
                 <th className="px-3 py-2 font-medium">Detail</th>
+                <th className="px-3 py-2 font-medium text-right">Recover</th>
               </tr>
             </thead>
             <tbody>
@@ -169,6 +173,20 @@ export default function NodeHealthPanel() {
                     <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
                       {pressureSummary(n)}
                     </td>
+                    <td className="px-3 py-2 text-right">
+                      {n.severity !== 'normal' ? (
+                        <button
+                          type="button"
+                          onClick={() => setRecoveryNode(n)}
+                          className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          data-testid={`recovery-open-${n.name}`}
+                        >
+                          <Wrench size={11} /> Recover…
+                        </button>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -178,9 +196,13 @@ export default function NodeHealthPanel() {
       )}
 
       <div className="text-xs text-gray-500 dark:text-gray-400">
-        Reconciler runs every 5 min. Notifications fire on severity transitions and re-fire every 24 h while a node remains warning/critical. See{' '}
-        <code className="rounded bg-gray-100 px-1 py-0.5 text-[10px] dark:bg-gray-800">backend/src/modules/node-health/</code> for the implementation.
+        Reconciler runs every 5 min. Notifications fire on severity transitions and re-fire every 24 h while a node remains warning/critical. Recovery actions audit-log every run; see{' '}
+        <code className="rounded bg-gray-100 px-1 py-0.5 text-[10px] dark:bg-gray-800">docs/02-operations/NODE_HEALTH_MONITORING.md</code> for the action catalogue.
       </div>
+
+      {recoveryNode && (
+        <NodeRecoveryModal entry={recoveryNode} onClose={() => setRecoveryNode(null)} />
+      )}
     </div>
   );
 }
