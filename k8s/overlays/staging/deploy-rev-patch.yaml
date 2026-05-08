@@ -35,3 +35,14 @@ spec:
     metadata:
       annotations:
         platform.phoenix-host.net/deploy-rev: "0.0.0-9a13c5b"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: peer-firewall-reconciler
+  namespace: platform-system
+spec:
+  template:
+    metadata:
+      annotations:
+        platform.phoenix-host.net/deploy-rev: "0.0.0-9a13c5b"

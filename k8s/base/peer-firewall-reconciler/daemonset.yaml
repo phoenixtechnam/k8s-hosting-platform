@@ -55,7 +55,13 @@ spec:
       containers:
         - name: reconciler
           image: ghcr.io/phoenixtechnam/hosting-platform/peer-firewall-reconciler:latest # {"$imagepolicy": "flux-system:peer-firewall-reconciler"}
-          imagePullPolicy: IfNotPresent
+          # Always pull on pod start because the manifest pins :latest;
+          # kubelet's IfNotPresent cache otherwise sticks at the first-
+          # ever image SHA forever. The deploy-rev annotation in the
+          # staging overlay rolls the DaemonSet on every CI push, which
+          # combined with Always means each rollout picks up the just-
+          # built reconciler image.
+          imagePullPolicy: Always
           securityContext:
             # nft talks to netfilter via netlink — needs CAP_NET_ADMIN.
             # Drop everything else; no privileged, no host PID/IPC.
