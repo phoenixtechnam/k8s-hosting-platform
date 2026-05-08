@@ -36,6 +36,7 @@ import {
   CANONICAL_LABEL_KEYS,
   PLATFORM_API_MANAGER,
 } from '../../lib/canonical-labels.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 /** Labels the mirror manages. Anything else on the PV is left alone. */
 const MIRRORED_KEYS: ReadonlyArray<string> = [
@@ -135,10 +136,18 @@ export async function mirrorPvcLabelsToPvs(
       const drift = computeMirrorDrift(desired, pv.metadata?.labels);
       if (!drift) continue;
 
-      await k8s.core.patchPersistentVolume({
-        name: pvName,
-        body: { metadata: { labels: drift } },
-      });
+      // RFC-7396 JSON Merge Patch — additive label update without
+      // disturbing other PV labels. The k8s client library defaults to
+      // application/json-patch+json (RFC 6902 ops array) on patch* calls,
+      // which would 400 on this body shape; MERGE_PATCH overrides the
+      // Content-Type header.
+      await k8s.core.patchPersistentVolume(
+        {
+          name: pvName,
+          body: { metadata: { labels: drift } },
+        } as unknown as Parameters<typeof k8s.core.patchPersistentVolume>[0],
+        MERGE_PATCH,
+      );
       patched++;
     } catch (err: unknown) {
       const status = (err as { statusCode?: number; code?: number }).statusCode
