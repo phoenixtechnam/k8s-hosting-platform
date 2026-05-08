@@ -5,13 +5,14 @@
 # Two invariants:
 #   1. Every `tcp dport <port> accept` line MUST be a public-surface port
 #      (HTTP/HTTPS/SSH/mail) OR appear inside the cluster_allow block
-#      (CIDR-scoped or @cluster_peers_v{4,6}). Unrestricted control-plane
-#      ports are exactly the regression that caused the IngressNightmare
-#      exposure (CVE-2025-1974 advisory ticket from CERT-Bund).
-#   2. Every IPv4 saddr scope (`ip saddr ...`) on a control-plane port
-#      MUST have a parallel IPv6 (`ip6 saddr ...`) sibling rule, OR be
-#      followed by an explicit `# v4-only:` comment justifying the
-#      asymmetry. Forces dual-stack symmetry on cluster-internal ports.
+#      (saddr-scoped to @cluster_peers_v{4,6} or @trusted_ranges_v{4,6}).
+#      Unrestricted control-plane ports are exactly the regression that
+#      caused the IngressNightmare exposure (CVE-2025-1974 advisory
+#      ticket from CERT-Bund).
+#   2. Every IPv4 saddr scope (`ip saddr @<set>`) MUST have a parallel
+#      IPv6 (`ip6 saddr @<set>`) sibling rule, OR be followed by an
+#      explicit `# v4-only:` comment justifying the asymmetry. Forces
+#      dual-stack symmetry on cluster-internal ports.
 #
 # Exits non-zero on either violation.
 
@@ -65,19 +66,22 @@ while IFS= read -r line; do
     port="${BASH_REMATCH[1]}"
     if ! is_public_port "$port"; then
       echo "FAIL bootstrap.sh:$lineno — unrestricted 'tcp dport $port accept' is not a documented public port"
-      echo "      Move into the cluster_allow block (CIDR- or peer-set-scoped)"
+      echo "      Move into the cluster_allow block (saddr-scoped to @cluster_peers or @trusted_ranges)"
       failures=$((failures + 1))
     fi
   fi
 done < "$SCRIPT"
 
 # Invariant 2: dual-stack symmetry inside the bootstrap.sh
-# configure_firewall function. For each `ip saddr ${CLUSTER_NETWORK_CIDR}`
-# rule, require a matching `ip6 saddr ${CLUSTER_NETWORK_CIDR_V6}` rule
-# nearby (or a v4-only marker). Same for cluster_peers_v4 / v6 set
-# references.
-v4_count=$(grep -cE '^\s*ip\s+saddr\s+(\$\{CLUSTER_NETWORK_CIDR\}|@cluster_peers_v4)' "$SCRIPT" || true)
-v6_count=$(grep -cE '^\s*ip6\s+saddr\s+(\$\{CLUSTER_NETWORK_CIDR_V6\}|@cluster_peers_v6)' "$SCRIPT" || true)
+# configure_firewall function. For every IPv4 saddr-scoped rule
+# (`ip saddr @cluster_peers_v4` or `ip saddr @trusted_ranges_v4`),
+# require a matching IPv6 rule (`ip6 saddr @cluster_peers_v6` or
+# `ip6 saddr @trusted_ranges_v6`). The legacy literal-CIDR pattern
+# (`ip saddr ${CLUSTER_NETWORK_CIDR}`) was retired with always-on
+# set mode; if it ever reappears, the regex below will count it as a
+# v4-only rule and fail the build until v6 parity is added.
+v4_count=$(grep -cE '^\s*ip\s+saddr\s+@(cluster_peers_v4|trusted_ranges_v4)' "$SCRIPT" || true)
+v6_count=$(grep -cE '^\s*ip6\s+saddr\s+@(cluster_peers_v6|trusted_ranges_v6)' "$SCRIPT" || true)
 allowed_skew=$(grep -c '# v4-only:' "$SCRIPT" || true)
 
 # v6 must match v4 within the allowed_skew tolerance.

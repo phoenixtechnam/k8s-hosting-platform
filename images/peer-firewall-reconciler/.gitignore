@@ -1,0 +1,3 @@
+# Local build artifact — the production binary is built inside the
+# Dockerfile build stage, never committed.
+/peer-firewall-reconciler

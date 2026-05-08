@@ -1,5 +1,7 @@
-# peer-firewall-reconciler — keeps host nft sets cluster_peers_v{4,6}
-# in sync with kube-API node InternalIPs (firewall set-mode only).
+# peer-firewall-reconciler — always-on set-mode firewall converger.
+# Watches Nodes, ClusterTrustedRange, ClusterPendingPeer CRs and
+# converges four nft sets on the host: cluster_peers_v{4,6} (peers
+# union with non-expired CPP IPs), trusted_ranges_v{4,6} (CTR CIDRs).
 #
 # Runs hostNetwork: true so the in-container nft binary shares the host
 # netfilter ruleset; needs only CAP_NET_ADMIN, no privileged escalation.
@@ -9,7 +11,10 @@ WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY *.go ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/reconciler
+# Build the entire package (multiple .go files now). Test files are
+# excluded automatically by `go build`; -trimpath strips the local
+# build path; -s -w strips debug symbols.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/reconciler ./...
 
 FROM alpine:3.20
 RUN apk add --no-cache nftables ca-certificates

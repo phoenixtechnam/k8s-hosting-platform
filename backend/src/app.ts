@@ -79,6 +79,7 @@ import { systemBackupDownloadRoutes } from './modules/system-backup/download-rou
 import { systemBackupPgDumpRoutes } from './modules/system-backup/pg-dump-routes.js';
 import { systemBackupWalArchiveRoutes } from './modules/system-backup/wal-archive-routes.js';
 import { systemPvcRoutes } from './modules/system-backup/system-pvc-routes.js';
+import { clusterNetworkRoutes } from './modules/cluster-network/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -428,6 +429,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(systemBackupPgDumpRoutes, { prefix: '/api/v1' });
   await app.register(systemBackupWalArchiveRoutes, { prefix: '/api/v1' });
   await app.register(systemPvcRoutes, { prefix: '/api/v1' });
+  await app.register(clusterNetworkRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(taskCenterRoutes, { prefix: '/api/v1' });
