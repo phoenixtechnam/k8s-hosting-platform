@@ -1625,7 +1625,17 @@ tag_longhorn_node_for_system_replicas() {
 install_k3s() {
   if command -v k3s &>/dev/null; then
     local installed
-    installed="$(k3s --version | awk '{print $3}')"
+    # k3s --version output is two lines:
+    #   k3s version v1.33.10+k3s1 (52978a7f)
+    #   go version go1.24.13
+    # Constraining awk to NR==1 prevents the second line from joining
+    # the captured value via the command-substitution newline glue,
+    # which previously made the comparison below fall through and
+    # re-run the installer with potentially-changed --node-ip /
+    # --advertise-address flags on existing clusters (broke staging1
+    # etcd membership 2026-05-08 — auto-detect picked NetBird wt0 IP
+    # while existing etcd state expected the public IP).
+    installed="$(k3s --version | awk 'NR==1 {print $3}')"
     log "k3s already installed: ${installed}"
     if [[ "$installed" == "$K3S_VERSION" ]]; then
       log "Correct version, skipping k3s install."
