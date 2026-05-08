@@ -55,15 +55,6 @@ K3S_TOKEN=""
 K3S_VERSION="v1.33.10+k3s1"
 CALICO_VERSION="v3.31.5"
 
-# Private-network underlay. When --cluster-network-cidr is set (or
-# auto-detected from a wt0/tailscale0 interface that the sysadmin
-# brought up before bootstrap), every cross-node K8s flow (etcd peer,
-# apiserver, kubelet, Calico Typha + VXLAN, ingress-nginx admission)
-# is pinned to the IP picked from that CIDR on the host. Public
-# TCP/2379-2380, TCP/5473, TCP/10250, TCP/8443, TCP/6443, UDP/4789
-# stay closed — the CIDR-restricted nft allow IS the allowlist.
-# Bootstrap does NOT install or enrol VPN/mesh tooling — sysadmin
-# does that beforehand. See docs/04-deployment/CLUSTER_NETWORK.md.
 # Pod CIDR — passed to k3s as --cluster-cidr and used in the firewall
 # allow-list so pods can reach the host's control-plane ports via
 # kube-proxy Service-VIP DNAT (which preserves the pod source IP).
@@ -74,17 +65,29 @@ CALICO_VERSION="v3.31.5"
 # fresh testing host 2026-04-30. Keep in sync with install_k3s_server's
 # cluster_cidr_arg.
 POD_CIDR_V4="10.42.0.0/16"
+
+# Always-on set-mode firewall. cluster_peers_v{4,6} nft sets gate
+# cluster-internal control-plane ports (6443/8443/10250/5473/2379-2380),
+# converged from kube-API node InternalIPs by the peer-firewall-
+# reconciler DaemonSet. trusted_ranges_v{4,6} nft sets gate full TCP/UDP
+# from operator-blessed ranges (workstation IPs, hosting-provider
+# private LANs, monitoring scrapers, NetBird/Tailscale CIDRs). The
+# admin panel writes ClusterTrustedRange CRDs; bootstrap-time entries
+# are seeded from the repeatable --allow-source flag below.
+ALLOW_SOURCE_LIST_V4=()
+ALLOW_SOURCE_LIST_V6=()
+# CLUSTER_NETWORK_CIDR retained for k3s --node-ip pinning ONLY (selects
+# which interface k3s advertises on). No longer drives firewall trust;
+# pass --allow-source for that. Auto-detected from wt0/tailscale0 if
+# unset, same as before.
 CLUSTER_NETWORK_CIDR=""
-# IPv6 sibling of CLUSTER_NETWORK_CIDR. Auto-detected from wt0/tailscale0
-# scope-global v6 if not set explicitly. Empty → no v6 cluster-allow rule
-# emitted (v6 control-plane traffic falls through to default-drop).
 CLUSTER_NETWORK_CIDR_V6=""
 # Calico-managed WireGuard (UDP/51821): public by default. Public-key
 # auth makes the surface effectively zero. Operators on a real private
-# VLAN (Persona B) may opt-in to scope it to CLUSTER_NETWORK_CIDR via
+# VLAN may opt-in to scope it to trusted_ranges via
 # --calico-wg-public=false. Not recommended on NetBird/Tailscale meshes:
 # Calico's WG endpoint is announced as the underlay (eth0) IP, not the
-# mesh IP, so scoping to the mesh CIDR would block legitimate handshakes.
+# mesh IP, so scoping would block legitimate handshakes.
 CALICO_WG_PUBLIC="true"
 # DRY_RUN: when true, bootstrap exits cleanly after Phase 1 package
 # install. Used by scripts/test-bootstrap-os-matrix.sh to validate the
@@ -216,57 +219,67 @@ JOINING (server #2+ or worker):
   --token <token>        k3s join token from /var/lib/rancher/k3s/server/
                          node-token on an existing control-plane.
 
-PRIVATE-NETWORK UNDERLAY (recommended for HA):
+FIREWALL TRUST (always-on set mode):
+  Cluster firewall is always set-mode: cluster-internal control-plane
+  ports (6443/8443/10250/5473/2379-2380) gate via the cluster_peers_v{4,6}
+  nft sets, converged from kube-API node InternalIPs by the
+  peer-firewall-reconciler DaemonSet. Operator-trusted source ranges
+  (workstation IPs, private LANs, monitoring scrapers) gate via the
+  trusted_ranges_v{4,6} nft sets. Day-2 management of trusted ranges
+  is via the admin panel under Settings → Cluster Networking, which
+  writes ClusterTrustedRange CRDs that the reconciler converges. At
+  bootstrap time use --allow-source to seed the initial entries.
+
+  --allow-source <ip|cidr>
+                         Trust this source for full TCP/UDP. Repeatable
+                         and comma-tolerant. Accepts:
+                           * single IPv4   1.2.3.4         → /32
+                           * single IPv6   2001:db8::1     → /128
+                           * IPv4 CIDR     10.0.0.0/16
+                           * IPv6 CIDR     fd00::/8
+                         Examples:
+                           --allow-source 198.51.100.7      (workstation)
+                           --allow-source 10.0.0.0/16       (private LAN)
+                           --allow-source 100.64.0.0/10     (NetBird/Tailscale)
+                           --allow-source 1.2.3.4,5.6.7.8   (comma-separated)
+                         Optional — bootstrap-time convenience only.
+                         Once platform-api is up, manage via the UI.
+
   --cluster-network-cidr <cidr>
-                         Pin every cross-node k8s flow (etcd peer,
-                         apiserver, kubelet, Calico Typha + VXLAN,
-                         apiserver 6443, ingress-nginx admission 8443)
-                         to peers in this CIDR. Public 2379-2380/5473/
-                         10250/4789/6443/8443 stay closed; only TCP/22,
-                         80, 443 face the internet. Auto-detected from
-                         wt0 / tailscale0 if either is up at install
-                         time. Three-mode firewall:
-                         * cidr  — explicit flag or auto-detected mesh
-                         * set   — HA install with no CIDR; uses nft
-                                   sets reconciled by a server-side
-                                   DaemonSet. New peers must be pre-
-                                   authorised on existing peers via
-                                   /usr/local/bin/peer-firewall-add
-                                   <new-IP>
-                         * single — standalone first server, no peers
-                         Choose underlay once at first-server bootstrap;
-                         switching later requires a full cluster rebuild.
+                         k3s --node-ip pinning. When set, k3s binds and
+                         advertises the node's IP from inside this CIDR
+                         (e.g. its NetBird wt0 IP) instead of the
+                         default-route IP. Auto-detected from wt0 /
+                         tailscale0 (100.64.0.0/10) if unset.
+                         CONVENIENCE: also added to --allow-source so
+                         the host trusts traffic from inside that CIDR.
+                         Optional.
   --cluster-network-cidr-v6 <cidr>
                          IPv6 sibling of --cluster-network-cidr. Auto-
-                         detected from mesh interface if not set.
-                         Optional — without it, v6 control-plane traffic
-                         falls through to default-drop (safe).
+                         detected from the mesh interface if unset.
+                         Same convenience: also added to --allow-source.
+                         Optional.
   --calico-wg-public <true|false>
                          Calico WireGuard (UDP/51821). Default true:
                          public-key auth makes exposure safe AND mesh
                          underlays can't carry Calico's WG endpoint
-                         reliably. Persona B (real cloud VLAN) may set
-                         false to scope to --cluster-network-cidr.
+                         reliably. Set false to scope to trusted_ranges.
 
 PRE-REQUISITES (sysadmin, BEFORE running this script):
   Bootstrap does NOT install or enrol VPN/mesh CLIENTS (NetBird,
   Tailscale, etc.). It DOES install kernel WireGuard userland
   (wireguard-tools) since Calico's pod-traffic encryption needs it.
-  If you want a private-network underlay (recommended for HA — closes
-  :6443/:8443/etc. from the public internet), bring it up FIRST:
+  If you want a private-network underlay for k3s --node-ip pinning,
+  bring it up FIRST:
     NetBird:    netbird up --management-url <url> --setup-key <KEY>
     Tailscale:  tailscale up --auth-key tskey-...
     Hetzner / cloud VLAN: attach VLAN at provider level
-    Generic:   any private interface giving the host an IP in the CIDR
 
-  AUTO-DETECT: when bootstrap starts, configure_firewall checks for
-  wt0 (NetBird) or tailscale0 with an IP in 100.64.0.0/10. If found,
-  --cluster-network-cidr defaults to 100.64.0.0/10 and v6 is derived
-  from the interface's announced route prefix. No flag needed.
-
-  For non-mesh underlays (cloud VLAN, raw WireGuard, ZeroTier, etc.)
-  pass --cluster-network-cidr <CIDR> explicitly — bootstrap can't
-  auto-detect arbitrary interface names.
+  AUTO-DETECT: configure_firewall checks for wt0 (NetBird) or
+  tailscale0 with an IP in 100.64.0.0/10. If found, --cluster-network-
+  cidr defaults to 100.64.0.0/10 and v6 is derived from the
+  interface's announced route prefix. The detected CIDR is also added
+  to --allow-source as a convenience.
 
 REMOTE MODE:
   --remote <host>        Run on remote server via SSH
@@ -275,14 +288,22 @@ REMOTE MODE:
 
 EXAMPLES:
 
+  # ─ Single server, public-only ──────────────────────────────────────
+  # cluster_peers seeds with self-IP. Operator's workstation IP is
+  # added so kubectl works before the admin panel exists.
+  ./bootstrap.sh --join-as server \
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
+    --allow-source 198.51.100.7
+
   # ─ NetBird-private 3-server HA cluster ─────────────────────────────
-  # SYSADMIN, on each node, BEFORE running bootstrap:
+  # SYSADMIN, on each node BEFORE running bootstrap:
   #   netbird up --management-url https://vpn.example.com --setup-key <UUID>
-  # Then bootstrap auto-detects wt0 and uses 100.64.0.0/10 as the underlay.
+  # Auto-detect picks wt0 → 100.64.0.0/10 (also added to allow-source).
 
   # First server (creates the cluster):
   ./bootstrap.sh --join-as server \
-    --domain phoenix-host.net --acme-email ops@phoenix-host.net
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
+    --allow-source 198.51.100.7
 
   # Second & third servers (join over NetBird wt0 IP, NOT public IP):
   ./bootstrap.sh --join-as server \
@@ -293,29 +314,25 @@ EXAMPLES:
   ./bootstrap.sh --join-as worker \
     --server 100.64.1.5 --token K10abc...:server:def...
 
-  # ─ Tailscale-private cluster ───────────────────────────────────────
-  # SYSADMIN: tailscale up --auth-key tskey-... (before bootstrap)
-  # Auto-detect picks tailscale0 → 100.64.0.0/10.
-  ./bootstrap.sh --join-as server \
-    --domain phoenix-host.net --acme-email ops@phoenix-host.net
-
-  # ─ Generic private network (Hetzner Cloud private net, VLAN, ZeroTier) ─
-  # SYSADMIN: attach the host to the private network at provider level.
-  # No auto-detect for non-mesh interfaces — pass --cluster-network-cidr.
+  # ─ Hetzner private LAN + monitoring scraper ────────────────────────
   ./bootstrap.sh --join-as server \
     --domain phoenix-host.net --acme-email ops@phoenix-host.net \
-    --cluster-network-cidr 10.0.0.0/16
+    --cluster-network-cidr 10.0.0.0/16 \
+    --allow-source 203.0.113.42 \
+    --allow-source 198.51.100.0/24
 
-  # ─ Single server, no HA, no underlay ───────────────────────────────
-  # Set mode auto-engages; reconciler DaemonSet idles since there's
-  # only one node. Adding peers later requires peer-firewall-add.
+  # ─ Multiple sources (repeatable + comma) ───────────────────────────
   ./bootstrap.sh --join-as server \
-    --domain phoenix-host.net --acme-email ops@phoenix-host.net
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
+    --allow-source 100.64.0.0/10,fd00::/8 \
+    --allow-source 198.51.100.7 \
+    --allow-source 2001:db8::42
 
   # ─ Remote bootstrap from workstation ───────────────────────────────
   ./bootstrap.sh --remote 1.2.3.4 --ssh-key ~/hosting-platform.key \
     --join-as server \
-    --domain phoenix-host.net --acme-email ops@phoenix-host.net
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
+    --allow-source 198.51.100.7
 HELPTEXT
   exit 0
 }
@@ -326,6 +343,48 @@ error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
 
 marker_exists() { [[ -f "${MARKER_DIR}/.${1}" ]]; }
 marker_set()    { mkdir -p "$MARKER_DIR"; touch "${MARKER_DIR}/.${1}"; }
+
+# Parse one --allow-source argument value (comma-tolerant). Each token is
+# normalized to a CIDR (/32 for bare IPv4, /128 for bare IPv6) and pushed
+# to ALLOW_SOURCE_LIST_V4 or ALLOW_SOURCE_LIST_V6. Hard-fails on
+# malformed input BEFORE any nft-grammar concatenation downstream.
+parse_allow_source_arg() {
+  local raw="$1" tok normalized family
+  # IFS is restored on subshell exit; safe inside a function.
+  local IFS=','
+  for tok in $raw; do
+    tok="${tok// /}"  # strip whitespace
+    [[ -z "$tok" ]] && continue
+    if [[ "$tok" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      normalized="${tok}/32"; family=v4
+    elif [[ "$tok" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]]; then
+      normalized="$tok"; family=v4
+    elif [[ "$tok" =~ ^[0-9a-fA-F:]+$ && "$tok" == *:* ]]; then
+      normalized="${tok}/128"; family=v6
+    elif [[ "$tok" =~ ^[0-9a-fA-F:]+/[0-9]{1,3}$ ]]; then
+      normalized="$tok"; family=v6
+    else
+      error "Invalid --allow-source token: '${tok}'. Must be IPv4/v6 address (/32, /128 implied) or CIDR."
+    fi
+    # Final sanity check via python's ipaddress: catches /33, all-zeros,
+    # malformed v6 ranges that the regex above accepts.
+    normalized=$(python3 - "$normalized" <<'PYEOF' 2>/dev/null || true
+import ipaddress, sys
+try:
+    n = ipaddress.ip_network(sys.argv[1], strict=False)
+    print(str(n))
+except Exception:
+    sys.exit(1)
+PYEOF
+    )
+    [[ -z "$normalized" ]] && error "Invalid --allow-source token: '${tok}' (failed CIDR validation)."
+    if [[ "$family" == v4 ]]; then
+      ALLOW_SOURCE_LIST_V4+=("$normalized")
+    else
+      ALLOW_SOURCE_LIST_V6+=("$normalized")
+    fi
+  done
+}
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -339,6 +398,7 @@ parse_args() {
       --k3s-version)     K3S_VERSION="$2"; shift 2 ;;
       --cluster-network-cidr) CLUSTER_NETWORK_CIDR="$2"; shift 2 ;;
       --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; shift 2 ;;
+      --allow-source)    parse_allow_source_arg "$2"; shift 2 ;;
       --calico-wg-public) CALICO_WG_PUBLIC="$2"; shift 2 ;;
       --with-monitoring) ENABLE_MONITORING=true; shift ;;
       --skip-monitoring) shift ;; # Deprecated — monitoring is now opt-in via --with-monitoring
@@ -435,6 +495,17 @@ parse_args() {
   # Validate CALICO_WG_PUBLIC.
   if [[ "$CALICO_WG_PUBLIC" != "true" && "$CALICO_WG_PUBLIC" != "false" ]]; then
     error "Invalid --calico-wg-public: '${CALICO_WG_PUBLIC}'. Must be 'true' or 'false'."
+  fi
+
+  # CONVENIENCE: when --cluster-network-cidr{,-v6} is set explicitly,
+  # also add it to allow-source so the operator doesn't have to repeat
+  # the same CIDR twice. Auto-detected values are added later in
+  # configure_firewall after detection runs.
+  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+    parse_allow_source_arg "$CLUSTER_NETWORK_CIDR"
+  fi
+  if [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]]; then
+    parse_allow_source_arg "$CLUSTER_NETWORK_CIDR_V6"
   fi
 
   # Validate K3S_SERVER_IP shape if set. Same defence-in-depth — the
@@ -802,100 +873,77 @@ configure_firewall() {
     fi
   done
 
-  # ─── Resolve firewall mode ────────────────────────────────────────────
-  # Three modes, all dual-stack v4+v6:
-  #   cidr   — CLUSTER_NETWORK_CIDR is set (explicit flag, NetBird
-  #            convenience block, or auto-detected wt0/tailscale0).
-  #            Every cluster-internal flow is allowed only from peers
-  #            inside that CIDR.
-  #   set    — HA install (--join-as server|worker) without a CIDR.
-  #            Cluster-internal ports are scoped to nft sets
-  #            cluster_peers_v{4,6} reconciled by the peer-firewall-
-  #            reconciler DaemonSet from kube-API node InternalIPs.
-  #            New peers must be pre-authorised on existing peers via
-  #            /usr/local/bin/peer-firewall-add <new-IP>.
-  #   single — Standalone first server with no plan to add peers; no
-  #            cluster-internal ports needed open at all.
+  # ─── Auto-detect mesh interface for k3s --node-ip pinning ────────────
+  # The detected CIDR populates CLUSTER_NETWORK_CIDR{,_V6} (used later
+  # by install_k3s_{server,worker}'s --node-ip arg) AND is mirrored
+  # into ALLOW_SOURCE_LIST_V{4,6} so the host firewall trusts mesh
+  # peers from day one. Skipped when the operator passed --cluster-
+  # network-cidr explicitly (parse_args already merged that into
+  # ALLOW_SOURCE_LIST_V*).
   if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
     if detected=$(detect_mesh_v4_cidr 2>/dev/null); then
       CLUSTER_NETWORK_CIDR="$detected"
-      log "Auto-detected mesh interface; defaulting --cluster-network-cidr=${CLUSTER_NETWORK_CIDR}"
+      ALLOW_SOURCE_LIST_V4+=("$detected")
+      log "Auto-detected mesh interface; --cluster-network-cidr=${CLUSTER_NETWORK_CIDR} (mirrored into allow-source)"
       if [[ -z "$CLUSTER_NETWORK_CIDR_V6" ]]; then
         CLUSTER_NETWORK_CIDR_V6=$(detect_mesh_v6_cidr 2>/dev/null || true)
-        [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]] \
-          && log "  + auto-detected v6: --cluster-network-cidr-v6=${CLUSTER_NETWORK_CIDR_V6}"
+        if [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]]; then
+          ALLOW_SOURCE_LIST_V6+=("$CLUSTER_NETWORK_CIDR_V6")
+          log "  + auto-detected v6: --cluster-network-cidr-v6=${CLUSTER_NETWORK_CIDR_V6} (mirrored)"
+        fi
       fi
     fi
   fi
 
-  local mode="single"
-  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
-    mode="cidr"
-  elif [[ "$NODE_ROLE" == "server" || "$NODE_ROLE" == "worker" ]]; then
-    # HA-shaped install without a CIDR → set mode (Persona C). First
-    # server in this mode has only itself in the peer set; subsequent
-    # joins require pre-authorisation via peer-firewall-add helper.
-    mode="set"
-  fi
-  log "Firewall mode: ${mode}"
+  log "Firewall: always-on set mode (cluster_peers + trusted_ranges)"
+  log "  trust seed: v4=${#ALLOW_SOURCE_LIST_V4[@]} v6=${#ALLOW_SOURCE_LIST_V6[@]} entries"
 
-  # ─── Render mode-specific cluster-allow rules ─────────────────────────
-  local cluster_allow
-  case "$mode" in
-    cidr)
-      cluster_allow="    # Cluster-internal k8s flows — trusted private CIDR ${CLUSTER_NETWORK_CIDR}
-    # (covers apiserver 6443, etcd peer 2379-2380, Calico Typha 5473,
-    # kubelet 10250, Calico VXLAN 4789, ingress-nginx admission 8443,
-    # cert-manager webhook 9443, and any future webhook port).
-    ip saddr ${CLUSTER_NETWORK_CIDR} ip protocol tcp accept
-    ip saddr ${CLUSTER_NETWORK_CIDR} ip protocol udp accept"
-      if [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]]; then
-        cluster_allow="${cluster_allow}
-    ip6 saddr ${CLUSTER_NETWORK_CIDR_V6} meta l4proto tcp accept
-    ip6 saddr ${CLUSTER_NETWORK_CIDR_V6} meta l4proto udp accept"
-      fi
-      ;;
-    set)
-      cluster_allow="    # Cluster-internal k8s flows — peer-set scoped (Persona C, no
-    # private network). Sets are reconciled by the peer-firewall-
-    # reconciler DaemonSet from kube-API. New peers MUST be pre-
-    # authorised on every existing peer before joining via:
-    #   /usr/local/bin/peer-firewall-add <new-public-IP>
-    # See docs/04-deployment/CLUSTER_NETWORK.md for the join workflow.
+  # ─── cluster_allow rules ──────────────────────────────────────────────
+  # Two scopes, both gated by nft sets the reconciler converges:
+  #   cluster_peers_v{4,6}   — control-plane ports for kube-cluster peers
+  #     (kube-API node InternalIPs).
+  #   trusted_ranges_v{4,6}  — full TCP/UDP for operator-blessed sources
+  #     (workstation IPs, private LANs, partner systems). Day-2 managed
+  #     via Settings → Cluster Networking; bootstrap seeds from
+  #     --allow-source.
+  local cluster_allow="    # Cluster peers (control-plane ports only) — converged from kube-API
+    # by peer-firewall-reconciler. Helpers /usr/local/bin/peer-firewall-
+    # {add,remove} are break-glass for the bootstrap-time window.
     ip  saddr @cluster_peers_v4 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept
-    ip6 saddr @cluster_peers_v6 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept"
-      ;;
-    single)
-      cluster_allow="    # Single-server install: no peers expected, no cluster-internal
-    # ports opened. To add a second node later, re-run bootstrap with
-    # --cluster-network-cidr OR bring up a NetBird/Tailscale mesh
-    # interface first."
-      ;;
-  esac
+    ip6 saddr @cluster_peers_v6 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept
+
+    # Trusted ranges (full TCP/UDP) — converged from ClusterTrustedRange
+    # CRDs by peer-firewall-reconciler. Bootstrap-time entries from
+    # --allow-source flag are seeded directly into the nft set.
+    ip  saddr @trusted_ranges_v4 ip protocol tcp accept
+    ip  saddr @trusted_ranges_v4 ip protocol udp accept
+    ip6 saddr @trusted_ranges_v6 meta l4proto tcp accept
+    ip6 saddr @trusted_ranges_v6 meta l4proto udp accept"
 
   # ─── Calico WireGuard scoping (default: public) ───────────────────────
   local calico_wg_rule="    # Calico WireGuard (UDP/51821) — public-key auth makes exposure safe.
     # Calico's WG endpoint is the underlay (eth0) IP, so scoping to a
     # mesh CIDR would block legitimate handshakes. Override with
-    # --calico-wg-public=false on cidr-mode Persona B (real VLAN) only.
+    # --calico-wg-public=false on real-VLAN deployments only.
     udp dport 51821 accept"
-  if [[ "$CALICO_WG_PUBLIC" == "false" && "$mode" == "cidr" ]]; then
-    calico_wg_rule="    # Calico WireGuard (UDP/51821) — scoped to private CIDR (Persona B opt-in)
-    ip saddr ${CLUSTER_NETWORK_CIDR} udp dport 51821 accept"
-    if [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]]; then
-      calico_wg_rule="${calico_wg_rule}
-    ip6 saddr ${CLUSTER_NETWORK_CIDR_V6} udp dport 51821 accept"
-    fi
+  if [[ "$CALICO_WG_PUBLIC" == "false" ]]; then
+    calico_wg_rule="    # Calico WireGuard (UDP/51821) — scoped to trusted_ranges (real-VLAN opt-in).
+    ip  saddr @trusted_ranges_v4 udp dport 51821 accept
+    ip6 saddr @trusted_ranges_v6 udp dport 51821 accept"
   fi
 
   # ─── nft set declarations ─────────────────────────────────────────────
-  # cluster_peers_v{4,6} — set-mode only, peer-IP allowlist for cluster ports
-  # tenant_ports_{tcp,udp} — always declared, runtime-managed by the
-  #   worker-firewall-reconciler DaemonSet. Empty at bootstrap; the
-  #   reconciler watches Pods on this node for hostPort + the
-  #   `platform.io/firewall-{tcp,udp}-ports` annotation and converges
-  #   the live set via `nft add element / nft delete element`. See
-  #   docs/04-deployment/RUNTIME_FIREWALL.md.
+  # All four firewall sets are always declared. Empty sets are valid;
+  # rules referencing an empty set are no-ops, so single-node clusters
+  # and freshly-bootstrapped first servers work without special-casing.
+  #
+  #   cluster_peers_v{4,6}   — converged by peer-firewall-reconciler from
+  #     kube-API node InternalIPs.
+  #   trusted_ranges_v{4,6}  — converged by peer-firewall-reconciler from
+  #     ClusterTrustedRange CRDs; bootstrap also seeds from --allow-source.
+  #   tenant_ports_{tcp,udp} — runtime-managed by worker-firewall-
+  #     reconciler from Pod hostPort + platform.io/firewall-{tcp,udp}-
+  #     ports annotations. See docs/04-deployment/RUNTIME_FIREWALL.md.
   local set_decls="  set tenant_ports_tcp {
     type inet_service
     flags interval
@@ -904,9 +952,7 @@ configure_firewall() {
     type inet_service
     flags interval
   }
-"
-  if [[ "$mode" == "set" ]]; then
-    set_decls="${set_decls}  set cluster_peers_v4 {
+  set cluster_peers_v4 {
     type ipv4_addr
     flags interval
   }
@@ -914,8 +960,15 @@ configure_firewall() {
     type ipv6_addr
     flags interval
   }
+  set trusted_ranges_v4 {
+    type ipv4_addr
+    flags interval
+  }
+  set trusted_ranges_v6 {
+    type ipv6_addr
+    flags interval
+  }
 "
-  fi
 
   cat > /etc/nftables.conf <<NFT
 #!/usr/sbin/nft -f
@@ -998,77 +1051,103 @@ NFT
 
   systemctl enable nftables
   nft -f /etc/nftables.conf
-  log "Firewall configured (mode=${mode})."
+  log "Firewall configured (always-on set mode)."
 
-  # In set mode, seed the peer set with this node's public IP + the
-  # join-target's IP (if any). The reconciler DaemonSet converges
-  # the rest from kube-API after the cluster is up.
-  if [[ "$mode" == "set" ]]; then
-    seed_peer_set
-    install_peer_firewall_helpers
-  fi
+  # Always seed the firewall sets — set mode is the only mode now.
+  seed_firewall_sets
+  install_peer_firewall_helpers
 }
 
-# Seed cluster_peers_v{4,6} sets in set mode. Adds:
-#   - this node's primary outbound IPv4 + IPv6 (so the reconciler can
-#     reach itself before kube-API knows about us)
-#   - the join target's IP from --server, if joining (so we can hit its
-#     :6443 to register; the existing peer must have already added our
-#     IP to its set via peer-firewall-add — handled by operator)
-seed_peer_set() {
-  log "Seeding cluster_peers nft sets (set mode)..."
-  local local_v4 local_v6
+# Seed cluster_peers_v{4,6} + trusted_ranges_v{4,6} nft sets at bootstrap.
+#
+# cluster_peers seeded with:
+#   - this node's primary outbound IPv4 + IPv6 (so the local kubelet
+#     etc. trust traffic from self before kube-API knows about us)
+#   - the join target's IP from --server, if joining (so we can hit
+#     its :6443 to register; the existing peer must have ALREADY added
+#     our IP via peer-firewall-add OR via Settings → Cluster Networking
+#     → Pre-Enroll Node, which writes a ClusterPendingPeer CRD that the
+#     reconciler converges into the existing peers' sets)
+#
+# trusted_ranges seeded from --allow-source (already validated and
+# normalized in parse_args). Once platform-api is up, day-2 management
+# is via Settings → Cluster Networking — that page writes
+# ClusterTrustedRange CRDs which the reconciler converges. Bootstrap
+# entries persist as raw nft set members until the operator either
+# adds them via the UI (idempotent, no-op) or removes them.
+seed_firewall_sets() {
+  log "Seeding firewall nft sets..."
+  local local_v4 local_v6 entry
   local_v4=$(detect_local_ipv4 || true)
   local_v6=$(detect_local_ipv6 || true)
   # Each `nft add element` is wrapped in an explicit if/then/else so a
-  # non-zero exit (set element already present, or set undeclared on a
-  # re-run with mode flip) doesn't abort under `set -e` via an
-  # unbalanced `&&` chain. Failures are logged but non-fatal — the
-  # reconciler DaemonSet will repopulate the set from kube-API anyway.
+  # non-zero exit (already present, set undeclared) doesn't abort under
+  # set -e. Failures are logged but non-fatal — the reconciler DaemonSet
+  # repopulates from kube-API once it's running.
   if [[ -n "$local_v4" ]]; then
     if nft add element inet filter cluster_peers_v4 "{ ${local_v4} }" 2>/dev/null; then
-      log "  + ${local_v4} (self, v4)"
+      log "  + cluster_peers_v4 ${local_v4} (self)"
     else
-      warn "  failed to seed self v4 ${local_v4}; reconciler will repopulate"
+      warn "  failed to seed cluster_peers_v4 self ${local_v4}; reconciler will repopulate"
     fi
   fi
   if [[ -n "$local_v6" ]]; then
     if nft add element inet filter cluster_peers_v6 "{ ${local_v6} }" 2>/dev/null; then
-      log "  + ${local_v6} (self, v6)"
+      log "  + cluster_peers_v6 ${local_v6} (self)"
     else
-      warn "  failed to seed self v6 ${local_v6}; reconciler will repopulate"
+      warn "  failed to seed cluster_peers_v6 self ${local_v6}; reconciler will repopulate"
     fi
   fi
   if [[ -n "$K3S_SERVER_IP" ]]; then
     if nft add element inet filter cluster_peers_v4 "{ ${K3S_SERVER_IP} }" 2>/dev/null; then
-      log "  + ${K3S_SERVER_IP} (join target, v4)"
+      log "  + cluster_peers_v4 ${K3S_SERVER_IP} (join target)"
     else
-      warn "  failed to seed join target ${K3S_SERVER_IP}; manual intervention may be required"
+      warn "  failed to seed cluster_peers_v4 join target ${K3S_SERVER_IP}; manual intervention may be required"
     fi
     log ""
-    log "  IMPORTANT — set mode requires per-peer pre-authorisation."
-    log "  On the existing peer at ${K3S_SERVER_IP}, run BEFORE this bootstrap:"
-    log "    /usr/local/bin/peer-firewall-add ${local_v4}"
+    log "  IMPORTANT — joining an existing cluster requires this node's"
+    log "  IP to be pre-authorised on every existing peer. Either:"
+    log "    (a) Settings → Cluster Networking → Pre-Enroll Node (preferred)"
+    log "    (b) On each existing peer, run BEFORE this bootstrap:"
+    log "          /usr/local/bin/peer-firewall-add ${local_v4}"
     log "  Otherwise this node cannot reach :6443 and the join will hang."
     log ""
   fi
+  # Seed trusted_ranges from the --allow-source flag entries. Each
+  # element was already normalized to a CIDR (with prefix) by
+  # parse_allow_source_arg, so no further validation is needed here.
+  for entry in "${ALLOW_SOURCE_LIST_V4[@]+"${ALLOW_SOURCE_LIST_V4[@]}"}"; do
+    if nft add element inet filter trusted_ranges_v4 "{ ${entry} }" 2>/dev/null; then
+      log "  + trusted_ranges_v4 ${entry}"
+    else
+      warn "  failed to seed trusted_ranges_v4 ${entry}; check nft set declaration"
+    fi
+  done
+  for entry in "${ALLOW_SOURCE_LIST_V6[@]+"${ALLOW_SOURCE_LIST_V6[@]}"}"; do
+    if nft add element inet filter trusted_ranges_v6 "{ ${entry} }" 2>/dev/null; then
+      log "  + trusted_ranges_v6 ${entry}"
+    else
+      warn "  failed to seed trusted_ranges_v6 ${entry}; check nft set declaration"
+    fi
+  done
 }
 
-# Install the /usr/local/bin/peer-firewall-{add,remove} helpers used
-# during set-mode joins. The peer-firewall-reconciler DaemonSet handles
-# ongoing membership; these helpers cover the bootstrap-time window
-# before the new node appears in kube-API.
+# Install the /usr/local/bin/peer-firewall-{add,remove} helpers —
+# break-glass for the bootstrap-time window before a new peer appears
+# in kube-API. The preferred path is the admin panel (Settings →
+# Cluster Networking → Pre-Enroll Node), which writes a
+# ClusterPendingPeer CRD that the reconciler converges. These helpers
+# remain installed for emergencies (platform-api unreachable, etc.).
 install_peer_firewall_helpers() {
   log "Installing /usr/local/bin/peer-firewall-{add,remove}..."
 
   cat > /usr/local/bin/peer-firewall-add <<'HELPER'
 #!/usr/bin/env bash
-# peer-firewall-add — Authorise a cluster peer in the local nft set.
-# Usage: peer-firewall-add <ipv4-or-ipv6>
-# Run on each existing cluster peer BEFORE bootstrapping a new node in
-# set mode (Persona C). The peer-firewall-reconciler DaemonSet converges
-# membership from kube-API once the new node has registered, so this
-# helper only fills the bootstrap-time window.
+# peer-firewall-add — Break-glass: add a cluster peer to the local nft
+# set. The admin panel (Settings → Cluster Networking → Pre-Enroll Node)
+# is the preferred path. Use this helper only when the platform UI is
+# unreachable. The peer-firewall-reconciler DaemonSet converges
+# membership from kube-API once the new node has registered.
 set -euo pipefail
 [[ $# -eq 1 ]] || { echo "usage: $0 <ip>" >&2; exit 2; }
 ip="$1"
@@ -1088,7 +1167,8 @@ else
 fi
 if ! nft list set inet filter "$set_name" >/dev/null 2>&1; then
   echo "error: nft set '$set_name' does not exist." >&2
-  echo "       This node is not in set firewall mode (likely cidr or single)." >&2
+  echo "       This node was bootstrapped before always-on set mode landed." >&2
+  echo "       Re-run scripts/bootstrap.sh on this node to pick up the new firewall layout." >&2
   exit 1
 fi
 nft add element inet filter "$set_name" "{ ${ip} }"
@@ -1161,18 +1241,15 @@ EOF
 
 verify_underlay() {
   # Bootstrap does NOT install or enrol any VPN/mesh tooling — that's a
-  # sysadmin responsibility, performed before this script runs. This
-  # function only verifies the underlay state the operator told us
-  # about, so we fail loud rather than half-configuring a node that
-  # silently falls back to public-internet control-plane traffic.
-  #
-  # Three operator paths:
-  #   (a) --cluster-network-cidr <CIDR>: a private/mesh network is
-  #       already in place; verify the host has an IP inside that CIDR.
-  #   (b) wt0 / tailscale0 interface present: auto-detect picks
-  #       100.64.0.0/10 in configure_firewall; nothing to enforce here.
-  #   (c) neither — operator gets set mode (HA) or single mode. No
-  #       underlay to verify.
+  # sysadmin responsibility, performed before this script runs. With
+  # always-on set mode, an underlay is no longer required for the
+  # firewall to be safe (cluster_peers + trusted_ranges + the reconciler
+  # cover that). The remaining role of this function is narrow: when
+  # the operator passed --cluster-network-cidr (explicit OR auto-
+  # detected from wt0/tailscale0), k3s will be told to bind/advertise
+  # an IP inside that CIDR. Verify the host actually has such an IP,
+  # to fail loud rather than letting k3s pick a default-route IP and
+  # silently advertise the public address.
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
     local ip
     ip=$(resolve_cluster_network_ip)
