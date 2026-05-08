@@ -262,6 +262,20 @@ jobs:
               metadata:
                 annotations:
                   platform.phoenix-host.net/deploy-rev: "${VERSION}"
+          ---
+          # peer-firewall-reconciler — :latest-tagged DaemonSet that needs
+          # rolling on every push so the new image SHA is picked up
+          # (imagePullPolicy: Always on the container).
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: peer-firewall-reconciler
+            namespace: platform-system
+          spec:
+            template:
+              metadata:
+                annotations:
+                  platform.phoenix-host.net/deploy-rev: "${VERSION}"
           PATCH
           if ! grep -q "deploy-rev-patch.yaml" k8s/overlays/staging/kustomization.yaml; then
             sed -i '/^  - path: platform-version-patch.yaml/a\  - path: deploy-rev-patch.yaml' k8s/overlays/staging/kustomization.yaml
