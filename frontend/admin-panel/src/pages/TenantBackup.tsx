@@ -598,21 +598,32 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
 }
 
 function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: () => void }) {
-  const [passphrase, setPassphrase] = useState('');
+  const [format, setFormat] = useState<'tar' | 'zip'>('tar');
+  const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const valid = passphrase.length >= 12 && passphrase === confirm;
+
+  // Password is OPTIONAL. When empty the archive is plaintext.
+  // When supplied it must be ≥12 chars (matches both backend
+  // validators — tar uses PBKDF2-SHA256@100k, zip uses
+  // WinZip AE-2 PBKDF2-SHA1@1000 which is weaker, so the same
+  // 12-char floor applies to both).
+  const minLen = 12;
+  const wantsEncryption = password.length > 0;
+  const valid = !wantsEncryption || (password.length >= minLen && password === confirm);
 
   const handleExport = async () => {
     if (!valid) {
-      setError('Passphrases must match and be at least 12 characters.');
+      setError(wantsEncryption
+        ? `Passwords must match and be at least ${minLen} characters.`
+        : 'Form is invalid.');
       return;
     }
     setError(null);
     setPending(true);
     try {
-      await downloadBundleExport(bundleId, passphrase);
+      await downloadBundleExport(bundleId, format, wantsEncryption ? password : null);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Export failed');
@@ -631,37 +642,71 @@ function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: (
           </button>
         </div>
         <p className="text-sm text-gray-600 dark:text-gray-300">
-          Builds a single passphrase-encrypted tarball containing every component artifact + meta.json.
-          Decryptable in another region with stock <code className="font-mono text-xs">openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000</code>.
+          Streams every component artifact + meta.json directly to your browser — no server-side staging.
         </p>
         <p className="mt-1 font-mono text-xs text-gray-500">{bundleId}</p>
 
         <div className="mt-4 space-y-3 text-sm">
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Passphrase (≥12 chars)</label>
-            <input
-              type="password"
-              value={passphrase}
-              onChange={(e) => setPassphrase(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-              autoComplete="new-password"
-            />
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Format</label>
+            <div className="flex gap-3">
+              <label className="flex flex-1 cursor-pointer items-start gap-2 rounded-md border border-gray-300 p-2 dark:border-gray-600 dark:text-gray-100">
+                <input type="radio" name="export-format" value="tar" checked={format === 'tar'} onChange={() => setFormat('tar')} className="mt-1" />
+                <span>
+                  <span className="font-medium">Tar (.tar.gz)</span>
+                  <span className="block text-xs text-gray-500 dark:text-gray-400">
+                    Optional <code className="font-mono">openssl</code> AES-256-CBC envelope. Filenames hidden when encrypted.
+                  </span>
+                </span>
+              </label>
+              <label className="flex flex-1 cursor-pointer items-start gap-2 rounded-md border border-gray-300 p-2 dark:border-gray-600 dark:text-gray-100">
+                <input type="radio" name="export-format" value="zip" checked={format === 'zip'} onChange={() => setFormat('zip')} className="mt-1" />
+                <span>
+                  <span className="font-medium">Zip (.zip)</span>
+                  <span className="block text-xs text-gray-500 dark:text-gray-400">
+                    Optional WinZip AES-256 per-entry encryption. Any OS unzips with the password; filenames remain visible.
+                  </span>
+                </span>
+              </label>
+            </div>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Confirm passphrase</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+              Password <span className="text-gray-400">(optional, leave blank for unencrypted)</span>
+            </label>
             <input
               type="password"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder={`≥${minLen} chars when set`}
               className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
               autoComplete="new-password"
             />
           </div>
-          <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-            <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-            The platform never stores this passphrase. If you lose it the export is unrecoverable.
-            The secrets component remains encrypted with the source region's <code className="font-mono">OIDC_ENCRYPTION_KEY</code> — for full cross-region restore the target region needs the same KEK or the bundle will surface a decrypt error on the secrets component only.
-          </p>
+          {wantsEncryption && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Confirm password</label>
+              <input
+                type="password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                autoComplete="new-password"
+              />
+            </div>
+          )}
+          {wantsEncryption && (
+            <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+              The platform never stores this password. If you lose it the export is unrecoverable.
+              The secrets component remains encrypted with the source region's <code className="font-mono">OIDC_ENCRYPTION_KEY</code> — for full cross-region restore the target region needs the same KEK or the bundle will surface a decrypt error on the secrets component only.
+            </p>
+          )}
+          {!wantsEncryption && (
+            <p className="rounded-md bg-blue-50 p-2 text-xs text-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+              No password set — the archive will download unencrypted. Anyone with the file can read every component.
+            </p>
+          )}
           {error && (
             <div className="rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
               <AlertCircle className="mr-1 inline h-4 w-4" /> {error}
@@ -679,7 +724,9 @@ function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: (
             disabled={!valid || pending}
             className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
           >
-            {pending ? <><Loader2 size={14} className="animate-spin" /> Encrypting…</> : <><Download size={14} /> Download</>}
+            {pending
+              ? <><Loader2 size={14} className="animate-spin" /> Streaming…</>
+              : <><Download size={14} /> Download {format === 'zip' ? 'Zip' : 'Tar'}</>}
           </button>
         </div>
       </div>
