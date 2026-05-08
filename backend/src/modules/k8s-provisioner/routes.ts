@@ -6,7 +6,7 @@ import { clients, provisioningTasks } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from './k8s-client.js';
-import { runProvisionNamespace, runDeprovision, PROVISION_STEPS, DEPROVISION_STEPS, buildStepsLog } from './service.js';
+import { runProvisionNamespace, runDeprovision, mirrorProvisioningToTaskTracker, PROVISION_STEPS, DEPROVISION_STEPS, buildStepsLog } from './service.js';
 
 export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
   // All provisioning routes require auth + admin role
@@ -65,6 +65,11 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
       completedSteps: 0,
       stepsLog,
       startedBy: request.user!.sub,
+    });
+    // Best-effort enroll into the chip so the operator sees the task
+    // running before runProvisionNamespace's first state update.
+    await mirrorProvisioningToTaskTracker(app.db, taskId).catch((err) => {
+      app.log.warn({ err, taskId }, 'task tracker enroll failed (non-fatal)');
     });
 
     // Fire-and-forget: run provisioning in background
@@ -219,6 +224,9 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
       completedSteps: 0,
       stepsLog,
       startedBy: request.user!.sub,
+    });
+    await mirrorProvisioningToTaskTracker(app.db, taskId).catch((err) => {
+      app.log.warn({ err, taskId }, 'task tracker enroll failed (non-fatal)');
     });
 
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;

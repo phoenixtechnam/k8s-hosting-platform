@@ -765,6 +765,121 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // 2 GiB per-route bodyLimit override — bundles can dwarf the global
   // 50 MiB. Global stays low so a stray non-bundle endpoint doesn't
   // accept arbitrary uploads.
+  // ── POST /api/v1/admin/tenant-bundles/import-preview ─────────────
+  //
+  // Decode + inspect an uploaded archive WITHOUT writing anything to
+  // the DB or the off-site target. Returns the parsed meta v2 fields
+  // (client block + domains + deployments summaries + counts) so the
+  // ImportBundleModal can show the operator who they're about to
+  // import + whether the source client already exists in this region.
+  //
+  // Multipart fields: `bundle` (file), `passphrase` (optional, only
+  // needed for Salted__-encrypted tar). The archive format is
+  // detected from magic bytes — tar.gz / tar.gz.enc / zip all work.
+  //
+  // The frontend two-step UX uses this endpoint to:
+  //   1. Show a preview after the operator picks the file.
+  //   2. Detect whether the source client UUID already exists in
+  //      this region (active/suspended → block with "use Restore
+  //      Cart"; archived/missing → unlock the restore-from-bundle
+  //      path; new UUID → unlock the "create new client" path).
+  //
+  // Idempotent + side-effect-free: the operator can run this as
+  // many times as they like. The actual import / restore happens
+  // via POST /import (legacy clientId-required flow) or via the
+  // upcoming POST /import-finalize.
+  app.post('/admin/tenant-bundles/import-preview', {
+    bodyLimit: 2 * 1024 * 1024 * 1024,
+    schema: { tags: ['TenantBundles'], summary: 'Decode an upload + return meta v2 fields, no DB writes', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const req = request as unknown as {
+      isMultipart: () => boolean;
+      parts: () => AsyncIterable<{ type: 'field' | 'file'; fieldname: string; value?: string; toBuffer?: () => Promise<Buffer> }>;
+    };
+    if (!req.isMultipart()) {
+      throw new ApiError('VALIDATION_ERROR', 'request must be multipart/form-data', 400);
+    }
+    let passphrase: string | null = null;
+    let blob: Buffer | null = null;
+    for await (const part of req.parts()) {
+      if (part.type === 'field' && part.fieldname === 'passphrase') passphrase = part.value ?? null;
+      else if (part.type === 'file' && part.fieldname === 'bundle' && part.toBuffer) blob = await part.toBuffer();
+    }
+    if (!blob) throw new ApiError('VALIDATION_ERROR', 'bundle file required', 400);
+
+    const { extractImportArchive } = await import('./data-export.js');
+    let extracted;
+    try {
+      extracted = await extractImportArchive({ blob, passphrase: passphrase ?? undefined });
+    } catch (err) {
+      throw new ApiError('VALIDATION_ERROR', `archive decode failed: ${err instanceof Error ? err.message : String(err)}`, 400);
+    }
+    const { format, entries } = extracted;
+
+    const metaEntry = entries.find((e) => e.path === 'meta.json');
+    if (!metaEntry) throw new ApiError('VALIDATION_ERROR', 'archive missing meta.json', 400);
+    let meta: Record<string, unknown>;
+    try {
+      meta = JSON.parse(metaEntry.buffer.toString('utf8')) as Record<string, unknown>;
+    } catch (err) {
+      throw new ApiError('VALIDATION_ERROR', `meta.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, 400);
+    }
+
+    const sourceClient = meta.client as Record<string, unknown> | null | undefined;
+    const sourceClientId = (meta.clientId as string | undefined) ?? null;
+
+    // Look up the client in THIS region if the source meta carries an ID.
+    // Used by the UI to choose between "restore existing" / "create new"
+    // / "block — use Restore Cart" paths. Failure to resolve is benign;
+    // it just means the source client doesn't exist locally.
+    let localClient: { id: string; status: string; companyName: string } | null = null;
+    if (sourceClientId) {
+      const [c] = await app.db
+        .select({ id: clients.id, status: clients.status, companyName: clients.companyName })
+        .from(clients)
+        .where(eq(clients.id, sourceClientId))
+        .limit(1);
+      if (c) localClient = { id: c.id, status: c.status as string, companyName: c.companyName };
+    }
+
+    // Component breakdown: enumerate the entries by component so the
+    // operator UI can show "files (12 entries), config (1 entry), …"
+    const componentBreakdown: Record<string, { count: number; totalBytes: number }> = {};
+    for (const e of entries) {
+      const m = e.path.match(/^components\/(files|mailboxes|config|secrets)\/.+$/);
+      if (!m) continue;
+      const comp = m[1]!;
+      const bucket = componentBreakdown[comp] ?? { count: 0, totalBytes: 0 };
+      bucket.count += 1;
+      bucket.totalBytes += e.buffer.length;
+      componentBreakdown[comp] = bucket;
+    }
+
+    return success({
+      format, // 'tar-encrypted' | 'tar-plain' | 'zip'
+      sourceMeta: {
+        schemaVersion: meta.schemaVersion ?? null,
+        backupId: meta.backupId ?? null,
+        clientId: sourceClientId,
+        capturedAt: meta.capturedAt ?? null,
+        platformVersion: meta.platformVersion ?? null,
+        label: meta.label ?? null,
+        client: sourceClient ?? null, // v2: may be null on legacy v1 archives
+        domainsSummary: meta.domainsSummary ?? [],
+        deploymentsSummary: meta.deploymentsSummary ?? [],
+      },
+      components: componentBreakdown,
+      // Local match: indicates whether this region already has a
+      // client with the source UUID (and what its status is). UI
+      // uses this to pick the right downstream flow.
+      localClientMatch: localClient,
+      // Total entry count (incl. meta.json) and overall size for the
+      // "this archive contains N files (X MiB)" UI line.
+      entryCount: entries.length,
+      totalBytes: entries.reduce((sum, e) => sum + e.buffer.length, 0),
+    });
+  });
+
   app.post('/admin/tenant-bundles/import', {
     bodyLimit: 2 * 1024 * 1024 * 1024,
     schema: { tags: ['TenantBundles'], summary: 'Import a passphrase-encrypted bundle from another region', security: [{ bearerAuth: [] }] },
@@ -788,7 +903,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       else if (part.type === 'field' && part.fieldname === 'targetConfigId') targetConfigId = part.value ?? null;
       else if (part.type === 'file' && part.fieldname === 'bundle' && part.toBuffer) blob = await part.toBuffer();
     }
-    if (!passphrase || passphrase.length < 12) throw new ApiError('VALIDATION_ERROR', 'passphrase ≥12 chars required', 400);
+    // No min-length on passphrase — only required when the uploaded
+    // archive is the encrypted-tar variant. Plain tar.gz and ZIP both
+    // skip the field. The format-detecting decoder enforces this.
     if (!clientId) throw new ApiError('VALIDATION_ERROR', 'clientId required', 400);
     if (!targetConfigId) throw new ApiError('VALIDATION_ERROR', 'targetConfigId required', 400);
     if (!blob) throw new ApiError('VALIDATION_ERROR', 'bundle file required', 400);
@@ -796,9 +913,19 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
     if (!client) throw new ApiError('NOT_FOUND', 'Target client not found in this region', 404);
 
-    // Decrypt + extract entries.
-    const { decryptImportTarball } = await import('./data-export.js');
-    const entries = await decryptImportTarball({ cipherBlob: blob, passphrase });
+    // Format-detecting decoder: dispatches by magic bytes
+    // (Salted__/gzip/zip). Encrypted tar requires `passphrase`; the
+    // others ignore it. This replaces the original tar-encrypted-only
+    // path so the operator can upload any of the three export formats.
+    const { extractImportArchive } = await import('./data-export.js');
+    let entries;
+    try {
+      const result = await extractImportArchive({ blob, passphrase: passphrase ?? undefined });
+      entries = result.entries;
+      app.log.info({ format: result.format, entryCount: entries.length, clientId }, 'tenant-bundles: import archive decoded');
+    } catch (err) {
+      throw new ApiError('VALIDATION_ERROR', `archive decode failed: ${err instanceof Error ? err.message : String(err)}`, 400);
+    }
 
     // Pull the source meta.json (kept for label/components info; we
     // override clientId and capturedAt-vs-importedAt).

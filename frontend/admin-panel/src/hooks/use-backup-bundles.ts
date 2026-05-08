@@ -192,6 +192,66 @@ export interface ImportBundleResult {
 }
 
 /**
+ * Format-detected import preview. Server inspects the uploaded
+ * archive (without writing anything) and returns the parsed v2 meta
+ * + a local-client lookup so the UI can pick the right downstream
+ * flow:
+ *   - localClientMatch.status='active'   → block ("use Restore Cart")
+ *   - localClientMatch.status='archived' or null → unlock RestoreFromBundleModal
+ *   - localClientMatch=null               → unlock the "create new tenant" path
+ */
+export interface ImportPreviewResponse {
+  readonly format: 'tar-encrypted' | 'tar-plain' | 'zip';
+  readonly sourceMeta: {
+    readonly schemaVersion: number | null;
+    readonly backupId: string | null;
+    readonly clientId: string | null;
+    readonly capturedAt: string | null;
+    readonly platformVersion: string | null;
+    readonly label: string | null;
+    readonly client: import('@k8s-hosting/api-contracts').BackupMetaClient | null;
+    readonly domainsSummary: ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDomainSummary>;
+    readonly deploymentsSummary: ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary>;
+  };
+  readonly components: Record<string, { count: number; totalBytes: number }>;
+  readonly localClientMatch: {
+    readonly id: string;
+    readonly status: string;
+    readonly companyName: string;
+  } | null;
+  readonly entryCount: number;
+  readonly totalBytes: number;
+}
+
+/**
+ * Decode an uploaded archive without committing to the import. The
+ * server detects format from magic bytes (Salted__/gzip/zip), runs
+ * the same extract-archive code path the import endpoint uses, and
+ * returns the parsed meta + per-component breakdown. No DB writes.
+ */
+export async function previewImport(args: {
+  file: File;
+  passphrase?: string;
+}): Promise<ImportPreviewResponse> {
+  const fd = new FormData();
+  fd.append('bundle', args.file);
+  if (args.passphrase) fd.append('passphrase', args.passphrase);
+  const token = localStorage.getItem('auth_token');
+  const r = await fetch('/api/v1/admin/tenant-bundles/import-preview', {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+  });
+  if (!r.ok) {
+    let detail = '';
+    try { detail = await r.text(); } catch { /* ignore */ }
+    throw new Error(`preview failed (${r.status}): ${detail.slice(0, 300)}`);
+  }
+  const body = await r.json();
+  return body.data as ImportPreviewResponse;
+}
+
+/**
  * Multi-region import — multipart POST with the encrypted tarball
  * + passphrase + target clientId/targetConfigId. Server decrypts,
  * uploads each component to the local off-site target, registers a

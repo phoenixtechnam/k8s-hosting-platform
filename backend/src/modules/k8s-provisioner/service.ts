@@ -1,11 +1,13 @@
 import { eq } from 'drizzle-orm';
 import type { K8sClients } from './k8s-client.js';
 import type { ProvisioningStep } from '@k8s-hosting/api-contracts';
+import { toSafeText } from '@k8s-hosting/api-contracts';
 import { clients, provisioningTasks, hostingPlans } from '../../db/schema.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
+import { start as startTask, finishByRef } from '../tasks/service.js';
 
 /**
  * Render a raw provisioning error into either a JSON-stringified
@@ -505,6 +507,163 @@ export interface ProvisionOptions {
   };
 }
 
+// ─── Task Tracker mirror ─────────────────────────────────────────────────────
+
+/**
+ * Sync a `provisioning_tasks` row into the canonical `tasks` table so
+ * the Task Center chip surfaces it. Idempotent on
+ * `(kind=client.provision|client.deprovision, ref_id=taskId)` —
+ * multiple progress updates within a single run just refresh the
+ * existing task row.
+ *
+ * The `kind` is derived from `provisioningTasks.type`:
+ *   - `provision_namespace` → `client.provision`
+ *   - `deprovision`         → `client.deprovision`
+ * This keeps deprovision rows from upserting onto the original
+ * provision row (they share `ref_id` only when the orchestrator
+ * re-uses ids, but separate kinds let both rows coexist anyway).
+ *
+ * Skips system-initiated provisioning rows (no `started_by`) the same
+ * way storage-lifecycle skips cron-driven snapshot ops: `scope='admin'`
+ * tasks need a real user_id to surface in any chip.
+ *
+ * Best-effort. Failures are logged by the caller — never block the
+ * underlying provisioning flow.
+ */
+export async function mirrorProvisioningToTaskTracker(
+  db: Database,
+  taskId: string,
+): Promise<void> {
+  const [task] = await db
+    .select({
+      id: provisioningTasks.id,
+      clientId: provisioningTasks.clientId,
+      type: provisioningTasks.type,
+      status: provisioningTasks.status,
+      currentStep: provisioningTasks.currentStep,
+      totalSteps: provisioningTasks.totalSteps,
+      completedSteps: provisioningTasks.completedSteps,
+      errorMessage: provisioningTasks.errorMessage,
+      startedBy: provisioningTasks.startedBy,
+    })
+    .from(provisioningTasks)
+    .where(eq(provisioningTasks.id, taskId))
+    .limit(1);
+  if (!task || !task.startedBy) return;
+
+  // Look up client for the modal label. ProvisioningProgressModal
+  // takes `clientId` + `clientName` (companyName) as its required
+  // props — keep them in modalProps so the chip's reopen path doesn't
+  // need a follow-up fetch.
+  const [client] = await db
+    .select({ id: clients.id, companyName: clients.companyName })
+    .from(clients)
+    .where(eq(clients.id, task.clientId))
+    .limit(1);
+  const clientName = client?.companyName ?? task.clientId.slice(0, 8);
+
+  // pending|running → 'running'; completed → 'succeeded'; failed → 'failed'.
+  const isTerminal = task.status === 'completed' || task.status === 'failed';
+  const taskStatus: 'running' | 'succeeded' | 'failed' =
+    !isTerminal ? 'running'
+    : task.status === 'failed' ? 'failed'
+    : 'succeeded';
+
+  const progressPct = task.totalSteps > 0
+    ? Math.round((task.completedSteps / task.totalSteps) * 100)
+    : null;
+
+  // Branch on the underlying op type so deprovision tasks don't get
+  // upserted onto the same row as a previous provision. The frontend
+  // modal-registry maps both kinds via `target.modal = 'provisioning'`
+  // (the modal renders the same step list in either direction).
+  const isDeprovision = task.type === 'deprovision';
+  const kind = isDeprovision ? 'client.deprovision' : 'client.provision';
+  const labelVerb = isDeprovision ? 'Decommission' : 'Provision';
+
+  const target = {
+    type: 'modal' as const,
+    modal: 'provisioning',
+    modalProps: {
+      clientId: task.clientId,
+      clientName,
+    },
+  };
+
+  // toSafeText throws on forbidden patterns (e.g., a company name
+  // containing "token=..." would trip the secret-leak guard). Falling
+  // back to a guaranteed-safe string keeps the mirror running and the
+  // chip lit up — operators always have the modal target to recover
+  // the full client name.
+  const safeLabel = (() => {
+    try {
+      return toSafeText(`${labelVerb}: ${clientName}`);
+    } catch {
+      return toSafeText(`${labelVerb}: ${task.clientId.slice(0, 8)}`);
+    }
+  })();
+  const safeProgressText = task.currentStep
+    ? (() => {
+        try {
+          return toSafeText(task.currentStep!);
+        } catch {
+          return null;
+        }
+      })()
+    : null;
+
+  // start() upserts on (kind, ref_id). Re-running it on every progress
+  // tick is the documented pattern for refreshing label/progress fields
+  // while a task is still running (matches storage-lifecycle).
+  if (taskStatus === 'running') {
+    await startTask(db, {
+      kind,
+      refId: task.id,
+      scope: 'admin',
+      userId: task.startedBy,
+      clientId: task.clientId,
+      label: safeLabel,
+      target,
+      progressPct,
+      progressText: safeProgressText,
+      details: {
+        type: task.type,
+        totalSteps: task.totalSteps,
+        completedSteps: task.completedSteps,
+        currentStep: task.currentStep,
+      },
+    });
+    return;
+  }
+
+  // Terminal — also call start() once so the chip has a row to
+  // finalize even if no `running` mirror happened (e.g., the op
+  // completed in a single tick before the orchestrator's first
+  // mirror call landed). Matches storage-lifecycle's pattern.
+  await startTask(db, {
+    kind,
+    refId: task.id,
+    scope: 'admin',
+    userId: task.startedBy,
+    clientId: task.clientId,
+    label: safeLabel,
+    target,
+    progressPct,
+    progressText: safeProgressText,
+    details: {
+      type: task.type,
+      totalSteps: task.totalSteps,
+      completedSteps: task.completedSteps,
+      currentStep: task.currentStep,
+    },
+  });
+  await finishByRef(db, kind, task.id, {
+    status: taskStatus,
+    text: safeProgressText,
+    error: taskStatus === 'failed' ? (task.errorMessage ?? `${labelVerb} failed`) : null,
+  });
+}
+
 /**
  * Run the full namespace provisioning flow.
  * Updates the provisioning_tasks row with progress at each step.
@@ -569,6 +728,11 @@ export async function runProvisionNamespace(
       stepsLog,
       ...(status === 'failed' ? { status: 'failed' as const, errorMessage: error, completedAt: new Date() } : {}),
     }).where(eq(provisioningTasks.id, taskId));
+    // Best-effort mirror to the chip. A tracker error must not break
+    // the provisioning flow — the underlying op continues regardless.
+    await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
+      console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
   };
 
   // Mark task as running
@@ -577,6 +741,9 @@ export async function runProvisionNamespace(
     startedAt: new Date(),
     stepsLog,
   }).where(eq(provisioningTasks.id, taskId));
+  await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
+    console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+  });
 
   await db.update(clients).set({
     provisioningStatus: 'provisioning',
@@ -594,6 +761,9 @@ export async function runProvisionNamespace(
       completedAt: new Date(),
       stepsLog,
     }).where(eq(provisioningTasks.id, taskId));
+    await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
+      console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
     return false;
   };
 
@@ -662,6 +832,9 @@ export async function runProvisionNamespace(
     await db.update(clients).set({
       provisioningStatus: 'provisioned',
     }).where(eq(clients.id, clientId));
+    await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
+      console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
   } catch (err: unknown) {
     const message = formatK8sError(err);
     const persistedError = formatProvisionErrorForStorage(message);
@@ -693,6 +866,9 @@ export async function runProvisionNamespace(
     } catch {
       // Swallow — row is gone, nothing to update.
     }
+    await mirrorProvisioningToTaskTracker(db, taskId).catch((mirErr) => {
+      console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${mirErr instanceof Error ? mirErr.message : String(mirErr)}`);
+    });
   }
 }
 
@@ -724,6 +900,9 @@ export async function runDeprovision(
       stepsLog,
       ...(status === 'failed' ? { status: 'failed' as const, errorMessage: error, completedAt: new Date() } : {}),
     }).where(eq(provisioningTasks.id, taskId));
+    await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
+      console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
   };
 
   await db.update(provisioningTasks).set({
@@ -731,6 +910,9 @@ export async function runDeprovision(
     startedAt: new Date(),
     stepsLog,
   }).where(eq(provisioningTasks.id, taskId));
+  await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
+    console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+  });
 
   try {
     // Phase A2 follow-up: dispatch a 'deleted' transition through the
@@ -876,6 +1058,9 @@ export async function runDeprovision(
     await db.update(clients).set({
       provisioningStatus: 'unprovisioned',
     }).where(eq(clients.id, clientId));
+    await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
+      console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
   } catch (err: unknown) {
     const message = formatK8sError(err);
     const persistedError = formatProvisionErrorForStorage(message);
@@ -889,5 +1074,8 @@ export async function runDeprovision(
       completedAt: new Date(),
       stepsLog,
     }).where(eq(provisioningTasks.id, taskId));
+    await mirrorProvisioningToTaskTracker(db, taskId).catch((mirErr) => {
+      console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${mirErr instanceof Error ? mirErr.message : String(mirErr)}`);
+    });
   }
 }

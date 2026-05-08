@@ -47,6 +47,9 @@ SURFACE_FILE_MARKERS=(
   "backend/src/modules/domains/routes.ts|tracked"
   # Mail admin password rotation (Stalwart JMAP)
   "backend/src/modules/mail-admin/routes.ts|tasks/service.js"
+  # Phase 4 surface (2026-05-08):
+  # Client provisioning + decommission (provisioning_tasks → tasks chip)
+  "backend/src/modules/k8s-provisioner/service.ts|mirrorProvisioningToTaskTracker"
 )
 
 # Add path-globs of files that the lint will report when newly created

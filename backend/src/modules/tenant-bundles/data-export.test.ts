@@ -315,3 +315,113 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     expect(zipBlob.length).toBeGreaterThan(50);
   });
 });
+
+// ─── Format-detecting import decoder ─────────────────────────────────
+
+describe('detectImportFormat + extractImportArchive', () => {
+  const meta: BackupMetaV1 = {
+    schemaVersion: 1, backupId: 'bkp-fmt', clientId: 'c1',
+    capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
+    initiator: 'admin', systemTrigger: null, retentionDays: 1,
+    label: null, description: null, components: {},
+  } as unknown as BackupMetaV1;
+
+  it('detectImportFormat distinguishes Salted__ / gzip / zip magic bytes', async () => {
+    const { detectImportFormat } = await import('./data-export.js');
+    const salted = Buffer.concat([Buffer.from('Salted__'), Buffer.alloc(8)]);
+    const gz = Buffer.concat([Buffer.from([0x1f, 0x8b]), Buffer.alloc(8)]);
+    const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(8)]);
+    expect(detectImportFormat(salted)).toBe('tar-encrypted');
+    expect(detectImportFormat(gz)).toBe('tar-plain');
+    expect(detectImportFormat(zip)).toBe('zip');
+  });
+
+  it('detectImportFormat rejects unknown magic bytes', async () => {
+    const { detectImportFormat } = await import('./data-export.js');
+    expect(() => detectImportFormat(Buffer.from('garbage-archive-no-magic-bytes'))).toThrow(/unrecognized archive/);
+  });
+
+  it('detectImportFormat rejects too-short blobs', async () => {
+    const { detectImportFormat } = await import('./data-export.js');
+    expect(() => detectImportFormat(Buffer.from([0x01, 0x02]))).toThrow(/too short/);
+  });
+
+  it('round-trips a plain tar.gz through stream-export → extractImportArchive', async () => {
+    const { streamEncryptedExport, extractImportArchive } = await import('./data-export.js');
+    const store = makeMockStore({
+      meta, artifacts: { 'config/db-rows.json.gz': Buffer.from('TAR-PLAIN-CONFIG') },
+    });
+    const handle: BundleHandle = { backupId: 'bkp-fmt', clientId: 'c1', root: 'mem://bkp-fmt' };
+    const stream = await streamEncryptedExport({ store, handle, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
+    const chunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
+    const blob = Buffer.concat(chunks);
+
+    const { format, entries } = await extractImportArchive({ blob });
+    expect(format).toBe('tar-plain');
+    const byPath = new Map(entries.map((e) => [e.path, e.buffer]));
+    expect(byPath.has('meta.json')).toBe(true);
+    expect(byPath.get('components/config/db-rows.json.gz')?.toString()).toBe('TAR-PLAIN-CONFIG');
+  });
+
+  it('round-trips a Salted__ tarball through stream-export → extractImportArchive', async () => {
+    const { streamEncryptedExport, extractImportArchive } = await import('./data-export.js');
+    const passphrase = 'fmt-rt-pw';
+    const store = makeMockStore({
+      meta, artifacts: { 'config/db-rows.json.gz': Buffer.from('TAR-ENC-CONFIG') },
+    });
+    const handle: BundleHandle = { backupId: 'bkp-fmt', clientId: 'c1', root: 'mem://bkp-fmt' };
+    const stream = await streamEncryptedExport({ store, handle, passphrase, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
+    const chunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
+    const blob = Buffer.concat(chunks);
+
+    const { format, entries } = await extractImportArchive({ blob, passphrase });
+    expect(format).toBe('tar-encrypted');
+    const byPath = new Map(entries.map((e) => [e.path, e.buffer]));
+    expect(byPath.get('components/config/db-rows.json.gz')?.toString()).toBe('TAR-ENC-CONFIG');
+  });
+
+  it('round-trips a ZIP through streamZipExport → extractImportArchive', async () => {
+    const { streamZipExport, extractImportArchive } = await import('./data-export.js');
+    const store = makeMockStore({
+      meta, artifacts: {
+        'config/db-rows.json.gz': Buffer.from('ZIP-CONFIG'),
+        'files/archive.tar.gz': Buffer.from('ZIP-FILES'),
+      },
+    });
+    const handle: BundleHandle = { backupId: 'bkp-fmt', clientId: 'c1', root: 'mem://bkp-fmt' };
+    const stream = await streamZipExport({ store, handle, components: [
+      { component: 'config', name: 'db-rows.json.gz' },
+      { component: 'files', name: 'archive.tar.gz' },
+    ] });
+    const chunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
+    const blob = Buffer.concat(chunks);
+
+    const { format, entries } = await extractImportArchive({ blob });
+    expect(format).toBe('zip');
+    const byPath = new Map(entries.map((e) => [e.path, e.buffer]));
+    expect(byPath.has('meta.json')).toBe(true);
+    expect(byPath.get('components/config/db-rows.json.gz')?.toString()).toBe('ZIP-CONFIG');
+    expect(byPath.get('components/files/archive.tar.gz')?.toString()).toBe('ZIP-FILES');
+  });
+
+  it('rejects encrypted tar without a passphrase', async () => {
+    const { streamEncryptedExport, extractImportArchive } = await import('./data-export.js');
+    const store = makeMockStore({ meta, artifacts: {} });
+    const handle: BundleHandle = { backupId: 'bkp-fmt', clientId: 'c1', root: 'mem://bkp-fmt' };
+    const stream = await streamEncryptedExport({ store, handle, passphrase: 'pw', components: [] });
+    const chunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
+    const blob = Buffer.concat(chunks);
+    await expect(extractImportArchive({ blob })).rejects.toThrow(/requires a passphrase/);
+  });
+
+  it('rejects a corrupt zip with a clear error', async () => {
+    const { extractImportArchive } = await import('./data-export.js');
+    // ZIP magic + 4 bytes of garbage
+    const blob = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('garbage')]);
+    await expect(extractImportArchive({ blob })).rejects.toThrow(/not a valid zip/);
+  });
+});

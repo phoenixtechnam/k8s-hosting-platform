@@ -184,6 +184,14 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
           stepsLog: buildStepsLog(PROVISION_STEPS),
           startedBy: request.user!.sub,
         });
+        // Mirror to chip immediately so the operator sees a "running"
+        // task right after clicking Create — without this, the chip
+        // only lights up once `runProvisionNamespace` updates state to
+        // 'running' which is several seconds later. Best-effort.
+        const { mirrorProvisioningToTaskTracker } = await import('../k8s-provisioner/service.js');
+        await mirrorProvisioningToTaskTracker(app.db, taskId).catch((err) => {
+          app.log.warn({ err, taskId }, 'task tracker enroll failed (non-fatal)');
+        });
         runProvisionNamespace(app.db, k8sClients, taskId, client.id, {}).catch((err) => {
           app.log.error({ err, taskId, clientId: client.id }, 'Auto-provisioning failed');
         });
