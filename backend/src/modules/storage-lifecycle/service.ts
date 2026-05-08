@@ -134,9 +134,18 @@ async function mirrorOpToTaskTracker(db: Database, opId: string): Promise<void> 
 
   const kind = `storage.${op.opType}`;
   const labelText = `${op.opType} storage (${op.clientId.slice(0, 8)})`;
+  // Phase 3: route to the OperationProgressModal so clicking the chip
+  // re-opens the live progress view instead of just navigating to the
+  // storage tab. The admin-panel registry maps `modal: 'operation'` to
+  // <OperationProgressModal /> which takes `operationId` (the
+  // storageOperations.id) + an optional title.
   const target = {
-    type: 'route' as const,
-    href: `/clients/${op.clientId}?tab=storage`,
+    type: 'modal' as const,
+    modal: 'operation',
+    modalProps: {
+      operationId: op.id,
+      title: `${op.opType.replace(/_/g, ' ')} — ${op.clientId.slice(0, 8)}`,
+    },
   };
 
   const { start: startTask, finishByRef } = await import('../tasks/service.js');

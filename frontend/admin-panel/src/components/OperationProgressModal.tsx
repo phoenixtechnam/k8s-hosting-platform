@@ -70,22 +70,35 @@ export default function OperationProgressModal({ operationId, title, onClose }: 
     <div
       className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
       data-testid="operation-progress-modal"
-      onClick={(e) => { if (e.target === e.currentTarget && isTerminal) { setDismissed(true); onClose(); } }}
+      onClick={(e) => { if (e.target === e.currentTarget) { setDismissed(true); onClose(); } }}
     >
-      <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 shadow-xl">
+      <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-3">
           <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
             {title ?? (op ? `${op.opType.replace(/_/g, ' ')} operation` : 'Operation in progress')}
           </h3>
-          <button
-            onClick={() => { if (isTerminal) { setDismissed(true); onClose(); } }}
-            disabled={!isTerminal}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed"
-            data-testid="operation-progress-close"
-            aria-label="Close"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            {/* "Run in Background" — the storage op continues server-side
+                regardless of whether this modal is open. The operator
+                can re-open progress from the Task Center chip. */}
+            <button
+              type="button"
+              onClick={() => { setDismissed(true); onClose(); }}
+              className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+              data-testid="operation-progress-dismiss"
+            >
+              {isTerminal ? 'Close' : 'Run in Background'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setDismissed(true); onClose(); }}
+              className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              data-testid="operation-progress-close"
+              aria-label="Close"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         <div className="p-5 space-y-3">
