@@ -136,3 +136,30 @@ export async function fetchBootstrapCommand(cppName: string): Promise<BootstrapC
   );
   return env.data;
 }
+
+// ─── Node exposure toggle (Phase 6) ────────────────────────────────────────
+
+interface SetNodeExposurePayload {
+  readonly name: string;
+  readonly exposure: 'public' | 'private';
+}
+
+/** Toggle a Node's platform.phoenix-host.net/exposure label. Drives
+ *  ingress-nginx + cert-manager solver scheduler affinity (manifest-
+ *  side); a future Phase 6.5 will add reconciler firewall-chain drops
+ *  on private nodes for workload ports. Invalidates the existing
+ *  ['cluster-nodes'] query (consumed by the /admin/nodes page) so the
+ *  UI re-fetches after the flip. */
+export function useToggleNodeExposure() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<{ name: string; exposure: 'public' | 'private' }>, Error, SetNodeExposurePayload>({
+    mutationFn: ({ name, exposure }) =>
+      apiFetch(`/api/v1/admin/cluster/nodes/${encodeURIComponent(name)}/exposure`, {
+        method: 'PATCH',
+        body: JSON.stringify({ exposure }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['cluster-nodes'] });
+    },
+  });
+}

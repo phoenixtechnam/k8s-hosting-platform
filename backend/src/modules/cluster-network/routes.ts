@@ -48,6 +48,7 @@ import {
   deletePendingPeer,
 } from './cluster-pending-peers.js';
 import { generateBootstrapCommand } from './bootstrap-command.js';
+import { setNodeExposure, setNodeExposureRequestSchema } from './node-exposure.js';
 
 interface AuthedRequest {
   readonly body?: unknown;
@@ -180,6 +181,27 @@ export async function clusterNetworkRoutes(app: FastifyInstance): Promise<void> 
         domain: platformDomain,
       });
       return success(cmd);
+    },
+  );
+
+  // ─── Node exposure (Phase 6 PRIVATE NODE) ────────────────────────────
+  // Flips the platform.phoenix-host.net/exposure label on a Node.
+  // Drives ingress-nginx + cert-manager solver scheduler affinity
+  // (manifest-side); a future Phase 6.5 will add reconciler firewall-
+  // chain drops on private nodes for workload ports.
+  app.patch<{ Params: { name: string } }>(
+    '/admin/cluster/nodes/:name/exposure',
+    { preHandler: requireRole('super_admin') },
+    async (req: AuthedRequest) => {
+      const name = paramName(req);
+      const body = parseOrThrow(setNodeExposureRequestSchema, req.body);
+      const userId = userOf(req);
+      app.log.warn(
+        { userId, name, exposure: body.exposure },
+        'cluster-network: node exposure toggle',
+      );
+      const result = await setNodeExposure(name, body, userId, k8sOpts);
+      return success(result);
     },
   );
 }
