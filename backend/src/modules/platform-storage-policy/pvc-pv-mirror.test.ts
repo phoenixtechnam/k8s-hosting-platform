@@ -154,7 +154,12 @@ describe('mirrorPvcLabelsToPvs', () => {
       labelSelector: 'platform/managed-by=platform-api',
     });
     expect(fixture.patch).toHaveBeenCalledTimes(1);
-    expect(fixture.patch).toHaveBeenCalledWith({
+    // The patch call now passes a second argument (MERGE_PATCH options) so
+    // the k8s client library overrides Content-Type to
+    // application/merge-patch+json instead of the default json-patch+json.
+    const [bodyArg, optsArg] = fixture.patch.mock.calls[0];
+    expect(optsArg).toBeDefined();
+    expect(bodyArg).toMatchObject({
       name: 'pvc-uuid-1',
       body: {
         metadata: {
