@@ -308,6 +308,154 @@ export interface ImportEntry {
   readonly buffer: Buffer;
 }
 
+/** Three accepted import formats. The decoder detects the format
+ *  from the first few bytes; passphrase is used only for the
+ *  encrypted-tar path and ignored otherwise. */
+export type ImportFormat = 'tar-encrypted' | 'tar-plain' | 'zip';
+
+export function detectImportFormat(blob: Buffer): ImportFormat {
+  if (blob.length < 8) {
+    throw new Error(`detectImportFormat: blob too short (${blob.length} bytes); not a recognized archive`);
+  }
+  // OpenSSL Salted__ envelope (encrypted tar.gz)
+  if (blob.subarray(0, 8).toString('ascii') === 'Salted__') {
+    return 'tar-encrypted';
+  }
+  // gzip magic: 1f 8b — plain tar.gz
+  if (blob[0] === 0x1f && blob[1] === 0x8b) {
+    return 'tar-plain';
+  }
+  // ZIP local file header: 50 4b 03 04 ('PK\x03\x04')
+  if (blob[0] === 0x50 && blob[1] === 0x4b && blob[2] === 0x03 && blob[3] === 0x04) {
+    return 'zip';
+  }
+  throw new Error('detectImportFormat: unrecognized archive (not Salted__/gzip/zip)');
+}
+
+/**
+ * Format-detecting import decoder. Replaces the original tar-encrypted-only
+ * `decryptImportTarball`. Accepts:
+ *   - `tar-encrypted` — OpenSSL Salted__ envelope (passphrase required)
+ *   - `tar-plain`     — gzipped tar (passphrase ignored if supplied)
+ *   - `zip`           — plaintext ZIP (passphrase ignored if supplied)
+ * and returns a flat array of (path, buffer) entries.
+ *
+ * The caller then registers a new backup_jobs row and re-uploads each
+ * entry to the local off-site target.
+ */
+export async function extractImportArchive(args: {
+  readonly blob: Buffer;
+  readonly passphrase?: string;
+}): Promise<{ readonly format: ImportFormat; readonly entries: ReadonlyArray<ImportEntry> }> {
+  const { blob, passphrase } = args;
+  const format = detectImportFormat(blob);
+
+  if (format === 'tar-encrypted') {
+    if (!passphrase) {
+      throw new Error('extractImportArchive: tar-encrypted bundle requires a passphrase');
+    }
+    const entries = await decryptImportTarball({ cipherBlob: blob, passphrase });
+    return { format, entries };
+  }
+
+  if (format === 'tar-plain') {
+    const entries = await extractPlainTarGz(blob);
+    return { format, entries };
+  }
+
+  // zip
+  const entries = await extractZip(blob);
+  return { format, entries };
+}
+
+/**
+ * Extract a plaintext gzipped tar into (path, buffer) entries.
+ * Mirrors the post-decrypt half of decryptImportTarball.
+ */
+async function extractPlainTarGz(blob: Buffer): Promise<ImportEntry[]> {
+  const gunzip = createGunzip();
+  const tarX = tarExtract();
+  // Drop unhandled-listener error from gunzip; the pipeline below
+  // surfaces gunzip errors via the await.
+  gunzip.on('error', () => undefined);
+
+  const entries: ImportEntry[] = [];
+  const collect = new Promise<void>((resolve, reject) => {
+    tarX.on('entry', (header, stream, next) => {
+      const chunks: Buffer[] = [];
+      stream.on('data', (c: Buffer) => chunks.push(c));
+      stream.on('end', () => {
+        entries.push({ path: header.name, buffer: Buffer.concat(chunks) });
+        next();
+      });
+      stream.on('error', reject);
+      stream.resume();
+    });
+    tarX.on('finish', () => resolve());
+    tarX.on('error', reject);
+  });
+
+  try {
+    await pipeline(Readable.from(blob), gunzip, tarX);
+    await collect;
+  } catch (err) {
+    throw new Error(`extractPlainTarGz: corrupt tar.gz (${err instanceof Error ? err.message : String(err)})`);
+  }
+  return entries;
+}
+
+/**
+ * Extract a plaintext ZIP into (path, buffer) entries using yauzl.
+ *
+ * Why yauzl over the existing `archiver` lib: archiver only writes;
+ * for reading we need a streaming ZIP parser. yauzl is the canonical
+ * Node ZIP reader (used by extract-zip, vscode, etc).
+ *
+ * `lazyEntries: true` so we drive entry iteration ourselves and can
+ * apply backpressure on large entries; `decodeStrings: true` so
+ * filename bytes come back UTF-8-decoded.
+ */
+async function extractZip(blob: Buffer): Promise<ImportEntry[]> {
+  // yauzl is CommonJS; tsconfig esModuleInterop is on.
+  const { default: yauzl } = await import('yauzl');
+  const entries: ImportEntry[] = [];
+  return new Promise<ImportEntry[]>((resolve, reject) => {
+    yauzl.fromBuffer(blob, { lazyEntries: true, decodeStrings: true }, (err, zip) => {
+      if (err) {
+        reject(new Error(`extractZip: not a valid zip (${err.message})`));
+        return;
+      }
+      if (!zip) {
+        reject(new Error('extractZip: yauzl returned no zip handle'));
+        return;
+      }
+      zip.on('error', (e) => reject(new Error(`extractZip: zip read error (${e.message})`)));
+      zip.on('end', () => resolve(entries));
+      zip.on('entry', (entry) => {
+        // Skip directories (yauzl marks them with trailing slash).
+        if (/\/$/.test(entry.fileName)) {
+          zip.readEntry();
+          return;
+        }
+        zip.openReadStream(entry, (zErr, stream) => {
+          if (zErr || !stream) {
+            reject(new Error(`extractZip: cannot read entry ${entry.fileName} (${zErr?.message ?? 'no stream'})`));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          stream.on('data', (c: Buffer) => chunks.push(c));
+          stream.on('end', () => {
+            entries.push({ path: entry.fileName, buffer: Buffer.concat(chunks) });
+            zip.readEntry();
+          });
+          stream.on('error', (e) => reject(new Error(`extractZip: entry stream error (${e.message})`)));
+        });
+      });
+      zip.readEntry();
+    });
+  });
+}
+
 /**
  * Inverse of `streamEncryptedExport`: takes a buffered Salted__-
  * envelope tarball + passphrase, returns each tar entry as
@@ -327,8 +475,11 @@ export async function decryptImportTarball(args: {
   readonly passphrase: string;
 }): Promise<ReadonlyArray<ImportEntry>> {
   const { cipherBlob, passphrase } = args;
-  if (!passphrase || passphrase.length < 12) {
-    throw new Error('decryptImportTarball: passphrase must be ≥12 chars');
+  // No min-length floor since 2026-05-08 (matches the export side).
+  // Empty passphrase is still invalid — there's no plaintext path
+  // through the decrypt branch.
+  if (!passphrase) {
+    throw new Error('decryptImportTarball: passphrase required');
   }
 
   // Parse OpenSSL Salted__ header.
