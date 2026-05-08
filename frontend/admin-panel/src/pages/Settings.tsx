@@ -230,6 +230,14 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
+      <Link to="/settings/cluster-network" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="cluster-network-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-cyan-50 dark:bg-cyan-900/20 text-cyan-600 dark:text-cyan-400"><Network size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Cluster Networking</h2><p className="text-sm text-gray-500 dark:text-gray-400">Trusted source ranges + pre-enroll new cluster nodes (always-on set-mode firewall)</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
       <Link to="/settings/oidc" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="oidc-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400"><Shield size={20} /></div>

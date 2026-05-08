@@ -25,10 +25,16 @@ resources:
   - ingress.yaml
   - sftp-gateway.yaml
   - sftp-gateway-netpol.yaml
-  # peer-firewall-reconciler — keeps host nft sets cluster_peers_v{4,6}
-  # in sync with kube-API node InternalIPs. Idles on clusters in cidr or
-  # single firewall mode (the nft sets don't exist there). See
-  # docs/04-deployment/CLUSTER_NETWORK.md for the three-mode design.
+  # cluster-network — CRDs (ClusterTrustedRange, ClusterPendingPeer)
+  # that drive the always-on set-mode firewall. Must apply BEFORE
+  # peer-firewall-reconciler so the reconciler's informers can resolve
+  # the kinds at startup. See docs/04-deployment/CLUSTER_NETWORK.md.
+  - cluster-network/
+  # peer-firewall-reconciler — keeps host nft sets cluster_peers_v{4,6},
+  # trusted_ranges_v{4,6}, and pending_peers_v{4,6} in sync with kube-API
+  # Nodes + ClusterTrustedRange/ClusterPendingPeer CRs. Always-on set
+  # mode; bootstrap.sh seeds the local nft sets and this DaemonSet keeps
+  # them converged across every node.
   - peer-firewall-reconciler/
   # worker-firewall-reconciler — keeps host nft sets
   # tenant_ports_{tcp,udp} in sync with Pods scheduled to this node

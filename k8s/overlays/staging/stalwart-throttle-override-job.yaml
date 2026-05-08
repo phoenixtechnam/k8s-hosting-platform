@@ -8,169 +8,181 @@
 #   assertion unreliable. Production keeps the default — real
 #   anti-spam protection matters there.
 #
-# Why a Job (not a Kustomize patch):
-#   Stalwart's MtaInboundThrottle settings live in Stalwart's PG
-#   (mail-pg CNPG cluster), not in any k8s resource. They're created
-#   by Stalwart at first install and only tunable via stalwart-cli's
-#   `update MtaInboundThrottle <id>` against the JMAP mgmt API. Flux
-#   can't reconcile this; a one-shot Job invoking the cli is the
-#   canonical approach.
+# Why a CronJob (not a one-shot Job):
+#   2026-05-08: rewritten from `kind: Job`. The Job version hit
+#   `spec.template is immutable` errors every time the script was
+#   tweaked (CLI version bump, throttle-id discovery refactor) — Flux
+#   couldn't re-apply without manual `kubectl delete job`. CronJob
+#   spawns a fresh Job per schedule, so manifest mutations always
+#   land. Idempotent re-runs are cheap.
+#
+#   The CronJob also re-asserts the override after Stalwart restarts
+#   (rolling deploy, node drain, mail-db PITR restore) — historically
+#   the throttle would silently re-enable from PG defaults.
+#
+# Why Stalwart settings live outside k8s:
+#   Stalwart's MtaInboundThrottle config lives in mail-db (CNPG), not
+#   in any k8s resource. They're created at first install and only
+#   tunable via stalwart-cli `update MtaInboundThrottle <id>` against
+#   the JMAP mgmt API. Flux can't reconcile this; a scheduled Job
+#   invoking the cli is the canonical approach.
 #
 # Idempotency:
 #   `cli update --field enable=false` is idempotent. Re-running the
-#   Job after Flux reconciles is a no-op. The Job has
-#   `restartPolicy: OnFailure` + `activeDeadlineSeconds: 600` so it
-#   eventually gives up if the recovery admin password is wrong (and
-#   surfaces the failure in `kubectl get jobs`).
-#
-# Order of operations:
-#   1. Operator runs scripts/bootstrap.sh:bootstrap_stalwart_v016
-#      which creates stalwart-admin-creds (with recoveryPassword).
-#   2. Flux applies this overlay; Job spawns.
-#   3. Job downloads stalwart-cli, authenticates as `admin` via
-#      recovery password, runs `update MtaInboundThrottle ...`.
-#   4. Stalwart applies the change to its in-memory config (no
-#      restart needed).
+#   Job after Flux reconciles is a no-op except for the AFTER log
+#   line, which is useful as evidence in `kubectl logs`.
 #
 # To restore the default (e.g. before promoting staging behavior to
 # production), delete this file from the overlay; Flux's prune will
-# remove the Job. Operators who want to re-enable the throttle on a
-# live cluster can:
+# remove the CronJob. Operators who want to re-enable the throttle
+# on a live cluster can:
 #   stalwart-cli --user admin update MtaInboundThrottle iphfjphgabab \
 #     --field enable=true
 apiVersion: batch/v1
-kind: Job
+kind: CronJob
 metadata:
   name: stalwart-throttle-override
   namespace: mail
   labels:
     app.kubernetes.io/component: stalwart-throttle-override
     app.kubernetes.io/part-of: hosting-platform
-  annotations:
-    # Skip Flux reconciliation after first create. Required because k8s
-    # auto-adds batch.kubernetes.io/controller-uid + job-name labels to
-    # .spec.template.metadata.labels, and Job spec.template is immutable
-    # — Flux dry-run-fails on every reconcile regardless of SSA mode.
-    # The Job is idempotent and one-shot — re-running serves no purpose
-    # and re-creation on each Flux reconcile would download stalwart-
-    # cli + restart Stalwart at the configured interval. Flux still
-    # creates it on first apply (this annotation only stops ongoing
-    # reconcile). Caught on testing.phoenix-host.net 2026-05-08.
-    kustomize.toolkit.fluxcd.io/reconcile: disabled
-    kustomize.toolkit.fluxcd.io/ssa: merge
-  # No `kustomize.toolkit.fluxcd.io/force: enabled` annotation — that
-  # would re-create the Job on EVERY Flux reconcile (10 min on staging),
-  # spawning a new pod + redownloading stalwart-cli + re-running the
-  # idempotent update. The Job runs once on first apply; subsequent
-  # changes to this manifest's content (e.g. CLI version bump) write a
-  # new resource generation and Flux re-applies on its own.
 spec:
-  backoffLimit: 3
-  activeDeadlineSeconds: 600
-  ttlSecondsAfterFinished: 86400
-  template:
+  # Daily at 03:30 UTC. The override is idempotent so cadence is
+  # mostly cosmetic; pick low-traffic local hours so the alpine pull
+  # + cli download doesn't compete with mail traffic. Stalwart restart
+  # → throttle re-enables → next run flips it back within ≤24 h, well
+  # inside the harness's typical CI window.
+  schedule: "30 3 * * *"
+  # Pacific Daylight Time would shift the actual run by 1 h; UTC keeps
+  # the schedule deterministic. The cluster's tz is irrelevant — k8s
+  # CronJob honours spec.timeZone (default: kube-controller-manager tz,
+  # usually UTC).
+  timeZone: "Etc/UTC"
+  # Forbid: never run two overrides in parallel. If a previous run is
+  # still pulling alpine, skip this firing.
+  concurrencyPolicy: Forbid
+  # 5 min grace if controller is briefly down — beyond that, skip.
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
     metadata:
       labels:
         app.kubernetes.io/component: stalwart-throttle-override
     spec:
-      restartPolicy: OnFailure
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: platform.phoenix-host.net/node-role
-                    operator: In
-                    values: [server]
-      tolerations:
-        - key: platform.phoenix-host.net/server-only
-          operator: Equal
-          value: "true"
-          effect: NoSchedule
-      containers:
-        - name: cli
-          image: alpine:3.20
-          env:
-            - name: STALWART_URL
-              value: "http://stalwart-mgmt.mail.svc.cluster.local:8080"
-            - name: STALWART_USER
-              value: "admin"
-            - name: STALWART_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: stalwart-admin-creds
-                  key: recoveryPassword
-          command: ["sh", "-c"]
-          args:
-            - |
-              set -e
-              apk add --no-cache wget tar xz >/dev/null
-              cd /tmp
-              # SHA256-pinned download — same version + checksum the
-              # bootstrap-job uses (k8s/base/stalwart-mail/stalwart/
-              # bootstrap-job.yaml). Keep these two pins in lock-step
-              # when bumping CLI versions.
-              CLI_VERSION="v1.0.4"
-              CLI_SHA256="01c734752cc44b9e24f753cbacfc2d489dadaaccf72cd229ecb7269e85e0eefa"
-              CLI_URL="https://github.com/stalwartlabs/cli/releases/download/$${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
-              wget -q -O cli.tar.xz "$${CLI_URL}"
-              actual=$$(sha256sum cli.tar.xz | awk '{print $$1}')
-              if [ "$${actual}" != "$${CLI_SHA256}" ]; then
-                echo "ERROR: stalwart-cli SHA256 mismatch" >&2
-                echo "  expected: $${CLI_SHA256}" >&2
-                echo "  actual:   $${actual}" >&2
-                exit 1
-              fi
-              tar -xJf cli.tar.xz
-              CLI=/tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli
-              chmod +x "$$CLI"
+      backoffLimit: 3
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: stalwart-throttle-override
+        spec:
+          restartPolicy: OnFailure
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: platform.phoenix-host.net/node-role
+                        operator: In
+                        values: [server]
+          tolerations:
+            - key: platform.phoenix-host.net/server-only
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          containers:
+            - name: cli
+              image: alpine:3.20
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              env:
+                - name: STALWART_URL
+                  value: "http://stalwart-mgmt.mail.svc.cluster.local:8080"
+                - name: STALWART_USER
+                  value: "admin"
+                - name: STALWART_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: stalwart-admin-creds
+                      key: recoveryPassword
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -e
+                  apk add --no-cache wget tar xz >/dev/null
+                  cd /tmp
+                  # SHA256-pinned download — same version + checksum the
+                  # bootstrap-job uses (k8s/base/stalwart-mail/stalwart/
+                  # bootstrap-job.yaml). Keep these two pins in lock-step
+                  # when bumping CLI versions.
+                  CLI_VERSION="v1.0.4"
+                  CLI_SHA256="01c734752cc44b9e24f753cbacfc2d489dadaaccf72cd229ecb7269e85e0eefa"
+                  CLI_URL="https://github.com/stalwartlabs/cli/releases/download/$${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
+                  wget -q -O cli.tar.xz "$${CLI_URL}"
+                  actual=$$(sha256sum cli.tar.xz | awk '{print $$1}')
+                  if [ "$${actual}" != "$${CLI_SHA256}" ]; then
+                    echo "ERROR: stalwart-cli SHA256 mismatch" >&2
+                    echo "  expected: $${CLI_SHA256}" >&2
+                    echo "  actual:   $${actual}" >&2
+                    exit 1
+                  fi
+                  tar -xJf cli.tar.xz
+                  CLI=/tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli
+                  chmod +x "$$CLI"
 
-              # Wait for Stalwart mgmt port to be reachable (Stalwart
-              # rollout may still be in progress when this Job spawns).
-              for i in $$(seq 1 30); do
-                if "$$CLI" query MtaInboundThrottle >/dev/null 2>&1; then
-                  break
-                fi
-                echo "waiting for stalwart mgmt API..."
-                sleep 5
-              done
+                  # Wait for Stalwart mgmt port to be reachable (Stalwart
+                  # rollout may still be in progress when this Job spawns).
+                  for i in $$(seq 1 30); do
+                    if "$$CLI" query MtaInboundThrottle >/dev/null 2>&1; then
+                      break
+                    fi
+                    echo "waiting for stalwart mgmt API..."
+                    sleep 5
+                  done
 
-              # Discover the per-IP throttle ID dynamically — Stalwart
-              # 0.16 generates deterministic IDs from the throttle's
-              # natural key, but the ID format isn't part of the public
-              # contract. Look up by `Description` instead. The default
-              # per-IP throttle ships as "Sender IP throttle" with
-              # keys=remoteIp, count=5, period=1s. CRITICAL: matching
-              # by description text means a future Stalwart release
-              # that renames this throttle would silently no-op the
-              # update, so we ALSO assert the AFTER state shows
-              # `Enabled: false`.
-              THROTTLE_ID=$$("$$CLI" query MtaInboundThrottle 2>/dev/null \
-                | awk '/Sender IP throttle/ {print $$1; exit}')
-              if [ -z "$${THROTTLE_ID}" ]; then
-                echo "ERROR: per-IP throttle not found by description" >&2
-                "$$CLI" query MtaInboundThrottle 2>&1 || true
-                exit 1
-              fi
-              echo "Resolved per-IP throttle id: $${THROTTLE_ID}"
+                  # Discover the per-IP throttle ID dynamically — Stalwart
+                  # 0.16 generates deterministic IDs from the throttle's
+                  # natural key, but the ID format isn't part of the public
+                  # contract. Look up by `Description` instead. The default
+                  # per-IP throttle ships as "Sender IP throttle" with
+                  # keys=remoteIp, count=5, period=1s. CRITICAL: matching
+                  # by description text means a future Stalwart release
+                  # that renames this throttle would silently no-op the
+                  # update, so we ALSO assert the AFTER state shows
+                  # `Enabled: false`.
+                  THROTTLE_ID=$$("$$CLI" query MtaInboundThrottle 2>/dev/null \
+                    | awk '/Sender IP throttle/ {print $$1; exit}')
+                  if [ -z "$${THROTTLE_ID}" ]; then
+                    echo "ERROR: per-IP throttle not found by description" >&2
+                    "$$CLI" query MtaInboundThrottle 2>&1 || true
+                    exit 1
+                  fi
+                  echo "Resolved per-IP throttle id: $${THROTTLE_ID}"
 
-              echo "BEFORE:"
-              "$$CLI" get MtaInboundThrottle "$${THROTTLE_ID}" 2>&1 | grep -E "Description|Enabled|Count|Period" || true
+                  echo "BEFORE:"
+                  "$$CLI" get MtaInboundThrottle "$${THROTTLE_ID}" 2>&1 | grep -E "Description|Enabled|Count|Period" || true
 
-              "$$CLI" update MtaInboundThrottle "$${THROTTLE_ID}" --field 'enable=false'
+                  "$$CLI" update MtaInboundThrottle "$${THROTTLE_ID}" --field 'enable=false'
 
-              # Self-verify: cli `update` returns 0 even if the field
-              # patch was a no-op or the record was missing on some
-              # builds. Re-fetch and assert `Enabled: No`. Without this
-              # the throttle could silently stay on and stress tests
-              # would mysteriously fail with auth-blocked.
-              if ! "$$CLI" get MtaInboundThrottle "$${THROTTLE_ID}" 2>&1 | grep -qE "Enabled:[[:space:]]+No"; then
-                echo "ERROR: throttle update did not stick — Enabled is still Yes" >&2
-                "$$CLI" get MtaInboundThrottle "$${THROTTLE_ID}" 2>&1 || true
-                exit 1
-              fi
+                  # Self-verify: cli `update` returns 0 even if the field
+                  # patch was a no-op or the record was missing on some
+                  # builds. Re-fetch and assert `Enabled: No`. Without this
+                  # the throttle could silently stay on and stress tests
+                  # would mysteriously fail with auth-blocked.
+                  if ! "$$CLI" get MtaInboundThrottle "$${THROTTLE_ID}" 2>&1 | grep -qE "Enabled:[[:space:]]+No"; then
+                    echo "ERROR: throttle update did not stick — Enabled is still Yes" >&2
+                    "$$CLI" get MtaInboundThrottle "$${THROTTLE_ID}" 2>&1 || true
+                    exit 1
+                  fi
 
-              echo "AFTER:"
-              "$$CLI" get MtaInboundThrottle "$${THROTTLE_ID}" 2>&1 | grep -E "Description|Enabled|Count|Period" || true
+                  echo "AFTER:"
+                  "$$CLI" get MtaInboundThrottle "$${THROTTLE_ID}" 2>&1 | grep -E "Description|Enabled|Count|Period" || true
 
-              echo "stalwart-throttle-override: per-IP throttle disabled (staging-only)"
+                  echo "stalwart-throttle-override: per-IP throttle disabled (staging-only)"

@@ -81,15 +81,25 @@ spec:
     # reconciler. See k8s/base/database.yaml for the same rationale.
     storageClass: longhorn-system-local
 
-  # Conservative defaults. Mail metadata is small; 256Mi is fine for
-  # a single-domain install. Production overlay should bump to 512Mi+.
+  # Sized from live observation 2026-05-08: 102-122 Mi actual / 16m
+  # CPU per instance under low traffic. Bump in production overlay
+  # if heavy mail volume warrants. Limits stay generous for spikes.
   resources:
     requests:
       cpu: 50m
-      memory: 256Mi
+      memory: 128Mi
     limits:
       cpu: 200m
       memory: 512Mi
+
+  # Slow CNPG instance-manager probes to 60s (default 10s) — see
+  # k8s/base/database.yaml for the rationale. Same defaults applied
+  # symmetrically to both system clusters.
+  probes:
+    liveness:
+      periodSeconds: 60
+    readiness:
+      periodSeconds: 60
 
   # Pin to system (server) nodes — same pattern as platform-PG.
   affinity:

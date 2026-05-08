@@ -1,12 +1,101 @@
-# Cluster Network — Three-Mode Firewall
+# Cluster Network — Always-On Set Mode
 
-`scripts/bootstrap.sh` configures the host nftables ruleset based on the
-underlay topology of the cluster. There are three modes; bootstrap picks
-one automatically based on what's available at install time.
+`scripts/bootstrap.sh` configures the host nftables ruleset for an
+**always-on set-mode** firewall. Every cluster, every install, ships
+the same four nft sets and a deterministic input chain. CRD-driven
+trust changes converge onto every node via the
+`peer-firewall-reconciler` DaemonSet. Day-2 trust management is via
+the admin panel under **Settings → Cluster Networking** — no
+per-node SSH, no firewall flags after bootstrap.
 
-## TL;DR — what gets opened on the public internet
+> **Migrating from the pre-Phase-1 three-mode firewall?** See
+> [CLUSTER_NETWORK_MIGRATION.md](./CLUSTER_NETWORK_MIGRATION.md).
+> The legacy `cidr` / `set` / `single` modes are retained at the end
+> of this page as historical reference.
 
-In **every** mode, only these ports face `0.0.0.0/0` (and `::/0`):
+## The four nft sets
+
+| Set                    | Source-of-truth                                                                  | Use                                          |
+|------------------------|----------------------------------------------------------------------------------|----------------------------------------------|
+| `cluster_peers_v4`     | kube-API Node InternalIPs ∪ non-expired `ClusterPendingPeer.spec.ip`             | Cluster-internal control-plane ports         |
+| `cluster_peers_v6`     | (same, IPv6)                                                                     | (same)                                       |
+| `trusted_ranges_v4`    | `ClusterTrustedRange.spec.cidr` ∪ bootstrap-time `--allow-source`                | Full TCP/UDP from operator-blessed sources   |
+| `trusted_ranges_v6`    | (same, IPv6)                                                                     | (same)                                       |
+
+Cluster-internal ports gated to `cluster_peers`:
+`6443` (kube-API), `8443` (ingress-nginx admission), `10250` (kubelet),
+`5473` (Calico Typha), `2379-2380` (etcd peers).
+
+`trusted_ranges` opens **all** TCP/UDP from the listed source CIDRs —
+operator workstation IPs, monitoring scrapers, partner systems, private
+LANs. /0 is rejected at every layer (CRD CEL rule, bootstrap regex,
+reconciler net/netip).
+
+## CRDs
+
+Two cluster-scoped `networking.platform.phoenix-host.net/v1alpha1`
+resources, defined in `k8s/base/cluster-network/`:
+
+- `ClusterTrustedRange` (`ctr` / `trustedrange`) — permanent trust entry.
+- `ClusterPendingPeer` (`cpp` / `pendingpeer`) — pre-authorise a node
+  about to bootstrap. TTL-enforced; auto-deleted on TTL expiry or 5 min
+  after the node joins (`status.claimedAt` set when the matching
+  InternalIP appears).
+
+Operator path: **Settings → Cluster Networking** in the admin panel
+writes both CRD families. The reconciler converges them into the four
+nft sets within ~30 s.
+
+## Bootstrap-time trust seed
+
+Operator passes their workstation IP at first install so they can
+`kubectl` before the admin UI exists:
+
+```
+bootstrap.sh --join-as server \
+  --domain phoenix-host.net --acme-email ops@... \
+  --allow-source 198.51.100.7    # operator workstation
+```
+
+`--allow-source` is repeatable, comma-tolerant, and accepts IPv4/v6
+single addresses (auto-normalized to `/32` or `/128`) or CIDRs.
+`--cluster-network-cidr` continues to pin k3s `--node-ip` for mesh
+underlays and is mirrored into `--allow-source` as a convenience.
+
+## PRIVATE NODE feature
+
+A node label `platform.phoenix-host.net/exposure=private` (set via the
+admin API or `kubectl label`) drives:
+
+- **Scheduler isolation** — `ingress-nginx` controllers and
+  cert-manager solver pods refuse to schedule on private nodes
+  (`nodeAffinity` includes `exposure NotIn [private]`). Public ingress
+  traffic terminates on public-exposure nodes only.
+- **Reconciler firewall chain** *(Phase 6.5, deferred)* — private nodes
+  will additionally drop public-internet traffic on workload ports
+  (80/443/mail) at the host firewall, falling through to `cluster_peers`
+  + `trusted_ranges` only.
+
+## Operator workflow — pre-enroll a new node
+
+1. **Settings → Cluster Networking → Pending Peers → Pre-Enroll Node.**
+   Paste the new node's public IP, role (server/worker), TTL.
+2. Platform-api creates a `ClusterPendingPeer` CR. Reconciler propagates
+   the IP into every existing peer's `cluster_peers` nft set within ~30 s.
+3. Click **Get bootstrap command** — paste the rendered `bootstrap.sh`
+   invocation on your workstation. Replace the token placeholder by
+   running `cat /var/lib/rancher/k3s/server/node-token` on the existing
+   peer at the displayed IP.
+4. Run the bootstrap command. The new node's k3s join handshake reaches
+   `:6443` because step 2 opened the firewall.
+5. Once the new node registers, the reconciler sets
+   `status.claimedAt` on the CPP. After a 5 min grace window, the CR
+   auto-deletes — the node's IP is now in `cluster_peers` via the Node
+   path.
+
+## Public-internet ports (every node)
+
+Only these ports face `0.0.0.0/0` (and `::/0`):
 
 | Port | Reason |
 |---|---|
@@ -21,7 +110,11 @@ In **every** mode, only these ports face `0.0.0.0/0` (and `::/0`):
 Cluster-internal control-plane ports — `6443` (kube-API), `8443`
 (ingress-nginx admission), `10250` (kubelet), `5473` (Calico Typha),
 `2379-2380` (etcd peers), and CIDR-trusted `4789` (Calico VXLAN) — are
-**scoped** to peers via one of the three modes below.
+**scoped** to `cluster_peers_v{4,6}` via the input chain.
+
+> The sections below describe the **legacy** three-mode design that
+> shipped before the always-on refactor. Retained for historical
+> context; the always-on architecture above is the current one.
 
 ## Supported operating systems
 

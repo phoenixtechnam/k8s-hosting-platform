@@ -23,8 +23,13 @@ import ErrorPanel from '@/components/ErrorPanel';
 import type { OperatorError } from '@k8s-hosting/api-contracts';
 
 const SYSTEM_CLUSTERS = [
-  { namespace: 'platform', cluster: 'postgres', database: 'hosting_platform', label: 'Platform DB' },
-  { namespace: 'mail', cluster: 'mail-pg', database: 'stalwart_app', label: 'Mail DB (Stalwart)' },
+  // Cluster names renamed 2026-05-07 (postgres → system-db, mail-pg → mail-db)
+  // to drop PG-version baggage from CNPG resource names. The backend's
+  // KNOWN_CLUSTERS list (system-backup/wal-archive-routes.ts) and
+  // CNPG_CLUSTERS (platform-storage-policy/service.ts) must stay in sync
+  // with these names — drift will silently no-op at the API boundary.
+  { namespace: 'platform', cluster: 'system-db', database: 'hosting_platform', label: 'Platform DB' },
+  { namespace: 'mail', cluster: 'mail-db', database: 'stalwart_app', label: 'Mail DB (Stalwart)' },
 ] as const;
 
 export default function SystemDatabasesTab() {

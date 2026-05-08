@@ -18,8 +18,9 @@ import SystemDatabasesTab from '@/components/system-backup/SystemDatabasesTab';
 import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
 import LonghornSnapshotsTab from '@/components/system-backup/LonghornSnapshotsTab';
 import DrDrillTab from '@/components/system-backup/DrDrillTab';
+import SystemStorageCard from '@/components/SystemStorageCard';
 
-type TabId = 'secrets' | 'system-dbs' | 'stalwart-blob' | 'longhorn-snapshots' | 'wal-archive' | 'dr-drill';
+type TabId = 'secrets' | 'system-dbs' | 'storage' | 'stalwart-blob' | 'longhorn-snapshots' | 'wal-archive' | 'dr-drill';
 
 interface TabSpec {
   id: TabId;
@@ -31,6 +32,7 @@ interface TabSpec {
 const TABS: ReadonlyArray<TabSpec> = [
   { id: 'secrets', label: 'Secrets Bundle', available: true },
   { id: 'system-dbs', label: 'System Databases', available: true },
+  { id: 'storage', label: 'System DB Storage', available: true },
   { id: 'stalwart-blob', label: 'Stalwart BLOB', available: false, comingPhase: 'Phase 2' },
   { id: 'longhorn-snapshots', label: 'Longhorn Snapshots', available: true },
   { id: 'wal-archive', label: 'WAL Archive', available: true },
@@ -101,10 +103,11 @@ export default function SystemBackupPage() {
       <div>
         {activeTab === 'secrets' && <SecretsBundleTab />}
         {activeTab === 'system-dbs' && <SystemDatabasesTab />}
+        {activeTab === 'storage' && <SystemStorageCard />}
         {activeTab === 'wal-archive' && <WalArchiveTab />}
         {activeTab === 'longhorn-snapshots' && <LonghornSnapshotsTab />}
         {activeTab === 'dr-drill' && <DrDrillTab />}
-        {activeTab !== 'secrets' && activeTab !== 'system-dbs' && activeTab !== 'wal-archive' && activeTab !== 'longhorn-snapshots' && activeTab !== 'dr-drill' && (
+        {activeTab !== 'secrets' && activeTab !== 'system-dbs' && activeTab !== 'storage' && activeTab !== 'wal-archive' && activeTab !== 'longhorn-snapshots' && activeTab !== 'dr-drill' && (
           <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-8 text-center">
             <AlertTriangle size={32} className="mx-auto text-gray-400 dark:text-gray-500 mb-3" />
             <p className="text-sm text-gray-600 dark:text-gray-400">

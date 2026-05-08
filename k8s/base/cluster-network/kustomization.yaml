@@ -1,0 +1,20 @@
+# Cluster network — CRDs that drive the always-on set-mode firewall.
+#
+# ClusterTrustedRange and ClusterPendingPeer are cluster-scoped CRDs
+# the platform-api writes (via Settings → Cluster Networking) and the
+# peer-firewall-reconciler DaemonSet converges into nft sets on every
+# node.
+#
+# CRDs are installed BEFORE the reconciler picks them up. The ordering
+# is enforced by the resources list position in
+# k8s/base/kustomization.yaml — `cluster-network/` is listed before
+# `peer-firewall-reconciler/`, so kubectl/Flux applies the CRDs first.
+# Kustomize/Flux do NOT sort alphabetically; rely on list order.
+# If a future change inserts a directory between them, the reconciler
+# will Crash on startup with "no kind matches" until the CRDs land.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - crd-clustertrustedrange.yaml
+  - crd-clusterpendingpeer.yaml

@@ -109,7 +109,13 @@ spec:
         - "ALTER USER platform WITH SUPERUSER"
 
   storage:
-    size: 10Gi
+    # 5Gi covers a fresh hosting_platform DB + headroom (was 10Gi pre-
+    # 2026-05-08 efficiency audit; live observation: 16 MB of actual
+    # data). Operators can grow online via Settings → System DB Storage
+    # or the SystemPvcResize endpoint when the DB grows. Shrink is NOT
+    # supported by k8s in-place — requires snapshot+recreate, same as
+    # mail-db.
+    size: 5Gi
     # System PVCs MUST use longhorn-system-local (or -ha when policy
     # is HA — operator flip via Apply Tier patches both numberOfReplicas
     # and nodeSelector on the live volume). The bare `longhorn` class
@@ -117,15 +123,32 @@ spec:
     # a replica on a worker node — never desired for postgres.
     storageClass: longhorn-system-local
 
-  # Per-instance resources. Conservative defaults for staging;
-  # production overlay should bump to 4Gi memory + 2 CPU.
+  # Per-instance resources. Sized for low-traffic single-tenant install.
+  # Live observation 2026-05-08: actual usage 108 Mi / 26m. Bump
+  # production-overlay (or via the storage policy advisor) when
+  # workload grows.
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 50m
+      memory: 128Mi
     limits:
       cpu: "1"
       memory: 1Gi
+
+  # Slow the instance-manager probes from CNPG defaults (10s) to 60s.
+  # Each probe runs `pg_isready` against the local socket — a free
+  # operation on a healthy DB but, on a low-traffic single-tenant
+  # install, 10s adds up to ~8 600 invocations per pod per day. 60s
+  # reduces this to ~1 440 with no observable failure-detection
+  # impact (failover still triggers on actual crash via the operator's
+  # event watch — the periodic probe is a backstop, not a primary
+  # signal). startup keeps the default 5s so first-boot detection
+  # stays snappy.
+  probes:
+    liveness:
+      periodSeconds: 60
+    readiness:
+      periodSeconds: 60
 
   # Bind to the system-only nodes via the same toleration the
   # rest of the platform Deployments use. Without it, CNPG pods

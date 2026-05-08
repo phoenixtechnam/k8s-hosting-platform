@@ -46,7 +46,21 @@ TIER_REJECT=(
 
 # Common dry-run args. Domain/email values are placeholders — dry-run
 # exits before they're validated against ACME/DNS.
-DRY_ARGS=(--dry-run --join-as server --domain test.invalid --acme-email t@t.invalid)
+#
+# --allow-source exercises Phase 1 trust-seed validation (regex + python
+# ipaddress). Includes IPv4 single, IPv4 CIDR, comma-tolerant form, and
+# IPv6 to cover the full parser surface in every supported distro. If
+# any token fails validation, parse_args errors out before --dry-run
+# returns, which surfaces as a non-zero exit on the matrix run.
+DRY_ARGS=(
+  --dry-run
+  --join-as server
+  --domain test.invalid
+  --acme-email t@t.invalid
+  --allow-source 198.51.100.7
+  --allow-source 10.0.0.0/16,fd00::/8
+  --allow-source 2001:db8::1
+)
 
 # CentOS 8 stock image: removed from Docker Hub after EOL. We assert
 # that bootstrap rejects classic CentOS via the centos:7 case; that's
