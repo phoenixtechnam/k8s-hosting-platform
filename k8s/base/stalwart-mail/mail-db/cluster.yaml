@@ -38,6 +38,13 @@ spec:
     labels:
       app: mail-pg
       app.kubernetes.io/part-of: hosting-platform
+      # Canonical labels — see k8s/base/database.yaml for the full
+      # rationale. tl;dr: PV names are auto-generated UUIDs; these
+      # labels propagate PVC → PV via the storage-policy reconciler so
+      # `kubectl get pv -L platform/role,platform/owner` is meaningful.
+      platform/role: mail-db
+      platform/owner: mail
+      platform/managed-by: platform-api
 
   # spec.instances is INTENTIONALLY OMITTED — see k8s/base/database.yaml
   # for the full rationale. tl;dr: setting it here means Flux's merge-

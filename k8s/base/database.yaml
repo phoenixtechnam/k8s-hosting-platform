@@ -49,6 +49,16 @@ spec:
     labels:
       app: postgres
       app.kubernetes.io/part-of: hosting-platform
+      # Canonical labels — propagate to every CNPG-created PVC/Pod/Service,
+      # then mirrored from PVC → bound PV by the storage-policy reconciler.
+      # Operators can do `kubectl get pv -L platform/role,platform/owner` and
+      # see meaningful columns alongside the CSI-generated PV UUID.
+      # canonical-name is omitted here because each CNPG instance gets its
+      # own PVC name (system-db-1, system-db-2, …); only role/owner are
+      # cluster-wide.
+      platform/role: system-db
+      platform/owner: system
+      platform/managed-by: platform-api
 
   # spec.instances is INTENTIONALLY OMITTED. CNPG defaults to 1 on
   # first init. Apply HA patches this imperatively via

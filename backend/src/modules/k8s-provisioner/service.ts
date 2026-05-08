@@ -8,6 +8,7 @@ import { translateOperatorError } from '../../shared/operator-error.js';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
 import { start as startTask, finishByRef } from '../tasks/service.js';
+import { clientStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 
 /**
  * Render a raw provisioning error into either a JSON-stringified
@@ -431,6 +432,11 @@ export async function applyPVC(
             'recurring-job-group.longhorn.io/default': 'enabled',
             'app.kubernetes.io/part-of': 'hosting-platform',
             'app.kubernetes.io/component': 'tenant-storage',
+            // Canonical labels — mirrored to the bound PV by the
+            // storage-policy reconciler so `kubectl get pv` and the
+            // Longhorn UI can show meaningful names alongside the
+            // CSI-generated PV UUID.
+            ...clientStoragePvcLabelsFromNamespace(namespace),
           },
         },
         spec: {

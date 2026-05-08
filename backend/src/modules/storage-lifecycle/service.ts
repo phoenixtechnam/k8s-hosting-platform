@@ -13,6 +13,7 @@ import { getSnapshotStore, type SnapshotStore } from './snapshot-store.js';
 import { snapshotTenantPVC } from './snapshot.js';
 import { restoreTenantPVC } from './restore.js';
 import { quiesce, unquiesce, waitForQuiesced, type QuiesceSnapshot } from './quiesce.js';
+import { clientStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
 
 /**
@@ -898,7 +899,21 @@ async function applyPVCMib(k8s: K8sClients, namespace: string, sizeMib: number, 
     await k8s.core.createNamespacedPersistentVolumeClaim({
       namespace,
       body: {
-        metadata: { name: `${namespace}-storage`, namespace },
+        metadata: {
+          name: `${namespace}-storage`,
+          namespace,
+          labels: {
+            // Same label set as applyPVC in k8s-provisioner — the
+            // destructive-resize path replaces the PVC, so without
+            // re-stamping these labels the tenant would drop out of
+            // both the backup RecurringJob and the canonical label
+            // index after a shrink/snap-restore.
+            'recurring-job-group.longhorn.io/default': 'enabled',
+            'app.kubernetes.io/part-of': 'hosting-platform',
+            'app.kubernetes.io/component': 'tenant-storage',
+            ...clientStoragePvcLabelsFromNamespace(namespace),
+          },
+        },
         spec: {
           accessModes: ['ReadWriteOnce'],
           storageClassName: storageClass,
