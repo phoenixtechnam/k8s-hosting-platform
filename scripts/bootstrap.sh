@@ -349,11 +349,23 @@ marker_set()    { mkdir -p "$MARKER_DIR"; touch "${MARKER_DIR}/.${1}"; }
 # to ALLOW_SOURCE_LIST_V4 or ALLOW_SOURCE_LIST_V6. Hard-fails on
 # malformed input BEFORE any nft-grammar concatenation downstream.
 parse_allow_source_arg() {
+  # python3 is required for the ipaddress validation round-trip below.
+  # Bootstrap runs parse_args BEFORE install_base_packages, so on a
+  # fresh distro python3 may be absent. Fail with a clear message
+  # rather than the misleading "failed CIDR validation" we'd get if
+  # the python heredoc silently produced empty output.
+  if ! command -v python3 >/dev/null 2>&1; then
+    error "python3 not found — required for --allow-source CIDR validation. Install python3 first (Debian/Ubuntu: apt install python3; RHEL: dnf install python3) and re-run."
+  fi
   local raw="$1" tok normalized family
   # IFS is restored on subshell exit; safe inside a function.
   local IFS=','
   for tok in $raw; do
-    tok="${tok// /}"  # strip whitespace
+    # Strip both spaces and tabs to canonicalise input. Tabs are not
+    # rejected by the regex arms below (their character classes don't
+    # include \t), but stripping makes the error message cleaner if a
+    # downstream check fires.
+    tok="${tok//[[:space:]]/}"
     [[ -z "$tok" ]] && continue
     if [[ "$tok" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
       normalized="${tok}/32"; family=v4
@@ -367,7 +379,9 @@ parse_allow_source_arg() {
       error "Invalid --allow-source token: '${tok}'. Must be IPv4/v6 address (/32, /128 implied) or CIDR."
     fi
     # Final sanity check via python's ipaddress: catches /33, all-zeros,
-    # malformed v6 ranges that the regex above accepts.
+    # malformed v6 ranges that the regex above accepts. python3 presence
+    # was confirmed at function entry, so an empty result here means
+    # the token failed ipaddress.ip_network() — never a missing binary.
     normalized=$(python3 - "$normalized" <<'PYEOF' 2>/dev/null || true
 import ipaddress, sys
 try:
@@ -506,6 +520,20 @@ parse_args() {
   fi
   if [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]]; then
     parse_allow_source_arg "$CLUSTER_NETWORK_CIDR_V6"
+  fi
+
+  # GUARD: --calico-wg-public=false scopes WireGuard 51821 to
+  # @trusted_ranges_v{4,6}. If both lists are empty (no --allow-source,
+  # no --cluster-network-cidr, no auto-detected mesh interface), WG
+  # becomes unreachable from every source and Calico's pod-traffic
+  # encryption silently fails. Warn loud — auto-detect at firewall-
+  # render time may still populate the lists, in which case the warning
+  # is benign; but a no-mesh single-node cluster with this flag set is
+  # almost certainly a misconfiguration.
+  if [[ "$CALICO_WG_PUBLIC" == "false" \
+        && ${#ALLOW_SOURCE_LIST_V4[@]} -eq 0 \
+        && ${#ALLOW_SOURCE_LIST_V6[@]} -eq 0 ]]; then
+    warn "--calico-wg-public=false with no --allow-source / --cluster-network-cidr: trusted_ranges may be empty after auto-detect, in which case WireGuard port 51821 becomes unreachable from all sources. If you intend this, ignore. Otherwise add --allow-source <CIDR>."
   fi
 
   # Validate K3S_SERVER_IP shape if set. Same defence-in-depth — the
@@ -880,15 +908,20 @@ configure_firewall() {
   # peers from day one. Skipped when the operator passed --cluster-
   # network-cidr explicitly (parse_args already merged that into
   # ALLOW_SOURCE_LIST_V*).
+  # Route auto-detected CIDRs through parse_allow_source_arg for the
+  # same regex + python ipaddress validation the explicit --allow-source
+  # path uses. Auto-detected values come from `ip route show` parsing
+  # (low risk) but a future kernel/route-table change could surface
+  # unexpected formats; the validator is the single source of truth.
   if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
     if detected=$(detect_mesh_v4_cidr 2>/dev/null); then
       CLUSTER_NETWORK_CIDR="$detected"
-      ALLOW_SOURCE_LIST_V4+=("$detected")
+      parse_allow_source_arg "$detected"
       log "Auto-detected mesh interface; --cluster-network-cidr=${CLUSTER_NETWORK_CIDR} (mirrored into allow-source)"
       if [[ -z "$CLUSTER_NETWORK_CIDR_V6" ]]; then
         CLUSTER_NETWORK_CIDR_V6=$(detect_mesh_v6_cidr 2>/dev/null || true)
         if [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]]; then
-          ALLOW_SOURCE_LIST_V6+=("$CLUSTER_NETWORK_CIDR_V6")
+          parse_allow_source_arg "$CLUSTER_NETWORK_CIDR_V6"
           log "  + auto-detected v6: --cluster-network-cidr-v6=${CLUSTER_NETWORK_CIDR_V6} (mirrored)"
         fi
       fi
