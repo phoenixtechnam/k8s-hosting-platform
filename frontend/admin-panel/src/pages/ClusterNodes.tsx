@@ -6,6 +6,7 @@ import {
 import clsx from 'clsx';
 import { useClusterNodes, useDeleteNode } from '@/hooks/use-cluster-nodes';
 import { useNodeSubsystemHealth, type NodeSubsystemReport, type NodeSubsystemStatus } from '@/hooks/use-cluster-health';
+import { useNodeHealth, type NodeHealthEntry } from '@/hooks/use-node-health';
 import type { ClusterNodeResponse, NodeIngressMode } from '@k8s-hosting/api-contracts';
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
@@ -74,9 +75,13 @@ interface ClusterNodesProps {
 export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {}) {
   const { data, isLoading, error } = useClusterNodes();
   const { data: subsystemData } = useNodeSubsystemHealth();
+  const { data: nodeHealthData } = useNodeHealth();
   const nodes = (data?.data ?? []) as readonly ClusterNodeResponse[];
   const subsystemByName = new Map<string, NodeSubsystemReport>(
     (subsystemData?.data.nodes ?? []).map((s) => [s.nodeName, s]),
+  );
+  const nodeHealthByName = new Map<string, NodeHealthEntry>(
+    (nodeHealthData?.data.nodes ?? []).map((n) => [n.name, n]),
   );
 
   if (isLoading) {
@@ -119,7 +124,7 @@ export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {
           <ClusterHealthBar nodes={nodes} subsystemByName={subsystemByName} />
           <div className="space-y-3">
             {nodes.map((node) => (
-              <NodeCard key={node.name} node={node} subsystem={subsystemByName.get(node.name)} />
+              <NodeCard key={node.name} node={node} subsystem={subsystemByName.get(node.name)} health={nodeHealthByName.get(node.name)} />
             ))}
           </div>
         </>
@@ -257,7 +262,7 @@ function HealthChip({
   return <span className={cls} data-testid={testId}>{children}</span>;
 }
 
-function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; readonly subsystem?: NodeSubsystemReport }) {
+function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeResponse; readonly subsystem?: NodeSubsystemReport; readonly health?: NodeHealthEntry }) {
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [drainOpen, setDrainOpen] = useState(false);
@@ -336,6 +341,27 @@ function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; rea
                 </span>
               )}
               <RolePill role={node.role} />
+              {health && health.severity !== 'normal' && (
+                <span
+                  className={clsx(
+                    'rounded-full px-2 py-0.5 text-xs font-medium',
+                    health.severity === 'critical'
+                      ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300'
+                      : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+                  )}
+                  title={
+                    [
+                      health.pressures.length > 0 ? `${health.pressures.join(' + ')}-pressure` : null,
+                      health.csiDriversMissing.length > 0 ? `CSI missing: ${health.csiDriversMissing.join(', ')}` : null,
+                      health.evictionsLastHour > 0 ? `${health.evictionsLastHour} pod evictions/h` : null,
+                      !health.ready ? 'NotReady' : null,
+                    ].filter(Boolean).join(' · ') || `severity=${health.severity}`
+                  }
+                  data-testid={`node-health-badge-${node.name}`}
+                >
+                  {health.severity === 'critical' ? '⚠ critical' : '! warning'}
+                </span>
+              )}
               {node.canHostClientWorkloads ? (
                 <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">
                   hosts tenants
