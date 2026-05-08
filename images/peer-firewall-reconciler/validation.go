@@ -27,6 +27,11 @@ import (
 //     too, but bootstrap-time --allow-source seed bypasses that path)
 //   - empty / whitespace-only input
 //
+// IPv4-mapped IPv6 addresses (e.g. "::ffff:1.2.3.4") are unmapped
+// before family classification — otherwise nft would route them into
+// trusted_ranges_v6 where conntrack wouldn't match the underlying v4
+// traffic. Always classify by the underlying address family.
+//
 // Returned canonical form is what the reconciler writes to CR status
 // AND to nft, so a round-trip through this function is the single
 // source of truth for "is this IP/CIDR usable?".
@@ -36,13 +41,15 @@ func parseIPOrCIDR(s string) (canonical, family string, ok bool) {
 		return "", "", false
 	}
 
-	// Try as Prefix first (covers both bare/* and CIDR forms via fallback).
+	// Try as Prefix (CIDR form with slash). Bare IPs fall through to
+	// the Addr path below.
 	if p, err := netip.ParsePrefix(s); err == nil {
 		return canonicalisePrefix(p)
 	}
 
 	// Try as bare Addr; promote to /32 or /128 prefix.
 	if a, err := netip.ParseAddr(s); err == nil {
+		a = a.Unmap()
 		if a.Is4() {
 			return a.String() + "/32", "v4", true
 		}
@@ -57,6 +64,7 @@ func parseIPOrCIDR(s string) (canonical, family string, ok bool) {
 // parseBareIP — accepts only a bare IP, no prefix. Used by
 // ClusterPendingPeer.spec.ip. Returns canonical "<ip>/32" or "<ip>/128"
 // (CPP semantically pre-authorises a single host, never a range).
+// IPv4-mapped IPv6 addresses are unmapped first so they classify as v4.
 func parseBareIP(s string) (canonical, family string, ok bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -66,6 +74,7 @@ func parseBareIP(s string) (canonical, family string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
+	a = a.Unmap()
 	if a.Is4() {
 		return a.String() + "/32", "v4", true
 	}

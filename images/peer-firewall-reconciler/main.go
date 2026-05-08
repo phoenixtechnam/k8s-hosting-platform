@@ -83,6 +83,13 @@ func main() {
 	go func() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+		// signal.Stop unregisters the channel so a future cancel path
+		// (e.g. test harness, restart-on-cache-failure) doesn't leak the
+		// signal subscription. signal.Notify registrations are global —
+		// no Stop here means the channel stays subscribed for the
+		// process lifetime, which mostly doesn't matter for a DaemonSet
+		// but trips signal-hygiene linters.
+		defer signal.Stop(sigs)
 		<-sigs
 		slog.Info("shutdown signal received")
 		cancel()
@@ -167,15 +174,13 @@ func (r *reconciler) kick() {
 	}
 }
 
-// idleForever blocks on SIGTERM/SIGINT. Retained for backward-compat
-// with the prior "idle if cidr/single mode" behavior — no longer
-// reachable in the always-on design but kept in case a future
-// kill-switch flag re-introduces an idle path.
-//
-//nolint:unused
+// idleForever blocks on SIGTERM/SIGINT. Reached when the startup probe
+// detects missing nft sets — we want a clear error log and a benign
+// pause, not a crashloop that spams nft errors at floorReconcile cadence.
 func idleForever() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigs)
 	<-sigs
 }
 

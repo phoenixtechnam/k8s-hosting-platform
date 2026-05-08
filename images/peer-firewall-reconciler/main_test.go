@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -76,9 +75,3 @@ func (s staticLister) List(_ labels.Selector) ([]*corev1.Node, error) {
 	return s.items, nil
 }
 
-// reconcilerCtx — minimal context for tests that exercise the run loop.
-//
-//nolint:unused
-func reconcilerCtx() context.Context {
-	return context.Background()
-}

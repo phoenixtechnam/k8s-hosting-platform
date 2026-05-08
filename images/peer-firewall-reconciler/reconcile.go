@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
+	"net/netip"
 	"sort"
 	"time"
 
@@ -27,6 +27,24 @@ import (
 // machinery and provides an injection point for a static slice fake.
 type nodeLister interface {
 	List(selector labels.Selector) ([]*corev1.Node, error)
+}
+
+// applyIfChanged compares the rendered script against the cached last
+// applied bytes; on change, applies via runNft and updates the cache.
+// Holds r.mu via defer so any future caller that drives reconcileOnce
+// concurrently (test harness, forced-refresh endpoint) is automatically
+// safe — no early-unlock-then-return footgun.
+func (r *reconciler) applyIfChanged(script []byte) (changed bool, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if bytes.Equal(script, r.last) {
+		return false, nil
+	}
+	if err := r.runNft(script); err != nil {
+		return false, err
+	}
+	r.last = script
+	return true, nil
 }
 
 // reconcileOnce gathers all three sources, computes the four nft
@@ -82,12 +100,25 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 		}
 		canonical, family, ok := parseBareIP(spec.IP)
 		if !ok {
-			// Spec IP fails the authoritative validator. Write Failed.
+			// Spec IP fails the authoritative validator. patchCPPStatus
+			// re-validates downstream and writes the Failed condition.
 			cppPatches[cpp.GetName()] = cpp
+			slog.Warn("clusterpendingpeer spec.ip rejected by net/netip; pending peer will not be installed",
+				"name", cpp.GetName(),
+				"raw_ip", spec.IP)
 			continue
 		}
 		bareIP := stripPrefix(canonical)
-		expiresAt := cpp.GetCreationTimestamp().Add(time.Duration(spec.TTLSeconds) * time.Second)
+		// Guard against zero creationTimestamp — would otherwise compute
+		// expiresAt as year 1 + ttlSeconds and immediately delete a CR
+		// the operator just created. Treat zero as "just now" so the CR
+		// gets a normal TTL window. Stub-Time should never escape the
+		// kube-API in practice, but the cost of the guard is one branch.
+		ct := cpp.GetCreationTimestamp().Time
+		if ct.IsZero() {
+			ct = now
+		}
+		expiresAt := ct.Add(time.Duration(spec.TTLSeconds) * time.Second)
 
 		// TTL: claimed CRs get an extra grace window before delete so
 		// the operator can observe the "Claimed" state in the UI.
@@ -128,11 +159,16 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 		ctrPatches[ctr.GetName()] = ctr
 		spec, ok := readCTRSpec(ctr)
 		if !ok {
-			continue // status patch will write Failed
+			slog.Warn("clustertrustedrange has empty spec.cidr; status will be Ready=False",
+				"name", ctr.GetName())
+			continue // patchCTRStatus re-validates and writes the Failed condition
 		}
 		canonical, family, ok := parseIPOrCIDR(spec.Cidr)
 		if !ok {
-			continue // status patch will write Failed
+			slog.Warn("clustertrustedrange spec.cidr rejected by net/netip; trust range will not be installed",
+				"name", ctr.GetName(),
+				"raw_cidr", spec.Cidr)
+			continue // patchCTRStatus re-validates and writes the Failed condition
 		}
 		if family == "v4" {
 			trustedV4 = append(trustedV4, canonical)
@@ -154,16 +190,10 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 		TrustedV4: trustedV4,
 		TrustedV6: trustedV6,
 	})
-	r.mu.Lock()
-	scriptChanged := !bytes.Equal(script, r.last)
-	if scriptChanged {
-		if err := r.runNft(script); err != nil {
-			r.mu.Unlock()
-			return fmt.Errorf("apply nft: %w", err)
-		}
-		r.last = script
+	scriptChanged, err := r.applyIfChanged(script)
+	if err != nil {
+		return fmt.Errorf("apply nft: %w", err)
 	}
-	r.mu.Unlock()
 
 	if scriptChanged {
 		slog.Info("nft sets reconciled",
@@ -175,10 +205,24 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 
 	// 5. Status patches + cleanup. All best-effort — kube-API hiccup
 	// on one resource doesn't roll back firewall changes.
+	//
+	// CPPs that just transitioned to claimed get a single combined
+	// patch via markCPPClaimed (which carries the full status payload
+	// including normalizedIp, family, expiresAt). Skipping patchCPPStatus
+	// for them avoids a double-patch race where MergePatchType replaces
+	// the conditions array wholesale and the second writer overwrites
+	// the first's fields.
+	toClaimNames := make(map[string]struct{}, len(cppToClaim))
+	for _, cpp := range cppToClaim {
+		toClaimNames[cpp.GetName()] = struct{}{}
+	}
 	for _, ctr := range ctrPatches {
 		r.patchCTRStatus(ctx, ctr, now)
 	}
-	for _, cpp := range cppPatches {
+	for name, cpp := range cppPatches {
+		if _, alsoClaiming := toClaimNames[name]; alsoClaiming {
+			continue
+		}
 		r.patchCPPStatus(ctx, cpp, now)
 	}
 	for _, cpp := range cppToClaim {
@@ -287,12 +331,21 @@ func (r *reconciler) patchCPPStatus(ctx context.Context, cpp *unstructured.Unstr
 	})
 }
 
-// markCPPClaimed sets status.claimedAt + a Claimed=True condition.
-// Called from reconcileOnce ONLY for CPPs whose IP just appeared in
-// kube-API Node InternalIPs — the new node has joined.
+// markCPPClaimed sets status.claimedAt + Claimed=True condition AND
+// (idempotently) the full status payload normally written by
+// patchCPPStatus — normalizedIp, family, expiresAt, observedGeneration
+// — in a single MergePatch call. The caller in reconcileOnce skips
+// patchCPPStatus for any CPP also in cppToClaim, so the conditions
+// array isn't subject to a wholesale-array overwrite race.
 func (r *reconciler) markCPPClaimed(ctx context.Context, cpp *unstructured.Unstructured, now time.Time) {
+	spec, _ := readCPPSpec(cpp)
+	canonical, family, _ := parseBareIP(spec.IP) // already validated upstream; ignoring ok is safe here
+	expiresAt := cpp.GetCreationTimestamp().Add(time.Duration(spec.TTLSeconds) * time.Second)
 	r.writeStatus(ctx, r.cppClient, cpp, statusPayload{
 		ObservedGeneration: cpp.GetGeneration(),
+		NormalizedIp:       canonical,
+		Family:             family,
+		ExpiresAt:          &expiresAt,
 		ClaimedAt:          &now,
 		Conditions: []condition{{
 			Type:    "Claimed",
@@ -402,22 +455,26 @@ func renderConditions(conds []condition) []map[string]any {
 }
 
 // splitInternalIPs separates Node.status.addresses[type=InternalIP] into
-// IPv4 and IPv6 sorted slices. Sorted output makes the rendered nft
-// script deterministic for the no-op short-circuit in reconcileOnce.
+// IPv4 and IPv6 sorted slices. Uses net/netip + Unmap to match the
+// classification rules used by parseIPOrCIDR / parseBareIP — an
+// IPv4-mapped IPv6 InternalIP (rare but possible on some kubelet
+// configs) lands in cluster_peers_v4, never v6. Sorted output makes
+// the rendered nft script deterministic for the diff cache.
 func splitInternalIPs(nodes []*corev1.Node) (v4, v6 []string) {
 	for _, n := range nodes {
 		for _, addr := range n.Status.Addresses {
 			if addr.Type != corev1.NodeInternalIP {
 				continue
 			}
-			ip := net.ParseIP(addr.Address)
-			if ip == nil {
+			a, err := netip.ParseAddr(addr.Address)
+			if err != nil {
 				continue
 			}
-			if ip.To4() != nil {
-				v4 = append(v4, ip.String())
-			} else {
-				v6 = append(v6, ip.String())
+			a = a.Unmap()
+			if a.Is4() {
+				v4 = append(v4, a.String())
+			} else if a.Is6() {
+				v6 = append(v6, a.String())
 			}
 		}
 	}
@@ -461,16 +518,8 @@ func asUnstructured(obj runtime.Object) (*unstructured.Unstructured, bool) {
 	return u, true
 }
 
-var (
-	// errReconcile is reserved for tests that need a sentinel error.
-	//nolint:unused
-	errReconcile = errors.New("reconcile failed")
-)
-
-// statusPatchType — exported for tests that want to assert the patch
-// kind. The reconciler always uses MergePatch because the conditions
-// field has x-kubernetes-list-map-keys=[type] in the CRDs, so a merge
-// patch on the array correctly re-keys by type.
-//
-//nolint:unused
-const statusPatchType = types.MergePatchType
+// errReconcile is a sentinel error used by tests that need to assert
+// failure-propagation behaviour. Lives in reconcile.go (not _test.go)
+// because moving it to a *_test.go file would require a separate
+// package-internal helper for test imports.
+var errReconcile = errors.New("reconcile failed")

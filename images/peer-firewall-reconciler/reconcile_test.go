@@ -212,6 +212,87 @@ func TestReconcileOnce_claimDetection(t *testing.T) {
 	}
 }
 
+// TestReconcileOnce_claimDetectionSinglePatch — regression guard for
+// the double-patch race the code-reviewer flagged. Verifies that a
+// CPP transitioning to claimed in one tick has BOTH normalizedIp +
+// claimedAt + Claimed condition in its final status (not just one
+// or the other due to MergePatchType replacing the conditions array
+// when patchCPPStatus and markCPPClaimed both run).
+func TestReconcileOnce_claimDetectionSinglePatch(t *testing.T) {
+	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	nodes := []*corev1.Node{
+		node("worker-1", corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.0.5"}),
+	}
+	cpps := []*unstructured.Unstructured{
+		mkCPP("worker-1", "10.0.0.5", "worker", 1800, 60, now, 1),
+	}
+	r, _, dyn := fakeReconcilerSetup(t, now, nodes, nil, cpps)
+
+	if err := r.reconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+
+	got, err := dyn.Resource(cppGVR).Get(context.Background(), "worker-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get worker-1: %v", err)
+	}
+	// All four fields must be present in a single combined patch:
+	if v, _, _ := unstructured.NestedString(got.Object, "status", "claimedAt"); v == "" {
+		t.Error("status.claimedAt missing — claim path failed")
+	}
+	if v, _, _ := unstructured.NestedString(got.Object, "status", "normalizedIp"); v != "10.0.0.5/32" {
+		t.Errorf("status.normalizedIp = %q, want 10.0.0.5/32 (must be carried by markCPPClaimed)", v)
+	}
+	if v, _, _ := unstructured.NestedString(got.Object, "status", "family"); v != "v4" {
+		t.Errorf("status.family = %q, want v4", v)
+	}
+	if v, _, _ := unstructured.NestedString(got.Object, "status", "expiresAt"); v == "" {
+		t.Error("status.expiresAt missing")
+	}
+	conds, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+	hasClaimed := false
+	for _, c := range conds {
+		m, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["type"] == "Claimed" && m["status"] == "True" {
+			hasClaimed = true
+		}
+	}
+	if !hasClaimed {
+		t.Errorf("expected Claimed=True condition; got %v", conds)
+	}
+}
+
+// TestReconcileOnce_zeroCreationTimestampGuarded — regression for
+// the "expires immediately" footgun. When kube-API returns a stub
+// CPP with creationTimestamp=zero, the reconciler should treat it as
+// just-created (use now) instead of computing year-1+ttlSeconds and
+// deleting the CR on the first tick.
+func TestReconcileOnce_zeroCreationTimestampGuarded(t *testing.T) {
+	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	cpp := &unstructured.Unstructured{}
+	cpp.SetAPIVersion("networking.platform.phoenix-host.net/v1alpha1")
+	cpp.SetKind("ClusterPendingPeer")
+	cpp.SetName("zero-ct")
+	cpp.SetGeneration(1)
+	// creationTimestamp deliberately not set — defaults to metav1.Time{}.
+	_ = unstructured.SetNestedField(cpp.Object, "10.0.0.7", "spec", "ip")
+	_ = unstructured.SetNestedField(cpp.Object, "worker", "spec", "role")
+	_ = unstructured.SetNestedField(cpp.Object, int64(1800), "spec", "ttlSeconds")
+
+	r, _, dyn := fakeReconcilerSetup(t, now, nil, nil, []*unstructured.Unstructured{cpp})
+	if err := r.reconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+
+	// CR must NOT have been deleted.
+	if _, err := dyn.Resource(cppGVR).Get(context.Background(), "zero-ct", metav1.GetOptions{}); err != nil {
+		t.Errorf("CPP with zero creationTimestamp was deleted (premature TTL): %v", err)
+	}
+}
+
 func TestReconcileOnce_invalidCidrPatchesFailedCondition(t *testing.T) {
 	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	ctrs := []*unstructured.Unstructured{

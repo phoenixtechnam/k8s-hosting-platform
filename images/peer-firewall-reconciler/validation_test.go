@@ -96,6 +96,29 @@ func TestParseBareIP_rejectsCIDRandJunk(t *testing.T) {
 	}
 }
 
+func TestParseIPOrCIDR_unmapsIPv4InV6(t *testing.T) {
+	// "::ffff:1.2.3.4" is IPv4-mapped-IPv6. Without Unmap() it would
+	// classify as v6 and end up in trusted_ranges_v6 where conntrack
+	// wouldn't match v4 traffic. Verify the unmapping path works.
+	got, family, ok := parseIPOrCIDR("::ffff:1.2.3.4")
+	if !ok {
+		t.Fatalf("expected ok=true, got false")
+	}
+	if family != "v4" {
+		t.Errorf("family = %q, want v4 (after unmap)", family)
+	}
+	if got != "1.2.3.4/32" {
+		t.Errorf("canonical = %q, want 1.2.3.4/32", got)
+	}
+}
+
+func TestParseBareIP_unmapsIPv4InV6(t *testing.T) {
+	got, family, ok := parseBareIP("::ffff:10.0.0.5")
+	if !ok || family != "v4" || got != "10.0.0.5/32" {
+		t.Errorf("parseBareIP unmap = %q,%q,%v ; want 10.0.0.5/32,v4,true", got, family, ok)
+	}
+}
+
 func TestStripPrefix(t *testing.T) {
 	cases := map[string]string{
 		"10.0.0.5/32":         "10.0.0.5",
