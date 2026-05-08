@@ -252,6 +252,15 @@ export async function streamEncryptedExport(args: StreamExportArgs): Promise<Rea
   })();
 
   const gzip = createGzip({ level: 6 });
+  // CRITICAL: stream.pipe() does NOT forward errors from src to dest.
+  // Without this listener a `tar.destroy(err)` from the IIFE above
+  // emits 'error' on `tar`, no one is listening on `tar` (the route
+  // handler attaches to the returned `gzipped`/cipher stream), and
+  // Node treats it as an uncaughtException — killing the entire
+  // platform-api pod. Forward tar errors to gzip so the route's
+  // stream.on('error', ...) handler catches them and the pod stays
+  // up. Same pattern below for cipher/headerPrepender.
+  tar.on('error', (err) => gzip.destroy(err));
   const gzipped = (tar as unknown as Readable).pipe(gzip);
 
   if (!encrypt) {
@@ -285,6 +294,11 @@ export async function streamEncryptedExport(args: StreamExportArgs): Promise<Rea
     },
   });
 
+  // Same error-forwarding chain for the cipher path. Without these,
+  // an early error in the upstream tar/gzip silently strands the
+  // response and would crash the pod on a second occurrence.
+  gzipped.on('error', (err) => cipher.destroy(err));
+  cipher.on('error', (err) => headerPrepender.destroy(err));
   return gzipped.pipe(cipher).pipe(headerPrepender);
 }
 

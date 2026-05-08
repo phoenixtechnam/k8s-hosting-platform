@@ -86,6 +86,48 @@ describe('serializeMeta / parseMeta', () => {
   });
 });
 
+describe('parseMeta v1 → v2 read-side promotion', () => {
+  // Legacy v1 bundles (captured before 2026-05-08) lack the `client`,
+  // `domainsSummary`, `deploymentsSummary` fields. parseMeta promotes
+  // them in-memory so verify / export / restore-cart still work for
+  // pre-existing bundles. The IMPORT endpoint still rejects v1 — that
+  // path is owned by routes.ts (BUNDLE_VERSION_UNSUPPORTED).
+  it('accepts a v1 manifest and fills client/domains/deployments with safe defaults', () => {
+    const v1 = {
+      schemaVersion: 1,
+      backupId: 'bkp-legacy-1',
+      clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b',
+      capturedAt: '2026-05-01T10:00:00.000Z',
+      platformVersion: '0.3.0',
+      initiator: 'admin',
+      systemTrigger: null,
+      label: 'Pre-v2 bundle',
+      components: { files: { sizeBytes: 100, fileCount: 5, sha256: 'a'.repeat(64) } },
+      nodePlacement: null,
+      expiresAt: null,
+      retentionDays: 30,
+      description: null,
+    };
+    const meta = parseMeta(JSON.stringify(v1));
+    expect(meta.schemaVersion).toBe(BACKUP_META_SCHEMA_VERSION);
+    expect(meta.backupId).toBe('bkp-legacy-1');
+    expect(meta.client).toBeNull();
+    expect(meta.domainsSummary).toEqual([]);
+    expect(meta.deploymentsSummary).toEqual([]);
+  });
+
+  it('rejects a manifest with an unsupported schemaVersion (forward incompat)', () => {
+    const future = { ...VALID_META, schemaVersion: 99 };
+    try {
+      parseMeta(JSON.stringify(future));
+      expect.fail('expected throw');
+    } catch (err) {
+      expect((err as BackupMetaError).code).toBe('UNKNOWN_SCHEMA_VERSION');
+      expect((err as Error).message).toMatch(/legacy read-only/);
+    }
+  });
+});
+
 describe('componentDir / META_FILENAME', () => {
   it('canonical names match the spec', () => {
     expect(META_FILENAME).toBe('meta.json');

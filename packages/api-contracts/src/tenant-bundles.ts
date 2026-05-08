@@ -157,7 +157,11 @@ export const backupMetaV2Schema = z.object({
   retentionDays: z.number().int().positive(),
   description: z.string().nullable(),
   // v2 additions:
-  client: backupMetaClientSchema,
+  // `client` is required on FRESH captures (orchestrator always writes
+  // it); legacy v1 bundles promoted via `parseMeta` carry `client: null`
+  // so verify / export / restore-cart still work. The IMPORT endpoint
+  // refuses any bundle whose meta has `client: null`.
+  client: backupMetaClientSchema.nullable(),
   domainsSummary: z.array(backupMetaDomainSummarySchema),
   deploymentsSummary: z.array(backupMetaDeploymentSummarySchema),
 });
