@@ -22,6 +22,50 @@ spec:
           labelSelector:
             matchLabels:
               app: oauth2-proxy
+      # Wait for dex's OIDC discovery endpoint to return 200 before
+      # starting oauth2-proxy. Without this, on a fresh bootstrap the
+      # main container starts, hits OIDC discovery, and crashes — either
+      # because dex isn't Ready (nginx returns 404 from the public
+      # ingress), or because the LE cert hasn't been issued yet (nginx
+      # serves the default ingress.local self-signed cert and oauth2-
+      # proxy refuses TLS). After ~8 backoffs the pod stays in long
+      # CrashLoopBackOff and doesn't recover even after dex+cert come
+      # up — empirically requires manual `kubectl delete pod`.
+      #
+      # Polling cluster-internal HTTP (no LE cert dependency, no
+      # ingress dependency) sidesteps both failure modes. The main
+      # container still validates against the public HTTPS issuer at
+      # runtime — by the time the init container exits, dex is ready
+      # and the cert race is over.
+      initContainers:
+        - name: wait-for-dex-discovery
+          image: curlimages/curl:8.10.1
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              # 60×5s = 5 min cap. Longer than any plausible dex+CNPG
+              # cold-boot window. Errors loudly so the failure mode is
+              # visible in `kubectl describe` rather than silent.
+              for i in $(seq 1 60); do
+                if curl -fsS -o /dev/null \
+                     "http://dex.platform.svc.cluster.local:5556/dex/.well-known/openid-configuration"; then
+                  echo "dex discovery ready (attempt $i)"
+                  exit 0
+                fi
+                echo "waiting for dex... ($i/60)"
+                sleep 5
+              done
+              echo "dex never returned 200 — oauth2-proxy cannot start" >&2
+              exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
       containers:
         - name: oauth2-proxy
           image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.2

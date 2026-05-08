@@ -41,6 +41,19 @@ metadata:
     configmap.reloader.stakater.com/reload: "stalwart-config"
     secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds"
 spec:
+  # Rolling-update strategy: kill the old pod BEFORE scheduling the new
+  # one. Stalwart binds 6 hostPorts (25/465/587/143/993/4190); k8s default
+  # `RollingUpdate{maxSurge:1,maxUnavailable:0}` would schedule the new
+  # pod first — on a single-node cluster it stays Pending forever because
+  # the old pod still owns the hostPorts, classic deadlock. On multi-node
+  # HA, this still rolls one pod at a time (replicas-1 keep serving SMTP
+  # / IMAP). Recreate strategy would briefly drop *all* replicas and is
+  # rejected for that reason. See project_testing_bootstrap_2026_05_08.md.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   # Cut 3 (2026-05-05): replicas removed from manifest — owned by the
   # platform-storage-policy reconciler (Apply HA / Apply Local). Same
   # pattern as admin-panel / platform-api / roundcube. Without this,

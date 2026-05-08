@@ -1389,33 +1389,94 @@ apply_node_labels_and_taints() {
       2>/dev/null || true
   fi
 
-  # Tag this server in Longhorn so the platform StorageClass'
-  # nodeSelector="system" can pin platform replicas to system servers
-  # and never to worker hosts. The node CR is created by Longhorn
-  # asynchronously (~30s after install_longhorn finishes), so this
-  # waits up to 60s. Workers stay untagged — tenant SC has no
-  # nodeSelector, so they remain valid replica targets for tenants.
-  apply_longhorn_node_tag "${node_name}"
+  # NOTE: the Longhorn node-tag step has moved out of this function.
+  # It now runs from main() AFTER apply_platform_manifests so the
+  # admission webhook is guaranteed to have endpoints by the time we
+  # patch — see tag_longhorn_node_for_system_replicas() and
+  # project_testing_bootstrap_2026_05_08.md issue 2.
 }
 
-# Idempotent — patches longhorn node CR so .spec.tags includes
-# "system". Safe to re-run.
+# Idempotent — patches Longhorn Node CR so BOTH .spec.tags AND each
+# disk's .spec.disks.<id>.tags include "system". Both are required by
+# the platform's longhorn-system-local StorageClass (nodeSelector +
+# replica scheduler match against both). Self-contained: waits for the
+# admission webhook AND for the Node CR, then verifies the patch stuck
+# (Longhorn's config-map controller can clobber spec mid-startup).
 apply_longhorn_node_tag() {
   local node_name="$1"
-  local i=0
+  local i
+
+  # Wait for the longhorn-admission-webhook to have ready endpoints.
+  # Without this, the patch is silently rejected ("no endpoints
+  # available for service longhorn-admission-webhook") and tags=[]
+  # on the Node CR — every system-tier PVC then sticks Pending with
+  # "specified node tag system does not exist". Caught on the
+  # 2026-05-08 testing.phoenix-host.net bootstrap (51s gap between
+  # tag patch attempt and webhook becoming ready).
+  log "  waiting for longhorn-admission-webhook endpoints (max 5 min)..."
+  i=0
+  while ! kctl get endpoints -n longhorn-system longhorn-admission-webhook \
+            -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null \
+            | grep -q '[0-9]'; do
+    i=$((i + 5))
+    if [[ "$i" -ge 300 ]]; then
+      error "  longhorn-admission-webhook never became ready in 5 min."
+    fi
+    sleep 5
+  done
+
+  # Wait for Longhorn Node CR (created asynchronously by longhorn-manager).
+  i=0
   while ! kubectl get node.longhorn.io -n longhorn-system "$node_name" >/dev/null 2>&1; do
     i=$((i + 2))
     if [[ "$i" -ge 60 ]]; then
-      log "  longhorn node.${node_name} did not register within 60s — skipping tag (run manually:"
-      log "    kubectl patch node.longhorn.io -n longhorn-system ${node_name} --type=merge -p '{\"spec\":{\"tags\":[\"system\"]}}')"
-      return 0
+      error "  longhorn node.${node_name} did not register within 60s."
     fi
     sleep 2
   done
-  log "Tagging Longhorn node ${node_name} with 'system' (platform replica placement)..."
-  kubectl patch node.longhorn.io -n longhorn-system "$node_name" \
-    --type=merge \
-    -p '{"spec":{"tags":["system"]}}' 2>/dev/null || true
+
+  log "Tagging Longhorn node ${node_name} with 'system' (node + all disks)..."
+
+  # Up to 6 attempts (30 + a few jq seconds each = ~3 min cap). Each
+  # attempt re-reads the node, applies the tags via SSA (so additions
+  # merge cleanly on re-runs), then verifies via fresh re-read. The
+  # config-map controller occasionally clobbers spec.tags shortly
+  # after manager startup, so verify-and-retry is mandatory.
+  local attempt nodetag disktag
+  for attempt in 1 2 3 4 5 6; do
+    kubectl get node.longhorn.io -n longhorn-system "$node_name" -o json \
+      | jq '.spec.tags = ["system"] | .spec.disks |= map_values(.tags = ["system"])' \
+      | kubectl apply --server-side --force-conflicts \
+                      --field-manager=bootstrap-longhorn-tag -f - >/dev/null 2>&1 || true
+
+    sleep 3
+    nodetag=$(kubectl get node.longhorn.io -n longhorn-system "$node_name" \
+                -o jsonpath='{.spec.tags[?(@=="system")]}' 2>/dev/null)
+    # Concatenated count: at least one disk tagged "system" — empty
+    # disk maps would yield "" which fails the check.
+    disktag=$(kubectl get node.longhorn.io -n longhorn-system "$node_name" \
+                -o jsonpath='{.spec.disks.*.tags[?(@=="system")]}' 2>/dev/null)
+    if [[ "$nodetag" == "system" && "$disktag" == *"system"* ]]; then
+      log "  longhorn ${node_name} tagged on attempt ${attempt} (node='${nodetag}', disks contain 'system')."
+      return 0
+    fi
+    log "  attempt ${attempt}/6: tag did not stick (node='${nodetag}', disks='${disktag}'); retrying..."
+    sleep 5
+  done
+
+  error "  longhorn node tag never stuck after 6 attempts — system-tier PVCs will fail to provision."
+}
+
+# Public entry: idempotent, safe to re-run. Workers stay untagged
+# (tenant SC has no nodeSelector). For workers this function is
+# called from the control plane via integration scripts, not from
+# the worker's own bootstrap.
+tag_longhorn_node_for_system_replicas() {
+  if [[ "$NODE_ROLE" == "worker" ]]; then
+    log "Worker node — Longhorn 'system' tag is server-only, skipping."
+    return 0
+  fi
+  apply_longhorn_node_tag "$(hostname)"
 }
 
 install_k3s() {
@@ -4082,10 +4143,22 @@ expected k8s/overlays/${PLATFORM_ENV}/ to exist (dev | staging | production)."
     error "envsubst not found on PATH; install gettext-base / gettext."
   fi
   log "Rendering overlay with envsubst (DOMAIN=${PLATFORM_DOMAIN}) and applying..."
+  # SSA with field-manager=kustomize-controller (Flux's default). Without
+  # this, bootstrap uses client-side apply and stashes the manifest in
+  # `last-applied-configuration`. When Flux later reconciles via SSA, k8s
+  # has already added system-managed labels to live Job pods (controller-
+  # uid, batch.kubernetes.io/job-name) — Flux sees a phantom diff in
+  # `spec.template.metadata.labels` and tries to patch it, but Job
+  # `spec.template` is immutable → "field is immutable" → Kustomization
+  # stuck Ready=False. Matching field-manager names lets Flux take clean
+  # ownership on first reconcile. --force-conflicts is needed because k8s
+  # auto-managed labels register as conflicts on first SSA from a new
+  # field manager. See project_testing_bootstrap_2026_05_08.md issue 3.
   DOMAIN="${PLATFORM_DOMAIN}" \
     kubectl --kubeconfig="$KUBECONFIG" kustomize "$overlay_dir" \
     | DOMAIN="${PLATFORM_DOMAIN}" envsubst '${DOMAIN}' \
-    | kctl apply -f -
+    | kctl apply --server-side --force-conflicts \
+                 --field-manager=kustomize-controller -f -
   log "Platform manifests applied with domain ${PLATFORM_DOMAIN} (env=${PLATFORM_ENV})."
 }
 
@@ -4468,6 +4541,13 @@ main() {
     create_platform_configmap
     generate_operator_recipient
     apply_platform_manifests
+    # Tag the Longhorn Node CR (.spec.tags + each disk .tags = "system")
+    # so the platform's longhorn-system-local StorageClass can schedule
+    # replicas. apply_platform_manifests waits for the longhorn admission
+    # webhook before applying overlay, so by here the webhook is ready;
+    # the function still re-checks defensively. See issue 2 in
+    # project_testing_bootstrap_2026_05_08.md.
+    tag_longhorn_node_for_system_replicas
     # Stalwart 0.16 first-install bootstrap. Runs after apply_platform_manifests
     # so the stalwart-mail manifests (Deployment, CNPG Cluster, bootstrap Job)
     # exist in the cluster before we wait for them. Skips gracefully when the
