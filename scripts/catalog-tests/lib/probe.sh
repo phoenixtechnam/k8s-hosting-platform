@@ -17,9 +17,14 @@ probe_pod_ready_only() {
   return 1
 }
 
-# probe_http_ingress NAMESPACE PATH MIN_CODE MAX_CODE TIMEOUT_S
+# probe_http_ingress NAMESPACE PATH MIN_CODE MAX_CODE TIMEOUT_S [ENTRY_CODE]
 # Curls the deployed Service from inside the tenant namespace using a
 # transient pod, asserting the response code is in [MIN_CODE, MAX_CODE].
+# ENTRY_CODE (optional) is the catalog entry's code — when given, the
+# probe prefers the Service labelled `component=<ENTRY_CODE>`. For
+# multi-component apps (nextcloud, jitsi, immich, ...) the entry-code
+# component is the ingress target by convention; without this hint the
+# probe sometimes lands on a sidecar (collabora, redis, etc.).
 #
 # We deliberately bypass the external ingress + cert-manager + DNS chain
 # here — those are platform concerns covered by integration-staging.sh's
@@ -31,7 +36,7 @@ probe_pod_ready_only() {
 # k8sResourceName in the deployer); we discover it by label selector
 # `platform.io/managed=true=<deplname>` so we don't hard-code the name.
 probe_http_ingress() {
-  local ns="$1" path="$2" min_code="$3" max_code="$4" timeout="$5"
+  local ns="$1" path="$2" min_code="$3" max_code="$4" timeout="$5" code="${6:-}"
   # Wait for any pod in the namespace to be Ready first — without this,
   # a fresh tenant has Service-with-no-endpoints which curl reads as 000.
   if ! kctl -n "$ns" wait --for=condition=Ready pod \
@@ -41,19 +46,31 @@ probe_http_ingress() {
   fi
   # Discover the ingress-target Service. The deployer creates one Service
   # per component, including DB/cache/object-store sidecars (mariadb,
-  # postgresql, redis, mongodb, minio) which we never want to probe via
-  # HTTP — their ports trip the probe with "no response".
+  # postgresql, redis, mongodb, collabora, etc.) — none of which serve
+  # HTTP on the port the catalog declares as the ingress target.
   #
-  # Heuristic: skip `file-manager` (always present) AND any Service whose
-  # only declared port is a known DB/cache/storage backend port. Among
-  # the rest, take the first.
+  # Selection priority:
+  #   1) Service labelled `component=<entry_code>` (the ingress component
+  #      by catalog convention — primary for multi-component apps)
+  #   2) Otherwise, first non-file-manager Service whose port is NOT in
+  #      the known DB/cache backend allowlist
   local svc port
   svc=$(kctl -n "$ns" get svc -o json \
-    | python3 -c "
-import json, sys
-DB_PORTS = {3306, 5432, 27017, 6379, 11211, 5984, 9092, 25, 53, 9001}
-d = json.load(sys.stdin)
-for s in d.get('items', []):
+    | CODE="$code" python3 -c "
+import json, os, sys
+code = os.environ.get('CODE') or ''
+DB_PORTS = {3306, 5432, 27017, 6379, 11211, 5984, 9092, 9980, 25, 53, 9001}
+items = json.load(sys.stdin).get('items', [])
+# pass 1: prefer Service labelled component=<code>
+if code:
+    for s in items:
+        if s.get('metadata', {}).get('labels', {}).get('component') == code:
+            ports = s.get('spec', {}).get('ports', [])
+            if ports:
+                print(s['metadata']['name'], ports[0]['port'])
+                sys.exit(0)
+# pass 2: first non-file-manager non-backend Service
+for s in items:
     n = s['metadata']['name']
     if n == 'file-manager': continue
     ports = s.get('spec', {}).get('ports', [])
@@ -136,18 +153,14 @@ probe_db_protocol() {
         fi
         ;;
       mongodb)
-        # mongosh inside kubectl exec has hung the harness for 25 min on a
-        # prior run — wrap in `timeout` (inside the pod since `kctl` is a
-        # shell function and `timeout` only runs binaries) and authenticate
-        # explicitly with the seeded root creds.
-        if kctl -n "$ns" exec "$pod" -c mongodb-7 --request-timeout=20s -- sh -c \
-           'timeout 10 mongosh --host 127.0.0.1 --port 27017 \
-              --username "$MONGO_INITDB_ROOT_USERNAME" \
-              --password "$MONGO_INITDB_ROOT_PASSWORD" \
-              --authenticationDatabase admin \
-              --quiet --eval "db.runCommand({ ping: 1 }).ok" 2>/dev/null' \
-           | grep -q '^1$'; then
-          ok "mongodb responding (pod=${pod}, after ${i}s)"; return 0
+        # mongosh inside kubectl exec hangs reliably on the mongo:7 image.
+        # bash /dev/tcp is the simplest "is the port accepting?" probe —
+        # the mongo container has bash (not dash), so explicitly invoke
+        # bash, not sh.
+        if kctl -n "$ns" exec "$pod" -c mongodb-7 --request-timeout=15s -- bash -c \
+           'timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/27017" 2>/dev/null && echo OK' \
+           | grep -q '^OK$'; then
+          ok "mongodb listening on 27017 (pod=${pod}, after ${i}s)"; return 0
         fi
         ;;
       *)

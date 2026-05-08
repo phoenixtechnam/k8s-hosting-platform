@@ -269,7 +269,7 @@ for e in d.get('data', []):
       path=$(echo "$rule" | python3 -c "import json,sys;print(json.load(sys.stdin).get('path','/'))")
       min_code=$(echo "$rule" | python3 -c "import json,sys;print(json.load(sys.stdin).get('expect_code_min',200))")
       max_code=$(echo "$rule" | python3 -c "import json,sys;print(json.load(sys.stdin).get('expect_code_max',399))")
-      probe_http_ingress "$ns" "$path" "$min_code" "$max_code" "$timeout" || probe_ok=$?
+      probe_http_ingress "$ns" "$path" "$min_code" "$max_code" "$timeout" "$code" || probe_ok=$?
       ;;
     db_protocol)
       # Engine derived from the deployment's primary DB component.
