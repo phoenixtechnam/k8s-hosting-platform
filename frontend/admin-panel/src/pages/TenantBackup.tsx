@@ -26,7 +26,7 @@ import {
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
-import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, useBundleDetailLive, useVerifyAllBundles, downloadDataExport, downloadBundleExport, importBundle } from '@/hooks/use-backup-bundles';
+import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, useBundleDetailLive, useVerifyAllBundles, downloadDataExport, downloadBundleExport, importBundle, previewImport, type ImportPreviewResponse } from '@/hooks/use-backup-bundles';
 import type { VerifyAllResult } from '@/hooks/use-backup-bundles';
 import { useAllBackupSchedules, useRunBackupScheduleNow } from '@/hooks/use-backup-schedule';
 import { useRestoreCarts } from '@/hooks/use-restore-carts';
@@ -753,25 +753,83 @@ function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: (
   );
 }
 
+/**
+ * Two-step import flow:
+ *   1. Pick file + (optional) passphrase → click Inspect →
+ *      `POST /import-preview` returns the parsed meta v2 + a local
+ *      lookup of the source clientId.
+ *   2. Server-resolved client info shows in the modal:
+ *      - if the source client exists locally and is active/suspended:
+ *        BLOCK with "use the Restore Cart" warning (no import).
+ *      - if the source client is archived/missing: unlock the
+ *        RestoreFromBundleModal path.
+ *      - if no local match: prompt the operator to either pick a
+ *        target tenant manually (legacy /import) OR open the
+ *        RestoreFromBundleModal in "create-new" mode.
+ *   3. Operator picks the off-site target + final action.
+ *
+ * The clientId field has been removed from the form — the source
+ * meta carries the answer. The modal still exposes a manual override
+ * path (used when the bundle is being adopted by a different
+ * tenant — typical multi-region migration).
+ */
 function ImportBundleModal({ configs, onClose }: {
   configs: ReadonlyArray<{ readonly id: string; readonly name: string; readonly active: boolean }>;
   onClose: () => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [passphrase, setPassphrase] = useState('');
-  const [clientId, setClientId] = useState<string | null>(null);
+  const [showPassphrase, setShowPassphrase] = useState(false);
+  const [preview, setPreview] = useState<ImportPreviewResponse | null>(null);
   const [targetConfigId, setTargetConfigId] = useState<string>(
     () => configs.find((c) => c.active)?.id ?? configs[0]?.id ?? '',
   );
+  // Manual-adoption clientId — only used when the operator overrides
+  // the auto-detected target (e.g. adopting bundle to a different tenant).
+  const [overrideClientId, setOverrideClientId] = useState<string | null>(null);
+  const [showOverride, setShowOverride] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [success, setSuccess] = useState<{ bundleId: string; sizeBytes: number } | null>(null);
 
-  const valid = !!file && passphrase.length >= 12 && !!clientId && !!targetConfigId;
+  // Derived: which downstream path the local match unlocks.
+  // - active/suspended: blocked (operator should use Restore Cart on the existing tenant)
+  // - archived/missing/no-match: unlocked (will open RestoreFromBundleModal in a follow-up; for now → legacy /import with explicit clientId)
+  const localMatch = preview?.localClientMatch ?? null;
+  const blocked = localMatch && (localMatch.status === 'active' || localMatch.status === 'suspended');
+
+  const handleInspect = async () => {
+    if (!file) {
+      setError('Pick a file first.');
+      return;
+    }
+    setError(null);
+    setPending(true);
+    try {
+      const result = await previewImport({ file, passphrase: passphrase || undefined });
+      setPreview(result);
+      // Reset override since a new file may have changed the source client.
+      setOverrideClientId(null);
+      setShowOverride(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Inspect failed');
+    } finally {
+      setPending(false);
+    }
+  };
 
   const handleImport = async () => {
-    if (!valid || !file || !clientId) {
-      setError('All fields required; passphrase must be ≥12 chars.');
+    if (!preview || !file) return;
+    if (blocked) {
+      setError(`This region already has an ${localMatch!.status} client with the source UUID — open the client and use Restore Cart instead. Importing would overwrite live state.`);
+      return;
+    }
+    // Decide the target clientId:
+    //   - If operator picked an override: use it.
+    //   - Else use the source meta clientId (which matches the local archived/missing client).
+    const clientId = overrideClientId ?? preview.sourceMeta.clientId;
+    if (!clientId) {
+      setError('Source meta has no clientId AND no override was picked. Pick a target tenant manually.');
       return;
     }
     setError(null);
@@ -788,7 +846,7 @@ function ImportBundleModal({ configs, onClose }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="import-bundle-title">
-      <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
+      <div className="w-full max-w-2xl rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
         <div className="mb-3 flex items-center justify-between">
           <h3 id="import-bundle-title" className="text-lg font-semibold text-gray-900 dark:text-gray-100">Import bundle</h3>
           <button type="button" onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600" aria-label="Close">
@@ -810,45 +868,155 @@ function ImportBundleModal({ configs, onClose }: {
         ) : (
           <>
             <div className="space-y-3 text-sm">
+              {/* Step 1 — file picker */}
               <div>
-                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Encrypted bundle file (.tar.gz.enc)</label>
+                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+                  Bundle archive
+                  <span className="ml-2 text-gray-400">(.tar.gz, .tar.gz.enc, or .zip)</span>
+                </label>
                 <input
                   type="file"
-                  accept=".enc,.tar.gz.enc,application/octet-stream"
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  accept=".gz,.enc,.tar,.zip,application/octet-stream,application/zip,application/gzip"
+                  onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); }}
                   className="block w-full text-sm text-gray-700 dark:text-gray-300"
                 />
                 {file && <p className="mt-1 text-xs text-gray-500">{file.name} ({(file.size / 1024 / 1024).toFixed(1)} MiB)</p>}
               </div>
 
+              {/* Passphrase — optional, only used if archive is encrypted */}
               <div>
-                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Passphrase</label>
-                <input
-                  type="password"
-                  value={passphrase}
-                  onChange={(e) => setPassphrase(e.target.value)}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-                  autoComplete="new-password"
-                />
+                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+                  Passphrase <span className="text-gray-400">(only if the archive is .tar.gz.enc)</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassphrase ? 'text' : 'password'}
+                    value={passphrase}
+                    onChange={(e) => setPassphrase(e.target.value)}
+                    placeholder="(optional)"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 pr-10 font-mono text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                    autoComplete="off"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassphrase(!showPassphrase)}
+                    className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                    aria-label={showPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+                  >
+                    {showPassphrase ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </div>
 
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Target client (in this region)</label>
-                <SearchableClientSelect selectedClientId={clientId} onSelect={setClientId} placeholder="Pick a client…" />
-              </div>
+              {/* Inspect button — runs the preview if no preview yet */}
+              {!preview && (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleInspect}
+                    disabled={!file || pending}
+                    className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
+                  >
+                    {pending ? <><Loader2 size={14} className="animate-spin" /> Inspecting…</> : <>Inspect archive</>}
+                  </button>
+                </div>
+              )}
 
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Off-site target</label>
-                <select
-                  value={targetConfigId}
-                  onChange={(e) => setTargetConfigId(e.target.value)}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-                >
-                  {configs.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}{c.active ? ' (active)' : ''}</option>
-                  ))}
-                </select>
-              </div>
+              {/* Step 2 — preview + decision */}
+              {preview && (
+                <div className="space-y-3 rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/50">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium text-gray-900 dark:text-gray-100">Detected bundle</h4>
+                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/40 dark:text-blue-300">
+                      {preview.format}
+                    </span>
+                  </div>
+
+                  {/* Source-meta facts */}
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                    {preview.sourceMeta.client?.companyName && (
+                      <><dt className="text-gray-500">Source client</dt><dd className="text-gray-900 dark:text-gray-100">{preview.sourceMeta.client.companyName}</dd></>
+                    )}
+                    {preview.sourceMeta.clientId && (
+                      <><dt className="text-gray-500">Source UUID</dt><dd className="font-mono text-gray-700 dark:text-gray-300" title={preview.sourceMeta.clientId}>{preview.sourceMeta.clientId.slice(0, 8)}…</dd></>
+                    )}
+                    {preview.sourceMeta.client?.regionId && (
+                      <><dt className="text-gray-500">Source region</dt><dd className="font-mono text-gray-700 dark:text-gray-300">{preview.sourceMeta.client.regionId.slice(0, 8)}…</dd></>
+                    )}
+                    {preview.sourceMeta.capturedAt && (
+                      <><dt className="text-gray-500">Captured at</dt><dd className="text-gray-700 dark:text-gray-300">{new Date(preview.sourceMeta.capturedAt).toLocaleString()}</dd></>
+                    )}
+                    <dt className="text-gray-500">Archive size</dt><dd className="text-gray-700 dark:text-gray-300">{(preview.totalBytes / 1024 / 1024).toFixed(1)} MiB · {preview.entryCount} entries</dd>
+                  </dl>
+
+                  {/* Component breakdown */}
+                  {Object.keys(preview.components).length > 0 && (
+                    <div className="text-xs">
+                      <span className="text-gray-500">Components:</span>{' '}
+                      {Object.entries(preview.components).map(([k, v]) => (
+                        <span key={k} className="mr-2 text-gray-700 dark:text-gray-300">
+                          {k} ({v.count}, {(v.totalBytes / 1024 / 1024).toFixed(1)}MiB)
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Local-match decision */}
+                  {localMatch ? (
+                    blocked ? (
+                      <div className="rounded-md bg-red-50 p-2 text-xs text-red-900 dark:bg-red-950/40 dark:text-red-200">
+                        <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
+                        This region already has an <strong>{localMatch.status}</strong> client (<em>{localMatch.companyName}</em>)
+                        with the source UUID. Importing would create a parallel bundle row pointing at the live tenant —
+                        instead, open <code className="font-mono">/clients/{localMatch.id}</code> and use the Restore Cart there.
+                      </div>
+                    ) : (
+                      <div className="rounded-md bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                        <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
+                        This region has an <strong>{localMatch.status}</strong> client (<em>{localMatch.companyName}</em>)
+                        with the source UUID. The import will register the bundle against this client; restoration
+                        is then via the Restore Cart. (Full RestoreFromBundleModal coming soon for {localMatch.status} cases.)
+                      </div>
+                    )
+                  ) : (
+                    <div className="rounded-md bg-blue-50 p-2 text-xs text-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+                      No local client matches the source UUID. Pick a target tenant below to adopt the bundle.
+                    </div>
+                  )}
+
+                  {/* Override picker — only useful when adopting to a different tenant */}
+                  {!blocked && (
+                    <div className="text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setShowOverride(!showOverride)}
+                        className="text-blue-700 underline dark:text-blue-300"
+                      >
+                        {showOverride ? 'Hide' : (localMatch ? 'Adopt under a different tenant…' : 'Pick target tenant…')}
+                      </button>
+                      {(showOverride || !localMatch) && (
+                        <div className="mt-2">
+                          <SearchableClientSelect selectedClientId={overrideClientId} onSelect={setOverrideClientId} placeholder={localMatch ? 'Override target client…' : 'Pick a client…'} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Off-site target — always required */}
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Off-site target</label>
+                    <select
+                      value={targetConfigId}
+                      onChange={(e) => setTargetConfigId(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                    >
+                      {configs.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}{c.active ? ' (active)' : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
 
               {error && (
                 <div className="rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
@@ -861,14 +1029,17 @@ function ImportBundleModal({ configs, onClose }: {
               <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:text-gray-100">
                 Cancel
               </button>
-              <button
-                type="button"
-                onClick={handleImport}
-                disabled={!valid || pending}
-                className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
-              >
-                {pending ? <><Loader2 size={14} className="animate-spin" /> Importing…</> : <><Upload size={14} /> Import</>}
-              </button>
+              {preview && (
+                <button
+                  type="button"
+                  onClick={handleImport}
+                  disabled={pending || !!blocked || (!preview.sourceMeta.clientId && !overrideClientId)}
+                  className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
+                  title={blocked ? 'Source client is active locally — use Restore Cart instead' : ''}
+                >
+                  {pending ? <><Loader2 size={14} className="animate-spin" /> Importing…</> : <><Upload size={14} /> Import</>}
+                </button>
+              )}
             </div>
           </>
         )}
