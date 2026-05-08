@@ -96,6 +96,14 @@ export interface RunBundleInput {
    * the background. Synchronous callers can ignore it.
    */
   readonly onBundleReserved?: (bundleId: string) => void | Promise<void>;
+  /**
+   * The user (admin or client) that initiated the bundle. Threaded
+   * through to the Task Tracker chip so the operator's session lights
+   * up. Null for system/cron-triggered bundles (initiator='system' or
+   * 'cluster') — those land in notifications on failure, never in any
+   * user's chip per the UX agreement.
+   */
+  readonly triggeredByUserId?: string | null;
 }
 
 export interface RunBundleResult {
@@ -140,6 +148,28 @@ export async function runBundle(
     startedAt: new Date(),
   };
   await deps.db.insert(backupJobs).values(newJob);
+
+  // Mirror to the Task Tracker chip — best-effort, never throws.
+  // Skipped when system/cron-triggered (no triggeredByUserId).
+  if (input.triggeredByUserId) {
+    try {
+      const { start: startTask } = await import('../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      await startTask(deps.db, {
+        kind: 'backup.bundle',
+        refId: bundleId,
+        scope: input.initiator === 'client' ? 'client' : 'admin',
+        userId: input.triggeredByUserId,
+        clientId: input.clientId,
+        label: toSafeText(`Backup bundle (${input.clientId.slice(0, 8)})`),
+        target: { type: 'route', href: `/clients/${input.clientId}?tab=backups` },
+        details: { bundleId, initiator: input.initiator },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[tenant-bundles] task tracker enroll failed for ${bundleId}: ${msg}`);
+    }
+  }
 
   // Reserve the bundle in the store (in-flight; meta.json absent).
   const handle = await deps.store.reserveBundle({ backupId: bundleId, clientId: input.clientId });
@@ -423,6 +453,23 @@ export async function runBundle(
       exportArtifact,
     })
     .where(eq(backupJobs.id, bundleId));
+
+  // Mirror terminal state to the chip.
+  if (input.triggeredByUserId) {
+    try {
+      const { finishByRef } = await import('../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const taskStatus = errors.length === 0 ? 'succeeded' : 'failed';
+      await finishByRef(deps.db, 'backup.bundle', bundleId, {
+        status: taskStatus,
+        text: toSafeText(`${(totalSize / (1024 * 1024)).toFixed(1)} MiB captured`),
+        error: errors.length === 0 ? null : errors.join('; ').slice(0, 4096),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[tenant-bundles] task tracker finish failed for ${bundleId}: ${msg}`);
+    }
+  }
 
   return { bundleId, status, meta };
 }

@@ -90,6 +90,13 @@ export async function createSecretsBundleExport(
     });
   });
 
+  // Mirror to Task Tracker chip — best-effort, never throws. The
+  // operator gets a chip row with `target.type='route'` so clicking
+  // navigates to the system-backup runs page.
+  await mirrorRunToTaskTracker(input.db, runId).catch((err) => {
+    logger.warn({ err, runId }, '[system-backup] task tracker enroll failed');
+  });
+
   // Fire and forget. runExport handles its own errors + DB updates.
   void runExport(runId, input, logger);
 
@@ -98,6 +105,57 @@ export async function createSecretsBundleExport(
     status: 'pending',
     pollUrl: `/api/v1/system-backup/secrets/runs/${runId}`,
   };
+}
+
+/**
+ * Sync a `system_backup_runs` row into the Task Tracker chip via the
+ * tasks helper. Idempotent on `(kind='backup.run', ref_id=runId)`.
+ * Cron-driven runs (operatorUserId NULL — scheduled backups) are
+ * `scope='system'` and stay bell-only per the UX agreement.
+ */
+async function mirrorRunToTaskTracker(db: Database, runId: string): Promise<void> {
+  const [run] = await db
+    .select({
+      id: systemBackupRuns.id,
+      kind: systemBackupRuns.kind,
+      status: systemBackupRuns.status,
+      operatorUserId: systemBackupRuns.operatorUserId,
+      errorEnvelope: systemBackupRuns.errorEnvelope,
+    })
+    .from(systemBackupRuns)
+    .where(eq(systemBackupRuns.id, runId))
+    .limit(1);
+  if (!run || !run.operatorUserId) return;
+
+  const isTerminal = run.status === 'succeeded' || run.status === 'failed';
+  const taskStatus: 'running' | 'succeeded' | 'failed' =
+    !isTerminal ? 'running'
+    : run.status === 'failed' ? 'failed'
+    : 'succeeded';
+
+  const { start: startTask, finishByRef } = await import('../tasks/service.js');
+  const { toSafeText } = await import('@k8s-hosting/api-contracts');
+
+  await startTask(db, {
+    kind: 'backup.run',
+    refId: run.id,
+    scope: 'admin',
+    userId: run.operatorUserId,
+    label: toSafeText(`System backup (${run.kind})`),
+    target: { type: 'route', href: '/settings/system-backup' },
+    progressPct: taskStatus === 'succeeded' ? 100 : null,
+    details: { kind: run.kind },
+  });
+
+  if (taskStatus !== 'running') {
+    const errMsg = (run.errorEnvelope && typeof run.errorEnvelope === 'object'
+      ? ((run.errorEnvelope as Record<string, unknown>).message as string | undefined)
+      : null) ?? null;
+    await finishByRef(db, 'backup.run', run.id, {
+      status: taskStatus,
+      error: taskStatus === 'failed' ? errMsg : null,
+    });
+  }
 }
 
 /**
@@ -140,6 +198,18 @@ async function runExport(runId: string, input: ExportRunInput, logger: FastifyLo
         errorEnvelope: { code: 'SYSTEM_BACKUP_EXPORT_FAILED', message: msg } as unknown as Record<string, unknown>,
       })
       .where(eq(systemBackupRuns.id, runId));
+  }
+  // Mirror terminal status into the chip task. Best-effort: a tracker
+  // failure must not propagate into runExport since callers already
+  // returned. Without this, the chip stays at status='running' forever
+  // and only the 24h orphan reaper resolves it.
+  try {
+    await mirrorRunToTaskTracker(input.db, runId);
+  } catch (taskErr) {
+    logger.warn(
+      { err: taskErr instanceof Error ? taskErr.message : String(taskErr), runId },
+      '[system-backup] task tracker finalize failed (non-fatal)',
+    );
   }
 }
 

@@ -278,6 +278,10 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       ?? process.env.PLATFORM_API_INTERNAL_URL
       ?? 'http://platform-api.platform.svc:3000';
 
+    const triggeredByUserId =
+      input.initiator === 'system' || input.initiator === 'cluster'
+        ? null
+        : ((request.user as { sub?: string } | undefined)?.sub ?? null);
     const orchInput = {
       clientId: input.clientId,
       initiator: input.initiator,
@@ -295,6 +299,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       },
       exportMode: input.exportMode ?? null,
       exportPassphrase: input.exportPassphrase ?? null,
+      triggeredByUserId,
     };
     const orchDeps = { db: app.db, k8s, store, platformVersion, secretsKeyHex, platformApiUrl };
 

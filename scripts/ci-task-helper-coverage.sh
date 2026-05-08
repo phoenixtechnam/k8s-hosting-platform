@@ -30,17 +30,32 @@ SURFACE_FILE_MARKERS=(
   "backend/src/modules/clients/bulk.ts|createBulkParentTask"
   # storage ops
   "backend/src/modules/storage-lifecycle/service.ts|mirrorOpToTaskTracker"
+  # Phase 2 surfaces (2026-05-03):
+  # system-backup runs (admin secrets bundle export)
+  "backend/src/modules/system-backup/service.ts|mirrorRunToTaskTracker"
+  # tenant bundle creation (per-client backup)
+  "backend/src/modules/tenant-bundles/orchestrator.ts|tasks/service.js"
+  # postgres PITR start
+  "backend/src/modules/postgres-restore/routes.ts|tasks/service.js"
+  # postgres PITR finalize
+  "backend/src/modules/postgres-restore/service.ts|tasks"
+  # restore-cart execute
+  "backend/src/modules/backup-restore/routes.ts|tasks/service.js"
+  # cache purge
+  "backend/src/modules/storage/routes.ts|tracked"
+  # DNS verify (per-client domain verify)
+  "backend/src/modules/domains/routes.ts|tracked"
+  # Mail admin password rotation (Stalwart JMAP)
+  "backend/src/modules/mail-admin/routes.ts|tasks/service.js"
 )
 
 # Add path-globs of files that the lint will report when newly created
 # under a long-running module — operator must add them to SURFACE_FILE_MARKERS
-# OR justify with a SKIP entry. Phase 1B keeps this conservative; Phase 2
-# expands to system-backup, postgres-restore, mail-rotation, etc.
+# OR justify with a SKIP entry. Phase 2 covers most surfaces; future phases
+# will add: bulk DNS verify, future webmail-master rotation chip, etc.
 SKIP=(
-  # system-backup — Phase 2 wiring deferred
-  # postgres-restore — Phase 2 wiring deferred
-  # restore-cart — Phase 2 wiring deferred
-  # mail rotation — Phase 4 wiring deferred (see TASK_TRACKER.md when added)
+  # webmail-master rotation — short-running variant of mail.rotate; reuses
+  # admin chip via the JMAP rotation, not separately enrolled.
 )
 
 ROOT="${1:-.}"

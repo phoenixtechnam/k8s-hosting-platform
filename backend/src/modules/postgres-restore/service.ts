@@ -219,9 +219,29 @@ export async function isPostgresRestoreInProgressClusterWide(
  *
  * Always succeeds — best-effort; clears both in-memory and DB lock.
  */
-export async function releasePitrLock(db: Database): Promise<void> {
+export async function releasePitrLock(db: Database, opts: { failed?: boolean; error?: string | null } = {}): Promise<void> {
   activeRestore = null;
   await clearPersistedLock(db).catch(() => undefined);
+
+  // Finalize any running postgres.pitr task in the chip — singleton, so
+  // it's safe to look up by kind alone. Best-effort, never throws.
+  try {
+    const { tasks } = await import('../../db/schema.js');
+    const { sql, eq, and } = await import('drizzle-orm');
+    const taskStatus: 'succeeded' | 'failed' = opts.failed ? 'failed' : 'succeeded';
+    await db
+      .update(tasks)
+      .set({
+        status: taskStatus,
+        finishedAt: sql`NOW()`,
+        updatedAt: sql`NOW()`,
+        progressPct: opts.failed ? null : 100,
+        errorMessage: opts.error ?? null,
+      })
+      .where(and(eq(tasks.kind, 'postgres.pitr'), eq(tasks.status, 'running')));
+  } catch {
+    // Helper is best-effort — never block the lock release.
+  }
 }
 
 export async function acquirePitrLockOrThrow(

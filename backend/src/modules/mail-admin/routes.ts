@@ -90,6 +90,34 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     const userId = req.user?.sub ?? 'unknown';
     const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
     app.log.warn({ userId }, 'mail-admin: rotate-admin-password requested (JMAP)');
+
+    // Register the chip task — the verify-loop after JMAP rotation can
+    // take 30-60s as Stalwart pods recycle. Wired via the Task Tracker
+    // helper so the operator sees a spinning chip + completion toast.
+    // Best-effort: tracker errors must not fail the rotation itself.
+    // Cannot use tracked() because the task id must span two logically
+    // separate async paths (rotation + best-effort blocklist purge).
+    let taskId: string | null = null;
+    if (req.user?.sub) {
+      try {
+        const { start: startTask } = await import('../tasks/service.js');
+        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        const started = await startTask(app.db, {
+          kind: 'mail.rotate',
+          scope: 'admin',
+          userId: req.user.sub,
+          label: toSafeText('Rotate Stalwart admin password'),
+          target: { type: 'route', href: '/settings/email-admin' },
+        });
+        taskId = started.id;
+      } catch (taskErr) {
+        app.log.warn(
+          { err: taskErr instanceof Error ? taskErr.message : String(taskErr) },
+          'mail-admin: task tracker enroll failed (non-fatal)',
+        );
+      }
+    }
+
     try {
       const result = await rotateAdminPasswordViaJmap({
         kubeconfigPath,
@@ -137,9 +165,33 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         }, 'mail-admin: blocklist purge failed (non-fatal — rotation already succeeded)');
       }
 
+      if (taskId) {
+        try {
+          const { finish: finishTask } = await import('../tasks/service.js');
+          await finishTask(app.db, taskId, { status: 'succeeded' });
+        } catch (taskErr) {
+          app.log.warn(
+            { err: taskErr instanceof Error ? taskErr.message : String(taskErr) },
+            'mail-admin: task tracker finalize (success) failed (non-fatal)',
+          );
+        }
+      }
+
       return success(result);
     } catch (err) {
       app.log.error({ err, userId }, 'mail-admin: rotation failed');
+      if (taskId) {
+        try {
+          const { finish: finishTask } = await import('../tasks/service.js');
+          const errMsg = err instanceof Error ? err.message : String(err);
+          await finishTask(app.db, taskId, { status: 'failed', error: errMsg });
+        } catch (taskErr) {
+          app.log.warn(
+            { err: taskErr instanceof Error ? taskErr.message : String(taskErr) },
+            'mail-admin: task tracker finalize (failure) failed (non-fatal)',
+          );
+        }
+      }
       if (err instanceof ApiError) throw err;
       throw new ApiError(
         'STALWART_ROTATION_FAILED',

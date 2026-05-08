@@ -129,6 +129,34 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
       throw new ApiError('PITR_FAILED', `Failed to create PITR Job: ${(err as Error).message}`, 500);
     }
 
+    // Register the chip task — refId = Job name (unique per PITR run).
+    // The Job pod runs the orchestration; on success/failure it calls
+    // releasePitrLock which is patched to finalize the matching task
+    // by `(kind='postgres.pitr', running)` (singleton — only one PITR
+    // can run at a time, enforced by the cluster-wide lock).
+    if (actor?.sub) {
+      try {
+        const { start: startTask } = await import('../tasks/service.js');
+        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        await startTask(app.db, {
+          kind: 'postgres.pitr',
+          refId: job.jobName,
+          scope: 'admin',
+          userId: actor.sub,
+          label: toSafeText(`Postgres PITR (${body.clusterNamespace}/${body.clusterName})`),
+          target: { type: 'route', href: '/admin/postgres-restore' },
+          details: {
+            clusterNamespace: body.clusterNamespace,
+            clusterName: body.clusterName,
+            snapshotName: body.snapshotName,
+          },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        request.log.warn(`[postgres-restore] task tracker enroll failed: ${msg}`);
+      }
+    }
+
     reply.code(202);
     return success({
       status: 'started',

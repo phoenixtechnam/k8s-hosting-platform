@@ -39,6 +39,28 @@ export async function storageRoutes(app: FastifyInstance): Promise<void> {
     }
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
+
+    // Wrap the purge in a chip task so the operator can see it running
+    // (typically 30-90s on a busy cluster). dryRun mode also gets a
+    // task — quick win, low overhead, and surfaces the run in audit.
+    const userId = (request.user as { sub?: string } | undefined)?.sub ?? null;
+    if (userId) {
+      const { tracked } = await import('../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      const result = await tracked(
+        app.db,
+        {
+          kind: 'cache.purge',
+          scope: 'admin',
+          userId,
+          label: toSafeText(`Cache purge${parsed.data.dryRun ? ' (dry-run)' : ''}`),
+          target: { type: 'route', href: '/storage' },
+          details: { dryRun: parsed.data.dryRun },
+        },
+        () => purgeUnusedImages(k8s, parsed.data.dryRun),
+      );
+      return success(result);
+    }
     const result = await purgeUnusedImages(k8s, parsed.data.dryRun);
     return success(result);
   });

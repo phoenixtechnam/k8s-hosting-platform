@@ -222,6 +222,28 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, cartId)).limit(1);
     if (!job) throw new ApiError('NOT_FOUND', 'Restore cart vanished mid-claim', 404);
 
+    // Register the chip task — idempotent on (kind, ref_id) so
+    // re-/execute from a partial failure refreshes the same row.
+    if (job.initiatorUserId) {
+      try {
+        const { start: startTask } = await import('../tasks/service.js');
+        const { toSafeText } = await import('@k8s-hosting/api-contracts');
+        await startTask(app.db, {
+          kind: 'restore.cart',
+          refId: cartId,
+          scope: 'admin',
+          userId: job.initiatorUserId,
+          clientId: job.clientId,
+          label: toSafeText(`Restore cart (${job.clientId.slice(0, 8)})`),
+          target: { type: 'route', href: `/clients/${job.clientId}?tab=backups` },
+          details: { cartId },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        request.log.warn(`[restore-cart] task tracker enroll failed: ${msg}`);
+      }
+    }
+
     const items = await app.db.select().from(restoreItems)
       .where(eq(restoreItems.restoreJobId, cartId))
       .orderBy(asc(restoreItems.seq));
@@ -259,6 +281,22 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
         await app.db.update(restoreJobs)
           .set({ status: 'failed', finishedAt: new Date(), lastError: 'PRE_RESTORE_SNAPSHOT_FAILED: see server logs' })
           .where(eq(restoreJobs.id, cartId));
+        // Finalize the chip task before re-throwing — otherwise the
+        // task row sticks at status='running' until the orphan reaper
+        // catches it 24h later. Best-effort (tracker errors must not
+        // mask the snapshot error the operator needs to see).
+        if (job.initiatorUserId) {
+          try {
+            const { finishByRef } = await import('../tasks/service.js');
+            await finishByRef(app.db, 'restore.cart', cartId, {
+              status: 'failed',
+              error: 'PRE_RESTORE_SNAPSHOT_FAILED',
+            });
+          } catch (taskErr) {
+            const msg = taskErr instanceof Error ? taskErr.message : String(taskErr);
+            request.log.warn(`[restore-cart] task tracker finish (snapshot-failed) failed: ${msg}`);
+          }
+        }
         throw new ApiError('SNAPSHOT_FAILED', 'Pre-restore snapshot failed; cart aborted to preserve current state', 500);
       }
     }
@@ -302,6 +340,20 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
         lastError: firstFailureMsg,
       })
       .where(eq(restoreJobs.id, cartId));
+
+    // Mirror terminal state to the chip.
+    if (job.initiatorUserId) {
+      try {
+        const { finishByRef } = await import('../tasks/service.js');
+        await finishByRef(app.db, 'restore.cart', cartId, {
+          status: finalStatus === 'done' ? 'succeeded' : 'failed',
+          error: firstFailureMsg,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        request.log.warn(`[restore-cart] task tracker finish failed: ${msg}`);
+      }
+    }
 
     // Notify platform operators on cart failure so a stuck restore
     // is page-able. Fire-and-forget. We don't notify on success —

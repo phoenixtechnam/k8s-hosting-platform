@@ -162,16 +162,42 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
 
     const platformConfig = await getPlatformConfig(app.db);
     const dnsMode = domain.dnsMode as 'primary' | 'cname' | 'secondary';
-    const result = await verifyDomain(domain.domainName, dnsMode, platformConfig, app.db);
 
-    // Use the shared helper so status transitions (unverified ↔ verified)
-    // happen on this manual path too — earlier E2E showed this route was
-    // writing the cache + verifiedAt directly and silently leaving `status`
-    // stuck at its previous value. Helper also writes verification_cache_at
-    // and verification_cache_result; we add lastVerifiedAt separately.
-    const now = new Date();
-    await service.setDomainVerificationStatus(app.db, domainId, result);
-    await app.db.update(domains).set({ lastVerifiedAt: now }).where(eq(domains.id, domainId));
+    // Wrap in a chip task so the operator sees the verify spinning
+    // (DNS lookups across multiple resolvers + record-checks can take
+    // 5-30s on stale cache misses). Idempotent on (kind, refId=domainId)
+    // so concurrent verifies coalesce to one row.
+    const userId = request.user?.sub ?? null;
+    const taskScope = request.user?.panel === 'client' ? 'client' as const : 'admin' as const;
+
+    const verifyAndPersist = async () => {
+      const result = await verifyDomain(domain.domainName, dnsMode, platformConfig, app.db);
+      const now = new Date();
+      await service.setDomainVerificationStatus(app.db, domainId, result);
+      await app.db.update(domains).set({ lastVerifiedAt: now }).where(eq(domains.id, domainId));
+      return result;
+    };
+
+    let result;
+    if (userId) {
+      const { tracked } = await import('../tasks/service.js');
+      const { toSafeText } = await import('@k8s-hosting/api-contracts');
+      result = await tracked(
+        app.db,
+        {
+          kind: 'dns.verify',
+          refId: domainId,
+          scope: taskScope,
+          userId,
+          clientId,
+          label: toSafeText(`Verify DNS — ${domain.domainName}`),
+          target: { type: 'route', href: `/clients/${clientId}/domains/${domainId}` },
+        },
+        verifyAndPersist,
+      );
+    } else {
+      result = await verifyAndPersist();
+    }
 
     return success({ ...result, domainId, domainName: domain.domainName, cached: false });
   });
