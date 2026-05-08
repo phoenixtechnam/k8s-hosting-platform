@@ -187,9 +187,20 @@ for e in d.get('data', []):
   info "code=${code} type=${type} name='${rname}' id=${entry_id}"
 
   # Resolve plan + region (cached at first call so we don't pay every entry).
+  # Pick the LARGEST plan so multi-component apps (paperless-ngx, plausible,
+  # nextcloud — 3+ components) don't trip the starter-plan ResourceQuota.
+  # The starter plan's CPU=500m total fits 2 small components max; bigger
+  # apps need Business or Premium.
   if [[ -z "${PLAN_ID:-}" ]]; then
-    PLAN_ID=$(api GET "/plans?limit=1" \
-      | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',[{}])[0].get('id',''))")
+    PLAN_ID=$(api GET "/plans?limit=20" \
+      | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+plans = d.get('data', [])
+# Sort by cpuLimit descending; take the largest
+plans.sort(key=lambda p: float(p.get('cpuLimit', 0) or 0), reverse=True)
+print(plans[0].get('id', '') if plans else '')
+")
     REGION_ID=$(api GET "/regions?limit=1" \
       | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',[{}])[0].get('id',''))")
     if [[ -z "$PLAN_ID" || -z "$REGION_ID" ]]; then
@@ -197,7 +208,7 @@ for e in d.get('data', []):
       echo -e "${code}\t${type}\tFAIL\t0\tprereq\tNo plan/region\t-" >> "$RESULTS_TSV"
       return 1
     fi
-    info "PLAN_ID=${PLAN_ID} REGION_ID=${REGION_ID}"
+    info "PLAN_ID=${PLAN_ID} (largest) REGION_ID=${REGION_ID}"
   fi
 
   # Create client
@@ -224,10 +235,14 @@ for e in d.get('data', []):
   ns=$(api GET "/clients/${client_id}" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('kubernetesNamespace',''))" 2>/dev/null)
   info "namespace=${ns}"
 
-  # POST deployment
+  # POST deployment. We pin generous CPU + memory (well above the
+  # API default of 250m/256Mi) because mysql, mongodb, immich, plausible,
+  # paperless-ngx etc. need 500Mi-1Gi to start. The largest plan we
+  # picked above caps these at the plan limit — but the API default of
+  # 256Mi crashes mysql before it finishes InnoDB init.
   local depl_resp depl_id
   depl_resp=$(api POST "/clients/${client_id}/deployments" \
-    "{\"catalog_entry_id\":\"${entry_id}\",\"name\":\"${depl_name}\",\"replica_count\":1}")
+    "{\"catalog_entry_id\":\"${entry_id}\",\"name\":\"${depl_name}\",\"replica_count\":1,\"cpu_request\":\"1\",\"memory_request\":\"1Gi\"}")
   depl_id=$(echo "$depl_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id') or '')" 2>/dev/null)
   if [[ -z "$depl_id" ]]; then
     fail "deployment create failed: $(echo "$depl_resp" | head -c 300)"
