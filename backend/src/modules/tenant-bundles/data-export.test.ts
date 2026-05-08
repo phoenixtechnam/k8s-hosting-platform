@@ -194,13 +194,15 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
     expect(importedMeta.backupId).toBe('bkp-src');
   });
 
-  it('rejects an export with a passphrase shorter than 12 chars', async () => {
+  it('accepts a short passphrase (no min-length floor since 2026-05-08)', async () => {
+    // The 12-char minimum was removed; operator-chosen length is on
+    // them. Empty string still means "plaintext" (separate test).
     const { streamEncryptedExport } = await import('./data-export.js');
-    const meta: BackupMetaV1 = { schemaVersion: 1, backupId: 'b', clientId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
+    const meta: BackupMetaV1 = { schemaVersion: 2, backupId: 'b', clientId: 'c', capturedAt: '2026-05-07T00:00:00.000Z', platformVersion: '0', initiator: 'admin', systemTrigger: null, retentionDays: 1, label: null, description: null, components: {} } as unknown as BackupMetaV1;
     const store = makeMockStore({ meta, artifacts: {} });
     const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
-    await expect(streamEncryptedExport({ store, handle, passphrase: 'short', components: [] }))
-      .rejects.toThrow(/≥12 chars/);
+    const stream = await streamEncryptedExport({ store, handle, passphrase: 'short', components: [] });
+    expect(stream).toBeDefined();
   });
 
   it('rejects a wrong passphrase on import', async () => {

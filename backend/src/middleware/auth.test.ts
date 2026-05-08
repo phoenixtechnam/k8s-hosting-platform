@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
-import { registerAuth, authenticate, requireRole, requireClientRoleByMethod } from './auth.js';
+import { registerAuth, authenticate, requirePanel, requireRole, requireClientRoleByMethod } from './auth.js';
 import { errorHandler } from './error-handler.js';
 
 describe('auth middleware', () => {
@@ -43,6 +43,15 @@ describe('auth middleware', () => {
     app.delete('/client-rsrc', {
       preHandler: [authenticate, requireClientRoleByMethod()],
     }, async () => ({ ok: true }));
+
+    // Route-level skipAuth opt-out (used by signed-URL endpoints).
+    // All three guards (authenticate, requirePanel, requireRole) must
+    // honour the flag so a window.location GET with no Bearer can reach
+    // the handler that does its own token verification.
+    app.get('/no-auth-needed', {
+      preHandler: [authenticate, requirePanel('admin'), requireRole('admin', 'super_admin')],
+      config: { skipAuth: true },
+    }, async () => ({ ok: true, viaSkipAuth: true }));
 
     await app.ready();
 
@@ -139,6 +148,24 @@ describe('auth middleware', () => {
   // handles it inline (no shared middleware). The broader
   // `authenticate` middleware stays strictly Bearer-only to keep
   // mutating routes CSRF-safe.
+
+  describe('skipAuth route-level opt-out', () => {
+    it('all three guards honour config.skipAuth (no Bearer required)', async () => {
+      // No Authorization header at all — would normally 401 at authenticate.
+      const res = await app.inject({ method: 'GET', url: '/no-auth-needed' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true, viaSkipAuth: true });
+    });
+
+    it('skipAuth still works when a Bearer is supplied (does not error on extra info)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/no-auth-needed',
+        headers: { authorization: `Bearer ${validToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+  });
 
   describe('requireClientRoleByMethod (Phase 6)', () => {
     const iat = Math.floor(Date.now() / 1000);

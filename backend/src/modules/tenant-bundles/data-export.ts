@@ -221,9 +221,8 @@ export interface StreamExportArgs {
 export async function streamEncryptedExport(args: StreamExportArgs): Promise<Readable> {
   const { store, handle, passphrase, components } = args;
   const encrypt = typeof passphrase === 'string' && passphrase.length > 0;
-  if (encrypt && passphrase!.length < 12) {
-    throw new Error('streamEncryptedExport: passphrase must be ≥12 chars (or omit it for an unencrypted tar.gz)');
-  }
+  // No minimum length: the operator chooses (and may have a strong
+  // generated password). Non-empty string is the only requirement.
 
   const tar = tarPack();
 

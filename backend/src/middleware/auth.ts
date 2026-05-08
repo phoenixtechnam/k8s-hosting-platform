@@ -23,6 +23,21 @@ declare module '@fastify/jwt' {
   }
 }
 
+// Route-level config flag for endpoints that authenticate via signed
+// URL tokens (the GET handler verifies the token itself; the global
+// auth/role hooks short-circuit when this flag is set). Augmenting
+// FastifyContextConfig once removes the per-call cast that was
+// previously copy-pasted into authenticate / requirePanel / requireRole.
+declare module 'fastify' {
+  interface FastifyContextConfig {
+    skipAuth?: boolean;
+  }
+}
+
+function shouldSkipAuth(request: FastifyRequest): boolean {
+  return request.routeOptions?.config?.skipAuth === true;
+}
+
 export const PLATFORM_SESSION_COOKIE = 'platform_session';
 
 export function registerAuth(_app: FastifyInstance): void {
@@ -54,6 +69,15 @@ export function authenticate(
   _reply: FastifyReply,
   done: (err?: Error) => void,
 ): void {
+  // Route-level opt-out for endpoints that authenticate via signed
+  // URL tokens (no Bearer header survives a `window.location` GET).
+  // The route is responsible for verifying its own token; setting
+  // `config: { skipAuth: true }` exempts it from the global hook.
+  if (shouldSkipAuth(request)) {
+    done();
+    return;
+  }
+
   const authHeader = request.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
     done(missingToken());
@@ -84,6 +108,10 @@ export function requirePanel(panel: 'admin' | 'client') {
     _reply: FastifyReply,
     done: (err?: Error) => void,
   ): void {
+    if (shouldSkipAuth(request)) {
+      done();
+      return;
+    }
     if (!request.user || request.user.panel !== panel) {
       done(new ApiError(
         'PANEL_ACCESS_DENIED',
@@ -102,6 +130,10 @@ export function requireRole(...roles: AnyRole[]) {
     _reply: FastifyReply,
     done: (err?: Error) => void,
   ): void {
+    if (shouldSkipAuth(request)) {
+      done();
+      return;
+    }
     if (!request.user || !roles.includes(request.user.role)) {
       done(insufficientPermissions(roles.join(', ')));
       return;

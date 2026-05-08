@@ -34,12 +34,22 @@ export type BackupComponentStatus = z.infer<typeof backupComponentStatusSchema>;
 export const backupTargetKindSchema = z.enum(['hostpath', 's3', 'ssh']);
 export type BackupTargetKind = z.infer<typeof backupTargetKindSchema>;
 
-// ─── meta.json (canonical bundle manifest, schemaVersion=1) ──────────────────
+// ─── meta.json (canonical bundle manifest, schemaVersion=2) ──────────────────
 //
 // See docs/06-features/BACKUP_COMPONENT_MODEL.md and ADR-032.
 // Restore code MUST reject schemaVersion values it does not recognize.
+//
+// v2 adds enough information for the import flow to fully restore a
+// deleted client without first unzipping the config component:
+//   - `client` block: account + subscription + node placement + overrides
+//   - `domainsSummary[]`, `deploymentsSummary[]`: small previews so the
+//     operator import-confirmation UI can show counts + names without
+//     gunzipping db-rows.json.gz
+//
+// v1 bundles are NOT importable. The 2026-05-08 staging bundles were
+// flushed when v2 shipped — see project_export_streaming_2026_05_08.md.
 
-export const BACKUP_META_SCHEMA_VERSION = 1 as const;
+export const BACKUP_META_SCHEMA_VERSION = 2 as const;
 
 export const backupMetaComponentFilesSchema = z.object({
   sizeBytes: z.number().int().nonnegative(),
@@ -71,7 +81,63 @@ export const backupMetaComponentsSchema = z.object({
   secrets: backupMetaComponentSecretsSchema.optional(),
 });
 
-export const backupMetaV1Schema = z.object({
+/**
+ * Client account + subscription block carried in meta.json v2 so the
+ * import flow can fully restore a deleted client without gunzipping
+ * the config component.
+ *
+ * Field semantics:
+ *   - `kubernetesNamespace` is captured but the import dialog can
+ *     opt to derive a fresh one (typical when restoring across regions).
+ *   - `workerNodeName` is captured so the operator can choose to pin
+ *     to the same physical node, but the import dialog typically
+ *     resets to "auto" so the scheduler picks an available node.
+ *   - `*Override` fields are nullable; null = use plan default.
+ */
+export const backupMetaClientSchema = z.object({
+  companyName: z.string(),
+  companyEmail: z.string(),
+  contactEmail: z.string().nullable(),
+  status: z.string(), // client_status enum at capture time (active/suspended/archived)
+  kubernetesNamespace: z.string(),
+  regionId: uuidField,
+  planId: uuidField,
+  workerNodeName: z.string().nullable(),
+  storageTier: z.string(), // 'local' | 'longhorn' | ...
+  timezone: z.string().nullable(),
+  storageLimitOverride: z.number().nullable(),
+  cpuLimitOverride: z.number().nullable(),
+  memoryLimitOverride: z.number().nullable(),
+  maxSubUsersOverride: z.number().int().nullable(),
+  maxMailboxesOverride: z.number().int().nullable(),
+  monthlyPriceOverride: z.number().nullable(),
+  emailSendRateLimit: z.number().int().nullable(),
+  subscriptionExpiresAt: z.string().nullable(),
+  // Counts for the import-preview UI; never load-bearing for restore
+  // (config component carries authoritative rows).
+  counts: z.object({
+    mailboxes: z.number().int().nonnegative(),
+    domains: z.number().int().nonnegative(),
+    deployments: z.number().int().nonnegative(),
+  }),
+});
+export type BackupMetaClient = z.infer<typeof backupMetaClientSchema>;
+
+export const backupMetaDomainSummarySchema = z.object({
+  name: z.string(),
+  status: z.string(),
+});
+export type BackupMetaDomainSummary = z.infer<typeof backupMetaDomainSummarySchema>;
+
+export const backupMetaDeploymentSummarySchema = z.object({
+  name: z.string(),
+  catalogEntryId: uuidField,
+  replicas: z.number().int().nonnegative(),
+  status: z.string(),
+});
+export type BackupMetaDeploymentSummary = z.infer<typeof backupMetaDeploymentSummarySchema>;
+
+export const backupMetaV2Schema = z.object({
   schemaVersion: z.literal(BACKUP_META_SCHEMA_VERSION),
   backupId: z.string().min(1),
   clientId: uuidField,
@@ -90,8 +156,17 @@ export const backupMetaV1Schema = z.object({
   expiresAt: z.string().datetime().nullable(),
   retentionDays: z.number().int().positive(),
   description: z.string().nullable(),
+  // v2 additions:
+  client: backupMetaClientSchema,
+  domainsSummary: z.array(backupMetaDomainSummarySchema),
+  deploymentsSummary: z.array(backupMetaDeploymentSummarySchema),
 });
-export type BackupMetaV1 = z.infer<typeof backupMetaV1Schema>;
+export type BackupMetaV2 = z.infer<typeof backupMetaV2Schema>;
+
+// Legacy aliases — keep the old type name working until every
+// import site moves to BackupMetaV2 (single deploy cycle).
+export const backupMetaV1Schema = backupMetaV2Schema;
+export type BackupMetaV1 = BackupMetaV2;
 
 // ─── Component info row (for admin UI listings) ──────────────────────────────
 
@@ -110,9 +185,28 @@ export type BackupComponentInfo = z.infer<typeof backupComponentInfoSchema>;
 
 // ─── Bundle summary + detail (admin/client list endpoints) ───────────────────
 
+/**
+ * Live status of the client this bundle belongs to. Computed at list
+ * time via LEFT JOIN clients on backup_jobs.client_id:
+ *   - 'active' / 'suspended' / 'archived' → live row found
+ *   - 'missing' → no row in clients (client was deleted; bundle survives
+ *     until its own retention sweep). Operator UI uses this to surface
+ *     the "Restore from bundle" affordance with a different copy.
+ */
+export const bundleClientStatusSchema = z.enum([
+  'active',
+  'suspended',
+  'archived',
+  'missing',
+]);
+export type BundleClientStatus = z.infer<typeof bundleClientStatusSchema>;
+
 export const bundleSummarySchema = z.object({
   id: uuidField,
   clientId: uuidField,
+  clientStatus: bundleClientStatusSchema,
+  /** companyName from clients (null when clientStatus='missing'). */
+  clientName: z.string().nullable(),
   initiator: backupInitiatorSchema,
   systemTrigger: backupSystemTriggerSchema.nullable(),
   status: backupJobStatusSchema,

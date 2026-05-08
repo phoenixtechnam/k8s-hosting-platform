@@ -18,6 +18,30 @@ const VALID_META: BackupMetaV1 = {
   expiresAt: '2026-06-01T10:00:00.000Z',
   retentionDays: 30,
   description: null,
+  // v2 fields
+  client: {
+    companyName: 'Acme Co',
+    companyEmail: 'admin@acme.test',
+    contactEmail: null,
+    status: 'active',
+    kubernetesNamespace: 'client-acme-deadbeef',
+    regionId: '7707111e-21f6-49b6-9eea-a26a007fa2a1',
+    planId: 'a383c4ce-ff5e-427b-b6c8-76fea6af043c',
+    workerNodeName: null,
+    storageTier: 'local',
+    timezone: 'UTC',
+    storageLimitOverride: null,
+    cpuLimitOverride: null,
+    memoryLimitOverride: null,
+    maxSubUsersOverride: null,
+    maxMailboxesOverride: null,
+    monthlyPriceOverride: null,
+    emailSendRateLimit: null,
+    subscriptionExpiresAt: null,
+    counts: { mailboxes: 0, domains: 0, deployments: 0 },
+  },
+  domainsSummary: [],
+  deploymentsSummary: [],
 };
 
 describe('serializeMeta / parseMeta', () => {

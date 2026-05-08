@@ -53,7 +53,11 @@ export default function TaskCenterChip() {
   const failedCount = recentTerminal.filter((t) => t.status === 'failed').length;
   const succeededCount = recentTerminal.filter((t) => t.status === 'succeeded').length;
 
-  if (isLoading || (runningCount === 0 && recentTerminal.length === 0)) return null;
+  // Always-visible chip (Phase 3 UX): even when nothing is in flight,
+  // render as a neutral icon-only pill so operators always see where
+  // long-running ops will surface. Hide only during the first-load
+  // flicker.
+  if (isLoading) return null;
 
   const tone =
     failedCount > 0 ? 'red'
@@ -79,7 +83,9 @@ export default function TaskCenterChip() {
     ? `${runningCount} running`
     : failedCount > 0
       ? `${failedCount} failed`
-      : `${succeededCount} done`;
+      : succeededCount > 0
+        ? `${succeededCount} done`
+        : 'Tasks';
 
   const onSelect = (task: TaskRow) => {
     if (task.target.type === 'route') {

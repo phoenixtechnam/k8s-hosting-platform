@@ -119,52 +119,60 @@ export async function downloadDataExport(bundleId: string): Promise<void> {
 }
 
 /**
- * Streaming bundle download — two formats:
+ * Streaming bundle download via a signed URL.
  *
+ * Flow:
+ *   1. POST `/admin/tenant-bundles/:id/export-token` with
+ *      `{ format, password? }`. Server returns `{ downloadUrl,
+ *      expiresInSec }` where `downloadUrl` is a single-bundle
+ *      HMAC-signed URL valid for 5 min. The password (when set) is
+ *      AES-256-GCM-encrypted into the URL — plaintext never appears
+ *      in the URL or browser history.
+ *   2. Click a hidden `<a download rel="noreferrer">` pointing at
+ *      `downloadUrl`. The browser issues a GET, the server validates
+ *      the token, and streams the bundle straight back. The native
+ *      save-file dialog opens at byte 0 — no Blob() buffering, no
+ *      RAM cap on the bundle size.
+ *
+ * Why an `<a>` click instead of `window.location`:
+ *   `<a download rel="noreferrer">` suppresses the Referer header,
+ *   so any third-party request the download page subsequently makes
+ *   (analytics, CDN, browser extension) can't see the signed token.
+ *
+ * Formats:
  *   - 'tar' → `tar.gz` (plain) or `tar.gz.enc` (OpenSSL Salted__
  *             AES-256-CBC envelope, 100k-iter PBKDF2-SHA256;
- *             decryptable with stock `openssl enc -d -aes-256-cbc
- *             -pbkdf2 -iter 100000`). Password is optional; empty
- *             → plaintext.
- *   - 'zip' → plaintext `.zip` only. Password protection is NOT
- *             offered on the ZIP path because the only practical
- *             Node ZIP-encryption library has weak key-stretching
- *             (1000 iterations vs 100k for tar) and an unstable
- *             pure-JS AES implementation that crashed on multi-
- *             hundred-MB bundles in testing. Operators who want a
- *             password use the tar.gz.enc variant.
- *
- * Tar passphrase minimum: 12 chars. ZIP ignores any password arg.
+ *             decryptable with `openssl enc -d -aes-256-cbc
+ *             -pbkdf2 -iter 100000`). Password is optional.
+ *   - 'zip' → plaintext `.zip` only. Password is ignored on the
+ *             ZIP path (architecturally — see backend rationale).
  */
 export async function downloadBundleExport(
   bundleId: string,
   format: 'tar' | 'zip',
   password: string | null,
 ): Promise<void> {
-  const token = localStorage.getItem('auth_token');
-  const path = format === 'zip' ? 'zip' : 'export';
-  const body: Record<string, string> = {};
+  const body: { format: 'tar' | 'zip'; password?: string } = { format };
   // Only the tar path consumes a password; ZIP ignores it.
   if (format === 'tar' && password && password.length > 0) {
-    body.passphrase = password;
+    body.password = password;
   }
-  const r = await fetch(`/api/v1/admin/tenant-bundles/${bundleId}/${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) {
-    let detail = '';
-    try { detail = await r.text(); } catch { /* ignore */ }
-    throw new Error(`export failed (${r.status}): ${detail.slice(0, 200)}`);
-  }
-  const blob = await r.blob();
-  const url = URL.createObjectURL(blob);
+  const r = await apiFetch<{ data: { downloadUrl: string; expiresInSec: number } }>(
+    `/api/v1/admin/tenant-bundles/${bundleId}/export-token`,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+  const downloadUrl = r.data.downloadUrl;
+  if (!downloadUrl) throw new Error('server returned no downloadUrl');
+
+  // Click a hidden <a> with `rel="noreferrer"` so the signed token
+  // is not leaked in Referer headers from any cross-origin requests
+  // the page makes after the click (analytics, CDN, extensions).
   const a = document.createElement('a');
-  a.href = url;
+  a.href = downloadUrl;
+  a.rel = 'noreferrer noopener';
+  // The download attribute is ignored on cross-origin URLs but our
+  // URL is same-origin, so the filename is set server-side via the
+  // Content-Disposition header — a.download is just a fallback.
   if (format === 'zip') {
     a.download = `bundle-${bundleId}.zip`;
   } else if (password && password.length > 0) {
@@ -175,7 +183,6 @@ export async function downloadBundleExport(
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export interface ImportBundleResult {

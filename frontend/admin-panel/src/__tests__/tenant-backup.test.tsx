@@ -71,6 +71,8 @@ function wrapper({ children, initialEntries = ['/tenant-backup'] }: { children: 
 const BUNDLE: BundleSummary = {
   id: 'bkp-aaaaaaaa-1111-2222-3333-444444444444',
   clientId: 'c1',
+  clientStatus: 'active',
+  clientName: 'Test Co',
   initiator: 'admin',
   systemTrigger: null,
   status: 'completed',
@@ -136,7 +138,10 @@ describe('TenantBackup', () => {
   it('shows bundles table with client name resolved', () => {
     mockedBundles.mockReturnValue({ data: { data: { data: [BUNDLE], pagination: {} } }, isLoading: false });
     render(<TenantBackup />, { wrapper });
-    expect(screen.getByText('Acme Corp')).toBeInTheDocument();
+    // Server-side `clientName` from the bundle summary takes precedence over
+    // the client-side useClients() lookup (so bundles for deleted clients
+    // still show a name).
+    expect(screen.getByText('Test Co')).toBeInTheDocument();
     expect(screen.getByText(/manual-test/)).toBeInTheDocument();
   });
 

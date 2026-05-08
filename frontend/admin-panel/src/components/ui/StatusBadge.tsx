@@ -13,7 +13,11 @@ type BadgeStatus = 'active' | 'suspended' | 'pending' | 'cancelled' | 'expired' 
   // Tenant Backup — bundle status (some components captured, others failed).
   | 'partial'
   // Tenant Backup — restore-cart lifecycle.
-  | 'draft' | 'executing' | 'paused' | 'done';
+  | 'draft' | 'executing' | 'paused' | 'done'
+  // Bundle client status — for bundles whose source client has been
+  // deleted (`missing`) the bundle is still valid but a Restore From
+  // Bundle dialog is the only path back.
+  | 'missing';
 
 const statusStyles: Record<BadgeStatus, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
@@ -57,6 +61,9 @@ const statusStyles: Record<BadgeStatus, string> = {
   executing: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
   paused: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
   done: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  // Bundle client status — red dot for clients that have been deleted
+  // and are now unrecoverable except via a bundle import.
+  missing: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
 };
 
 interface StatusBadgeProps {

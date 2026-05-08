@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { TASK_CENTER_QUERY_KEY } from '@/hooks/use-task-center';
 import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import Login from '@/pages/Login';
@@ -38,6 +39,14 @@ import LifecycleHooksSettings from '@/pages/LifecycleHooksSettings';
 import PrivateWorkerTunnelSettings from '@/pages/PrivateWorkerTunnelSettings';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
+// MutationCache subscriber: refresh the Task Center chip after every
+// successful mutation. Long-running ops register a `tasks` row inside
+// their handler, so the chip needs to refetch right after the trigger
+// resolves — without this, the row only appears on the next 3 s poll
+// tick and the chip looks unresponsive. Per-mutation `onSuccess` opt-in
+// would work too but is easy to forget; doing it once globally is the
+// safer floor. The /me/tasks endpoint is small + per-user so the extra
+// refetch is cheap.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -46,6 +55,14 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
     },
   },
+  mutationCache: new MutationCache({
+    onSuccess: (_data, _vars, _ctx, mutation) => {
+      // Skip chip-internal mutations (clear/etc) to avoid refetch loops.
+      const key = mutation.options.mutationKey;
+      if (Array.isArray(key) && key[0] === 'task-center') return;
+      void queryClient.invalidateQueries({ queryKey: TASK_CENTER_QUERY_KEY });
+    },
+  }),
 });
 
 export default function App() {

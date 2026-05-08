@@ -16,16 +16,36 @@ interface RegistryEntry {
 
 const TransitionProgressModal = lazy(() => import('@/components/TransitionProgressModal'));
 const BulkProgressModal = lazy(() => import('@/components/BulkProgressModal'));
+const OperationProgressModal = lazy(() => import('@/components/OperationProgressModal'));
+const ProvisioningProgressModal = lazy(() => import('@/components/ProvisioningProgressModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
 // doesn't block the chip click handler.
+//
+// Each entry below corresponds to one or more `kind` values on the
+// task row. The backend chooses `target.modal = 'foo'` and supplies
+// the matching `target.modalProps` shape:
+//
+//   transition  → TransitionProgressModal     (client.transition)
+//   bulk        → BulkProgressModal           (client.*.bulk)
+//   operation   → OperationProgressModal      (storage.*)
+//   provisioning→ ProvisioningProgressModal   (client.provision)
+//
+// Surfaces without a dedicated modal use `target.type = 'route'`
+// instead.
 const REGISTRY: Record<string, RegistryEntry> = {
   transition: {
     Component: TransitionProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
   bulk: {
     Component: BulkProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  operation: {
+    Component: OperationProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  provisioning: {
+    Component: ProvisioningProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
 };
 

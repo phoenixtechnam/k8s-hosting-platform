@@ -29,6 +29,8 @@ import {
   backupJobs,
   backupComponents,
   clients,
+  domains,
+  deployments,
   type NewBackupJob,
   type NewBackupComponent,
 } from '../../db/schema.js';
@@ -387,6 +389,15 @@ export async function runBundle(
     (secretsResult?.sizeBytes ?? 0) +
     (mailboxesResult?.sizeBytes ?? 0);
 
+  // v2 meta.json: capture the client account + counts + summaries so
+  // the import flow can present a confirmation dialog without
+  // unzipping the config component.
+  const clientMetaBlock = await captureClientBlock(deps.db, input.clientId);
+  const domainsSummaryRO = await captureDomainsSummary(deps.db, input.clientId);
+  const deploymentsSummaryRO = await captureDeploymentsSummary(deps.db, input.clientId);
+  const domainsSummary = [...domainsSummaryRO];
+  const deploymentsSummary = [...deploymentsSummaryRO];
+
   const meta: BackupMetaV1 = {
     schemaVersion: BACKUP_META_SCHEMA_VERSION,
     backupId: bundleId,
@@ -397,12 +408,17 @@ export async function runBundle(
     systemTrigger: input.systemTrigger ?? null,
     label: input.label ?? null,
     components: componentInfos,
-    nodePlacement: null,
+    nodePlacement: clientMetaBlock.workerNodeName
+      ? { preferredNode: clientMetaBlock.workerNodeName, preferredRegion: clientMetaBlock.regionId }
+      : null,
     expiresAt: input.retentionDays > 0
       ? addDays(new Date(), input.retentionDays).toISOString()
       : null,
     retentionDays: input.retentionDays,
     description: input.description ?? null,
+    client: clientMetaBlock,
+    domainsSummary,
+    deploymentsSummary,
   };
 
   if (status === 'completed') {
@@ -587,6 +603,108 @@ function addDays(d: Date, days: number): Date {
   const next = new Date(d);
   next.setUTCDate(next.getUTCDate() + days);
   return next;
+}
+
+/**
+ * Build the meta.json `client` block (v2). Pulls the live row from
+ * `clients` + counts via raw SQL to keep the latency low. Throws if
+ * the client is missing — capture should fail loudly because a v2
+ * bundle without a client block can't be imported.
+ *
+ * Numeric override fields land in PG as `numeric(...)` and Drizzle
+ * returns them as strings; we coerce to number|null so the JSON
+ * round-trips cleanly through z.number().nullable() on the schema.
+ */
+async function captureClientBlock(
+  db: Database,
+  clientId: string,
+): Promise<import('@k8s-hosting/api-contracts').BackupMetaClient> {
+  const [c] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
+  if (!c) throw new Error(`captureClientBlock: client ${clientId} not found`);
+
+  const rawDb = db as unknown as {
+    execute: (q: ReturnType<typeof sql>) => Promise<{
+      rows: Array<{ mailboxes: number | string; domains: number | string; deployments: number | string }>;
+    }>;
+  };
+  const counts = await rawDb.execute(sql`
+    SELECT
+      (SELECT COUNT(*)::int FROM mailboxes WHERE client_id = ${clientId})  AS mailboxes,
+      (SELECT COUNT(*)::int FROM domains    WHERE client_id = ${clientId})  AS domains,
+      (SELECT COUNT(*)::int FROM deployments WHERE client_id = ${clientId} AND deleted_at IS NULL) AS deployments
+  `);
+  const row = counts.rows[0] ?? { mailboxes: 0, domains: 0, deployments: 0 };
+
+  const numOrNull = (v: unknown): number | null =>
+    v === null || v === undefined ? null : Number(v);
+
+  return {
+    companyName: c.companyName,
+    companyEmail: c.companyEmail,
+    contactEmail: c.contactEmail ?? null,
+    status: c.status as string,
+    kubernetesNamespace: c.kubernetesNamespace,
+    regionId: c.regionId,
+    planId: c.planId,
+    workerNodeName: c.workerNodeName ?? null,
+    storageTier: c.storageTier as string,
+    timezone: c.timezone ?? null,
+    storageLimitOverride: numOrNull(c.storageLimitOverride),
+    cpuLimitOverride: numOrNull(c.cpuLimitOverride),
+    memoryLimitOverride: numOrNull(c.memoryLimitOverride),
+    maxSubUsersOverride: c.maxSubUsersOverride ?? null,
+    maxMailboxesOverride: c.maxMailboxesOverride ?? null,
+    monthlyPriceOverride: numOrNull(c.monthlyPriceOverride),
+    emailSendRateLimit: c.emailSendRateLimit ?? null,
+    subscriptionExpiresAt: c.subscriptionExpiresAt ? c.subscriptionExpiresAt.toISOString() : null,
+    counts: {
+      mailboxes: Number(row.mailboxes ?? 0),
+      domains: Number(row.domains ?? 0),
+      deployments: Number(row.deployments ?? 0),
+    },
+  };
+}
+
+async function captureDomainsSummary(
+  db: Database,
+  clientId: string,
+): Promise<ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDomainSummary>> {
+  const rows = await db
+    .select({ name: domains.domainName, status: domains.status })
+    .from(domains)
+    .where(eq(domains.clientId, clientId));
+  return rows.map((r) => ({ name: r.name, status: r.status as string }));
+}
+
+async function captureDeploymentsSummary(
+  db: Database,
+  clientId: string,
+): Promise<ReadonlyArray<import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary>> {
+  const rows = await db
+    .select({
+      name: deployments.name,
+      catalogEntryId: deployments.catalogEntryId,
+      replicas: deployments.replicaCount,
+      status: deployments.status,
+    })
+    .from(deployments)
+    .where(eq(deployments.clientId, clientId));
+  // Type predicate so the post-filter type narrows from
+  // `name: string | null` to `name: string` (Array.prototype.filter
+  // does not narrow without an explicit predicate). Belt-and-braces:
+  // the column is currently non-null at the schema level, but if it
+  // is ever made nullable a silent null-leak into the meta would be
+  // a data-corruption bug — caught here at compile time.
+  const isComplete = (r: typeof rows[number]): r is typeof r & { name: string; catalogEntryId: string } =>
+    Boolean(r.name && r.catalogEntryId);
+  return rows
+    .filter(isComplete)
+    .map((r) => ({
+      name: r.name,
+      catalogEntryId: r.catalogEntryId,
+      replicas: r.replicas ?? 0,
+      status: r.status as string,
+    }));
 }
 
 /**

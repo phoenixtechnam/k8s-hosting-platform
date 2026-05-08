@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { eq, desc, sql } from 'drizzle-orm';
+import { z } from 'zod';
+import { eq, desc, sql, inArray } from 'drizzle-orm';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -67,6 +68,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   } else if (!configuredKey) {
     app.log.warn('tenant-bundles: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Secrets bundles produced now will be unencrypted.');
   }
+  // Validate the key is the right shape (32 bytes hex) at registration
+  // time so a misconfigured operator gets a clear failure now instead
+  // of a confusing "key must be 32 bytes" thrown from inside an
+  // export-token request 10 minutes later.
+  if (Buffer.from(secretsKeyHex, 'hex').length !== 32) {
+    throw new Error(`tenant-bundles: OIDC_ENCRYPTION_KEY must be 32 bytes hex (got ${secretsKeyHex.length} chars / ${Buffer.from(secretsKeyHex, 'hex').length} bytes)`);
+  }
 
   // ── Legacy path redirects (one cycle) ────────────────────────────
   // The bundle endpoints used to live under /admin/backups/bundles*
@@ -113,7 +121,29 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const [rows, countRows] = await Promise.all([rowsQuery, countQuery]);
 
     const hasMore = rows.length > limit;
-    const items: BundleSummary[] = rows.slice(0, limit).map(toBundleSummary);
+    const visibleRows = rows.slice(0, limit);
+
+    // Resolve client status + name for every distinct client id in a
+    // single bulk query. Bundles for deleted clients miss the JOIN
+    // and surface as clientStatus='missing'.
+    const distinctClientIds = Array.from(new Set(visibleRows.map((r) => r.clientId)));
+    const clientRows = distinctClientIds.length === 0
+      ? []
+      : await app.db
+          .select({ id: clients.id, status: clients.status, name: clients.companyName })
+          .from(clients)
+          .where(inArray(clients.id, distinctClientIds));
+    const clientById = new Map<string, { status: string; name: string }>(
+      clientRows.map((c) => [c.id, { status: c.status as string, name: c.name }]),
+    );
+
+    const items: BundleSummary[] = visibleRows.map((row) => {
+      const c = clientById.get(row.clientId);
+      return toBundleSummary(row, {
+        status: clientRowToBundleStatus(c?.status),
+        name: c?.name ?? null,
+      });
+    });
     const total = countRows[0]?.n ?? items.length;
     return success({
       data: items,
@@ -206,9 +236,15 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
     if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    const [clientRow] = await app.db
+      .select({ status: clients.status, name: clients.companyName })
+      .from(clients).where(eq(clients.id, job.clientId)).limit(1);
     const components = await app.db.select().from(backupComponents).where(eq(backupComponents.backupJobId, id));
     const detail: BundleDetail = {
-      ...toBundleSummary(job),
+      ...toBundleSummary(job, {
+        status: clientRowToBundleStatus(clientRow?.status as string | undefined),
+        name: clientRow?.name ?? null,
+      }),
       components: components.map(toComponentInfo),
     };
     return success(detail);
@@ -445,11 +481,11 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     // function throws a plain Error which the framework returns as
     // 500. Caught by typescript-reviewer 2026-05-08.
     if (passphrase !== undefined && passphrase !== null && passphrase !== '') {
-      if (typeof passphrase !== 'string' || passphrase.length < 12) {
-        throw new ApiError('VALIDATION_ERROR', 'passphrase must be a string ≥12 characters (or omit it for an unencrypted tar.gz)', 400);
+      if (typeof passphrase !== 'string' || passphrase.length < 1) {
+        throw new ApiError('VALIDATION_ERROR', 'passphrase must be a non-empty string (or omit it for an unencrypted tar.gz)', 400);
       }
     }
-    const encrypt = typeof passphrase === 'string' && passphrase.length >= 12;
+    const encrypt = typeof passphrase === 'string' && passphrase.length >= 1;
 
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
     if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
@@ -552,6 +588,159 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     return reply.send(stream);
   });
 
+  // ── POST /api/v1/admin/tenant-bundles/:id/export-token ────────────
+  //
+  // Mint a 5-min single-purpose URL that the browser can open
+  // directly via `window.location` to trigger the native save-file
+  // dialog the moment the response starts streaming. The companion
+  // GET `/exports/:token` endpoint below validates + streams.
+  //
+  // Why this exists (vs the existing POST /:id/export):
+  //   POST handlers can't trigger the browser's save-file dialog
+  //   without the response being buffered into a Blob first (the
+  //   prior UX). For multi-GB bundles the operator was waiting on
+  //   a hidden in-memory copy before the file dialog appeared.
+  //   With a signed URL the browser issues an unauthenticated GET,
+  //   the server validates the token + streams headers immediately
+  //   → save dialog opens at byte 0.
+  //
+  // Body: { format: 'tar' | 'zip', password?: string }.
+  //   - password is only meaningful for tar; the zip variant
+  //     ignores it (architectural — see the /zip endpoint comment).
+  app.post('/admin/tenant-bundles/:id/export-token', {
+    schema: { tags: ['TenantBundles'], summary: 'Mint a single-purpose download URL for a bundle', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const bodySchema = z.object({
+      format: z.enum(['tar', 'zip']),
+      password: z.string().optional(),
+    });
+    const parsed = bodySchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', `invalid body: ${parsed.error.issues[0]?.message ?? 'unknown'}`, 400);
+    }
+    const { format } = parsed.data;
+    // Password rule: only carries through on tar. zip discards it
+    // even if supplied — keeps the token small and prevents confusion.
+    const password = format === 'tar' ? parsed.data.password : undefined;
+
+    // Validate the bundle exists + is reachable before minting a
+    // token. Otherwise the operator clicks Download, the URL goes
+    // through, and only then the server returns 404 — confusing UX.
+    const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no targetConfigId', 400);
+
+    const { signExportToken } = await import('./export-token.js');
+    const token = signExportToken({ bundleId: id, format, password: password || undefined }, secretsKeyHex);
+    const downloadUrl = `/api/v1/admin/tenant-bundles/exports/${encodeURIComponent(token)}`;
+    app.log.info(
+      { userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id, format, encrypted: !!(password && password.length > 0) },
+      'tenant-bundles: export-token minted',
+    );
+    return success({ downloadUrl, expiresInSec: 300 });
+  });
+
+  // ── GET /api/v1/admin/tenant-bundles/exports/:token ───────────────
+  //
+  // Token-authenticated download endpoint. The token IS the auth —
+  // no Bearer header. The token is bound to one bundleId + format +
+  // (encrypted) password and expires after 5 min. See export-token.ts
+  // for the token format and signing key.
+  //
+  // SECURITY: this endpoint is NOT covered by the panel/role
+  // onRequest hooks declared at the top of `backupsV2Routes` —
+  // `requirePanel('admin')` and `requireRole('super_admin','admin')`
+  // both check the request.user populated by JWT auth, which a
+  // browser GET via window.location can't supply. We exempt the
+  // route via a route-level `config: { skipAuth: true }` flag and
+  // verify the signed token instead. Bundle-level access control is
+  // enforced by the token's bundleId binding (so an operator can't
+  // re-purpose someone else's token for a different bundle).
+  app.get(
+    '/admin/tenant-bundles/exports/:token',
+    {
+      schema: { tags: ['TenantBundles'], summary: 'Download a bundle via signed token (no Bearer)', security: [] },
+      config: { skipAuth: true },
+    },
+    async (request, reply) => {
+      const { token } = request.params as { token: string };
+      // We don't know the expectedBundleId until we decode the token,
+      // but we want it bound — so decode once, take .b, and re-verify
+      // against itself. This is fine because the HMAC catches a token
+      // whose `b` was tampered (any change to the payload breaks the
+      // MAC). In other words: trust the .b field iff the MAC is good.
+      // Probe the (still-untrusted) payload for its `b` field so we
+      // can pass it as `expectedBundleId` to verifyExportToken — the
+      // HMAC is then computed over the full payload, so any tampering
+      // with `.b` would break the MAC. Both the malformed-shape path
+      // and the bad-MAC path map to the SAME 401/INVALID_TOKEN
+      // response (no 400 vs 401 oracle for unauthenticated callers).
+      const probeOnly = (() => {
+        const dot = token.indexOf('.');
+        if (dot < 1) return null;
+        try {
+          const payload = JSON.parse(Buffer.from(token.slice(0, dot).replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')) as { b?: string };
+          return payload.b ?? null;
+        } catch { return null; }
+      })();
+      if (!probeOnly) {
+        throw new ApiError('INVALID_TOKEN', 'export token rejected', 401);
+      }
+
+      const { verifyExportToken } = await import('./export-token.js');
+      const v = verifyExportToken(token, probeOnly, secretsKeyHex);
+      if (!v.ok) {
+        const code = v.error.code === 'EXPIRED' ? 'TOKEN_EXPIRED' : 'INVALID_TOKEN';
+        throw new ApiError(code, 'export token rejected', 401);
+      }
+      const { bundleId, format, password } = v.value;
+
+      const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, bundleId)).limit(1);
+      if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+      if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no targetConfigId', 400);
+
+      const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+      const handle = await store.open(bundleId);
+      if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artifacts not found on off-site target', 404);
+
+      const allArtifacts: Array<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }> = [];
+      for (const component of (['files', 'mailboxes', 'config', 'secrets'] as const)) {
+        const refs = await store.listArtifacts(handle, component);
+        for (const r of refs) {
+          if (component === 'config' && r.name.startsWith('data-export-')) continue;
+          allArtifacts.push({ component, name: r.name });
+        }
+      }
+
+      let stream: import('node:stream').Readable;
+      if (format === 'zip') {
+        const { streamZipExport } = await import('./data-export.js');
+        stream = await streamZipExport({ store, handle, components: allArtifacts });
+        reply.header('Content-Type', 'application/zip');
+        reply.header('Content-Disposition', `attachment; filename="bundle-${bundleId}.zip"`);
+      } else {
+        const { streamEncryptedExport } = await import('./data-export.js');
+        const encrypt = !!(password && password.length > 0);
+        stream = await streamEncryptedExport({
+          store, handle,
+          passphrase: encrypt ? password! : undefined,
+          components: allArtifacts,
+        });
+        reply.header('Content-Type', encrypt ? 'application/octet-stream' : 'application/gzip');
+        const filename = encrypt ? `bundle-${bundleId}.tar.gz.enc` : `bundle-${bundleId}.tar.gz`;
+        reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+      }
+      reply.header('Cache-Control', 'no-store');
+      stream.on('error', (err) => {
+        app.log.error({ err: err instanceof Error ? err.message : String(err), bundleId }, 'tenant-bundles: signed-url stream error');
+      });
+      app.log.warn({ bundleId, clientId: job.clientId, format, encrypted: format === 'tar' && !!(password && password.length > 0) },
+        'tenant-bundles: export download via signed-url initiated');
+      return reply.send(stream);
+    },
+  );
+
   // ── POST /api/v1/admin/tenant-bundles/import ──────────────────────
   //
   // Multi-region import: accept a passphrase-encrypted bundle tarball
@@ -646,13 +835,27 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
 
     // Write a fresh meta.json with this region's bundleId + clientId.
-    const importMeta = {
-      schemaVersion: 1 as const,
+    // The v2 fields (client / domainsSummary / deploymentsSummary) are
+    // forwarded as-is from the source meta. If the source was a v1
+    // bundle these are missing and the import will fail validation —
+    // intentional, no backcompat (see BACKUP_META_SCHEMA_VERSION = 2).
+    const sourceClient = (sourceMeta as Record<string, unknown>).client;
+    const sourceDomains = (sourceMeta as Record<string, unknown>).domainsSummary;
+    const sourceDeploys = (sourceMeta as Record<string, unknown>).deploymentsSummary;
+    if (!sourceClient || !Array.isArray(sourceDomains) || !Array.isArray(sourceDeploys)) {
+      throw new ApiError(
+        'BUNDLE_VERSION_UNSUPPORTED',
+        'Imported bundle is missing v2 meta fields (client, domainsSummary, deploymentsSummary). Re-capture the bundle on the source region against a platform-api running schemaVersion=2 or later.',
+        400,
+      );
+    }
+    const importMeta: import('@k8s-hosting/api-contracts').BackupMetaV1 = {
+      schemaVersion: 2 as const,
       backupId: newBundleId,
       clientId,
       capturedAt: new Date().toISOString(),
       platformVersion,
-      initiator: 'admin' as const,
+      initiator: 'admin',
       systemTrigger: null,
       label: `imported-from-${sourceMeta.backupId ?? 'unknown'}: ${sourceMeta.label ?? ''}`.slice(0, 255),
       components: sourceMeta.components ?? {},
@@ -660,6 +863,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       expiresAt: null,
       retentionDays: sourceMeta.retentionDays ?? 30,
       description: sourceMeta.description ?? null,
+      client: sourceClient as import('@k8s-hosting/api-contracts').BackupMetaClient,
+      domainsSummary: sourceDomains as import('@k8s-hosting/api-contracts').BackupMetaDomainSummary[],
+      deploymentsSummary: sourceDeploys as import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary[],
     };
     await store.putMeta(handle, importMeta);
 
@@ -1150,10 +1356,21 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {
+/**
+ * Map a `backup_jobs` row + the live client status into the
+ * BundleSummary contract. Caller resolves the client status via
+ * a LEFT JOIN (list endpoint) or a follow-up SELECT (single-bundle
+ * endpoints) so this function stays pure.
+ */
+function toBundleSummary(
+  j: typeof backupJobs.$inferSelect,
+  client: { status: import('@k8s-hosting/api-contracts').BundleClientStatus; name: string | null },
+): BundleSummary {
   return {
     id: j.id,
     clientId: j.clientId,
+    clientStatus: client.status,
+    clientName: client.name,
     initiator: j.initiator,
     systemTrigger: j.systemTrigger,
     status: j.status,
@@ -1173,6 +1390,19 @@ function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {
     createdAt: j.createdAt.toISOString(),
     updatedAt: j.updatedAt.toISOString(),
   };
+}
+
+/**
+ * Convert clients.status (or null when the row was deleted) into the
+ * BundleClientStatus enum the UI consumes.
+ */
+export function clientRowToBundleStatus(
+  status: string | null | undefined,
+): import('@k8s-hosting/api-contracts').BundleClientStatus {
+  if (!status) return 'missing';
+  if (status === 'archived') return 'archived';
+  if (status === 'suspended') return 'suspended';
+  return 'active';
 }
 
 function toComponentInfo(c: typeof backupComponents.$inferSelect): BackupComponentInfo {

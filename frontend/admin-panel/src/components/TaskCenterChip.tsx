@@ -63,11 +63,15 @@ export default function TaskCenterChip() {
   const failedCount = recentTerminal.filter((t) => t.status === 'failed').length;
   const succeededCount = recentTerminal.filter((t) => t.status === 'succeeded').length;
 
-  // Hide entirely when there's nothing to show — preserves the previous
-  // ActiveTasksIndicator behaviour and avoids permanent header noise.
-  if (isLoading || (runningCount === 0 && recentTerminal.length === 0)) return null;
+  // Always-visible chip (Phase 3 UX): even when nothing is in flight,
+  // the chip is rendered as a neutral icon-only pill. This anchors the
+  // tracker in the header so operators always know where to look, and
+  // makes the tone-change on a new task land in a stable spot. The
+  // first-load loading flicker is hidden until the snapshot resolves.
+  if (isLoading) return null;
 
-  // Chip tone: red wins over amber wins over green wins over blue.
+  // Chip tone: red wins over amber wins over green wins over blue,
+  // gray for idle.
   const tone =
     failedCount > 0 ? 'red'
     : runningCount > 0 ? 'blue'
@@ -88,11 +92,16 @@ export default function TaskCenterChip() {
     : succeededCount > 0 ? CheckCircle2
     : Activity;
 
+  // Idle chip is icon-only to keep the header tidy. When something is
+  // in flight or recently terminal, surface the count so a glance is
+  // enough.
   const chipLabel = runningCount > 0
     ? `${runningCount} running`
     : failedCount > 0
       ? `${failedCount} failed`
-      : `${succeededCount} done`;
+      : succeededCount > 0
+        ? `${succeededCount} done`
+        : 'Tasks';
 
   const onSelect = (task: TaskRow) => {
     if (task.target.type === 'modal') {

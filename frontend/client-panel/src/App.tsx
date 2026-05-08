@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { TASK_CENTER_QUERY_KEY } from '@/hooks/use-task-center';
 import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import Login from '@/pages/Login';
@@ -29,6 +30,10 @@ import Placeholder from '@/pages/Placeholder';
 import LifecycleGate from '@/components/LifecycleGate';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
+// MutationCache subscriber refreshes the Task Center chip after every
+// successful mutation so a freshly-triggered task row surfaces in the
+// chip immediately, instead of waiting for the next 3 s poll. Skips
+// task-center-internal mutations to avoid feedback loops.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -37,6 +42,13 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
     },
   },
+  mutationCache: new MutationCache({
+    onSuccess: (_data, _vars, _ctx, mutation) => {
+      const key = mutation.options.mutationKey;
+      if (Array.isArray(key) && key[0] === 'task-center') return;
+      void queryClient.invalidateQueries({ queryKey: TASK_CENTER_QUERY_KEY });
+    },
+  }),
 });
 
 export default function App() {

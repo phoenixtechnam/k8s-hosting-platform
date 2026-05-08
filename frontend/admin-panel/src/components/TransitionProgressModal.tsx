@@ -106,14 +106,29 @@ export default function TransitionProgressModal({ clientId, transition, since, t
               <span className="text-xs text-gray-500 dark:text-gray-400">(polling stopped)</span>
             )}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-            aria-label="Close"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            {/* "Run in Background" button — the underlying op is decoupled
+                from the modal so closing here never cancels work. The
+                label only changes once the transition is terminal. */}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+              data-testid="transition-progress-dismiss"
+            >
+              {tx && (tx.state === 'completed' || tx.state === 'failed_partial' || tx.state === 'failed_blocking')
+                ? 'Close'
+                : 'Run in Background'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+              aria-label="Close"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         <div className="space-y-3 px-5 py-4 text-sm">

@@ -212,10 +212,20 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
 
 // ── helpers ───────────────────────────────────────────────────────────
 
+/**
+ * Client-panel variant. The authenticated client is by definition
+ * `active` (they wouldn't have a valid session otherwise) and the
+ * companyName isn't carried in this projection — UI shows the
+ * bundle row in the client's own context, so leaving it null is
+ * fine. Both fields exist purely to keep type-shape parity with
+ * the admin BundleSummary contract.
+ */
 function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {
   return {
     id: j.id,
     clientId: j.clientId,
+    clientStatus: 'active',
+    clientName: null,
     initiator: j.initiator,
     systemTrigger: j.systemTrigger,
     status: j.status,

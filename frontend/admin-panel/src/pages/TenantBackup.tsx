@@ -21,6 +21,7 @@ import {
   Package, Calendar, RotateCcw, Cloud, Search, X, Play, Pencil,
   Trash2, ShieldCheck, Download, Upload, Loader2, AlertCircle, CheckCircle2,
   Pause, FileText, Server, Plus, Shield, AlertTriangle,
+  FileDown, Eye, EyeOff, Sparkles,
 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
@@ -600,29 +601,39 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
 function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: () => void }) {
   const [format, setFormat] = useState<'tar' | 'zip'>('tar');
   const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
-  // Password is offered ONLY for the Tar format. When supplied it
-  // must be ≥12 chars and match its confirmation; empty = plaintext
-  // tar.gz. ZIP is always plaintext — see the rationale next to the
-  // "Password not available for ZIP" notice.
-  const minLen = 12;
+  // Password is offered ONLY for the Tar format. Any non-empty
+  // password passes through — the operator chooses (and may have a
+  // strong generated value). Empty = plaintext tar.gz. ZIP is always
+  // plaintext.
   const passwordAllowed = format === 'tar';
   const wantsEncryption = passwordAllowed && password.length > 0;
-  const valid = !wantsEncryption || (password.length >= minLen && password === confirm);
+
+  // Generate a 16-char URL-safe random password using crypto.getRandomValues
+  // — runs entirely browser-side, never leaves the page until export.
+  const generatePassword = () => {
+    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const out = Array.from(bytes, (b) => charset[b % charset.length]).join('');
+    setPassword(out);
+    // Show by default after generating — operator needs to record it
+    // before submitting. The platform never stores it.
+    setShowPassword(true);
+  };
 
   const handleExport = async () => {
-    if (!valid) {
-      setError(`Passwords must match and be at least ${minLen} characters.`);
-      return;
-    }
     setError(null);
     setPending(true);
     try {
       await downloadBundleExport(bundleId, format, wantsEncryption ? password : null);
-      onClose();
+      // Wait a beat so the browser has actually triggered the download
+      // before the modal disappears (otherwise the user briefly sees
+      // nothing while the request is in flight).
+      setTimeout(onClose, 400);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Export failed');
     } finally {
@@ -669,39 +680,39 @@ function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: (
             </div>
           </div>
           {passwordAllowed && (
-            <>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
-                  Password <span className="text-gray-400">(optional, leave blank for unencrypted)</span>
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={`≥${minLen} chars when set`}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-                  autoComplete="new-password"
-                />
-              </div>
-              {wantsEncryption && (
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Confirm password</label>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+                Password <span className="text-gray-400">(optional, leave blank for unencrypted)</span>
+              </label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
                   <input
-                    type="password"
-                    value={confirm}
-                    onChange={(e) => setConfirm(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="(optional)"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 pr-10 font-mono text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
                     autoComplete="new-password"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
                 </div>
-              )}
-            </>
-          )}
-          {!passwordAllowed && (
-            <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-              <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-              ZIP archives are unencrypted by design — the only practical Node ZIP-encryption library has weak key-stretching and crashes on multi-hundred-MB bundles. Switch to <strong>Tar</strong> if you need a password.
-            </p>
+                <button
+                  type="button"
+                  onClick={generatePassword}
+                  className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                  title="Generate a 16-char random password"
+                >
+                  <Sparkles size={14} /> Generate
+                </button>
+              </div>
+            </div>
           )}
           {passwordAllowed && wantsEncryption && (
             <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
@@ -729,12 +740,12 @@ function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: (
           <button
             type="button"
             onClick={handleExport}
-            disabled={!valid || pending}
+            disabled={pending}
             className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
           >
             {pending
-              ? <><Loader2 size={14} className="animate-spin" /> Streaming…</>
-              : <><Download size={14} /> Download {format === 'zip' ? 'Zip' : 'Tar'}</>}
+              ? <><Loader2 size={14} className="animate-spin" /> Starting…</>
+              : <><FileDown size={14} /> Download {format === 'zip' ? 'Zip' : 'Tar'}</>}
           </button>
         </div>
       </div>
@@ -1141,7 +1152,18 @@ function BundleRow({ bundle: b, clientName, onVerify, onDelete, onDataExport, on
         {b.label && <div className="text-[11px] text-gray-500">{b.label}</div>}
       </td>
       <td className="px-4 py-2 text-gray-700 dark:text-gray-200">
-        <Link to={`/clients/${b.clientId}`} className="hover:text-brand-600 hover:underline">{clientName}</Link>
+        <div className="flex items-center gap-2">
+          {b.clientStatus === 'missing' ? (
+            // No /clients/:id row exists for a missing client — render
+            // as plain text so the operator doesn't get a 404 click.
+            <span className="text-gray-500 italic">{b.clientName ?? clientName}</span>
+          ) : (
+            <Link to={`/clients/${b.clientId}`} className="hover:text-brand-600 hover:underline">{b.clientName ?? clientName}</Link>
+          )}
+          {b.clientStatus && b.clientStatus !== 'active' && (
+            <StatusBadge status={b.clientStatus} />
+          )}
+        </div>
       </td>
       <td className="px-4 py-2"><StatusBadge status={b.status} /></td>
       <td className="px-4 py-2 text-gray-600 dark:text-gray-300">
@@ -1183,9 +1205,9 @@ function BundleRow({ bundle: b, clientName, onVerify, onDelete, onDataExport, on
             type="button"
             onClick={onExportForRegion}
             className="rounded p-1.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30"
-            title="Export for multi-region transfer (encrypted tarball download)"
+            title="Download bundle (Tar or Zip; optional password on Tar)"
           >
-            <Upload size={14} />
+            <FileDown size={14} />
           </button>
           <button
             type="button"
