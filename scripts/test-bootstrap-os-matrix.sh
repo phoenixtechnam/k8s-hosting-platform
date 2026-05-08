@@ -58,7 +58,8 @@ DRY_ARGS=(
   --domain test.invalid
   --acme-email t@t.invalid
   --allow-source 198.51.100.7
-  --allow-source 10.0.0.0/16,fd00::/8
+  --allow-source 10.0.0.0/16
+  --allow-source fd00::/8
   --allow-source 2001:db8::1
 )
 
