@@ -39,10 +39,14 @@ rules:
   # Cluster-scoped PV access — listing is needed for storage inventory,
   # delete for the deprovision flow's Released-PV cleanup
   # (tenant SC reclaimPolicy=Retain leaves PVs around after PVC delete;
-  # the deprovision step purges them so re-provisioning doesn't conflict).
+  # the deprovision step purges them so re-provisioning doesn't conflict),
+  # patch for the canonical-label mirror tick (storage-policy advisor
+  # mirrors platform/role,owner,canonical-name from PVC → bound PV so
+  # `kubectl get pv -L platform/role` is meaningful — see
+  # backend/src/modules/platform-storage-policy/pvc-pv-mirror.ts).
   - apiGroups: [""]
     resources: ["persistentvolumes"]
-    verbs: ["get", "list", "watch", "delete"]
+    verbs: ["get", "list", "watch", "patch", "delete"]
   # Subresource: pod logs (used by deployments/routes.ts and waf-log-scraper)
   - apiGroups: [""]
     resources: ["pods/log"]

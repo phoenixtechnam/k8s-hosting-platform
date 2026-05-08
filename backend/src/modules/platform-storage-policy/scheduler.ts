@@ -3,6 +3,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { notifications, users, platformStoragePolicy } from '../../db/schema.js';
 import { getPolicy, readClusterState, applyPolicy, valkeyReplicasForSystemTier } from './service.js';
+import { mirrorPvcLabelsToPvs } from './pvc-pv-mirror.js';
 
 // M13 Phase 6: emit a one-time admin notification when the cluster
 // reaches HA size (>=3 Ready servers) AND policy is still 'local' AND
@@ -78,6 +79,25 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
         } catch (err) {
           console.error('[storage-policy-advisor] reconcile failed:', (err as Error).message);
         }
+      }
+
+      // Canonical PVC → PV label mirror. Independent of tier-drift —
+      // runs every tick because PVCs (and their PVs) are created/deleted
+      // continuously by tenant lifecycle, CNPG instance scaling, and
+      // PITR rebuilds. K8s does NOT propagate PVC labels to bound PVs,
+      // so without this loop `kubectl get pv -L platform/role,...`
+      // shows no labels even though every PVC we manage has them.
+      // See pvc-pv-mirror.ts for the full rationale.
+      try {
+        const mirror = await mirrorPvcLabelsToPvs(k8s);
+        if (mirror.patched > 0) {
+          console.log(`[storage-policy-advisor] mirrored canonical labels onto ${mirror.patched}/${mirror.scanned} PV(s)`);
+        }
+        if (mirror.errors.length > 0) {
+          console.warn(`[storage-policy-advisor] pvc-pv-mirror had ${mirror.errors.length} per-PV error(s):`, mirror.errors.slice(0, 3));
+        }
+      } catch (err) {
+        console.error('[storage-policy-advisor] pvc-pv-mirror tick failed:', (err as Error).message);
       }
 
       // Recommendation: notify ONCE when cluster reaches HA size and
