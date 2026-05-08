@@ -7,6 +7,7 @@ import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { backupJobs, backupComponents, backupConfigurations, clients, hostingPlans, clientBackupSchedules } from '../../db/schema.js';
 import {
+  BACKUP_META_SCHEMA_VERSION,
   createBundleSchema,
   updateClientBackupScheduleSchema,
   type BundleSummary,
@@ -1029,6 +1030,227 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
     app.log.warn({ userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: newBundleId, sourceBundleId: sourceMeta.backupId, clientId, totalBytes }, 'tenant-bundles: import succeeded');
     reply.status(201).send({ data: { bundleId: newBundleId, sizeBytes: totalBytes, componentCount: componentInfo.length } });
+  });
+
+  // ── POST /api/v1/admin/tenant-bundles/import-finalize ─────────────
+  //
+  // Restore-from-bundle: create a brand-new client tenant from the
+  // operator-edited meta + the uploaded archive. Used when the source
+  // client doesn't exist (or no longer exists) in this region —
+  // typically a deleted client whose bundle is the only artifact.
+  //
+  // Flow:
+  //   1. Decode archive (same format-detecting decoder as /import).
+  //   2. Validate operator-supplied overrides (Zod schema).
+  //   3. Create a fresh client via the standard createClient service
+  //      (bcrypt-hashed admin password, kubernetesNamespace generated
+  //      from companyName, default status=pending).
+  //   4. Upload every artifact to the off-site target, register a new
+  //      backup_jobs row pointing at the new client.
+  //   5. Return { newClientId, bundleId, generatedPassword } so the UI
+  //      can show "client created" + "bundle imported — open
+  //      /clients/<id> and use Restore Cart to apply the data".
+  //
+  // Scope (deferred):
+  //   - reuseUuid / reuseNamespace toggles → require bypassing
+  //     createClient's randomUUID + namespace gen; coming in a follow-up.
+  //   - Auto-fire restore-cart against the new client (so the operator
+  //     doesn't have to click through cart-add for every component) —
+  //     out of scope for this endpoint.
+  app.post('/admin/tenant-bundles/import-finalize', {
+    bodyLimit: 2 * 1024 * 1024 * 1024,
+    schema: { tags: ['TenantBundles'], summary: 'Create new client + import bundle in one shot', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const req = request as unknown as {
+      isMultipart: () => boolean;
+      parts: () => AsyncIterable<{ type: 'field' | 'file'; fieldname: string; value?: string; toBuffer?: () => Promise<Buffer> }>;
+    };
+    if (!req.isMultipart()) {
+      throw new ApiError('VALIDATION_ERROR', 'request must be multipart/form-data', 400);
+    }
+    let passphrase: string | null = null;
+    let targetConfigId: string | null = null;
+    let overridesJson: string | null = null;
+    let blob: Buffer | null = null;
+    for await (const part of req.parts()) {
+      if (part.type === 'field' && part.fieldname === 'passphrase') passphrase = part.value ?? null;
+      else if (part.type === 'field' && part.fieldname === 'targetConfigId') targetConfigId = part.value ?? null;
+      else if (part.type === 'field' && part.fieldname === 'overrides') overridesJson = part.value ?? null;
+      else if (part.type === 'file' && part.fieldname === 'bundle' && part.toBuffer) blob = await part.toBuffer();
+    }
+    if (!targetConfigId) throw new ApiError('VALIDATION_ERROR', 'targetConfigId required', 400);
+    if (!blob) throw new ApiError('VALIDATION_ERROR', 'bundle file required', 400);
+    if (!overridesJson) throw new ApiError('VALIDATION_ERROR', 'overrides JSON required', 400);
+
+    // Operator-supplied overrides — validated against the same Zod
+    // schema the /clients POST endpoint uses, so any value the form
+    // accepts here is also acceptable on the regular create-client
+    // path. The shape is intentionally a strict subset of CreateClientInput.
+    const overridesSchema = z.object({
+      company_name: z.string().min(1).max(255),
+      company_email: z.string().email(),
+      contact_email: z.string().email().optional(),
+      plan_id: z.string().uuid(),
+      region_id: z.string().uuid(),
+      timezone: z.string().min(1).max(50).optional(),
+      worker_node_name: z.string().min(1).max(253).optional(),
+      storage_tier: z.enum(['local', 'ha']).optional(),
+      // Subscription expiry pulled from the meta is opt-in: only carries
+      // through if the operator confirms it on the form. Optional ISO date.
+      subscription_expires_at: z.string().datetime().optional(),
+    });
+    const parsed = overridesSchema.safeParse(JSON.parse(overridesJson));
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', `invalid overrides: ${parsed.error.issues[0]?.message ?? 'unknown'}`, 400);
+    }
+    const overrides = parsed.data;
+
+    // Decode archive first so a corrupt-bundle / wrong-passphrase
+    // failure happens BEFORE we create a phantom client row.
+    const { extractImportArchive } = await import('./data-export.js');
+    let entries;
+    try {
+      const result = await extractImportArchive({ blob, passphrase: passphrase ?? undefined });
+      entries = result.entries;
+      app.log.info({ format: result.format, entryCount: entries.length }, 'tenant-bundles: finalize archive decoded');
+    } catch (err) {
+      throw new ApiError('VALIDATION_ERROR', `archive decode failed: ${err instanceof Error ? err.message : String(err)}`, 400);
+    }
+
+    const metaEntry = entries.find((e) => e.path === 'meta.json');
+    if (!metaEntry) throw new ApiError('VALIDATION_ERROR', 'archive missing meta.json', 400);
+    let sourceMeta: Record<string, unknown>;
+    try {
+      sourceMeta = JSON.parse(metaEntry.buffer.toString('utf8')) as Record<string, unknown>;
+    } catch (err) {
+      throw new ApiError('VALIDATION_ERROR', `meta.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, 400);
+    }
+
+    // Resolve target config + store BEFORE creating the client so an
+    // mistyped targetConfigId fails fast.
+    const [cfgRow] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
+    if (!cfgRow) throw new ApiError('NOT_FOUND', 'targetConfigId does not match any backup configuration', 404);
+
+    // Create the new client. Returns id + generatedPassword for the
+    // auto-created client_admin user.
+    const userId = (request.user as { sub?: string } | undefined)?.sub ?? 'system';
+    const { createClient } = await import('../clients/service.js');
+    let newClient;
+    try {
+      newClient = await createClient(app.db, overrides, userId);
+    } catch (err) {
+      throw new ApiError('VALIDATION_ERROR', `client creation failed: ${err instanceof Error ? err.message : String(err)}`, 400);
+    }
+
+    // Now register + upload the bundle against the new client.
+    const newBundleId = `bkp-${randomUUID()}`;
+    const store = await resolveStore(app, targetConfigId, { requireActive: false });
+    const handle = await store.reserveBundle({ backupId: newBundleId, clientId: newClient.id });
+
+    const componentSet = new Set(['files', 'mailboxes', 'config', 'secrets'] as const);
+    const componentInfo: Array<{ component: string; sizeBytes: number }> = [];
+    let totalBytes = 0;
+    for (const e of entries) {
+      if (e.path === 'meta.json') continue;
+      const m = e.path.match(/^components\/(files|mailboxes|config|secrets)\/(.+)$/);
+      if (!m) continue;
+      const component = m[1] as 'files' | 'mailboxes' | 'config' | 'secrets';
+      const name = m[2]!;
+      if (!componentSet.has(component)) continue;
+      const ref = await store.writeComponent(handle, component, name, Readable.from(e.buffer));
+      componentInfo.push({ component, sizeBytes: ref.sizeBytes });
+      totalBytes += ref.sizeBytes;
+    }
+
+    // Write a fresh meta.json for the new bundle. v2 client block is
+    // taken from the operator's overrides, NOT the source meta — the
+    // source values are stale (different region, different plan, etc).
+    const importMeta = {
+      schemaVersion: BACKUP_META_SCHEMA_VERSION,
+      backupId: newBundleId,
+      clientId: newClient.id,
+      capturedAt: new Date().toISOString(),
+      platformVersion,
+      initiator: 'admin' as const,
+      systemTrigger: null,
+      label: `restored-from-bundle-${(sourceMeta.backupId as string | undefined) ?? 'unknown'}: ${(sourceMeta.label as string | undefined) ?? ''}`.slice(0, 255),
+      components: (sourceMeta.components as Record<string, unknown> | undefined) ?? {},
+      nodePlacement: null,
+      expiresAt: null,
+      retentionDays: ((sourceMeta.retentionDays as number | undefined) ?? 30),
+      description: ((sourceMeta.description as string | null | undefined) ?? null),
+      // v2: rebuild client block from the operator overrides. This is
+      // the canonical client info for the new tenant — the operator
+      // edited it, so we trust it over the (possibly stale) source.
+      client: {
+        companyName: overrides.company_name,
+        companyEmail: overrides.company_email,
+        contactEmail: overrides.contact_email ?? null,
+        status: newClient.status as string,
+        kubernetesNamespace: newClient.kubernetesNamespace,
+        regionId: overrides.region_id,
+        planId: overrides.plan_id,
+        workerNodeName: overrides.worker_node_name ?? null,
+        storageTier: overrides.storage_tier ?? 'local',
+        timezone: overrides.timezone ?? null,
+        storageLimitOverride: null,
+        cpuLimitOverride: null,
+        memoryLimitOverride: null,
+        maxSubUsersOverride: null,
+        maxMailboxesOverride: null,
+        monthlyPriceOverride: null,
+        emailSendRateLimit: null,
+        subscriptionExpiresAt: overrides.subscription_expires_at ?? null,
+        counts: { mailboxes: 0, domains: 0, deployments: 0 }, // restore-cart will fill these
+      },
+      domainsSummary: [...((sourceMeta.domainsSummary as Array<import('@k8s-hosting/api-contracts').BackupMetaDomainSummary> | undefined) ?? [])],
+      deploymentsSummary: [...((sourceMeta.deploymentsSummary as Array<import('@k8s-hosting/api-contracts').BackupMetaDeploymentSummary> | undefined) ?? [])],
+    };
+    await store.putMeta(handle, importMeta);
+
+    // Register backup_jobs row.
+    const targetKind = (cfgRow.storageType as 's3' | 'ssh' | 'hostpath');
+    const targetUri = targetKind === 's3'
+      ? `s3://${cfgRow.id}`
+      : targetKind === 'ssh' ? `ssh://${cfgRow.id}` : `hostpath://${cfgRow.id}`;
+    await app.db.insert(backupJobs).values({
+      id: newBundleId,
+      clientId: newClient.id,
+      initiator: 'admin',
+      systemTrigger: null,
+      status: 'completed',
+      targetKind,
+      targetUri,
+      targetConfigId,
+      label: importMeta.label,
+      description: importMeta.description,
+      sizeBytes: totalBytes,
+      retentionDays: importMeta.retentionDays,
+      expiresAt: null,
+      exportMode: null,
+      exportArtifact: null,
+      startedAt: new Date(),
+      finishedAt: new Date(),
+      lastError: null,
+    });
+
+    app.log.warn({
+      userId, newClientId: newClient.id, bundleId: newBundleId,
+      sourceBundleId: sourceMeta.backupId, totalBytes,
+    }, 'tenant-bundles: restore-from-bundle finalize succeeded');
+
+    reply.status(201).send({
+      data: {
+        newClientId: newClient.id,
+        bundleId: newBundleId,
+        sizeBytes: totalBytes,
+        componentCount: componentInfo.length,
+        clientUser: {
+          email: overrides.company_email,
+          generatedPassword: (newClient as unknown as { _generatedPassword?: string })._generatedPassword,
+        },
+      },
+    });
   });
 
   // ── POST /api/v1/admin/tenant-bundles/:id/verify ──────────────────

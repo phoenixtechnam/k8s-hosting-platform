@@ -26,7 +26,9 @@ import {
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
-import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, useBundleDetailLive, useVerifyAllBundles, downloadDataExport, downloadBundleExport, importBundle, previewImport, type ImportPreviewResponse } from '@/hooks/use-backup-bundles';
+import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, useBundleCoverage, useBundleDetailLive, useVerifyAllBundles, downloadDataExport, downloadBundleExport, importBundle, previewImport, restoreFromBundle, type ImportPreviewResponse, type RestoreFromBundleResult } from '@/hooks/use-backup-bundles';
+import { usePlans, useRegions } from '@/hooks/use-plans';
+import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import type { VerifyAllResult } from '@/hooks/use-backup-bundles';
 import { useAllBackupSchedules, useRunBackupScheduleNow } from '@/hooks/use-backup-schedule';
 import { useRestoreCarts } from '@/hooks/use-restore-carts';
@@ -292,6 +294,7 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
   const [showCreate, setShowCreate] = useState(false);
   const [exportPromptId, setExportPromptId] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [showRestore, setShowRestore] = useState(false);
   const [verifyAllResult, setVerifyAllResult] = useState<VerifyAllResult | null>(null);
   const [verifyAllError, setVerifyAllError] = useState<string | null>(null);
   const verifyAll = useVerifyAllBundles();
@@ -454,9 +457,19 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
           onClick={() => setShowImport(true)}
           className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
           data-testid="bundle-import"
-          title="Import an encrypted bundle from another region"
+          title="Import a bundle archive (tar.gz / tar.gz.enc / zip) for an existing local client"
         >
           <Upload size={14} /> Import
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowRestore(true)}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+          data-testid="bundle-restore-from-bundle"
+          title="Restore a deleted client from a bundle archive — creates a new tenant with a fresh UUID + namespace"
+        >
+          <RotateCcw size={14} /> Restore from bundle
         </button>
 
         <button
@@ -592,6 +605,13 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
         <ImportBundleModal
           configs={configs}
           onClose={() => setShowImport(false)}
+        />
+      )}
+
+      {showRestore && (
+        <RestoreFromBundleModal
+          configs={configs}
+          onClose={() => setShowRestore(false)}
         />
       )}
     </div>
@@ -1196,6 +1216,372 @@ function CreateBundleModal({ configs, onClose }: {
               title="Close the modal — capture continues in background"
             >
               Close (capture continues in background)
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * RestoreFromBundleModal — single-shot create-new-client + import flow
+ * for bundles whose source client doesn't exist locally any more.
+ *
+ * Operator workflow:
+ *   1. Pick the bundle archive (.tar.gz / .tar.gz.enc / .zip).
+ *   2. Click "Inspect" → preview decodes the archive + returns the
+ *      meta v2 client block. Form is pre-populated from those values.
+ *   3. Operator edits company name/email, picks region/plan/worker
+ *      node/storage tier (matches CreateClientModal's UX).
+ *   4. Submit → POST /import-finalize creates the client + imports
+ *      the bundle in one shot. Returns the new clientId + the auto-
+ *      generated client_admin password for one-shot display.
+ *
+ * Scope (deferred):
+ *   - re-use UUID toggle (would bypass createClient's randomUUID)
+ *   - re-use namespace toggle (would bypass generateNamespace)
+ *   These come in a follow-up alongside the restore-archived path
+ *   that needs both for byte-identical recovery.
+ */
+function RestoreFromBundleModal({ configs, onClose }: {
+  configs: ReadonlyArray<{ readonly id: string; readonly name: string; readonly active: boolean }>;
+  onClose: () => void;
+}) {
+  // Step 1 — file + passphrase
+  const [file, setFile] = useState<File | null>(null);
+  const [passphrase, setPassphrase] = useState('');
+  const [showPassphrase, setShowPassphrase] = useState(false);
+  const [preview, setPreview] = useState<ImportPreviewResponse | null>(null);
+
+  // Step 2 — operator-edited form (pre-filled from preview)
+  const [companyName, setCompanyName] = useState('');
+  const [companyEmail, setCompanyEmail] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [planId, setPlanId] = useState('');
+  const [regionId, setRegionId] = useState('');
+  const [workerNodeName, setWorkerNodeName] = useState('');
+  const [storageTier, setStorageTier] = useState<'local' | 'ha'>('local');
+  const [targetConfigId, setTargetConfigId] = useState<string>(
+    () => configs.find((c) => c.active)?.id ?? configs[0]?.id ?? '',
+  );
+
+  // Step 3 — submit / result
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<RestoreFromBundleResult | null>(null);
+  const [pwCopied, setPwCopied] = useState(false);
+
+  // Lookups for the form dropdowns
+  const { data: plansData } = usePlans();
+  const { data: regionsData } = useRegions();
+  const { data: nodesData } = useClusterNodes();
+
+  const handleInspect = async () => {
+    if (!file) {
+      setError('Pick a file first.');
+      return;
+    }
+    setError(null);
+    setPending(true);
+    try {
+      const p = await previewImport({ file, passphrase: passphrase || undefined });
+      setPreview(p);
+      // Pre-fill the form from the source meta where available.
+      const c = p.sourceMeta.client;
+      if (c) {
+        setCompanyName(c.companyName || '');
+        setCompanyEmail(c.companyEmail || '');
+        setContactEmail(c.contactEmail ?? '');
+        setStorageTier((c.storageTier as 'local' | 'ha') ?? 'local');
+      }
+      // The source plan/region UUIDs may not match anything in this
+      // region — leave the dropdowns at default and let the operator
+      // pick. workerNodeName ditto (different cluster).
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Inspect failed');
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const validForSubmit = !!file && !!preview && !!companyName && !!companyEmail
+    && !!planId && !!regionId && !!targetConfigId;
+
+  const handleSubmit = async () => {
+    if (!validForSubmit || !file) {
+      setError('Fill all required fields.');
+      return;
+    }
+    setError(null);
+    setPending(true);
+    try {
+      const r = await restoreFromBundle({
+        file,
+        passphrase: passphrase || undefined,
+        targetConfigId,
+        overrides: {
+          company_name: companyName,
+          company_email: companyEmail,
+          contact_email: contactEmail || undefined,
+          plan_id: planId,
+          region_id: regionId,
+          worker_node_name: workerNodeName || undefined,
+          storage_tier: storageTier,
+        },
+      });
+      setResult(r);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Restore failed');
+    } finally {
+      setPending(false);
+    }
+  };
+
+  // Result screen — show the new client + one-shot generated password
+  if (result) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+        <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Client restored</h3>
+            <button type="button" onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600" aria-label="Close">
+              <X size={16} />
+            </button>
+          </div>
+          <div className="space-y-3 text-sm">
+            <div className="rounded-md border border-green-300 bg-green-50 p-3 text-green-900 dark:border-green-800 dark:bg-green-950/40 dark:text-green-200">
+              <CheckCircle2 className="mr-1 inline h-4 w-4" />
+              Created client <code className="font-mono text-xs">{result.newClientId.slice(0, 8)}</code>{' '}
+              + bundle <code className="font-mono text-xs">{result.bundleId.slice(0, 16)}</code>{' '}
+              ({(result.sizeBytes / 1024 / 1024).toFixed(1)} MiB).
+            </div>
+            {result.clientUser?.generatedPassword && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                <p className="mb-2 font-medium">Auto-generated client_admin credentials (shown ONCE — record now):</p>
+                <div className="space-y-1 font-mono">
+                  <div>email: <code>{result.clientUser.email}</code></div>
+                  <div className="flex items-center gap-2">
+                    <span>password:</span>
+                    <code className="rounded bg-white/50 px-1 py-0.5 dark:bg-gray-900/50">{result.clientUser.generatedPassword}</code>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(result.clientUser!.generatedPassword!);
+                        setPwCopied(true);
+                        setTimeout(() => setPwCopied(false), 2000);
+                      }}
+                      className="text-blue-700 underline dark:text-blue-300"
+                    >
+                      {pwCopied ? 'copied' : 'copy'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            <p className="text-xs text-gray-600 dark:text-gray-300">
+              Open the new client and use Restore Cart to apply the bundle to the freshly-provisioned tenant.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Link
+                to={`/clients/${result.newClientId}`}
+                className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700"
+                onClick={onClose}
+              >
+                Open client →
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Restore client from bundle</h3>
+          <button type="button" onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600" aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+          Re-creates a client tenant from a bundle archive. Use when the source client has been deleted from this region.
+          For active or suspended clients, open the client and use Restore Cart instead — that path preserves UUID + namespace.
+        </p>
+
+        <div className="space-y-3 text-sm">
+          {/* Step 1 — file picker */}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+              Bundle archive <span className="text-gray-400">(.tar.gz, .tar.gz.enc, .zip)</span>
+            </label>
+            <input
+              type="file"
+              accept=".gz,.enc,.tar,.zip,application/octet-stream,application/zip,application/gzip"
+              onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); }}
+              className="block w-full text-sm text-gray-700 dark:text-gray-300"
+            />
+            {file && <p className="mt-1 text-xs text-gray-500">{file.name} ({(file.size / 1024 / 1024).toFixed(1)} MiB)</p>}
+          </div>
+
+          {/* Passphrase — optional, only used if archive is encrypted */}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+              Passphrase <span className="text-gray-400">(only if archive is encrypted)</span>
+            </label>
+            <div className="relative">
+              <input
+                type={showPassphrase ? 'text' : 'password'}
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+                placeholder="(optional)"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 pr-10 font-mono text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassphrase(!showPassphrase)}
+                className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                aria-label={showPassphrase ? 'Hide' : 'Show'}
+              >
+                {showPassphrase ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
+
+          {!preview && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleInspect}
+                disabled={!file || pending}
+                className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                {pending ? <><Loader2 size={14} className="animate-spin" /> Inspecting…</> : <>Inspect archive</>}
+              </button>
+            </div>
+          )}
+
+          {/* Step 2 — operator-edited form */}
+          {preview && (
+            <>
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs dark:border-gray-700 dark:bg-gray-900/50">
+                <span className="font-medium text-gray-700 dark:text-gray-200">Detected:</span>{' '}
+                <span className="rounded-full bg-blue-100 px-2 py-0.5 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300">{preview.format}</span>{' '}
+                · {preview.entryCount} entries · {(preview.totalBytes / 1024 / 1024).toFixed(1)} MiB
+                {preview.sourceMeta.client && (
+                  <span className="ml-2 text-gray-500">
+                    (source: <em>{preview.sourceMeta.client.companyName}</em>, captured {preview.sourceMeta.capturedAt ? new Date(preview.sourceMeta.capturedAt).toLocaleDateString() : '—'})
+                  </span>
+                )}
+              </div>
+
+              {preview.localClientMatch && (preview.localClientMatch.status === 'active' || preview.localClientMatch.status === 'suspended') ? (
+                <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+                  <AlertCircle className="mr-1 inline h-4 w-4" />
+                  This region already has an <strong>{preview.localClientMatch.status}</strong> client (<em>{preview.localClientMatch.companyName}</em>) with the source UUID.
+                  Restore-from-bundle would create a SECOND parallel tenant. Open the existing client and use Restore Cart instead.
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Company name *</label>
+                      <input type="text" value={companyName} onChange={(e) => setCompanyName(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Company email *</label>
+                      <input type="email" value={companyEmail} onChange={(e) => setCompanyEmail(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Contact email</label>
+                      <input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="(optional)"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Region *</label>
+                      <select value={regionId} onChange={(e) => setRegionId(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100">
+                        <option value="">— pick region —</option>
+                        {(regionsData?.data ?? []).map((r) => (
+                          <option key={r.id} value={r.id}>{r.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Plan *</label>
+                      <select value={planId} onChange={(e) => setPlanId(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100">
+                        <option value="">— pick plan —</option>
+                        {(plansData?.data ?? []).map((p) => (
+                          <option key={p.id} value={p.id}>{p.name} — {p.cpuLimit}vCPU / {p.memoryLimit}MB / {p.storageLimit}GB</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Storage tier</label>
+                      <select value={storageTier} onChange={(e) => setStorageTier(e.target.value as 'local' | 'ha')}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100">
+                        <option value="local">Local (1 replica)</option>
+                        <option value="ha" disabled={(nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads).length < 3}>
+                          HA (2 replicas){(nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads).length < 3 && ' — needs ≥3 nodes'}
+                        </option>
+                      </select>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Worker node</label>
+                      <select value={workerNodeName} onChange={(e) => setWorkerNodeName(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100">
+                        <option value="">Auto (scheduler picks based on capacity)</option>
+                        {(nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads).map((n) => (
+                          <option key={n.name} value={n.name}>{n.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Off-site target *</label>
+                      <select value={targetConfigId} onChange={(e) => setTargetConfigId(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100">
+                        {configs.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}{c.active ? ' (active)' : ''}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                    <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+                    A new tenant will be provisioned with a fresh UUID + namespace. The bundle is registered against
+                    the new client; apply the actual data via Restore Cart on the resulting client page.
+                  </p>
+                </>
+              )}
+            </>
+          )}
+
+          {error && (
+            <div className="rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+              <AlertCircle className="mr-1 inline h-4 w-4" /> {error}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:text-gray-100">
+            Cancel
+          </button>
+          {preview && !(preview.localClientMatch && (preview.localClientMatch.status === 'active' || preview.localClientMatch.status === 'suspended')) && (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!validForSubmit || pending}
+              className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
+            >
+              {pending ? <><Loader2 size={14} className="animate-spin" /> Restoring…</> : <><RotateCcw size={14} /> Restore client</>}
             </button>
           )}
         </div>

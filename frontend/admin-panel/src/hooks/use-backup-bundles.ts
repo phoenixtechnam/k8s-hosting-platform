@@ -223,6 +223,65 @@ export interface ImportPreviewResponse {
   readonly totalBytes: number;
 }
 
+export interface RestoreFromBundleResult {
+  readonly newClientId: string;
+  readonly bundleId: string;
+  readonly sizeBytes: number;
+  readonly componentCount: number;
+  readonly clientUser?: {
+    readonly email: string;
+    readonly generatedPassword?: string;
+  };
+}
+
+export interface RestoreFromBundleOverrides {
+  readonly company_name: string;
+  readonly company_email: string;
+  readonly contact_email?: string;
+  readonly plan_id: string;
+  readonly region_id: string;
+  readonly timezone?: string;
+  readonly worker_node_name?: string;
+  readonly storage_tier?: 'local' | 'ha';
+  readonly subscription_expires_at?: string;
+}
+
+/**
+ * Restore-from-bundle: create a brand-new client + import the bundle
+ * in one shot. Used for missing/deleted source clients where there's
+ * nothing locally to attach the bundle to.
+ *
+ * Server creates the client via the standard createClient service
+ * (auto-generates a client_admin user with one-shot password —
+ * returned in `clientUser.generatedPassword` so the operator can
+ * record it once before this dialog closes).
+ */
+export async function restoreFromBundle(args: {
+  file: File;
+  passphrase?: string;
+  targetConfigId: string;
+  overrides: RestoreFromBundleOverrides;
+}): Promise<RestoreFromBundleResult> {
+  const fd = new FormData();
+  fd.append('bundle', args.file);
+  fd.append('targetConfigId', args.targetConfigId);
+  fd.append('overrides', JSON.stringify(args.overrides));
+  if (args.passphrase) fd.append('passphrase', args.passphrase);
+  const token = localStorage.getItem('auth_token');
+  const r = await fetch('/api/v1/admin/tenant-bundles/import-finalize', {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+  });
+  if (!r.ok) {
+    let detail = '';
+    try { detail = await r.text(); } catch { /* ignore */ }
+    throw new Error(`restore-from-bundle failed (${r.status}): ${detail.slice(0, 300)}`);
+  }
+  const body = await r.json();
+  return body.data as RestoreFromBundleResult;
+}
+
 /**
  * Decode an uploaded archive without committing to the import. The
  * server detects format from magic bytes (Salted__/gzip/zip), runs
