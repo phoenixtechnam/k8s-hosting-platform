@@ -313,6 +313,49 @@ export interface ImportEntry {
  *  encrypted-tar path and ignored otherwise. */
 export type ImportFormat = 'tar-encrypted' | 'tar-plain' | 'zip';
 
+/**
+ * Per-archive total decompressed-bytes cap. A malicious admin (or
+ * compromised admin token) could upload a tiny gzip/zip bomb that
+ * decompresses to 100GB+ and OOM-kills the platform-api pod. 4 GiB
+ * is comfortably larger than any legitimate tenant bundle observed
+ * on staging (largest ~600 MiB) and far below typical pod memory.
+ * The cap is enforced inside every extract path — tar-plain,
+ * tar-encrypted, and zip — by tracking running entry-buffer size and
+ * throwing as soon as the threshold is crossed (the partial entries
+ * are then GC'd).
+ */
+const MAX_ARCHIVE_DECOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024;
+
+/**
+ * Validate a tar/zip entry filename for path-traversal (zip-slip).
+ *
+ * Rejects:
+ *   - any segment equal to '..'
+ *   - leading '/' (absolute paths)
+ *   - leading or embedded '\\' (Windows path separator — would be
+ *     interpreted as a single segment by Linux but treated as
+ *     traversal by some downstream consumers)
+ *   - control characters or NUL bytes
+ *
+ * The valid tenant-bundle layout is `meta.json` and
+ * `components/(files|mailboxes|config|secrets)/<name>` where
+ * `<name>` is a single segment with no traversal. Anything else
+ * is either a malicious crafted archive or a legitimately-renamed
+ * archive that we shouldn't accept blindly.
+ */
+function assertSafeArchivePath(name: string): void {
+  if (!name || name.length === 0) throw new Error('archive entry has empty path');
+  if (name.length > 1024) throw new Error(`archive entry path too long (${name.length} chars)`);
+  if (name.startsWith('/') || name.startsWith('\\')) throw new Error(`archive entry path is absolute: ${name}`);
+  if (name.includes('\\')) throw new Error(`archive entry path contains backslash: ${name}`);
+  if (/[\x00-\x1f]/.test(name)) throw new Error(`archive entry path contains control characters: ${name}`);
+  // Split on forward-slash and reject any '..' segment. Catches
+  // '../', 'foo/../bar', '..', etc.
+  for (const segment of name.split('/')) {
+    if (segment === '..') throw new Error(`archive entry path traversal: ${name}`);
+  }
+}
+
 export function detectImportFormat(blob: Buffer): ImportFormat {
   if (blob.length < 8) {
     throw new Error(`detectImportFormat: blob too short (${blob.length} bytes); not a recognized archive`);
@@ -375,17 +418,48 @@ export async function extractImportArchive(args: {
 async function extractPlainTarGz(blob: Buffer): Promise<ImportEntry[]> {
   const gunzip = createGunzip();
   const tarX = tarExtract();
-  // Drop unhandled-listener error from gunzip; the pipeline below
-  // surfaces gunzip errors via the await.
   gunzip.on('error', () => undefined);
 
   const entries: ImportEntry[] = [];
+  let totalBytes = 0;
+  // We collect path-traversal / size-cap violations as we see them,
+  // skip the offending entries, and let the tar parse complete its
+  // natural lifecycle. If anything was flagged, throw at the END so
+  // the tar-stream state machine winds down cleanly (avoids the
+  // "Unhandled Errors" parade you get from calling tarX.destroy
+  // mid-iteration). This is safe because we never write any of the
+  // malicious entries' bytes anywhere — they're dropped on the floor.
+  let safetyError: Error | null = null;
   const collect = new Promise<void>((resolve, reject) => {
     tarX.on('entry', (header, stream, next) => {
+      try {
+        assertSafeArchivePath(header.name);
+      } catch (err) {
+        if (!safetyError) safetyError = err as Error;
+        stream.on('error', () => undefined);
+        stream.resume();
+        stream.on('end', () => next());
+        return;
+      }
       const chunks: Buffer[] = [];
-      stream.on('data', (c: Buffer) => chunks.push(c));
+      let entryBytes = 0;
+      stream.on('data', (c: Buffer) => {
+        entryBytes += c.length;
+        totalBytes += c.length;
+        if (totalBytes > MAX_ARCHIVE_DECOMPRESSED_BYTES) {
+          if (!safetyError) {
+            safetyError = new Error(`extractPlainTarGz: archive exceeds ${MAX_ARCHIVE_DECOMPRESSED_BYTES} byte cap (zip-bomb guard)`);
+          }
+          // Stop collecting bytes for this entry; we'll throw at the
+          // end of the parse anyway. Don't push to chunks.
+          return;
+        }
+        chunks.push(c);
+      });
       stream.on('end', () => {
-        entries.push({ path: header.name, buffer: Buffer.concat(chunks) });
+        if (!safetyError) {
+          entries.push({ path: header.name, buffer: Buffer.concat(chunks, entryBytes) });
+        }
         next();
       });
       stream.on('error', reject);
@@ -401,6 +475,7 @@ async function extractPlainTarGz(blob: Buffer): Promise<ImportEntry[]> {
   } catch (err) {
     throw new Error(`extractPlainTarGz: corrupt tar.gz (${err instanceof Error ? err.message : String(err)})`);
   }
+  if (safetyError) throw safetyError;
   return entries;
 }
 
@@ -419,6 +494,8 @@ async function extractZip(blob: Buffer): Promise<ImportEntry[]> {
   // yauzl is CommonJS; tsconfig esModuleInterop is on.
   const { default: yauzl } = await import('yauzl');
   const entries: ImportEntry[] = [];
+  let totalBytes = 0;
+  let safetyError: Error | null = null;
   return new Promise<ImportEntry[]>((resolve, reject) => {
     yauzl.fromBuffer(blob, { lazyEntries: true, decodeStrings: true }, (err, zip) => {
       if (err) {
@@ -430,10 +507,23 @@ async function extractZip(blob: Buffer): Promise<ImportEntry[]> {
         return;
       }
       zip.on('error', (e) => reject(new Error(`extractZip: zip read error (${e.message})`)));
-      zip.on('end', () => resolve(entries));
+      zip.on('end', () => {
+        if (safetyError) reject(safetyError);
+        else resolve(entries);
+      });
       zip.on('entry', (entry) => {
         // Skip directories (yauzl marks them with trailing slash).
         if (/\/$/.test(entry.fileName)) {
+          zip.readEntry();
+          return;
+        }
+        // Validate path. On failure, mark + skip — same drain-then-throw
+        // pattern as the tar paths (avoids unhandled-error parade from
+        // mid-iteration destroy()).
+        try {
+          assertSafeArchivePath(entry.fileName);
+        } catch (e) {
+          if (!safetyError) safetyError = e as Error;
           zip.readEntry();
           return;
         }
@@ -443,9 +533,22 @@ async function extractZip(blob: Buffer): Promise<ImportEntry[]> {
             return;
           }
           const chunks: Buffer[] = [];
-          stream.on('data', (c: Buffer) => chunks.push(c));
+          let entryBytes = 0;
+          stream.on('data', (c: Buffer) => {
+            entryBytes += c.length;
+            totalBytes += c.length;
+            if (totalBytes > MAX_ARCHIVE_DECOMPRESSED_BYTES) {
+              if (!safetyError) {
+                safetyError = new Error(`extractZip: archive exceeds ${MAX_ARCHIVE_DECOMPRESSED_BYTES} byte cap (zip-bomb guard)`);
+              }
+              return;
+            }
+            chunks.push(c);
+          });
           stream.on('end', () => {
-            entries.push({ path: entry.fileName, buffer: Buffer.concat(chunks) });
+            if (!safetyError) {
+              entries.push({ path: entry.fileName, buffer: Buffer.concat(chunks, entryBytes) });
+            }
             zip.readEntry();
           });
           stream.on('error', (e) => reject(new Error(`extractZip: entry stream error (${e.message})`)));
@@ -515,12 +618,36 @@ export async function decryptImportTarball(args: {
   gunzip.on('error', () => undefined);
 
   const entries: ImportEntry[] = [];
+  let totalBytes = 0;
+  let safetyError: Error | null = null;
   const collect = new Promise<void>((resolve, reject) => {
     tarX.on('entry', (header, stream, next) => {
+      try {
+        assertSafeArchivePath(header.name);
+      } catch (err) {
+        if (!safetyError) safetyError = err as Error;
+        stream.on('error', () => undefined);
+        stream.resume();
+        stream.on('end', () => next());
+        return;
+      }
       const chunks: Buffer[] = [];
-      stream.on('data', (c: Buffer) => chunks.push(c));
+      let entryBytes = 0;
+      stream.on('data', (c: Buffer) => {
+        entryBytes += c.length;
+        totalBytes += c.length;
+        if (totalBytes > MAX_ARCHIVE_DECOMPRESSED_BYTES) {
+          if (!safetyError) {
+            safetyError = new Error(`decryptImportTarball: archive exceeds ${MAX_ARCHIVE_DECOMPRESSED_BYTES} byte cap (zip-bomb guard)`);
+          }
+          return;
+        }
+        chunks.push(c);
+      });
       stream.on('end', () => {
-        entries.push({ path: header.name, buffer: Buffer.concat(chunks) });
+        if (!safetyError) {
+          entries.push({ path: header.name, buffer: Buffer.concat(chunks, entryBytes) });
+        }
         next();
       });
       stream.on('error', reject);
@@ -536,6 +663,7 @@ export async function decryptImportTarball(args: {
   } catch (err) {
     throw new Error(`import-extract failed (corrupt tarball): ${err instanceof Error ? err.message : String(err)}`);
   }
+  if (safetyError) throw safetyError;
   return entries;
 }
 
