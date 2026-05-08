@@ -50,9 +50,11 @@ probe_http_ingress() {
   # HTTP on the port the catalog declares as the ingress target.
   #
   # Selection priority:
-  #   1) Service labelled `component=<entry_code>` (the ingress component
-  #      by catalog convention — primary for multi-component apps)
-  #   2) Otherwise, first non-file-manager Service whose port is NOT in
+  #   1) Service labelled `component=<entry_code>` (exact — primary for
+  #      most multi-component apps)
+  #   2) Service labelled `component=<entry_code>-server` or starting with
+  #      `<entry_code>-` (covers immich → immich-server, etc.)
+  #   3) Otherwise, first non-file-manager Service whose port is NOT in
   #      the known DB/cache backend allowlist
   local svc port
   svc=$(kctl -n "$ns" get svc -o json \
@@ -61,15 +63,26 @@ import json, os, sys
 code = os.environ.get('CODE') or ''
 DB_PORTS = {3306, 5432, 27017, 6379, 11211, 5984, 9092, 9980, 25, 53, 9001}
 items = json.load(sys.stdin).get('items', [])
-# pass 1: prefer Service labelled component=<code>
+def get_comp(s): return s.get('metadata', {}).get('labels', {}).get('component') or ''
+def first_port(s):
+    ports = s.get('spec', {}).get('ports', [])
+    return ports[0]['port'] if ports else None
+# pass 1: exact component=<code>
 if code:
     for s in items:
-        if s.get('metadata', {}).get('labels', {}).get('component') == code:
-            ports = s.get('spec', {}).get('ports', [])
-            if ports:
-                print(s['metadata']['name'], ports[0]['port'])
-                sys.exit(0)
-# pass 2: first non-file-manager non-backend Service
+        if get_comp(s) == code and first_port(s):
+            print(s['metadata']['name'], first_port(s)); sys.exit(0)
+# pass 2: component=<code>-server or component starting with <code>-
+if code:
+    candidates = [s for s in items if get_comp(s).startswith(code + '-') and first_port(s)]
+    # Prefer -server suffix when present
+    for s in candidates:
+        if get_comp(s) == code + '-server':
+            print(s['metadata']['name'], first_port(s)); sys.exit(0)
+    if candidates:
+        s = candidates[0]
+        print(s['metadata']['name'], first_port(s)); sys.exit(0)
+# pass 3: first non-file-manager non-backend Service
 for s in items:
     n = s['metadata']['name']
     if n == 'file-manager': continue
