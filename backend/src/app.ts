@@ -179,12 +179,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     },
     genReqId: () => crypto.randomUUID(),
     bodyLimit: 50 * 1024 * 1024, // 50MB for SQL imports
-    // System Backup secrets-bundle download URL embeds the HMAC
-    // token as a path parameter: <uuid>.<expiresMs>.<mac> ≈ 115 chars.
-    // Default maxParamLength (100) makes find-my-way refuse to match
-    // and Fastify returns 404 silently. Bump generously — no other
-    // route uses 256-char params, and shorter URLs aren't constrained.
-    maxParamLength: 256,
+    // Two routes encode HMAC tokens in path parameters:
+    //   - System Backup secrets-bundle download: <uuid>.<expiresMs>.<mac> ≈ 115 chars
+    //   - Tenant bundles signed-URL export: base64url(JSON{v,b,f,p,e,n}).b64url(mac).
+    //     With an encrypted password envelope p={iv,tag,ct} (AES-256-GCM
+    //     16+16+ciphertext bytes base64url'd) the token grows to ~290-340
+    //     chars even on a short password. Default maxParamLength (100)
+    //     makes find-my-way refuse to match and Fastify returns 404
+    //     silently. Bump generously — 1024 is plenty of headroom and
+    //     shorter URLs are not affected.
+    maxParamLength: 1024,
     // trustProxy: nginx-ingress terminates TLS and forwards as HTTP
     // to the platform-api pod. Without this, request.protocol returns
     // "http" — which breaks OIDC because the redirect_uri sent to
