@@ -432,14 +432,24 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // Wire format identical to wrapBundleAsDataExport: Salted__ +
   // 8-byte salt + AES-256-CBC(gzip(tar)) with 100k-iter PBKDF2.
   app.post('/admin/tenant-bundles/:id/export', {
-    schema: { tags: ['TenantBundles'], summary: 'Download a passphrase-encrypted bundle tarball for multi-region transfer', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles'], summary: 'Download a bundle tarball (optionally passphrase-encrypted)', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as { passphrase?: string } | null;
     const passphrase = body?.passphrase;
-    if (!passphrase || typeof passphrase !== 'string' || passphrase.length < 12) {
-      throw new ApiError('VALIDATION_ERROR', 'passphrase must be a string ≥12 characters', 400);
+    // passphrase is OPTIONAL. When supplied, must be ≥12 chars
+    // (matches the OpenSSL-compatible KDF parameters). When absent
+    // (undefined / null / empty string), the response is plain
+    // `tar.gz`. ANY non-empty value too short raises 400 — must
+    // happen BEFORE we call streamEncryptedExport, otherwise the
+    // function throws a plain Error which the framework returns as
+    // 500. Caught by typescript-reviewer 2026-05-08.
+    if (passphrase !== undefined && passphrase !== null && passphrase !== '') {
+      if (typeof passphrase !== 'string' || passphrase.length < 12) {
+        throw new ApiError('VALIDATION_ERROR', 'passphrase must be a string ≥12 characters (or omit it for an unencrypted tar.gz)', 400);
+      }
     }
+    const encrypt = typeof passphrase === 'string' && passphrase.length >= 12;
 
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
     if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
@@ -465,12 +475,89 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
 
     const { streamEncryptedExport } = await import('./data-export.js');
-    const stream = await streamEncryptedExport({ store, handle, passphrase, components: allArtifacts });
+    const stream = await streamEncryptedExport({ store, handle, passphrase: encrypt ? passphrase : undefined, components: allArtifacts });
 
-    reply.header('Content-Type', 'application/octet-stream');
-    reply.header('Content-Disposition', `attachment; filename="bundle-${id}.tar.gz.enc"`);
+    // Defensive: if the async feeder errors after headers are
+    // flushed, log so the failure isn't silent in audit logs.
+    stream.on('error', (err) => {
+      app.log.error({ err: err instanceof Error ? err.message : String(err), bundleId: id }, 'tenant-bundles: tar export stream error');
+    });
+
+    reply.header('Content-Type', encrypt ? 'application/octet-stream' : 'application/gzip');
+    const filename = encrypt ? `bundle-${id}.tar.gz.enc` : `bundle-${id}.tar.gz`;
+    reply.header('Content-Disposition', `attachment; filename="${filename}"`);
     reply.header('Cache-Control', 'no-store');
-    app.log.warn({ userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id }, 'tenant-bundles: export download initiated');
+    app.log.warn(
+      { userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id, clientId: job.clientId, encrypted: encrypt, format: 'tar' },
+      'tenant-bundles: export download initiated',
+    );
+    return reply.send(stream);
+  });
+
+  // ── POST /api/v1/admin/tenant-bundles/:id/zip ─────────────────────
+  //
+  // ZIP variant of the export endpoint. Same per-artifact streaming
+  // pipeline (S3 → archiver → reply), no server-side staging. When
+  // `password` is supplied the entries are encrypted with WinZip
+  // AES-256 (AE-2) — every modern unzip tool decrypts with the
+  // password. When absent the ZIP is plaintext.
+  //
+  // Tradeoff vs the tar.gz.enc variant: ZIP encrypts entry CONTENTS
+  // but leaves filenames + sizes visible in the central directory
+  // (it's a structural property of the ZIP format). Use tar.gz.enc
+  // if metadata confidentiality matters; use ZIP for cross-platform
+  // ergonomics (Windows Explorer / macOS Archive Utility / 7-Zip
+  // unzip with no extra tools).
+  app.post('/admin/tenant-bundles/:id/zip', {
+    schema: { tags: ['TenantBundles'], summary: 'Download a bundle as ZIP (optionally AES-256 password-encrypted)', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { password?: string } | null;
+    const password = body?.password;
+    // password is OPTIONAL. When supplied, must be ≥12 chars —
+    // matching the tar.gz.enc minimum, because WinZip AE-2 uses a
+    // weaker PBKDF2 (1000 iterations vs 100k for tar). A shorter
+    // password against the lower KDF cost would be trivially
+    // brute-forced. Caught by security-reviewer 2026-05-08.
+    if (password !== undefined && password !== null && password !== '') {
+      if (typeof password !== 'string' || password.length < 12) {
+        throw new ApiError('VALIDATION_ERROR', 'password must be a string ≥12 characters (or omit it for an unencrypted zip)', 400);
+      }
+    }
+    const encrypt = typeof password === 'string' && password.length >= 12;
+
+    const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    if (!job.targetConfigId) throw new ApiError('CONFIG_INVALID', 'Bundle has no targetConfigId; cannot read components', 400);
+
+    const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+    const handle = await store.open(id);
+    if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artifacts not found on off-site target', 404);
+
+    const allArtifacts: Array<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }> = [];
+    for (const component of (['files', 'mailboxes', 'config', 'secrets'] as const)) {
+      const refs = await store.listArtifacts(handle, component);
+      for (const r of refs) {
+        // Same circular-skip as the tar variant.
+        if (component === 'config' && r.name.startsWith('data-export-')) continue;
+        allArtifacts.push({ component, name: r.name });
+      }
+    }
+
+    const { streamZipExport } = await import('./data-export.js');
+    const stream = await streamZipExport({ store, handle, password: encrypt ? password : undefined, components: allArtifacts });
+
+    stream.on('error', (err) => {
+      app.log.error({ err: err instanceof Error ? err.message : String(err), bundleId: id }, 'tenant-bundles: zip export stream error');
+    });
+
+    reply.header('Content-Type', 'application/zip');
+    reply.header('Content-Disposition', `attachment; filename="bundle-${id}.zip"`);
+    reply.header('Cache-Control', 'no-store');
+    app.log.warn(
+      { userId: (request.user as { sub?: string } | undefined)?.sub, bundleId: id, clientId: job.clientId, encrypted: encrypt, format: 'zip' },
+      'tenant-bundles: export download initiated',
+    );
     return reply.send(stream);
   });
 

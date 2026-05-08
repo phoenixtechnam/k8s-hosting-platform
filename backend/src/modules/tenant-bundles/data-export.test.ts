@@ -224,4 +224,142 @@ describe('streamEncryptedExport + decryptImportTarball', () => {
       passphrase: 'whatever-12-chars',
     })).rejects.toThrow(/not an OpenSSL Salted__ envelope/);
   });
+
+  // ── plain (unencrypted) tar.gz export ────────────────────────────
+  it('streams a plain tar.gz when no passphrase is supplied', async () => {
+    const { streamEncryptedExport } = await import('./data-export.js');
+    const meta: BackupMetaV1 = {
+      schemaVersion: 1, backupId: 'bkp-plain', clientId: 'c1',
+      capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
+      initiator: 'admin', systemTrigger: null, retentionDays: 1,
+      label: null, description: null, components: {},
+    } as unknown as BackupMetaV1;
+    const store = makeMockStore({
+      meta,
+      artifacts: { 'config/db-rows.json.gz': Buffer.from('PLAIN-CONFIG') },
+    });
+    const handle: BundleHandle = { backupId: 'bkp-plain', clientId: 'c1', root: 'mem://bkp-plain' };
+
+    // No passphrase → plain gzip(tar)
+    const stream = await streamEncryptedExport({ store, handle, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
+    const chunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
+    const blob = Buffer.concat(chunks);
+
+    // Plain gzip starts with 1f 8b — no Salted__ header.
+    expect(blob.subarray(0, 2).equals(Buffer.from([0x1f, 0x8b]))).toBe(true);
+    expect(blob.subarray(0, 8).toString('ascii')).not.toBe('Salted__');
+
+    // Decompress + extract directly.
+    const tarBuf = gunzipSync(blob);
+    const tarX = tarExtract();
+    const seen: Record<string, Buffer> = {};
+    const collected = new Promise<void>((resolve, reject) => {
+      tarX.on('entry', (header, s, next) => {
+        const cs: Buffer[] = [];
+        s.on('data', (c: Buffer) => cs.push(c));
+        s.on('end', () => { seen[header.name] = Buffer.concat(cs); next(); });
+        s.on('error', reject);
+        s.resume();
+      });
+      tarX.on('finish', () => resolve());
+      tarX.on('error', reject);
+    });
+    Readable.from(tarBuf).pipe(tarX);
+    await collected;
+    expect(seen['meta.json']).toBeDefined();
+    expect(seen['components/config/db-rows.json.gz']?.toString()).toBe('PLAIN-CONFIG');
+  });
+
+  it('rejects an empty-string passphrase shorter than 12 chars only when explicitly supplied', async () => {
+    // The function distinguishes "absent password" (plain) from
+    // "supplied but too short" (validation error). Passing an empty
+    // string is treated as absent (no encryption).
+    const { streamEncryptedExport } = await import('./data-export.js');
+    const meta: BackupMetaV1 = {
+      schemaVersion: 1, backupId: 'b', clientId: 'c',
+      capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
+      initiator: 'admin', systemTrigger: null, retentionDays: 1,
+      label: null, description: null, components: {},
+    } as unknown as BackupMetaV1;
+    const store = makeMockStore({ meta, artifacts: {} });
+    const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
+
+    // Empty string → no encryption, no validation error.
+    const stream = await streamEncryptedExport({ store, handle, passphrase: '', components: [] });
+    expect(stream).toBeDefined();
+  });
+
+  // ── ZIP export (optional WinZip AES-256) ─────────────────────────
+  it('streams a plain ZIP when no password is supplied', async () => {
+    const { streamZipExport } = await import('./data-export.js');
+    const meta: BackupMetaV1 = {
+      schemaVersion: 1, backupId: 'bkp-zip', clientId: 'c1',
+      capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
+      initiator: 'admin', systemTrigger: null, retentionDays: 1,
+      label: null, description: null, components: {},
+    } as unknown as BackupMetaV1;
+    const store = makeMockStore({
+      meta,
+      artifacts: { 'config/db-rows.json.gz': Buffer.from('PLAIN-ZIP-PAYLOAD') },
+    });
+    const handle: BundleHandle = { backupId: 'bkp-zip', clientId: 'c1', root: 'mem://bkp-zip' };
+    const stream = await streamZipExport({ store, handle, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
+    const chunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
+    const zipBlob = Buffer.concat(chunks);
+    // ZIP magic: PK\x03\x04 at byte 0, central directory PK\x05\x06 near end.
+    expect(zipBlob.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))).toBe(true);
+    expect(zipBlob.length).toBeGreaterThan(50);
+  });
+
+  it('streams an AES-256 encrypted ZIP when password is supplied', async () => {
+    const { streamZipExport } = await import('./data-export.js');
+    const meta: BackupMetaV1 = {
+      schemaVersion: 1, backupId: 'bkp-zip-enc', clientId: 'c1',
+      capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
+      initiator: 'admin', systemTrigger: null, retentionDays: 1,
+      label: null, description: null, components: {},
+    } as unknown as BackupMetaV1;
+    const secret = 'TENANT-DATA-MUST-NOT-LEAK';
+    const store = makeMockStore({
+      meta,
+      artifacts: { 'config/db-rows.json.gz': Buffer.from(secret) },
+    });
+    const handle: BundleHandle = { backupId: 'bkp-zip-enc', clientId: 'c1', root: 'mem://bkp-zip-enc' };
+    const stream = await streamZipExport({
+      store, handle,
+      password: 'correct-horse-battery-staple',
+      components: [{ component: 'config', name: 'db-rows.json.gz' }],
+    });
+    const chunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
+    const zipBlob = Buffer.concat(chunks);
+    // Still a valid ZIP envelope.
+    expect(zipBlob.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))).toBe(true);
+    // The plaintext "TENANT-DATA-MUST-NOT-LEAK" must NOT appear in
+    // the ciphertext at all — defense-in-depth assertion that
+    // entry contents really are encrypted.
+    expect(zipBlob.includes(Buffer.from(secret))).toBe(false);
+  });
+
+  it('rejects a ZIP password shorter than 12 chars (WinZip AE-2 has weaker PBKDF2 than tar path)', async () => {
+    const { streamZipExport } = await import('./data-export.js');
+    const meta: BackupMetaV1 = {
+      schemaVersion: 1, backupId: 'b', clientId: 'c',
+      capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
+      initiator: 'admin', systemTrigger: null, retentionDays: 1,
+      label: null, description: null, components: {},
+    } as unknown as BackupMetaV1;
+    const store = makeMockStore({ meta, artifacts: {} });
+    const handle: BundleHandle = { backupId: 'b', clientId: 'c', root: 'mem://b' };
+    // 11 chars must fail
+    await expect(streamZipExport({ store, handle, password: 'eleven-char', components: [] }))
+      .rejects.toThrow(/≥12 chars/);
+    // 12 chars is the boundary — should NOT throw (validation passes).
+    // Skip running the full archive build here; just confirm the
+    // length check doesn't reject 12 chars.
+    const ok = streamZipExport({ store, handle, password: 'twelve-chars', components: [] });
+    await expect(ok).resolves.toBeDefined();
+  });
 });

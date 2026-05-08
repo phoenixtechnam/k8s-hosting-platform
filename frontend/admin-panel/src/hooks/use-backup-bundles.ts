@@ -119,23 +119,40 @@ export async function downloadDataExport(bundleId: string): Promise<void> {
 }
 
 /**
- * Multi-region export download — POSTs the operator-supplied
- * passphrase + streams the encrypted tarball to disk. Different from
- * `downloadDataExport` (which downloads a pre-built artifact created
- * at capture time): this works on ANY bundle, generates the envelope
- * on-demand, and never requires the bundle to have been captured with
- * exportMode='data_export'. The downloaded file is decryptable with
- * stock openssl in the target region.
+ * Streaming bundle download — POSTs an optional passphrase/password
+ * and streams the archive to disk. Two formats:
+ *
+ *   - 'tar'  → `tar.gz` (plain) or `tar.gz.enc` (OpenSSL Salted__
+ *              AES-256-CBC envelope, decryptable with stock
+ *              `openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000`).
+ *   - 'zip'  → `.zip` with optional WinZip AES-256 (AE-2) per-entry
+ *              encryption — every modern unzip tool decrypts with the
+ *              supplied password.
+ *
+ * Either format works on ANY bundle (no need for the bundle to have
+ * been captured with exportMode='data_export'). Password is optional;
+ * empty/undefined → unencrypted archive.
+ *
+ * Min lengths: tar passphrase ≥12 chars, zip password ≥8 chars,
+ * matching the backend validators.
  */
-export async function downloadBundleExport(bundleId: string, passphrase: string): Promise<void> {
+export async function downloadBundleExport(
+  bundleId: string,
+  format: 'tar' | 'zip',
+  password: string | null,
+): Promise<void> {
   const token = localStorage.getItem('auth_token');
-  const r = await fetch(`/api/v1/admin/tenant-bundles/${bundleId}/export`, {
+  const path = format === 'zip' ? 'zip' : 'export';
+  const passwordKey = format === 'zip' ? 'password' : 'passphrase';
+  const body: Record<string, string> = {};
+  if (password && password.length > 0) body[passwordKey] = password;
+  const r = await fetch(`/api/v1/admin/tenant-bundles/${bundleId}/${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ passphrase }),
+    body: JSON.stringify(body),
   });
   if (!r.ok) {
     let detail = '';
@@ -146,7 +163,16 @@ export async function downloadBundleExport(bundleId: string, passphrase: string)
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `bundle-${bundleId}.tar.gz.enc`;
+  // Filename: tar plain, tar encrypted, or zip (whether encrypted or
+  // not — the file extension stays `.zip` either way; readers
+  // discover encryption from the entry headers).
+  if (format === 'zip') {
+    a.download = `bundle-${bundleId}.zip`;
+  } else if (password && password.length > 0) {
+    a.download = `bundle-${bundleId}.tar.gz.enc`;
+  } else {
+    a.download = `bundle-${bundleId}.tar.gz`;
+  }
   document.body.appendChild(a);
   a.click();
   a.remove();

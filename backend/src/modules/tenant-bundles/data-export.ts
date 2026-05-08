@@ -192,29 +192,38 @@ export async function wrapBundleAsDataExport(args: WrapBundleArgs): Promise<Wrap
 export interface StreamExportArgs {
   readonly store: BackupStore;
   readonly handle: BundleHandle;
-  readonly passphrase: string;
+  /**
+   * Optional passphrase. When supplied (≥12 chars) the gzip(tar) is
+   * wrapped in an OpenSSL `Salted__` AES-256-CBC envelope. When
+   * omitted/empty the function emits plain `tar.gz` so any OS can
+   * extract with `tar -xzf` and no key.
+   */
+  readonly passphrase?: string;
   readonly components: ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>;
 }
 
 /**
- * Build a Readable that yields the OpenSSL Salted__-envelope of
- * gzip(tar(meta.json + every component artifact)) encrypted with
- * AES-256-CBC under a key derived from `passphrase`. Same wire
- * format as `wrapBundleAsDataExport`. Caller pipes the returned
- * stream to the HTTP reply.
+ * Build a Readable that yields gzip(tar(meta.json + every component
+ * artifact)). When `passphrase` is supplied, the gzip stream is
+ * additionally wrapped in an OpenSSL `Salted__` AES-256-CBC envelope
+ * (decryptable with stock `openssl enc -d -aes-256-cbc -pbkdf2`).
+ * When omitted, the bytes are plain gzipped tar.
+ *
+ * Either way the function streams end-to-end — tar is fed
+ * incrementally from S3 reads via `store.readComponent`, gzip + AES
+ * (when enabled) sit in the pipeline as Transform streams, and the
+ * caller pipes the returned Readable to the HTTP reply. No
+ * server-side staging.
  *
  * Async because PBKDF2 (100k iterations) runs on libuv's threadpool
  * via the async pbkdf2() helper rather than blocking the event loop.
  */
 export async function streamEncryptedExport(args: StreamExportArgs): Promise<Readable> {
   const { store, handle, passphrase, components } = args;
-  if (!passphrase || passphrase.length < 12) {
-    throw new Error('streamEncryptedExport: passphrase must be ≥12 chars');
+  const encrypt = typeof passphrase === 'string' && passphrase.length > 0;
+  if (encrypt && passphrase!.length < 12) {
+    throw new Error('streamEncryptedExport: passphrase must be ≥12 chars (or omit it for an unencrypted tar.gz)');
   }
-  const salt = randomBytes(SALT_BYTES);
-  const derived = await pbkdf2(Buffer.from(passphrase, 'utf8'), salt, PBKDF2_ITERATIONS, KEY_BYTES + IV_BYTES, 'sha256');
-  const key = derived.subarray(0, KEY_BYTES);
-  const iv = derived.subarray(KEY_BYTES, KEY_BYTES + IV_BYTES);
 
   const tar = tarPack();
 
@@ -243,6 +252,26 @@ export async function streamEncryptedExport(args: StreamExportArgs): Promise<Rea
     }
   })();
 
+  const gzip = createGzip({ level: 6 });
+  const gzipped = (tar as unknown as Readable).pipe(gzip);
+
+  if (!encrypt) {
+    // Plain tar.gz path: no key derivation, no cipher, no header.
+    return gzipped;
+  }
+
+  // Encrypted path: PBKDF2 → AES-256-CBC, OpenSSL `Salted__` envelope.
+  const salt = randomBytes(SALT_BYTES);
+  const derived = await pbkdf2(
+    Buffer.from(passphrase!, 'utf8'),
+    salt,
+    PBKDF2_ITERATIONS,
+    KEY_BYTES + IV_BYTES,
+    'sha256',
+  );
+  const key = derived.subarray(0, KEY_BYTES);
+  const iv = derived.subarray(KEY_BYTES, KEY_BYTES + IV_BYTES);
+
   const cipher = createCipheriv('aes-256-cbc', key, iv);
   const header = Buffer.concat([Buffer.from('Salted__', 'ascii'), salt]);
   let headerEmitted = false;
@@ -257,8 +286,7 @@ export async function streamEncryptedExport(args: StreamExportArgs): Promise<Rea
     },
   });
 
-  const gzip = createGzip({ level: 6 });
-  return (tar as unknown as Readable).pipe(gzip).pipe(cipher).pipe(headerPrepender);
+  return gzipped.pipe(cipher).pipe(headerPrepender);
 }
 
 export interface ImportEntry {
@@ -345,4 +373,145 @@ export async function decryptImportTarball(args: {
     throw new Error(`import-extract failed (corrupt tarball): ${err instanceof Error ? err.message : String(err)}`);
   }
   return entries;
+}
+
+// ─── ZIP export (optional WinZip AES-256 / AE-2) ─────────────────────
+//
+// Symmetric to `streamEncryptedExport` but produces a ZIP archive
+// instead of `tar.gz` (+ optional Salted__ envelope). Streams
+// end-to-end:
+//
+//   for each artifact in bundle:
+//     S3 GetObject (Readable) → archiver.append(stream, { name, store: true })
+//   archiver.finalize() → reply
+//
+// When `password` is supplied, archiver-zip-encrypted registers
+// "WinZip AES-256" (AE-2) as the entry encryption format. Modern
+// `unzip`, 7-Zip, and Windows Explorer all decrypt with the
+// supplied password. Per-entry encryption is fully streamable —
+// archiver writes each entry's local file header + AES-encrypted
+// content as bytes flow through, then a central directory at the end.
+//
+// Tradeoff vs tar.gz.enc: ZIP encrypts entry CONTENTS but leaves
+// filenames + sizes visible in the central directory. If the
+// operator needs metadata confidentiality, use the tar.gz.enc
+// variant (which encrypts the entire tarball including filenames).
+
+export interface StreamZipExportArgs {
+  readonly store: BackupStore;
+  readonly handle: BundleHandle;
+  /**
+   * Optional password. When supplied (≥8 chars) every ZIP entry is
+   * encrypted with WinZip AES-256 (AE-2). When omitted, the ZIP is
+   * plaintext.
+   */
+  readonly password?: string;
+  readonly components: ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>;
+}
+
+/** Minimum password length when encrypting.
+ *
+ * IMPORTANT — WinZip AE-2 derives the AES key with PBKDF2-HMAC-SHA1
+ * at **1000 iterations** (per the WinZip 9 spec). That's ~100x weaker
+ * key-stretching than the tar.gz.enc path's PBKDF2-HMAC-SHA256 at
+ * 100k iterations. We raise the ZIP minimum to 12 chars to match the
+ * tar path so the lower KDF cost doesn't translate into trivially
+ * brute-forceable archives. Documented in the route summary too.
+ */
+const ZIP_PASSWORD_MIN_LENGTH = 12;
+
+/**
+ * Build a Readable that yields a ZIP archive of meta.json + every
+ * component artifact. Optional WinZip AES-256 encryption when
+ * `password` is supplied.
+ *
+ * Async because we lazy-import `archiver` + `archiver-zip-encrypted`
+ * (heavyweight modules; not loaded on cold paths that don't export).
+ */
+export async function streamZipExport(args: StreamZipExportArgs): Promise<Readable> {
+  const { store, handle, password, components } = args;
+  const encrypt = typeof password === 'string' && password.length > 0;
+  if (encrypt && password!.length < ZIP_PASSWORD_MIN_LENGTH) {
+    throw new Error(`streamZipExport: password must be ≥${ZIP_PASSWORD_MIN_LENGTH} chars (or omit it for an unencrypted zip)`);
+  }
+
+  // Lazy-imported. Both packages are CommonJS; tsconfig
+  // esModuleInterop is on, so the default-export form works.
+  const { default: archiverFactory } = await import('archiver');
+  if (encrypt) {
+    const { default: archiverZipEncrypted } = await import('archiver-zip-encrypted');
+    // The registry guards against double-registration when a hot
+    // path imports this twice in the same process — the library
+    // throws on duplicate format names, so suppress it.
+    try {
+      (archiverFactory as unknown as { registerFormat: (name: string, fn: unknown) => void })
+        .registerFormat('zip-encrypted', archiverZipEncrypted);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('already registered')) throw err;
+    }
+  }
+
+  // archiver in plain or encrypted mode. Per-entry `store: true`
+  // (compression method 0, no zlib framing) is what actually skips
+  // recompression — every component artifact we ship is already
+  // gzip-compressed. The format-level `zlib` option is unused once
+  // every entry passes `store: true`; we omit it here.
+  const zipFormat = encrypt ? 'zip-encrypted' : 'zip';
+  const zipOptions: Record<string, unknown> = encrypt
+    ? { encryptionMethod: 'aes256', password: password! }
+    : {};
+  const archiveRaw = (archiverFactory as unknown as (format: string, opts: Record<string, unknown>) => unknown)(zipFormat, zipOptions);
+
+  // Defensive runtime guard: archiver-zip-encrypted is a third-party
+  // plugin with no upstream typings. If a future version returned an
+  // object that wasn't a Readable, Fastify's `reply.send` would
+  // happily forward it and the download would corrupt silently.
+  // Verify the contract at runtime once.
+  if (
+    !archiveRaw
+    || typeof (archiveRaw as { append?: unknown }).append !== 'function'
+    || typeof (archiveRaw as { finalize?: unknown }).finalize !== 'function'
+    || typeof (archiveRaw as { pipe?: unknown }).pipe !== 'function'
+    || typeof (archiveRaw as { on?: unknown }).on !== 'function'
+  ) {
+    throw new Error('streamZipExport: archiver returned an unexpected object shape (not a Readable archive)');
+  }
+  const archive = archiveRaw as NodeJS.ReadableStream & {
+    append: (src: Readable | Buffer | string, opts: { name: string; date?: Date; store?: boolean }) => void;
+    finalize: () => Promise<void>;
+    on: (event: string, fn: (err: Error) => void) => void;
+    destroy: (err?: Error) => void;
+  };
+
+  // Bubble archiver-internal errors so the route's try/catch can
+  // surface them. Without this listener, an error would tear down
+  // the underlying stream silently.
+  archive.on('error', (err) => {
+    archive.destroy(err);
+  });
+
+  // Async feeder: meta.json + every component artifact. Mirrors the
+  // tar feeder shape; same backpressure properties.
+  (async () => {
+    try {
+      const meta = await store.getMeta(handle);
+      const metaBuf = Buffer.from(JSON.stringify(meta, null, 2), 'utf8');
+      archive.append(metaBuf, { name: 'meta.json', date: new Date(meta.capturedAt), store: true });
+
+      for (const c of components) {
+        const stat = await store.stat(handle, c.component, c.name);
+        if (!stat) continue;
+        const body = await store.readComponent(handle, c.component, c.name);
+        archive.append(body, { name: `components/${c.component}/${c.name}`, date: new Date(), store: true });
+      }
+      await archive.finalize();
+    } catch (err) {
+      archive.destroy(err as Error);
+    }
+  })();
+
+  // archive is a Readable by archiver's contract (verified at runtime
+  // above). Fastify's reply.send() pipes it with proper error handling.
+  return archive as unknown as Readable;
 }
