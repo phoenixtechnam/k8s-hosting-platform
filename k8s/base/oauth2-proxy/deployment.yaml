@@ -55,16 +55,24 @@ spec:
           command:
             - sh
             - -c
+            # CRITICAL: every shell ${VAR} below is escaped as $${VAR}
+            # so Flux's postBuild envsubst leaves it alone for the
+            # shell to expand at runtime. Without the escape, envsubst
+            # nukes OIDC_ISSUER_URL (which isn't in the cluster-config
+            # substitution sources) to empty string, leaving curl with
+            # url="/.well-known/..." which fails as "URL rejected: No
+            # host part in the URL". Caught on testing.phoenix-host.net
+            # 2026-05-08; same gotcha as project_valkey_phase1_2.
             - |
               set -eu
-              url="${OIDC_ISSUER_URL%/}/.well-known/openid-configuration"
-              echo "polling: $url"
-              for i in $(seq 1 60); do
-                if curl -fsS -o /dev/null --max-time 8 "$url"; then
-                  echo "OIDC discovery ready (attempt $i)"
+              url="$${OIDC_ISSUER_URL%/}/.well-known/openid-configuration"
+              echo "polling: $${url}"
+              for i in $$(seq 1 60); do
+                if curl -fsS -o /dev/null --max-time 8 "$${url}"; then
+                  echo "OIDC discovery ready (attempt $${i})"
                   exit 0
                 fi
-                echo "waiting for OIDC discovery (cert + dex)... ($i/60)"
+                echo "waiting for OIDC discovery (cert + dex)... ($${i}/60)"
                 sleep 5
               done
               echo "OIDC discovery never succeeded after 5 min — main container would crashloop too" >&2
