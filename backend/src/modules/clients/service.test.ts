@@ -1,4 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mock the system-settings module so each createClient call gets a
+// deterministic timezone fallback without relying on the real module's
+// in-memory cache (which leaks across test cases).
+vi.mock('../system-settings/service.js', () => ({
+  getSettings: vi.fn().mockResolvedValue({ id: 'system', timezone: 'UTC', platformName: 'X', apiRateLimit: 100 }),
+}));
+
 import { createClient, getClientById, updateClient, deleteClient } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -56,25 +64,33 @@ describe('getClientById', () => {
 
 describe('createClient', () => {
   it('applies the system default timezone when input does not specify one', async () => {
-    // getSettings is mocked via the drizzle chain — first select goes to
-    // systemSettings (returning our default), second select returns the
-    // created client row back.
-    const systemDefault = { id: 'system', timezone: 'Europe/Berlin', platformName: 'X', apiRateLimit: 100 };
-    const createdClient = { id: 'c-new', companyName: 'NC', timezone: 'Europe/Berlin' };
-
-    // Alternate select results in order: systemSettings row, then created client
-    const selects: unknown[][] = [[systemDefault], [createdClient]];
-    const whereFn = vi.fn().mockImplementation(() => Promise.resolve(selects.shift() ?? []));
+    // Selects fire in order:
+    //   1. plan validation     → return [planRow] (must exist)
+    //   2. region validation   → return [regionRow]
+    //   3. systemSettings      → return [systemDefault]
+    //   4. created client read → return [createdClient]
+    //   5. existing-user check → return []  (no conflict)
+    // getSettings is mocked at the module level → returns 'UTC'.
+    const createdClient = { id: 'c-new', companyName: 'NC', timezone: 'UTC' };
+    const selects: unknown[][] = [[{ id: 'plan' }], [{ id: 'region' }], [createdClient], []];
+    // The new validation chains end with `.limit(1)` while older sites
+    // resolve directly off `.where(...)`. Make the where-result both a
+    // Promise (thenable) AND carry a `.limit()` that returns the same
+    // value, so both shapes work.
+    const makeWhereResult = () => {
+      const value = selects.shift() ?? [];
+      const promise = Promise.resolve(value);
+      (promise as unknown as { limit: (n: number) => Promise<unknown> }).limit = () => Promise.resolve(value);
+      return promise;
+    };
+    const whereFn = vi.fn().mockImplementation(makeWhereResult);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 
-    // Capture the values passed to insert(clients).values(...) so we can
-    // assert the timezone was applied.
     const insertValuesCalls: Array<Record<string, unknown>> = [];
-    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
     const insertValues = vi.fn((row: Record<string, unknown>) => {
       insertValuesCalls.push(row);
-      return { onConflictDoUpdate };
+      return Promise.resolve(undefined);
     });
     const insertFn = vi.fn().mockReturnValue({ values: insertValues });
 
@@ -91,23 +107,26 @@ describe('createClient', () => {
     }, 'creator');
 
     const clientRow = insertValuesCalls[0];
-    expect(clientRow.timezone).toBe('Europe/Berlin');
+    expect(clientRow.timezone).toBe('UTC');
   });
 
   it('keeps explicit timezone input when provided', async () => {
-    const systemDefault = { id: 'system', timezone: 'Europe/Berlin', platformName: 'X', apiRateLimit: 100 };
     const createdClient = { id: 'c-new', companyName: 'NC', timezone: 'America/Los_Angeles' };
-
-    const selects: unknown[][] = [[systemDefault], [createdClient]];
-    const whereFn = vi.fn().mockImplementation(() => Promise.resolve(selects.shift() ?? []));
+    const selects: unknown[][] = [[{ id: 'plan' }], [{ id: 'region' }], [createdClient], []];
+    const makeWhereResult = () => {
+      const value = selects.shift() ?? [];
+      const promise = Promise.resolve(value);
+      (promise as unknown as { limit: (n: number) => Promise<unknown> }).limit = () => Promise.resolve(value);
+      return promise;
+    };
+    const whereFn = vi.fn().mockImplementation(makeWhereResult);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 
     const insertValuesCalls: Array<Record<string, unknown>> = [];
-    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
     const insertValues = vi.fn((row: Record<string, unknown>) => {
       insertValuesCalls.push(row);
-      return { onConflictDoUpdate };
+      return Promise.resolve(undefined);
     });
     const insertFn = vi.fn().mockReturnValue({ values: insertValues });
 
@@ -135,14 +154,19 @@ describe('createClient', () => {
       status: 'pending',
     };
 
-    // For createClient: insert client, select, insert user (onConflictDoUpdate)
     const insertValues = vi.fn().mockResolvedValue(undefined);
-    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
-    const insertFn = vi.fn().mockReturnValue({ values: insertValues, onConflictDoUpdate });
-    // Make values return chainable too
-    insertValues.mockReturnValue({ onConflictDoUpdate });
+    const insertFn = vi.fn().mockReturnValue({ values: insertValues });
 
-    const whereFn = vi.fn().mockResolvedValue([createdClient]);
+    // Selects (with getSettings mocked): plan, region, created
+    // client, existing-user (empty = no conflict).
+    const selects: unknown[][] = [[{ id: 'plan' }], [{ id: 'region' }], [createdClient], []];
+    const makeWhereResult = () => {
+      const value = selects.shift() ?? [];
+      const promise = Promise.resolve(value);
+      (promise as unknown as { limit: (n: number) => Promise<unknown> }).limit = () => Promise.resolve(value);
+      return promise;
+    };
+    const whereFn = vi.fn().mockImplementation(makeWhereResult);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 
@@ -163,6 +187,71 @@ describe('createClient', () => {
     expect(result._generatedPassword).toBeDefined();
     expect(result._clientUserId).toBeDefined();
     expect(insertFn).toHaveBeenCalled();
+  });
+
+  it('throws INVALID_PLAN_ID when plan does not exist', async () => {
+    const selects: unknown[][] = [[]]; // empty plan lookup
+    const makeWhereResult = () => {
+      const value = selects.shift() ?? [];
+      const promise = Promise.resolve(value);
+      (promise as unknown as { limit: (n: number) => Promise<unknown> }).limit = () => Promise.resolve(value);
+      return promise;
+    };
+    const whereFn = vi.fn().mockImplementation(makeWhereResult);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+    const db = { select: selectFn, insert: vi.fn() } as unknown as Parameters<typeof createClient>[0];
+    await expect(createClient(db, {
+      company_name: 'X', company_email: 'x@x.test',
+      plan_id: '00000000-0000-0000-0000-000000000000',
+      region_id: '00000000-0000-0000-0000-000000000001',
+    }, 'creator')).rejects.toMatchObject({ code: 'INVALID_PLAN_ID' });
+  });
+
+  it('throws INVALID_REGION_ID when region does not exist', async () => {
+    const selects: unknown[][] = [[{ id: 'plan' }], []]; // plan ok, region empty
+    const makeWhereResult = () => {
+      const value = selects.shift() ?? [];
+      const promise = Promise.resolve(value);
+      (promise as unknown as { limit: (n: number) => Promise<unknown> }).limit = () => Promise.resolve(value);
+      return promise;
+    };
+    const whereFn = vi.fn().mockImplementation(makeWhereResult);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+    const db = { select: selectFn, insert: vi.fn() } as unknown as Parameters<typeof createClient>[0];
+    await expect(createClient(db, {
+      company_name: 'X', company_email: 'x@x.test',
+      plan_id: '00000000-0000-0000-0000-000000000000',
+      region_id: '00000000-0000-0000-0000-000000000001',
+    }, 'creator')).rejects.toMatchObject({ code: 'INVALID_REGION_ID' });
+  });
+
+  it('throws EMAIL_IN_USE when email already taken AND rolls back the client row', async () => {
+    // Selects (getSettings mocked): plan, region, client read, existing-user collision.
+    const createdClient = { id: 'c-new', companyName: 'NC' };
+    const selects: unknown[][] = [[{ id: 'plan' }], [{ id: 'region' }], [createdClient], [{ id: 'preexisting-user' }]];
+    const makeWhereResult = () => {
+      const value = selects.shift() ?? [];
+      const promise = Promise.resolve(value);
+      (promise as unknown as { limit: (n: number) => Promise<unknown> }).limit = () => Promise.resolve(value);
+      return promise;
+    };
+    const whereFn = vi.fn().mockImplementation(makeWhereResult);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+    const insertValues = vi.fn().mockResolvedValue(undefined);
+    const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
+    const db = { select: selectFn, insert: insertFn, delete: deleteFn } as unknown as Parameters<typeof createClient>[0];
+    await expect(createClient(db, {
+      company_name: 'X', company_email: 'taken@x.test',
+      plan_id: '00000000-0000-0000-0000-000000000000',
+      region_id: '00000000-0000-0000-0000-000000000001',
+    }, 'creator')).rejects.toMatchObject({ code: 'EMAIL_IN_USE' });
+    // Verify the rollback fired.
+    expect(deleteFn).toHaveBeenCalled();
   });
 });
 

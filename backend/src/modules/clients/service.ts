@@ -1,6 +1,6 @@
 import { eq, like, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
-import { clients, domains, deployments, cronJobs, users, hostingPlans, clusterNodes } from '../../db/schema.js';
+import { clients, domains, deployments, cronJobs, users, hostingPlans, clusterNodes, regions } from '../../db/schema.js';
 import { clientNotFound } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
@@ -46,6 +46,25 @@ export async function createClient(db: Database, input: CreateClientInput, creat
   // k8s or write the client row.
   await validateWorkerPin(db, input.worker_node_name);
 
+  // Validate plan_id + region_id referential integrity before the
+  // insert so an invalid UUID surfaces as a clean validation error
+  // instead of a raw Postgres FK-violation message (which leaks
+  // table/column names in the response detail).
+  const [planRow] = await db.select({ id: hostingPlans.id })
+    .from(hostingPlans).where(eq(hostingPlans.id, input.plan_id)).limit(1);
+  if (!planRow) {
+    const err = new Error(`plan_id '${input.plan_id}' does not match any plan`) as Error & { code?: string };
+    err.code = 'INVALID_PLAN_ID';
+    throw err;
+  }
+  const [regionRow] = await db.select({ id: regions.id })
+    .from(regions).where(eq(regions.id, input.region_id)).limit(1);
+  if (!regionRow) {
+    const err = new Error(`region_id '${input.region_id}' does not match any region`) as Error & { code?: string };
+    err.code = 'INVALID_REGION_ID';
+    throw err;
+  }
+
   // Resolve the default timezone: explicit input wins, otherwise fall back
   // to the platform default configured in System Settings. Lazy import to
   // avoid a circular dep with system-settings/service.
@@ -84,10 +103,30 @@ export async function createClient(db: Database, input: CreateClientInput, creat
 
   const [created] = await db.select().from(clients).where(eq(clients.id, id));
 
-  // Auto-create client_admin user with generated password
+  // Auto-create client_admin user with generated password.
+  //
+  // SECURITY: pre-check that the email isn't already in use by ANY
+  // user before insert. The previous `onConflictDoUpdate(target=email,
+  // set: clientId)` upsert silently re-pointed an existing user
+  // (admin / support / different tenant's client_admin) to this new
+  // client — an account-takeover vector when driven from
+  // import-finalize where the operator picks the email. Fail closed:
+  // surface a clear EMAIL_IN_USE error and roll back the just-inserted
+  // client row so the caller can retry with a different email.
   const generatedPassword = generateStrongPassword();
   const passwordHash = await bcrypt.hash(generatedPassword, 12);
   const clientUserId = crypto.randomUUID();
+
+  const [existingUser] = await db.select({ id: users.id }).from(users).where(eq(users.email, input.company_email)).limit(1);
+  if (existingUser) {
+    // Roll back the client row so caller can retry. We can't transact
+    // across kubernetesNamespace generation (nondeterministic), so a
+    // post-insert delete is the cleanest atomic-ish fallback.
+    await db.delete(clients).where(eq(clients.id, id));
+    const err = new Error(`a user with email '${input.company_email}' already exists; pick a different email`) as Error & { code?: string };
+    err.code = 'EMAIL_IN_USE';
+    throw err;
+  }
 
   await db.insert(users).values({
     id: clientUserId,
@@ -99,7 +138,7 @@ export async function createClient(db: Database, input: CreateClientInput, creat
     clientId: id,
     status: 'active',
     emailVerifiedAt: new Date(),
-  }).onConflictDoUpdate({ target: users.email, set: { clientId: sql`excluded.client_id` } });
+  });
 
   return { ...created, _generatedPassword: generatedPassword, _clientUserId: clientUserId };
 }

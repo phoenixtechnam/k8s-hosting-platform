@@ -790,7 +790,12 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // via POST /import (legacy clientId-required flow) or via the
   // upcoming POST /import-finalize.
   app.post('/admin/tenant-bundles/import-preview', {
-    bodyLimit: 2 * 1024 * 1024 * 1024,
+    // 512 MiB cap on the preview path: an operator who's about to
+    // commit to a multi-GiB import should run /import-finalize (which
+    // bumps to 2 GiB) directly. The preview is a side-effect-free
+    // probe — there's no legitimate need to buffer multiple GiB just
+    // to read back the meta.json.
+    bodyLimit: 512 * 1024 * 1024,
     schema: { tags: ['TenantBundles'], summary: 'Decode an upload + return meta v2 fields, no DB writes', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const req = request as unknown as {
@@ -1139,6 +1144,19 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     try {
       newClient = await createClient(app.db, overrides, userId);
     } catch (err) {
+      // Surface stable error codes from createClient (EMAIL_IN_USE,
+      // INVALID_PLAN_ID, INVALID_REGION_ID, plus worker-pin failures
+      // from validateWorkerPin) so the frontend can disambiguate
+      // operator-correctable validation errors from server-side
+      // failures. Falls back to VALIDATION_ERROR if the cause is
+      // some other thrown Error.
+      const code = (err as { code?: string }).code;
+      if (code === 'EMAIL_IN_USE') {
+        throw new ApiError('EMAIL_IN_USE', err instanceof Error ? err.message : 'email already in use', 409);
+      }
+      if (code === 'INVALID_PLAN_ID' || code === 'INVALID_REGION_ID') {
+        throw new ApiError(code, err instanceof Error ? err.message : 'invalid id', 400);
+      }
       throw new ApiError('VALIDATION_ERROR', `client creation failed: ${err instanceof Error ? err.message : String(err)}`, 400);
     }
 

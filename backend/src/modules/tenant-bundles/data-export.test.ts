@@ -424,4 +424,57 @@ describe('detectImportFormat + extractImportArchive', () => {
     const blob = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('garbage')]);
     await expect(extractImportArchive({ blob })).rejects.toThrow(/not a valid zip/);
   });
+
+  // ── Zip-slip path traversal guards ─────────────────────────────────
+  // assertSafeArchivePath isn't exported, but we can test it indirectly
+  // by hand-building a tar.gz with a malicious entry name.
+  it('rejects tar.gz entries with path traversal (..)', async () => {
+    const { extractImportArchive } = await import('./data-export.js');
+    const { pack } = await import('tar-stream');
+    const { gzipSync } = await import('node:zlib');
+    const tarP = pack();
+    // Build a tarball where the only entry has a path traversal name.
+    tarP.entry({ name: '../../etc/passwd', size: 4 }, 'evil');
+    tarP.finalize();
+    const tarChunks: Buffer[] = [];
+    for await (const c of tarP as AsyncIterable<Buffer>) tarChunks.push(Buffer.from(c));
+    const blob = gzipSync(Buffer.concat(tarChunks));
+    await expect(extractImportArchive({ blob })).rejects.toThrow(/path traversal|absolute|backslash|control/);
+  });
+
+  it('rejects tar.gz entries with absolute path', async () => {
+    const { extractImportArchive } = await import('./data-export.js');
+    const { pack } = await import('tar-stream');
+    const { gzipSync } = await import('node:zlib');
+    const tarP = pack();
+    tarP.entry({ name: '/etc/passwd', size: 4 }, 'evil');
+    tarP.finalize();
+    const tarChunks: Buffer[] = [];
+    for await (const c of tarP as AsyncIterable<Buffer>) tarChunks.push(Buffer.from(c));
+    const blob = gzipSync(Buffer.concat(tarChunks));
+    await expect(extractImportArchive({ blob })).rejects.toThrow(/absolute/);
+  });
+
+  it('accepts the canonical bundle layout (meta.json + components/<comp>/<name>)', async () => {
+    // Sanity check: the legitimate path patterns we generate via
+    // streamEncryptedExport must still pass the safe-path validator.
+    const { streamEncryptedExport, extractImportArchive } = await import('./data-export.js');
+    const meta: BackupMetaV1 = {
+      schemaVersion: 1, backupId: 'bkp-safe', clientId: 'c1',
+      capturedAt: '2026-05-08T00:00:00.000Z', platformVersion: '0',
+      initiator: 'admin', systemTrigger: null, retentionDays: 1,
+      label: null, description: null, components: {},
+    } as unknown as BackupMetaV1;
+    const store = makeMockStore({
+      meta, artifacts: { 'config/db-rows.json.gz': Buffer.from('OK') },
+    });
+    const handle: BundleHandle = { backupId: 'bkp-safe', clientId: 'c1', root: 'mem://bkp-safe' };
+    const stream = await streamEncryptedExport({ store, handle, components: [{ component: 'config', name: 'db-rows.json.gz' }] });
+    const chunks: Buffer[] = [];
+    for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c));
+    const blob = Buffer.concat(chunks);
+    const { entries } = await extractImportArchive({ blob });
+    expect(entries.find((e) => e.path === 'meta.json')).toBeDefined();
+    expect(entries.find((e) => e.path === 'components/config/db-rows.json.gz')).toBeDefined();
+  });
 });
