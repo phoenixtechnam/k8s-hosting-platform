@@ -8,6 +8,7 @@ on:
       - 'frontend/admin-panel/**'
       - 'frontend/client-panel/**'
       - 'packages/api-contracts/**'
+      - 'images/peer-firewall-reconciler/**'
       - '.github/workflows/build-deploy.yml'
   workflow_dispatch:
 
