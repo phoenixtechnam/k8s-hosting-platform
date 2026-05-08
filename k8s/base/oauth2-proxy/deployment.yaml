@@ -22,42 +22,52 @@ spec:
           labelSelector:
             matchLabels:
               app: oauth2-proxy
-      # Wait for dex's OIDC discovery endpoint to return 200 before
-      # starting oauth2-proxy. Without this, on a fresh bootstrap the
-      # main container starts, hits OIDC discovery, and crashes — either
-      # because dex isn't Ready (nginx returns 404 from the public
-      # ingress), or because the LE cert hasn't been issued yet (nginx
-      # serves the default ingress.local self-signed cert and oauth2-
-      # proxy refuses TLS). After ~8 backoffs the pod stays in long
-      # CrashLoopBackOff and doesn't recover even after dex+cert come
-      # up — empirically requires manual `kubectl delete pod`.
+      # Wait until oauth2-proxy can complete OIDC discovery exactly the
+      # way the main container will: GET ${OIDC_ISSUER_URL}/.well-known
+      # /openid-configuration with strict TLS verify. This is the same
+      # call the main container makes on startup, so if this initContainer
+      # passes, the main container will too.
       #
-      # Polling cluster-internal HTTP (no LE cert dependency, no
-      # ingress dependency) sidesteps both failure modes. The main
-      # container still validates against the public HTTPS issuer at
-      # runtime — by the time the init container exits, dex is ready
-      # and the cert race is over.
+      # Two failure modes this catches on a fresh bootstrap:
+      #   (1) dex Pending / mail-pg Pending — nginx 404 from the public
+      #       ingress because no Service endpoints
+      #   (2) LE cert not yet issued — nginx serves the default
+      #       ingress.local self-signed cert; curl refuses TLS verify
+      #
+      # Without the wait, the main container hits one of those errors
+      # at startup, exits, k8s applies exponential backoff, and even
+      # after dex+cert come up the pod stays in long CrashLoopBackOff
+      # — empirically requires manual `kubectl delete pod` (caught on
+      # testing.phoenix-host.net 2026-05-08).
+      #
+      # We pull OIDC_ISSUER_URL from the same Secret the main container
+      # uses, so any environment-specific override (dev uses internal
+      # cluster DNS) is honored automatically. 60×5s = 5 min cap is
+      # longer than any plausible cold boot window; if it expires, the
+      # init container exits non-zero and the pod stays Pending with a
+      # visible reason in `kubectl describe`.
       initContainers:
         - name: wait-for-dex-discovery
           image: curlimages/curl:8.10.1
+          envFrom:
+            - secretRef:
+                name: oauth2-proxy-config
           command:
             - sh
             - -c
             - |
-              set -e
-              # 60×5s = 5 min cap. Longer than any plausible dex+CNPG
-              # cold-boot window. Errors loudly so the failure mode is
-              # visible in `kubectl describe` rather than silent.
+              set -eu
+              url="${OIDC_ISSUER_URL%/}/.well-known/openid-configuration"
+              echo "polling: $url"
               for i in $(seq 1 60); do
-                if curl -fsS -o /dev/null \
-                     "http://dex.platform.svc.cluster.local:5556/dex/.well-known/openid-configuration"; then
-                  echo "dex discovery ready (attempt $i)"
+                if curl -fsS -o /dev/null --max-time 8 "$url"; then
+                  echo "OIDC discovery ready (attempt $i)"
                   exit 0
                 fi
-                echo "waiting for dex... ($i/60)"
+                echo "waiting for OIDC discovery (cert + dex)... ($i/60)"
                 sleep 5
               done
-              echo "dex never returned 200 — oauth2-proxy cannot start" >&2
+              echo "OIDC discovery never succeeded after 5 min — main container would crashloop too" >&2
               exit 1
           resources:
             # Floor of 32Mi memory matches the platform LimitRange minimum
