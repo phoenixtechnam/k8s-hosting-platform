@@ -41,6 +41,17 @@ export const orphanedVolumeEntrySchema = z.object({
   ageDays: z.number().int().nonnegative().nullable(),
   /** Pre-resolved label: client company name OR "Platform System (<ns>)". */
   ownerLabel: z.string(),
+  /**
+   * Canonical platform/role on the PV (when the PVC→PV mirror reconciler
+   * had stamped it before the volume became orphaned). Useful for "what
+   * was this volume?" forensics — the owning PVC may already be gone but
+   * the labels survive on the PV. Null for orphans pre-dating the
+   * canonical-labels rollout, for non-platform-managed PVs, and for the
+   * longhorn_volume_unbound + namespace_orphaned cases (no PV to read).
+   */
+  canonicalRole: z.string().nullable().default(null),
+  /** Canonical platform/owner — same provenance + null cases as canonicalRole. */
+  canonicalOwner: z.string().nullable().default(null),
 });
 export type OrphanedVolumeEntry = z.infer<typeof orphanedVolumeEntrySchema>;
 

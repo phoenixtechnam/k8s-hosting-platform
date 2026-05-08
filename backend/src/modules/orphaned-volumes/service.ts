@@ -61,6 +61,21 @@ export interface OrphanedVolumeEntry {
   readonly reason: OrphanReason;
   readonly ageDays: number | null;
   readonly ownerLabel: string;
+  /**
+   * Canonical platform label values, captured from the PV at orphan-detect
+   * time. Populated when the PVC→PV mirror reconciler had stamped the PV
+   * (lib/canonical-labels.ts + platform-storage-policy/pvc-pv-mirror.ts).
+   * Null for orphans pre-dating the canonical-labels rollout, for PVs
+   * provisioned outside platform-api, or for orphans where the PV was
+   * never bound (no PVC to mirror from).
+   *
+   * Useful for "what was this volume?" forensics when the PVC that owned
+   * it has already been deleted: the labels on the PV survive the PVC
+   * delete and tell the operator the role + owner that was provisioning
+   * the volume before it became an orphan.
+   */
+  readonly canonicalRole: string | null;
+  readonly canonicalOwner: string | null;
 }
 
 export interface OrphanedVolumesReport {
@@ -73,7 +88,10 @@ export interface OrphanedVolumesReport {
 const DEFAULT_STALE_PV_DAYS = 7;
 
 interface RawPv {
-  readonly metadata?: { readonly name?: string };
+  readonly metadata?: {
+    readonly name?: string;
+    readonly labels?: Record<string, string>;
+  };
   readonly spec?: {
     readonly claimRef?: { readonly namespace?: string; readonly name?: string };
     readonly capacity?: { readonly storage?: string };
@@ -242,6 +260,9 @@ export async function detectOrphans(
 
     const owner = ns ? clientByNs.get(ns)?.name : undefined;
     const ownerLabel = owner ?? (ns ? `Platform System (${ns})` : 'Unknown');
+    const pvLabels = pv.metadata?.labels ?? {};
+    const canonicalRole = pvLabels['platform/role'] ?? null;
+    const canonicalOwner = pvLabels['platform/owner'] ?? null;
 
     orphans.push({
       pvName,
@@ -255,6 +276,8 @@ export async function detectOrphans(
       reason,
       ageDays,
       ownerLabel,
+      canonicalRole,
+      canonicalOwner,
     });
   }
 
@@ -283,6 +306,12 @@ export async function detectOrphans(
       reason: 'longhorn_volume_unbound',
       ageDays: null,
       ownerLabel,
+      // Longhorn-volume-unbound case has no PV to read labels from;
+      // the orphan was caught via the volume CR side. Forensics for
+      // this kind of orphan come from the Longhorn volume's own
+      // labels (Longhorn UI) rather than this API surface.
+      canonicalRole: null,
+      canonicalOwner: null,
     });
   }
 
@@ -315,6 +344,9 @@ export async function detectOrphans(
       reason: 'namespace_orphaned',
       ageDays,
       ownerLabel: `Platform System (${nsName})`,
+      // Namespace-only orphan has no PV at all; nothing to read labels from.
+      canonicalRole: null,
+      canonicalOwner: null,
     });
   }
 

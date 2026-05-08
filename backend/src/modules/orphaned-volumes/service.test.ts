@@ -171,6 +171,59 @@ describe('detectOrphans', () => {
     expect(r.totalCount).toBe(0);
   });
 
+  it('surfaces canonical platform/role + platform/owner labels from the orphaned PV', async () => {
+    // Forensics: even after the owning client + namespace + PVC are
+    // gone, the labels stamped on the PV by the PVC→PV mirror tick
+    // survive — the orphaned-volumes API should expose them so the
+    // operator can see "what was this volume?" before deleting it.
+    const k8s = makeK8s({
+      pvs: [{
+        metadata: {
+          name: 'pvc-stamped-orphan',
+          labels: {
+            'platform/role': 'client-storage',
+            'platform/owner': 'client:abc12345',
+            'platform/canonical-name': 'client-acme-abc12345-storage',
+            'platform/managed-by': 'platform-api',
+          },
+        },
+        spec: { claimRef: { namespace: 'gone-tenant' }, capacity: { storage: '5Gi' } },
+        status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 86400_000).toISOString() },
+      }],
+      namespaces: ['platform'], // gone-tenant deleted
+      longhornVolumes: [],
+    });
+    const db = makeDb([]);
+
+    const r = await detectOrphans(db, k8s);
+    expect(r.totalCount).toBe(1);
+    expect(r.orphans[0]).toMatchObject({
+      pvName: 'pvc-stamped-orphan',
+      reason: 'namespace_deleted',
+      canonicalRole: 'client-storage',
+      canonicalOwner: 'client:abc12345',
+    });
+  });
+
+  it('reports null canonicalRole/canonicalOwner for legacy PVs without canonical labels', async () => {
+    const k8s = makeK8s({
+      pvs: [{
+        metadata: { name: 'pvc-legacy' /* no labels */ },
+        spec: { claimRef: { namespace: 'gone' }, capacity: { storage: '1Gi' } },
+        status: { phase: 'Released', lastTransitionTime: new Date(Date.now() - 86400_000).toISOString() },
+      }],
+      namespaces: ['platform'],
+      longhornVolumes: [],
+    });
+    const db = makeDb([]);
+    const r = await detectOrphans(db, k8s);
+    expect(r.orphans[0]).toMatchObject({
+      pvName: 'pvc-legacy',
+      canonicalRole: null,
+      canonicalOwner: null,
+    });
+  });
+
   it('flags Longhorn volume with no matching PV', async () => {
     const k8s = makeK8s({
       pvs: [],
