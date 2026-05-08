@@ -16,7 +16,16 @@ COPY *.go ./
 # build path; -s -w strips debug symbols.
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/reconciler ./...
 
-FROM alpine:3.20
+FROM alpine:3.21
+# nftables 1.1.3 (alpine 3.21) parses Debian 13 trixie's nft 1.1.3
+# ruleset cleanly. Alpine 3.20 ships nft 1.0.9 which segfaults on
+# `nft list ...` when the host wrote the ruleset with 1.1.3 — the
+# binary literal-string comparison succeeds at "list set" parse but
+# the netlink dump format includes new-in-1.1.x set-element shapes
+# that 1.0.9 dereferences as garbage. Observed on staging1
+# 2026-05-08: nftMissingSets() returned all-missing because every
+# probe segfaulted; reconciler idle-looped despite sets being
+# declared on the host.
 RUN apk add --no-cache nftables ca-certificates
 COPY --from=build /out/reconciler /usr/local/bin/peer-firewall-reconciler
 # Runs as root inside the container so nft inherits CAP_NET_ADMIN
