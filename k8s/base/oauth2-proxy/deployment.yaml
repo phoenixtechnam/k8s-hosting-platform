@@ -60,12 +60,17 @@ spec:
               echo "dex never returned 200 — oauth2-proxy cannot start" >&2
               exit 1
           resources:
+            # Floor of 32Mi memory matches the platform LimitRange minimum
+            # (k8s/base/limit-ranges.yaml). 16Mi is rejected with "minimum
+            # memory usage per Container is 32Mi, but request is 16Mi" and
+            # the entire pod is denied admission, including the main
+            # container — caught on testing.phoenix-host.net 2026-05-08.
             requests:
               cpu: 10m
-              memory: 16Mi
+              memory: 32Mi
             limits:
               cpu: 100m
-              memory: 32Mi
+              memory: 64Mi
       containers:
         - name: oauth2-proxy
           image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.2
