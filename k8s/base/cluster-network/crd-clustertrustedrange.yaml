@@ -62,8 +62,18 @@ spec:
                       - IPv4 CIDR (10.0.0.0/16)
                       - bare IPv6 (2001:db8::1)        → /128 implied
                       - IPv6 CIDR (fd00::/8)
-                  pattern: '^(([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[12][0-9]|3[0-2]))?|[0-9a-fA-F:]+(/[0-9]{1,3})?)$'
+                    The pattern is a coarse first filter; the
+                    peer-firewall-reconciler does authoritative IP/CIDR
+                    validation via Go's net/netip and writes a Failed
+                    condition on bad input. The IPv4 prefix is bounded
+                    0..32 and the IPv6 prefix is bounded 0..128 by
+                    the regex itself, so /33 and /129 are rejected at
+                    admission time.
+                  pattern: '^(([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[12][0-9]|3[0-2]))?|[0-9a-fA-F:]+(/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))?)$'
                   maxLength: 64
+                  x-kubernetes-validations:
+                    - rule: "!self.endsWith('/0')"
+                      message: "CIDR /0 (allow-all) is not permitted; pick a specific prefix."
                 description:
                   type: string
                   description: 'Operator-readable purpose. e.g. "NYC office VPN", "Prometheus scraper", "Hetzner private LAN".'
@@ -88,8 +98,16 @@ spec:
                   type: string
                   format: date-time
                   description: 'Most recent reconciler tick that observed this CR.'
+                observedGeneration:
+                  type: integer
+                  format: int64
+                  description: 'metadata.generation the reconciler last observed; clients use this to detect stale status.'
                 conditions:
                   type: array
+                  description: 'Standard k8s conditions list. Type is the unique key.'
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys:
+                    - type
                   items:
                     type: object
                     required:
