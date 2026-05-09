@@ -49,6 +49,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    outputs:
+      timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,11 +77,27 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - id: tag
+        name: Extract timestamp tag (for kustomization.yaml pin)
+        env:
+          ALL_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Pick the YYYYMMDDHHmmss-SHA tag (skip "latest" + bare-sha).
+          # Pattern: ${IMG}:<14 digits>-<7+ hex chars>
+          ts_tag=$(echo "$ALL_TAGS" | grep -oE ':[0-9]{14}-[0-9a-f]{7,}' | head -1 | sed 's/^://')
+          if [[ -z "$ts_tag" ]]; then
+            echo "::error::could not extract timestamp tag from: $ALL_TAGS"; exit 1
+          fi
+          echo "timestamp_tag=${ts_tag}" >> "$GITHUB_OUTPUT"
+          echo "backend timestamp tag → ${ts_tag}"
+
   build-admin-panel:
     name: Build Admin Panel
     needs: changes
     if: needs.changes.outputs.admin_panel == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    outputs:
+      timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -106,11 +124,23 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - id: tag
+        name: Extract timestamp tag
+        env:
+          ALL_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          ts_tag=$(echo "$ALL_TAGS" | grep -oE ':[0-9]{14}-[0-9a-f]{7,}' | head -1 | sed 's/^://')
+          [[ -z "$ts_tag" ]] && { echo "::error::no timestamp tag in $ALL_TAGS"; exit 1; }
+          echo "timestamp_tag=${ts_tag}" >> "$GITHUB_OUTPUT"
+          echo "admin-panel timestamp tag → ${ts_tag}"
+
   build-client-panel:
     name: Build Client Panel
     needs: changes
     if: needs.changes.outputs.client_panel == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    outputs:
+      timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -136,6 +166,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - id: tag
+        name: Extract timestamp tag
+        env:
+          ALL_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          ts_tag=$(echo "$ALL_TAGS" | grep -oE ':[0-9]{14}-[0-9a-f]{7,}' | head -1 | sed 's/^://')
+          [[ -z "$ts_tag" ]] && { echo "::error::no timestamp tag in $ALL_TAGS"; exit 1; }
+          echo "timestamp_tag=${ts_tag}" >> "$GITHUB_OUTPUT"
+          echo "client-panel timestamp tag → ${ts_tag}"
 
   # Tag strategy:
   # - SHA:          for traceability (e.g., a1b2c3d)
@@ -281,6 +321,36 @@ jobs:
           if ! grep -q "deploy-rev-patch.yaml" k8s/overlays/staging/kustomization.yaml; then
             sed -i '/^  - path: platform-version-patch.yaml/a\  - path: deploy-rev-patch.yaml' k8s/overlays/staging/kustomization.yaml
           fi
+
+      - name: Pin image tags in kustomization.yaml
+        env:
+          BACKEND_TAG: ${{ needs.build-backend.outputs.timestamp_tag }}
+          ADMIN_TAG: ${{ needs.build-admin-panel.outputs.timestamp_tag }}
+          CLIENT_TAG: ${{ needs.build-client-panel.outputs.timestamp_tag }}
+        run: |
+          # Replaces the work that Flux's image-automation-controller
+          # used to do via a long-lived PAT. The IUA approach failed
+          # silently for 4+ days when the PAT expired, leaving staging
+          # pinned to stale image SHAs. Doing the rewrite from this
+          # workflow uses the ephemeral GITHUB_TOKEN that already has
+          # repo write permission for the bot identity — no PAT to
+          # rotate, no separate controller to monitor.
+          KUST=k8s/overlays/staging/kustomization.yaml
+          # sed N;s/.../.../ pairs the matched `name: ...` line with the
+          # next `newTag: "..."` line, then rewrites the tag in the
+          # paired buffer. Anchoring `name` line with a $-end marker
+          # avoids matching within a "newTag" comment.
+          pin() {
+            local image=$1 tag=$2
+            [[ -z "$tag" ]] && { echo "skip $image (no tag — build was skipped)"; return; }
+            sed -i -e "/name: ghcr\.io.*\/${image}\$/{N;s/newTag: \"[^\"]*\"/newTag: \"${tag}\"/}" "$KUST"
+            echo "pinned ${image} → ${tag}"
+          }
+          pin backend       "$BACKEND_TAG"
+          pin admin-panel   "$ADMIN_TAG"
+          pin client-panel  "$CLIENT_TAG"
+          echo "---kustomization newTag lines after pin---"
+          grep -B1 newTag "$KUST" | grep -E "name: ghcr|newTag"
 
       - name: Commit + push
         env:

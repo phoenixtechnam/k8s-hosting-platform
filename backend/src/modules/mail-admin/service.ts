@@ -20,6 +20,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { readStalwartCredentials } from './credentials.js';
 
 const STALWART_NAMESPACE = 'mail';
 // stalwart-mail (the public-facing Service) only exposes mail
@@ -61,16 +62,15 @@ function loadKubeConfig(kubeconfigPath?: string): k8s.KubeConfig {
 }
 
 function adminAuth(): string {
-  const pw =
-    process.env.STALWART_ADMIN_PASSWORD ??
-    process.env.STALWART_ADMIN_SECRET_PLAIN ??
-    process.env.ADMIN_SECRET_PLAIN;
-  if (!pw) {
-    throw new Error(
-      'Stalwart admin password is required (set STALWART_ADMIN_PASSWORD or ADMIN_SECRET_PLAIN)',
-    );
-  }
-  return Buffer.from(`admin:${pw}`).toString('base64');
+  // Delegate to the canonical credentials reader so we honor the
+  // mounted-Secret path (STALWART_ADMIN_CREDS_DIR/ADMIN_SECRET_PLAIN)
+  // that the platform-api Deployment uses in real clusters. Without
+  // this, hostname-rename + DKIM-rotate routes hit "admin password
+  // required" 502s even though the password file IS mounted.
+  // readStalwartCredentials() also handles the legacy env-var
+  // fallbacks (STALWART_ADMIN_PASSWORD / ADMIN_SECRET_PLAIN).
+  const { username, password } = readStalwartCredentials(process.env);
+  return Buffer.from(`${username}:${password}`).toString('base64');
 }
 
 /**
