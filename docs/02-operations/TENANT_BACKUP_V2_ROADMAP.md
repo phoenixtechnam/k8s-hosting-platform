@@ -10,11 +10,13 @@ Targeting: ~28× storage reduction at 100 tenants, daily incremental window < 8 
 
 ## Phase status
 
+**Validation cluster**: `testing.phoenix-host.net` (single-node k3s 1.33, control-plane+etcd+master). Staging cluster is currently down; phases validate against testing. Backup targets remain Hetzner Object Storage (S3, `fsn1.your-objectstorage.com`) and Hetzner Storage Box (SFTP, `u335448-sub10.your-storagebox.de:23`) — credentials in `~/k8s-staging/servers.txt`.
+
 | Phase | Subject | Status | Branch / Commit | Notes |
 |-------|---------|--------|-----------------|-------|
-| 0 | Spike + budget validation | in progress | feat/tenant-backup-v2-restic-jmap | Throwaway script in `scripts/spike-restic-jmap.sh`. Validates against staging tenant `x.staging.success.com.na`. Tests both S3 (Hetzner Object Storage) and SFTP (Hetzner Storage Box) targets. Exit criteria: numbers within ±50% of ADR-036 budget. |
-| 1 | files + restic + pre-dump hook | blocked on Phase 0 | — | Replaces `components/files.ts` tar-only with restic-stdin pipeline. Adds `tenant_restic_repo_state` migration. Pre-capture DB hook walks `databases/*/`. Both S3 and SFTP targets. |
-| 2 | mail + JMAP + Maildir | blocked on Phase 1 | — | New `jmap-sync.py` (Python stdlib). Replaces mbsync entirely. mail-backup-tools image rebased on `debian:trixie-slim`. New `tenant_jmap_state` table. State persistence after restic ack. |
+| 0 | Spike + budget validation | DONE | feat/tenant-backup-v2-restic-jmap @ eaee5dd8 | `scripts/spike-restic-jmap.sh` green against real S3 + SFTP. Numbers in §"Phase 0a spike — measured numbers". |
+| 1 | files + restic + pre-dump hook | in progress | feat/tenant-backup-v2-restic-jmap | `restic-driver.ts` + migration `0086_tenant_restic_repo_state` + `components/files.ts` rewrite + `internal-upload-route` restic endpoint + `mail-backup-tools` image rebase + integration harness `scripts/integration-tenant-bundles-restic.sh` validated on testing cluster. |
+| 2 | mail + JMAP + Maildir | blocked on Phase 1 | — | New `jmap-sync.py` (Python stdlib). Replaces mbsync entirely. New `tenant_jmap_state` table. State persistence after restic ack. |
 | 3 | admin + tenant UI | blocked on Phase 2 | — | Snapshot tree browser, single-file/single-message picker, schedule editor, global Settings tab. Both admin panel and client panel. |
 
 ## Locked decisions (from chat 2026-05-09)

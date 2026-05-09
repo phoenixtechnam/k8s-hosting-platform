@@ -2263,6 +2263,71 @@ export type NewBackupComponent = typeof backupComponents.$inferInsert;
 export type ClientBackupSchedule = typeof clientBackupSchedules.$inferSelect;
 export type NewClientBackupSchedule = typeof clientBackupSchedules.$inferInsert;
 
+// ─── Tenant Backup v2 (ADR-036, migration 0093) ─────────────────────────
+// Per-tenant restic repository state + per-mailbox JMAP state + global
+// settings. See docs/07-reference/ADR-036-tenant-backup-restic-jmap.md.
+
+export const tenantResticRepoState = pgTable('tenant_restic_repo_state', {
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  // Component name matching backup_components.component. Today only
+  // 'files' and 'mailboxes' use restic.
+  component: varchar('component', { length: 32 }).notNull(),
+  repoUri: varchar('repo_uri', { length: 2000 }).notNull(),
+  targetConfigId: varchar('target_config_id', { length: 36 })
+    .references(() => backupConfigurations.id, { onDelete: 'set null' }),
+  lastSnapshotId: varchar('last_snapshot_id', { length: 64 }),
+  lastBackupJobId: varchar('last_backup_job_id', { length: 64 })
+    .references(() => backupJobs.id, { onDelete: 'set null' }),
+  lastRepoSizeBytes: bigint('last_repo_size_bytes', { mode: 'number' }).notNull().default(0),
+  lastSnapshotAt: timestamp('last_snapshot_at'),
+  lastRunAt: timestamp('last_run_at'),
+  lastCheckStatus: varchar('last_check_status', { length: 32 }),
+  lastCheckAt: timestamp('last_check_at'),
+  lastCheckError: text('last_check_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  primaryKey({ columns: [table.clientId, table.component] }),
+  index('tenant_restic_repo_state_target_idx').on(table.targetConfigId),
+]);
+
+export const tenantJmapState = pgTable('tenant_jmap_state', {
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  mailboxJmapId: varchar('mailbox_jmap_id', { length: 255 }).notNull(),
+  mailboxAddress: varchar('mailbox_address', { length: 255 }).notNull(),
+  // NULL = no prior state, do a full pull. Persisted ONLY after restic
+  // snapshot acks the corresponding backup. At-least-once semantics.
+  lastJmapState: text('last_jmap_state'),
+  lastSyncedAt: timestamp('last_synced_at'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  primaryKey({ columns: [table.clientId, table.mailboxJmapId] }),
+  index('tenant_jmap_state_client_idx').on(table.clientId, table.lastSyncedAt),
+]);
+
+// Single-row global settings for tenant-backup v2. CHECK constraint in
+// the migration enforces id=1.
+export const tenantBackupV2Settings = pgTable('tenant_backup_v2_settings', {
+  id: integer('id').primaryKey().default(1),
+  retentionDays: integer('retention_days').notNull().default(30),
+  checkIntervalDays: integer('check_interval_days').notNull().default(7),
+  maxConcurrentRestic: integer('max_concurrent_restic').notNull().default(4),
+  globalMaxInFlight: integer('global_max_in_flight').notNull().default(0),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type TenantResticRepoState = typeof tenantResticRepoState.$inferSelect;
+export type NewTenantResticRepoState = typeof tenantResticRepoState.$inferInsert;
+export type TenantJmapState = typeof tenantJmapState.$inferSelect;
+export type NewTenantJmapState = typeof tenantJmapState.$inferInsert;
+export type TenantBackupV2Settings = typeof tenantBackupV2Settings.$inferSelect;
+
 // ─── Private Workers (migration 0076) ─────────────────────────────────────
 // Per-client tunnel agents. A home box runs the private-worker-agent docker
 // container which dials in over WSS to tunnels.${DOMAIN}/c/{slug}/. A frps pod
