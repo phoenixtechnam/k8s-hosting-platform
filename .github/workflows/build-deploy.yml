@@ -377,5 +377,8 @@ jobs:
             k8s/overlays/staging/kustomization.yaml
           git commit -m "chore(staging): pin platform-version to ${VERSION} [skip ci]"
           git push origin HEAD:main
-          # Fast-forward staging too so Flux picks it up
-          git push origin HEAD:staging || true
+          # main → staging propagation is owned by sync-staging.yml.
+          # That workflow does a real merge (not fast-forward) and fails
+          # loudly on conflict, so we don't silently drop infra-only
+          # commits anymore. The previous `git push origin HEAD:staging
+          # || true` here masked divergence — see project_cluster_resource_audit_2026_05_09.

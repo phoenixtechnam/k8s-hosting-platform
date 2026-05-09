@@ -1,0 +1,107 @@
+name: Sync main → staging
+
+# Single owner of main → staging propagation. Runs on EVERY push to main
+# (no path filter) so infra-only, script-only, and docs-only commits all
+# reach the staging branch — and through it, Flux on the staging cluster.
+#
+# Replaces the previous behavior where build-deploy.yml did
+#   git push origin HEAD:staging || true
+# which silently dropped any commit when staging had diverged from main
+# (which it always does, because of staging-only auto-pin merge commits).
+#
+# DESIGN CHOICES:
+#
+#   - Merge, not fast-forward. Staging accumulates its own merge history
+#     (150+ "Merge main → staging" commits). A FF push fails the moment
+#     staging has any commit not on main. We use `git merge --no-ff` so
+#     each main → staging propagation is one explicit merge commit.
+#
+#   - Fail loudly on conflict. No `|| true`. If main and staging touch
+#     the same file in incompatible ways, the workflow fails and the
+#     conflict surfaces as an Action failure that needs human resolution.
+#     Silent failures are how we got 150+ accumulated manual merges.
+#
+#   - Concurrency group. Two main pushes in quick succession would race
+#     on the staging push. The `concurrency` block serializes them — the
+#     second waits for the first to finish before merging onto the new
+#     staging tip.
+#
+#   - cancel-in-progress: false. We never want to skip a propagation:
+#     every main commit MUST reach staging, even if a newer commit lands
+#     while we're processing.
+
+on:
+  push:
+    branches: [main]
+
+# Don't trigger on the auto-pin commits the build-deploy workflow makes
+# (they're tagged [skip ci] in the message).
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-staging
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge main → staging
+    runs-on: ubuntu-latest
+    # Marker is intentionally non-prose so documenting the feature in a
+    # commit message can't accidentally trigger the skip (the original
+    # `[skip staging-sync]` was a phrase, so the very commit that added
+    # this workflow self-skipped because the description used those words).
+    if: ${{ !contains(github.event.head_commit.message, '[ci-skip-staging-sync]') }}
+    steps:
+      - name: Checkout staging
+        uses: actions/checkout@v4
+        with:
+          ref: staging
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git author
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch main
+        run: git fetch origin main
+
+      - name: Merge main → staging
+        id: merge
+        run: |
+          set -e
+          MAIN_SHA=$(git rev-parse origin/main)
+          STAGING_SHA=$(git rev-parse HEAD)
+          echo "main:    $MAIN_SHA"
+          echo "staging: $STAGING_SHA"
+
+          if git merge-base --is-ancestor "$MAIN_SHA" "$STAGING_SHA"; then
+            echo "Staging is already up-to-date with main — nothing to do."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Build a concise summary of new commits for the merge message.
+          SUMMARY=$(git log --pretty=format:'  - %h %s' "$STAGING_SHA..$MAIN_SHA" | head -10)
+          NEW_COUNT=$(git log --oneline "$STAGING_SHA..$MAIN_SHA" | wc -l)
+
+          # --no-ff so every propagation is one explicit merge commit
+          # (matches the existing 150+ "Merge main → staging" history).
+          # No `|| true` — fail the workflow on conflict.
+          if ! git merge --no-ff origin/main -m "Merge main → staging: ${NEW_COUNT} commit(s) from main
+
+          ${SUMMARY}
+          "; then
+            echo "::error::Merge conflict propagating main → staging. Resolve manually:"
+            echo "::error::  git fetch origin && git checkout staging && git merge origin/main"
+            echo "::error::Then push the resolved merge."
+            git merge --abort || true
+            exit 1
+          fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+
+      - name: Push staging
+        if: steps.merge.outputs.skipped != 'true'
+        run: git push origin staging
