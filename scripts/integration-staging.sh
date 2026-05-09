@@ -2441,36 +2441,68 @@ scenario_mail_hostname_rename() {
   ok "hostname: PATCH accepted (${http_status})"
 
   # ── Verify Stalwart SystemSettings ──
+  # Strategy: ssh_cp issues only the curl command (raw JSON bytes back),
+  # then we parse with python3 LOCALLY. Avoids the nested SSH +
+  # python -c quoting trap that broke the previous version.
   local mgmt_pw mgmt_ip
   mgmt_pw=$(ssh_cp "kubectl -n mail get secret stalwart-admin-creds -o jsonpath='{.data.recoveryPassword}' | base64 -d" | tr -d '[:space:]')
   mgmt_ip=$(ssh_cp "kubectl -n mail get svc stalwart-mgmt -o jsonpath='{.spec.clusterIP}'" | tr -d '[:space:]')
-  local sw_hn
-  sw_hn=$(ssh_cp "curl -s --max-time 5 -u admin:'${mgmt_pw}' -X POST http://${mgmt_ip}:8080/jmap -H 'Content-Type: application/json' -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:SystemSettings/get\",{\"ids\":[\"singleton\"],\"properties\":[\"defaultHostname\"]},\"a\"]]}' | python3 -c \"import json,sys; d=json.load(sys.stdin); print(d['methodResponses'][0][1]['list'][0]['defaultHostname'])\"" | tr -d '[:space:]')
+
+  jmap_call() {
+    # $1 = methodCalls JSON array (no outer braces)
+    local calls="$1"
+    ssh_cp "curl -s --max-time 8 -u admin:'${mgmt_pw}' -X POST http://${mgmt_ip}:8080/jmap -H 'Content-Type: application/json' -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":${calls}}'"
+  }
+
+  local ss_json sw_hn
+  ss_json=$(jmap_call '[["x:SystemSettings/get",{"ids":["singleton"],"properties":["defaultHostname"]},"a"]]')
+  sw_hn=$(printf '%s' "$ss_json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['methodResponses'][0][1]['list'][0].get('defaultHostname',''))
+except Exception:
+    pass
+" 2>/dev/null | tr -d '[:space:]')
   if [[ "$sw_hn" == "$test_host" ]]; then
     ok "hostname: Stalwart SystemSettings.defaultHostname = ${sw_hn}"
   else
-    fail "hostname: Stalwart has defaultHostname=${sw_hn}, expected ${test_host}"
+    fail "hostname: Stalwart has defaultHostname=${sw_hn:-empty}, expected ${test_host} (raw JMAP: $(printf '%s' "$ss_json" | head -c 200))"
   fi
 
   # ── Verify Domain SAN map contains the new prefix ──
   local san_prefix="${test_host%.${apex}}"
-  local san_present
-  san_present=$(ssh_cp "curl -s --max-time 5 -u admin:'${mgmt_pw}' -X POST http://${mgmt_ip}:8080/jmap -H 'Content-Type: application/json' -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/query\",{},\"q\"]]}' | python3 -c \"
-import json,sys
-d=json.load(sys.stdin); ids=d['methodResponses'][0][1]['ids']
-print(' '.join(ids))
-\"")
-  san_present=$(ssh_cp "curl -s --max-time 5 -u admin:'${mgmt_pw}' -X POST http://${mgmt_ip}:8080/jmap -H 'Content-Type: application/json' -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/get\",{\"ids\":[$(printf '\"%s\",' $san_present | sed 's/,$//')]},\"a\"]]}' | python3 -c \"
-import json,sys
-d=json.load(sys.stdin)
-for row in d['methodResponses'][0][1]['list']:
-  if row.get('name') == '${apex}':
-    sans = (row.get('certificateManagement') or {}).get('subjectAlternativeNames', {})
-    print('yes' if '${san_prefix}' in sans else 'no')
-    break
-else:
-  print('domain-not-found')
-\"" | tr -d '[:space:]')
+  local domains_json domain_ids
+  domains_json=$(jmap_call '[["x:Domain/query",{},"q"]]')
+  domain_ids=$(printf '%s' "$domains_json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    ids = d['methodResponses'][0][1].get('ids', [])
+    print(','.join('\"'+i+'\"' for i in ids))
+except Exception:
+    pass
+")
+  local san_present="domain-not-found"
+  if [[ -n "$domain_ids" ]]; then
+    local domain_get_json
+    domain_get_json=$(jmap_call "[[\"x:Domain/get\",{\"ids\":[${domain_ids}]},\"g\"]]")
+    san_present=$(APEX="$apex" SAN_PREFIX="$san_prefix" printf '%s' "$domain_get_json" | python3 -c "
+import sys, json, os
+apex = os.environ['APEX']; needle = os.environ['SAN_PREFIX']
+try:
+    d = json.load(sys.stdin)
+    for row in d['methodResponses'][0][1].get('list', []):
+        if row.get('name') == apex:
+            sans = ((row.get('certificateManagement') or {}).get('subjectAlternativeNames') or {})
+            print('yes' if needle in sans else 'no:' + ','.join(sans.keys()))
+            break
+    else:
+        print('domain-not-found')
+except Exception as e:
+    print('parse-error:' + str(e)[:80])
+")
+  fi
   if [[ "$san_present" == "yes" ]]; then
     ok "hostname: Domain '${apex}' subjectAlternativeNames contains '${san_prefix}'"
   else
