@@ -87,6 +87,9 @@ patches:
   - path: platform-config-patch.yaml
   - path: ingress-patch.yaml
   - path: longhorn-ui-patch.yaml
+  # Staging-only: system-db at 10Gi (existing cluster from pre-Phase-1
+  # 10Gi base default). Base now defaults to 5Gi for fresh installs.
+  - path: system-db-storage-patch.yaml
   # M1: same affinity-patch as the system-node-affinity component,
   # applied to dex which is overlay-only (so it can't live inside the
   # shared component without breaking the production overlay, which
