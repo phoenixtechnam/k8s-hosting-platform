@@ -39,6 +39,12 @@ const STALWART_MGMT_PORT_NAME = 'mgmt-http';
 const STALWART_DEFAULT_POD = 'stalwart-mail-0';
 const STALWART_POD_LABEL_SELECTOR = 'app=stalwart-mail';
 
+// Proxy timeout. apiserver-proxy stalls (Stalwart pod restart, network
+// partition) without this would hang the calling Fastify handler until
+// Node's socket eventually times out (default ~2 min) — tying up a
+// worker slot for a 502 the operator could have seen in 10s.
+const STALWART_PROXY_TIMEOUT_MS = 10_000;
+
 interface ProxyResult {
   readonly status: number;
   readonly body: string;
@@ -126,6 +132,13 @@ export async function proxyStalwartGet(
         });
       });
     });
+    // 10s timeout so a stalled apiserver-proxy or Stalwart pod
+    // restart doesn't hang the calling Fastify handler — the route
+    // catches the rejection and surfaces a 502 to the operator
+    // rather than holding a worker slot open.
+    req.setTimeout(STALWART_PROXY_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Stalwart request timed out after ${STALWART_PROXY_TIMEOUT_MS}ms`));
+    });
     req.on('error', reject);
     req.end();
   });
@@ -192,6 +205,9 @@ export async function proxyStalwartRequest(
           body: Buffer.concat(chunks).toString('utf-8'),
         });
       });
+    });
+    req.setTimeout(STALWART_PROXY_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Stalwart request timed out after ${STALWART_PROXY_TIMEOUT_MS}ms`));
     });
     req.on('error', reject);
     req.write(body);

@@ -5,6 +5,12 @@ import { ApiError } from '../../shared/errors.js';
 import { updatePlatformUrlsSchema } from '@k8s-hosting/api-contracts';
 import type { ZodError } from 'zod';
 import * as service from './service.js';
+import {
+  applyMailServerHostnameToStalwart,
+  withMailHostnameLock,
+} from '../webmail-settings/service.js';
+import { auditLogs } from '../../db/schema.js';
+import crypto from 'node:crypto';
 
 function zodMessage(err: ZodError): string {
   return err.issues
@@ -40,22 +46,74 @@ export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    // 2026-05-07: same install-time-only constraint as the
-    // /admin/webmail-settings endpoint — Stalwart's Bootstrap
-    // singleton locks serverHostname post-install, and silently
-    // accepting a runtime rename here would leave the cluster
-    // half-migrated. Reject with a clear pointer to the rename
-    // runbook.
-    if (parsed.data.mailServerHostname !== undefined) {
-      throw new ApiError(
-        'MAIL_HOSTNAME_IMMUTABLE',
-        'Mail server hostname is fixed at install time. See the rename runbook for the snapshot+rebootstrap maintenance procedure.',
-        400,
-        { field: 'mailServerHostname' },
-      );
+    // 2026-05-09: mailServerHostname is editable post-bootstrap via
+    // SystemSettings.defaultHostname. Push to Stalwart first; if
+    // Stalwart accepts, persist to platform_urls. If Stalwart rejects
+    // (validation / missing Domain / network), fail loudly without
+    // updating the DB row — see the matching comment block in
+    // backend/src/modules/webmail-settings/routes.ts for the full
+    // rationale + operator-side caveats (cert SAN, DNS, rDNS).
+    // Hostname change is serialized via the advisory lock so two
+    // concurrent PATCHes can't apply different hostnames in
+    // interleaved order (Stalwart-A → Stalwart-B → DB-B → DB-A).
+    let stalwartHostnameUpdate:
+      | { defaultDomainId: string; previousHostname: string }
+      | undefined;
+    const result = await withMailHostnameLock(app.db, async () => {
+      if (
+        parsed.data.mailServerHostname !== undefined &&
+        parsed.data.mailServerHostname !== null
+      ) {
+        try {
+          const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as
+            | string
+            | undefined;
+          stalwartHostnameUpdate = await applyMailServerHostnameToStalwart(
+            kubeconfigPath,
+            parsed.data.mailServerHostname,
+          );
+        } catch (err) {
+          throw new ApiError(
+            'MAIL_HOSTNAME_APPLY_FAILED',
+            `Failed to update Stalwart's defaultHostname: ${
+              err instanceof Error ? err.message : String(err)
+            }. The platform-urls DB row was NOT updated to keep it consistent with the live server.`,
+            502,
+            { field: 'mailServerHostname' },
+          );
+        }
+      }
+      await service.updatePlatformUrls(app.db, parsed.data);
+      return service.getPlatformUrls(app.db);
+    });
+
+    if (stalwartHostnameUpdate && parsed.data.mailServerHostname) {
+      // Forensic audit trail — see matching block in
+      // backend/src/modules/webmail-settings/routes.ts. Failure to
+      // record the audit row is logged but doesn't fail the request.
+      try {
+        await app.db.insert(auditLogs).values({
+          id: crypto.randomUUID(),
+          actorId: (request.user as { sub?: string } | undefined)?.sub ?? 'system',
+          actorType: 'user',
+          actionType: 'platform_settings.mail_hostname_rename',
+          resourceType: 'platform_settings',
+          resourceId: 'mail_server_hostname',
+          changes: {
+            previousHostname: stalwartHostnameUpdate.previousHostname,
+            newHostname: parsed.data.mailServerHostname,
+            defaultDomainId: stalwartHostnameUpdate.defaultDomainId,
+            via: 'platform-urls',
+          } as unknown as Record<string, unknown>,
+        });
+      } catch (err) {
+        app.log.error(
+          { err, newHostname: parsed.data.mailServerHostname },
+          'mail-server-hostname (platform-urls): audit_logs insert failed after successful Stalwart apply',
+        );
+      }
     }
-    await service.updatePlatformUrls(app.db, parsed.data);
-    const result = await service.getPlatformUrls(app.db);
+
     return success(result);
   });
 }
