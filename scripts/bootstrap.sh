@@ -2140,9 +2140,13 @@ install_calico() {
   #     overhead − some headroom. Auto-discovery used in plain Calico
   #     can pick wrong values; explicit pin avoids the Felix MTU loop.
   #   * nodeAddressAutodetectionV4: when --cluster-network-cidr is set,
-  #     pin to that CIDR (private underlay). Otherwise firstFound: true
-  #     picks the public IP of eth0. Calico's WireGuard mesh terminates
-  #     on whichever IP is autodetected.
+  #     pin to that CIDR explicitly. Otherwise inherit k3s' --node-ip
+  #     choice via 'kubernetes: NodeInternalIP'. Calico's VXLAN/WG
+  #     tunnel endpoint follows whichever IP k3s already advertised
+  #     for the kubelet/apiserver — wt0 mesh IP if NetBird is up, else
+  #     the default-route public IP. This matches per-node correctness
+  #     in mixed clusters where some nodes joined publicly and others
+  #     via the mesh.
   local autodetect_block=""
   # ipv6_pool: kept here as a documented placeholder for the future
   # dual-stack v2 mode (see ROADMAP.md). When enabled, this string
@@ -2158,15 +2162,25 @@ install_calico() {
     # bgp:Disabled is rejected anyway, and k3s was launched with
     # IPv4-only cluster-cidr in install_k3s_server.
   else
-    # Public-underlay autodetect: skipInterface excludes known VPN
-    # tunnel names. Tigera rejects more than one autodetection method
-    # per family, so we pick this one (instead of canReach) because
-    # it doesn't depend on routing — even when an operator VPN
-    # carries a default-route to public IPs, Calico still picks the
-    # native cloud NIC. Calico iterates remaining interfaces in
-    # numeric order and takes the first global IPv4.
+    # Inherit k3s' --node-ip choice: Calico picks whatever IP
+    # Node.status.addresses[InternalIP] already shows. install_k3s_*
+    # auto-detects wt0 / tailscale0 and pins --node-ip to the mesh
+    # IP when present, else to the default-route IP. By inheriting
+    # via 'kubernetes: NodeInternalIP' we get the right behavior on
+    # both public-only and mesh-private nodes without needing
+    # separate code paths or per-node Installation overrides.
+    #
+    # Earlier (until 2026-05-09) we used 'skipInterface' to exclude
+    # known VPN tunnel names. That worked for pure-public clusters
+    # but actively broke mesh-private nodes — Calico would skip wt0
+    # and pick the public NIC for its tunnel endpoint, even after
+    # k3s --node-ip pinned the kubelet-side IP to the mesh address.
+    # The result was Node.status.InternalIP = mesh, but Calico
+    # tunnels (VXLAN/WG outer header) sourced from public NIC →
+    # firewall on the receiving server dropped the packet because
+    # cluster_peers_v4 contained the mesh IP, not the public one.
     autodetect_block="    nodeAddressAutodetectionV4:
-      skipInterface: \"^(wt[0-9]*|tailscale[0-9]*|wg[0-9]*|tun[0-9]*|tap[0-9]*|ipsec[0-9]*|cali[0-9a-f]+|vxlan\\\\.calico|wireguard\\\\.cali)\$\""
+      kubernetes: NodeInternalIP"
     # IPv6 dropped — see install_k3s_server: cluster-cidr is IPv4-only.
   fi
 
