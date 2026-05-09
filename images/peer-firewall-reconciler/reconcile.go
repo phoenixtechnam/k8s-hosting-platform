@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +10,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -29,22 +29,39 @@ type nodeLister interface {
 	List(selector labels.Selector) ([]*corev1.Node, error)
 }
 
-// applyIfChanged compares the rendered script against the cached last
-// applied bytes; on change, applies via runNft and updates the cache.
-// Holds r.mu via defer so any future caller that drives reconcileOnce
-// concurrently (test harness, forced-refresh endpoint) is automatically
-// safe — no early-unlock-then-return footgun.
-func (r *reconciler) applyIfChanged(script []byte) (changed bool, err error) {
+// applyIfChanged compares the desired set state against the cached
+// last-applied snapshot; on change, applies via the netlink applier
+// and updates the cache. Holds r.mu via defer so any future caller
+// that drives reconcileOnce concurrently is automatically safe — no
+// early-unlock-then-return footgun.
+//
+// The cache is a string-fingerprint of the four sorted slices —
+// cheaper than re-querying the kernel for the live state every tick,
+// and the netlink batch is idempotent so a duplicate apply is harmless
+// if the cache misses.
+func (r *reconciler) applyIfChanged(s nftSets) (changed bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if bytes.Equal(script, r.last) {
+	fingerprint := setFingerprint(s)
+	if fingerprint == r.lastFingerprint {
 		return false, nil
 	}
-	if err := r.runNft(script); err != nil {
+	if err := r.applier.apply(s); err != nil {
 		return false, err
 	}
-	r.last = script
+	r.lastFingerprint = fingerprint
 	return true, nil
+}
+
+// setFingerprint returns a stable string representation of the four
+// member slices. Used as the no-op short-circuit cache key. Order is
+// significant; callers MUST hand sorted slices.
+func setFingerprint(s nftSets) string {
+	const sep = "|"
+	return strings.Join(s.PeersV4, ",") + sep +
+		strings.Join(s.PeersV6, ",") + sep +
+		strings.Join(s.TrustedV4, ",") + sep +
+		strings.Join(s.TrustedV6, ",")
 }
 
 // reconcileOnce gathers all three sources, computes the four nft
@@ -183,14 +200,15 @@ func (r *reconciler) reconcileOnce(ctx context.Context) error {
 	trustedV4 = uniqueSorted(trustedV4)
 	trustedV6 = uniqueSorted(trustedV6)
 
-	// 4. Build + apply nft script (cached diff).
-	script := buildNftScript(nftSets{
+	// 4. Apply via netlink (cached diff). No more `nft -f -` exec —
+	// the applier writes directly to the kernel netfilter via libnftnl.
+	desired := nftSets{
 		PeersV4:   allPeerV4,
 		PeersV6:   allPeerV6,
 		TrustedV4: trustedV4,
 		TrustedV6: trustedV6,
-	})
-	scriptChanged, err := r.applyIfChanged(script)
+	}
+	scriptChanged, err := r.applyIfChanged(desired)
 	if err != nil {
 		return fmt.Errorf("apply nft: %w", err)
 	}

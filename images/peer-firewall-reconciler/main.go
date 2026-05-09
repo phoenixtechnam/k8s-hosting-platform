@@ -48,16 +48,14 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	// Pre-flight: confirm all four nft sets exist on the host. Bootstrap.sh
-	// declares them; if any are missing, the host was bootstrapped with a
-	// pre-Phase-1 script and re-running bootstrap.sh on this node is the
-	// fix. Without this probe, every reconcile tick would `nft -f -` fail
-	// atomically and spam ERROR logs at floorReconcile cadence — clear
-	// scream + idle is friendlier to operators investigating the issue.
-	if missing := nftMissingSets(); len(missing) > 0 {
-		slog.Error("nft sets missing — re-run scripts/bootstrap.sh on this node",
-			"missing", missing,
-			"hint", "this node was bootstrapped before always-on set mode; re-running bootstrap.sh re-renders /etc/nftables.conf with the four required sets")
+	// Pre-flight: confirm the kernel has the inet filter table. The
+	// reconciler's applier creates the four sets if they're missing
+	// (idempotent), but the table itself must already exist —
+	// bootstrap.sh creates it as part of nftables.conf.
+	if err := preflightFilterTable(); err != nil {
+		slog.Error("nftables preflight failed",
+			"err", err,
+			"hint", "ensure bootstrap.sh ran and nftables.service is active; the inet filter table must exist before this reconciler runs")
 		idleForever()
 		return
 	}
@@ -112,15 +110,15 @@ func main() {
 	cppLister := dynFactory.ForResource(cppGVR).Lister()
 
 	r := &reconciler{
-		nodes:      nodeLister,
-		ctrLister:  ctrLister,
-		cppLister:  cppLister,
-		ctrClient:  dynClient.Resource(ctrGVR),
-		cppClient:  dynClient.Resource(cppGVR),
-		cppGrace:   defaultCppPostClaimGrace,
-		now:        time.Now,
-		runNft:     realNftRunner,
-		trigger:    make(chan struct{}, 1),
+		nodes:     nodeLister,
+		ctrLister: ctrLister,
+		cppLister: cppLister,
+		ctrClient: dynClient.Resource(ctrGVR),
+		cppClient: dynClient.Resource(cppGVR),
+		cppGrace:  defaultCppPostClaimGrace,
+		now:       time.Now,
+		applier:   newRealApplier(),
+		trigger:   make(chan struct{}, 1),
 	}
 
 	for _, inf := range []cache.SharedIndexInformer{nodeInformer, ctrInformer, cppInformer} {
@@ -201,13 +199,15 @@ type reconciler struct {
 	// now is injectable for deterministic TTL tests.
 	now func() time.Time
 
-	// runNft is the nft executor; injectable so unit tests swap a fake.
-	runNft func([]byte) error
+	// applier writes the desired set state to the kernel via libnftnl
+	// netlink. Injectable so unit tests swap a fake — see fakeApplier
+	// in reconcile_test.go.
+	applier applier
 
 	trigger chan struct{}
 
-	mu   sync.Mutex
-	last []byte
+	mu              sync.Mutex
+	lastFingerprint string
 }
 
 // Type assertions (compile-time guarantees that we use the right
