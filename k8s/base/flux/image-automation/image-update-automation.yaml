@@ -1,15 +1,29 @@
-# Flux Image Update Automation — commits new SHA tags to the `staging`
-# branch when new images are detected. The staging Flux Kustomization
-# watches the `staging` branch and auto-reconciles.
+# Flux Image Update Automation — DEPRECATED 2026-05-09.
 #
-# Requires flux components: image-reflector-controller, image-automation-controller
-# Install via: flux install --components-extra=image-reflector-controller,image-automation-controller
+# Replaced by the in-CI tag-pin step in
+# .github/workflows/build-deploy.yml ("Pin image tags in
+# kustomization.yaml") which runs after each Build * job and rewrites
+# the staging overlay's newTag fields from the build's resolved tag.
+# CI uses the workflow's ephemeral GITHUB_TOKEN to push — no long-lived
+# PAT to manage, no separate controller to monitor.
+#
+# Why deprecated: the original IUA setup needed a Secret with a GitHub
+# PAT for git push, but the secretRef was never wired (or was deleted)
+# and the controller silently failed for 4+ days with "authentication
+# required: No anonymous write access." Image tags went stale on
+# staging until manually patched.
+#
+# Suspended below to stop the controller log spam. The CR is kept for
+# operators who want to revisit the PAT-based path; delete from
+# k8s/base/flux/image-automation/kustomization.yaml if no longer
+# needed.
 apiVersion: image.toolkit.fluxcd.io/v1beta2
 kind: ImageUpdateAutomation
 metadata:
   name: staging-image-updates
   namespace: flux-system
 spec:
+  suspend: true
   interval: 1m
   sourceRef:
     kind: GitRepository
