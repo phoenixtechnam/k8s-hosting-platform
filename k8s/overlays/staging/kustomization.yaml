@@ -55,14 +55,15 @@ resources:
   # mode is applied. NetworkPolicy locks the cache to redis-system /
   # mail / platform namespaces — tenant namespaces explicitly blocked.
   - valkey/
-  # Flux Image Automation — auto-promotes newly-built timestamp-tagged
-  # images to the staging branch. Requires the
-  # image-reflector-controller + image-automation-controller Flux
-  # components installed on the cluster (CRDs verified at install
-  # time). Without this wiring, ImagePolicies sit ignored and every
-  # CI build needs a manual `kubectl rollout restart` to converge
-  # all replicas to the same digest.
-  - ../../base/flux/image-automation
+  # Image promotion (was Flux Image Automation, removed 2026-05-09):
+  # Now handled by the in-CI "Pin image tags in kustomization.yaml"
+  # step in .github/workflows/build-deploy.yml. Build * jobs export
+  # their resolved timestamp tag; the version-bump job rewrites
+  # newTag in this file via sed and pushes via the workflow's
+  # ephemeral GITHUB_TOKEN. No long-lived PAT, no separate
+  # controller. The flux-image-* manifests + the corresponding
+  # image-reflector-controller + image-automation-controller
+  # deployments are no longer installed by bootstrap.sh.
 
 # Admin-auth gate — applies an auth_request to every Ingress labelled
 # `platform.phoenix-host.net/admin-ui=true` (Longhorn UI, Stalwart web-

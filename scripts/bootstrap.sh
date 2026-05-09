@@ -1417,8 +1417,6 @@ pin_system_components_to_servers() {
       "flux-system:kustomize-controller" \
       "flux-system:helm-controller" \
       "flux-system:notification-controller" \
-      "flux-system:image-reflector-controller" \
-      "flux-system:image-automation-controller" \
       "cert-manager:cert-manager" \
       "cert-manager:cert-manager-webhook" \
       "cert-manager:cert-manager-cainjector" \
@@ -1482,10 +1480,11 @@ pin_system_components_to_servers() {
   bump_request_memory flux-system kustomize-controller manager 50m 128Mi
   bump_request_memory flux-system helm-controller manager 50m 128Mi
   bump_request_memory flux-system notification-controller manager 50m 128Mi
-  # image-* controllers exist on staging only (see install_flux); the
-  # bump call is a no-op when the deployments don't exist (`|| true`).
-  bump_request_memory flux-system image-reflector-controller manager 50m 128Mi
-  bump_request_memory flux-system image-automation-controller manager 50m 128Mi
+  # 2026-05-09: image-reflector-controller + image-automation-controller
+  # removed from the platform — replaced by the in-CI tag-pin step in
+  # .github/workflows/build-deploy.yml. Saves ~333 Mi RAM per cluster
+  # and removes the long-lived PAT auth surface that broke 2026-05-04.
+  # No bump_request_memory entries needed; the deployments don't exist.
 
   # Tigera operator — sole calico-operator pod, ships with no requests.
   bump_request_memory tigera-operator tigera-operator tigera-operator 50m 128Mi
@@ -2731,11 +2730,13 @@ install_flux() {
   fi
 
   log "Installing Flux v2..."
-  local flux_extra=""
-  if [[ "$PLATFORM_ENV" == "staging" ]]; then
-    flux_extra="--components-extra=image-reflector-controller,image-automation-controller"
-  fi
-  flux install --kubeconfig="$KUBECONFIG" --timeout=300s $flux_extra
+  # 2026-05-09: dropped --components-extra=image-reflector-controller,
+  # image-automation-controller. Replaced by the in-CI tag-pin step in
+  # .github/workflows/build-deploy.yml which uses the workflow's
+  # ephemeral GITHUB_TOKEN to commit newTag bumps directly. Saves
+  # ~333 Mi RAM per cluster and removes the PAT-rotation failure mode
+  # that took out staging image promotion 2026-05-04 → 2026-05-09.
+  flux install --kubeconfig="$KUBECONFIG" --timeout=300s
 
   # Determine which branch Flux should watch
   local flux_branch="main"
