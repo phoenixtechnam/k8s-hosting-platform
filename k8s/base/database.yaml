@@ -109,15 +109,14 @@ spec:
         - "ALTER USER platform WITH SUPERUSER"
 
   storage:
-    # 10Gi base for fresh installs. The Phase-1 efficiency audit
-    # proposed 5Gi (live observation: 16 MB of actual data) but
-    # CNPG's webhook rejects any spec.storage decrease, which makes
-    # the smaller value un-applyable on existing 10Gi staging
-    # clusters via Flux. Operators can still right-size via Settings
-    # → System DB Storage or the SystemPvcResize endpoint at any
-    # time after install. A future overlay-only smaller-fresh-install
-    # default can revisit this.
-    size: 10Gi
+    # 5Gi base for fresh installs (Phase-1 efficiency audit: live
+    # observation 16 MB of actual data, ample headroom). Existing
+    # clusters with larger storage MUST be patched per-overlay because
+    # CNPG's webhook rejects any spec.storage decrease — see
+    # k8s/overlays/staging/system-db-storage-patch.yaml for the
+    # 10Gi staging override. Operators can right-size at any time
+    # via Settings → System DB Storage or the SystemPvcResize endpoint.
+    size: 5Gi
     # System PVCs MUST use longhorn-system-local (or -ha when policy
     # is HA — operator flip via Apply Tier patches both numberOfReplicas
     # and nodeSelector on the live volume). The bare `longhorn` class

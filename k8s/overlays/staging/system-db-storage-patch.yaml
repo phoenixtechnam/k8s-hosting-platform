@@ -1,0 +1,18 @@
+# Staging-only patch: keep system-db at 10Gi instead of the base 5Gi.
+#
+# Background: the staging cluster was bootstrapped pre-Phase-1 with the
+# 10Gi default that lived in the base manifest at the time. CNPG's
+# webhook rejects any spec.storage decrease, so the post-Phase-1 base
+# default of 5Gi can't apply to staging without manual snapshot+
+# recreate. This patch keeps the live size at 10Gi.
+#
+# When staging is wiped + rebootstrapped fresh, this overlay can be
+# deleted — the new install will pick up the 5Gi base default.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: system-db
+  namespace: platform
+spec:
+  storage:
+    size: 10Gi

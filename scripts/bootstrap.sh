@@ -1241,6 +1241,53 @@ HELPER
   chmod +x /usr/local/bin/peer-firewall-remove
 }
 
+seed_cluster_trusted_range_crs() {
+  # Apply ClusterTrustedRange CRs from the operator's --allow-source
+  # entries (and the auto-detected mesh CIDR) so the
+  # peer-firewall-reconciler converges them into trusted_ranges_v{4,6}
+  # nft sets across all nodes — and so they survive reconciler ticks
+  # (the reconciler's atomic flush+add would otherwise wipe the
+  # bootstrap-time-only nft seed on first reconcile).
+  #
+  # Idempotent: a CR with the same name + spec.cidr is a no-op; a
+  # different spec.cidr triggers a reconciler resync. This function
+  # is a no-op when the CRD doesn't exist (e.g. the platform overlay
+  # is still being applied) — caller retries on the next bootstrap
+  # re-run if needed.
+  if [[ ${#ALLOW_SOURCE_LIST_V4[@]} -eq 0 && ${#ALLOW_SOURCE_LIST_V6[@]} -eq 0 ]]; then
+    return 0
+  fi
+  if ! kctl get crd clustertrustedranges.networking.platform.phoenix-host.net &>/dev/null; then
+    log "ClusterTrustedRange CRD not yet applied — skipping CR seed; re-run bootstrap.sh after Flux finishes to pick up."
+    return 0
+  fi
+
+  log "Seeding ClusterTrustedRange CRs from --allow-source entries..."
+  local idx=0
+  local entry name
+  for entry in "${ALLOW_SOURCE_LIST_V4[@]+"${ALLOW_SOURCE_LIST_V4[@]}"}" \
+               "${ALLOW_SOURCE_LIST_V6[@]+"${ALLOW_SOURCE_LIST_V6[@]}"}"; do
+    # Deterministic CR name: bootstrap-seed-NN. Allows operators to
+    # rename / take ownership via the admin UI later (UI-created CRs
+    # use friendly names; the seed CRs stay until explicitly deleted).
+    name="bootstrap-seed-$(printf '%02d' $idx)"
+    idx=$((idx + 1))
+    kctl apply -f - <<CR | grep -v "unchanged" || true
+apiVersion: networking.platform.phoenix-host.net/v1alpha1
+kind: ClusterTrustedRange
+metadata:
+  name: ${name}
+  labels:
+    platform.phoenix-host.net/seed: bootstrap
+spec:
+  cidr: ${entry}
+  description: bootstrap.sh --allow-source seed (rename via admin UI to take ownership)
+  addedBy: bootstrap.sh
+CR
+    log "  + ClusterTrustedRange/${name} cidr=${entry}"
+  done
+}
+
 configure_fail2ban() {
   if [[ "$SKIP_HARDENING" == true ]]; then
     log "Skipping fail2ban (--skip-hardening)."
@@ -4711,6 +4758,13 @@ main() {
     create_platform_configmap
     generate_operator_recipient
     apply_platform_manifests
+    # Seed ClusterTrustedRange CRs from --allow-source entries. Runs
+    # AFTER apply_platform_manifests so the CRDs are guaranteed
+    # present. The reconciler converges these CRs into the host nft
+    # trusted_ranges_v{4,6} sets — without this seed, the reconciler's
+    # atomic flush+add wipes the bootstrap-time-only nft seed on first
+    # tick and operator NetBird/workstation access disappears.
+    seed_cluster_trusted_range_crs
     # Tag the Longhorn Node CR (.spec.tags + each disk .tags = "system")
     # so the platform's longhorn-system-local StorageClass can schedule
     # replicas. apply_platform_manifests waits for the longhorn admission
