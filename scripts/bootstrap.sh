@@ -118,6 +118,12 @@ REQUIRE_SMOKE_PASS=false       # --require-smoke-pass makes smoke FAIL fatal (CI
 SMOKE_WAIT_SECONDS=300         # max wait for Flux Kustomizations to reach Ready
 OPERATOR_AGE_RECIPIENT=""      # public half (age1...) — optional, generated if empty
 FORCE_ROTATE_OPERATOR_KEY=false # regenerate + overwrite ConfigMap even if it exists
+# --force-domain-change: opt-in to overwriting the existing
+# platform-cluster-config ConfigMap when --domain or --env differ from
+# the live cluster. Default false makes re-runs with a typo'd --domain
+# hard-fail with a clear message instead of silently breaking every
+# Ingress / cert / cookie pinned to the old DOMAIN.
+FORCE_DOMAIN_CHANGE=false
 SECRETS_BUNDLE_PATH=""         # --secrets-bundle <path|http(s) URL> — pre-Flux import
 SECRETS_BUNDLE_KEY=""          # --age-key <path> to operator-private.key for decrypt
 MARKER_DIR="/var/lib/hosting-platform"
@@ -192,6 +198,14 @@ OPTIONS:
   --force-rotate-operator-key
                          Regenerate the operator keypair even if the
                          ConfigMap already exists (rotation drill).
+  --force-domain-change  Allow re-running bootstrap.sh with --domain or
+                         --env different from the live cluster's
+                         platform-cluster-config. Default behaviour is
+                         a hard-fail to prevent accidental DOMAIN
+                         clobber that would break every Ingress + cert
+                         pinned to the previous value. Use only when
+                         a domain rename / env flip is intentional;
+                         existing certs + cookies will need re-issuance.
   --secrets-bundle <path|URL>
                          Tier-1 secrets bundle to import BEFORE Flux
                          reconciles. Decrypted with --age-key, then
@@ -431,6 +445,7 @@ parse_args() {
       --acme-email)      ACME_EMAIL="$2"; shift 2 ;;
       --operator-age-recipient) OPERATOR_AGE_RECIPIENT="$2"; shift 2 ;;
       --force-rotate-operator-key) FORCE_ROTATE_OPERATOR_KEY=true; shift ;;
+      --force-domain-change) FORCE_DOMAIN_CHANGE=true; shift ;;
       --secrets-bundle)  SECRETS_BUNDLE_PATH="$2"; shift 2 ;;
       --age-key)         SECRETS_BUNDLE_KEY="$2"; shift 2 ;;
       --help|-h)         usage ;;
@@ -4330,6 +4345,36 @@ apply_platform_manifests() {
   if [[ ! -f "${overlay_dir}/kustomization.yaml" ]]; then
     error "Overlay ${PLATFORM_ENV} not found at ${overlay_dir}/kustomization.yaml — \
 expected k8s/overlays/${PLATFORM_ENV}/ to exist (dev | staging | production)."
+  fi
+
+  # If the CM already exists, refuse to overwrite a mismatched DOMAIN
+  # or ENV unless the operator explicitly passes --force-domain-change.
+  # Re-running bootstrap.sh with a typo'd --domain previously clobbered
+  # the CM silently, breaking every Ingress that uses ${DOMAIN} envsubst
+  # (admin.${DOMAIN}, client.${DOMAIN}, dex.${DOMAIN}, …) and 502'ing
+  # the admin panel until the CM was patched back manually. Observed
+  # on staging1 2026-05-08.
+  local existing_domain="" existing_env=""
+  if kctl get cm -n flux-system platform-cluster-config >/dev/null 2>&1; then
+    existing_domain=$(kctl get cm -n flux-system platform-cluster-config -o jsonpath='{.data.DOMAIN}' 2>/dev/null || echo "")
+    existing_env=$(kctl get cm -n flux-system platform-cluster-config -o jsonpath='{.data.ENV}' 2>/dev/null || echo "")
+    if [[ -n "$existing_domain" && "$existing_domain" != "$PLATFORM_DOMAIN" ]]; then
+      if [[ "$FORCE_DOMAIN_CHANGE" != "true" ]]; then
+        error "Refusing to change platform-cluster-config DOMAIN: existing=${existing_domain} new=${PLATFORM_DOMAIN}.
+Re-running bootstrap.sh with a different --domain would overwrite the live cluster's DOMAIN and break every
+Ingress / cert / cookie domain pinned to it. Pass --force-domain-change if the rename is intentional, OR
+correct your --domain to match the live cluster."
+      fi
+      warn "DOMAIN change confirmed via --force-domain-change: ${existing_domain} → ${PLATFORM_DOMAIN}. Existing Ingresses + certs will need re-issuance."
+    fi
+    if [[ -n "$existing_env" && "$existing_env" != "$PLATFORM_ENV" ]]; then
+      if [[ "$FORCE_DOMAIN_CHANGE" != "true" ]]; then
+        error "Refusing to change platform-cluster-config ENV: existing=${existing_env} new=${PLATFORM_ENV}.
+Cross-env re-bootstrap is almost always a mistake (e.g. running --env production on a staging cluster
+swaps cert issuers + retention policies). Pass --force-domain-change if intentional."
+      fi
+      warn "ENV change confirmed via --force-domain-change: ${existing_env} → ${PLATFORM_ENV}."
+    fi
   fi
 
   log "Materialising ConfigMap platform-cluster-config (DOMAIN=${PLATFORM_DOMAIN}, ENV=${PLATFORM_ENV})..."

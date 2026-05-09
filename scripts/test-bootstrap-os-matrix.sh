@@ -145,6 +145,77 @@ done
 
 echo
 echo "════════════════════════════════════════════════"
+echo "  nft version drift guard"
+echo "════════════════════════════════════════════════"
+# Contract: the peer-firewall-reconciler ships nft pinned to
+# NFTABLES_VERSION (compiled from netfilter.org sources). On the host,
+# nft is whatever apt/dnf installs from the distro repo. The reconciler
+# parses the host's netlink ruleset dump, so:
+#
+#   container nft >= host nft  → safe (backward-compatible parse)
+#   container nft <  host nft  → SIGSEGV in libnftnl on `nft list set`
+#                                 (observed staging1 2026-05-08 with
+#                                 alpine 1.0.9 / 1.1.1 vs trixie 1.1.3)
+#
+# This guard installs nftables in each Tier-1/2 container, captures
+# `nft --version`, and fails the build if any host's version is
+# strictly newer than the reconciler's pinned NFTABLES_VERSION.
+#
+# Dependency: the Dockerfile's `ARG NFTABLES_VERSION=` is the source
+# of truth.
+
+DOCKERFILE=$REPO/images/peer-firewall-reconciler/Dockerfile
+CONTAINER_NFT=$(grep -E "^ARG NFTABLES_VERSION=" "$DOCKERFILE" | head -1 | sed 's/.*=//')
+if [[ -z "$CONTAINER_NFT" ]]; then
+  echo "  ✗ could not parse NFTABLES_VERSION from $DOCKERFILE — drift guard skipped"
+  FAIL=$((FAIL + 1))
+  FAILED_IMAGES+=("nft-version-guard (NFTABLES_VERSION not found)")
+else
+  echo "  reconciler pins nft v$CONTAINER_NFT"
+
+  # Convert "1.1.6" to "001001006" for lexical comparison.
+  ver_to_int() {
+    local v=$1
+    IFS='.' read -r a b c <<<"$v"
+    printf '%03d%03d%03d' "${a:-0}" "${b:-0}" "${c:-0}"
+  }
+  container_int=$(ver_to_int "$CONTAINER_NFT")
+
+  for img in "${TIER_OK[@]}"; do
+    case "$img" in
+      debian:*|ubuntu:*)
+        host_nft_cmd="apt-get update >/dev/null 2>&1 && apt-get install -y -q nftables >/dev/null 2>&1 && nft --version | head -1"
+        ;;
+      rockylinux:*|almalinux:*|quay.io/centos/centos:*)
+        host_nft_cmd="dnf install -y -q nftables >/dev/null 2>&1 && nft --version | head -1"
+        ;;
+      amazonlinux:*)
+        host_nft_cmd="dnf install -y -q nftables >/dev/null 2>&1 && nft --version | head -1"
+        ;;
+      *)
+        echo "  ⊘ $img — drift check skipped (unknown package manager)"
+        continue
+        ;;
+    esac
+    output=$(docker run --rm "$img" bash -c "$host_nft_cmd" 2>&1 | tail -1)
+    host_version=$(echo "$output" | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+" | sed 's/^v//' | head -1)
+    if [[ -z "$host_version" ]]; then
+      echo "  ⊘ $img — could not extract nft version from: $output"
+      continue
+    fi
+    host_int=$(ver_to_int "$host_version")
+    if (( host_int > container_int )); then
+      echo "  ✗ $img host nft v$host_version > container nft v$CONTAINER_NFT — DRIFT, container WILL segfault"
+      FAIL=$((FAIL + 1))
+      FAILED_IMAGES+=("$img nft-drift host=$host_version > container=$CONTAINER_NFT")
+    else
+      echo "  ✓ $img host nft v$host_version ≤ container v$CONTAINER_NFT"
+    fi
+  done
+fi
+
+echo
+echo "════════════════════════════════════════════════"
 echo "  RESULT: PASS=$PASS  FAIL=$FAIL"
 if (( FAIL > 0 )); then
   echo "  Failed: ${FAILED_IMAGES[*]}"
