@@ -90,3 +90,4 @@ Will be implemented as part of Phase 2. The code path can be designed against a 
 | 2026-05-09 | JMAP master-user auth, not per-tenant tokens | Reuse Stalwart master credentials already used by webmail/mbsync. No new credential plane |
 | 2026-05-09 | platform-api stays 1 GiB, restic cap 4 | Match operator preference. Concurrency × per-process budget fits the limit |
 | 2026-05-09 | SFTP via restic native backend (not SSHFS/FUSE) | Avoids SYS_ADMIN cap in containers, simpler operationally |
+| 2026-05-09 | Pre-capture DB hook is platform-api TypeScript that calls existing `db-manager.ts:exportDatabaseToPvc`; NO DB clients in the backup-tool image | SQL Manager already runs `mysqldump`/`pg_dump` inside the live tenant DB pod via `execInPod` using the credentials it already owns. Backup-tool image stays minimal: restic + python3 + curl + tar + ca-certificates. No duplicated binaries, no second credential plane. Backup pod has no network path to the live DB. |

@@ -49,10 +49,11 @@ Replace the daily backup path with two primitives, kept inside the existing `ten
 
 ### Primitive 3 — pre-capture logical dump of tenant application databases
 
-- Before the files-component tar runs, a small wrapper enumerates `databases/*/` on the tenant PVC.
-- For each entry, it dispatches `mysqldump --single-transaction --lock-wait-timeout=30` (or `pg_dump` equivalent) into `databases/<engine>-<suffix>/_backup/<ISO>.sql.gz`. 5-min hard ceiling per database.
-- The dump file is then included in the restic snapshot alongside the raw on-disk DB files. Restore offers two paths: full PVC re-hydrate (fast, may need engine-specific recovery) or logical re-import via the existing `db-manager.ts:importSqlFromPvcFile` (slow, guaranteed consistent).
+- Before the files-component restic capture runs, a small **platform-api-side helper** (`tenant-bundles/components/database-predump.ts`) iterates `SELECT * FROM databases WHERE client_id = ?` and for each row calls the **existing** SQL Manager primitive `db-manager.ts:exportDatabaseToPvc`.
+- `exportDatabaseToPvc` runs `mysqldump`/`mariadb-dump` (with `--routines --triggers`) or `pg_dump` **inside the live tenant DB pod** via `execInPod`, using the credentials already owned by the SQL Manager. The dump file lands on the tenant PVC under `/exports/<filename>.sql` (moved there by the existing file-manager step in that helper).
+- The files-component restic capture then snapshots the PVC including the dumps that are now already there. Restore offers two paths: full PVC re-hydrate (raw on-disk files; engine-specific recovery may be needed) OR logical re-import via the existing `db-manager.ts:importSqlFromPvcFile` (replays the SQL through the live DB pod; guaranteed consistent).
 - This is **not** a new bundle component. The `databases` table stays under the `config` component (metadata only). The `files` component continues to claim `{ns}-storage` per ADR-035 — its capture content now happens to include guaranteed-consistent dumps as well as raw bytes.
+- **Explicit non-goal:** the backup-tool image does NOT carry any DB client binaries. Adding `mariadb-client`/`postgresql-client` to a backup pod would duplicate the tenant DB image's existing tools, require a second credential plane (root password mounted to the backup ns), and open a network path from the backup pod to the live tenant DB. None of that is necessary because `exportDatabaseToPvc` already orchestrates the dump from inside the tenant DB pod itself.
 
 ### What stays unchanged
 
