@@ -24,7 +24,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"net/netip"
+	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/google/nftables"
@@ -61,11 +64,27 @@ type tenantPortSets struct {
 }
 
 // applier wraps the netlink connection plumbing so reconcile loops can
-// inject a fake in tests. Two methods, one per reconcile loop, so each
-// loop can apply independently without touching the other's sets.
+// inject a fake in tests. Each loop has an apply (write desired state)
+// and observe (read current kernel state) method.
+//
+// The observe* methods are used by reconcile to detect out-of-band
+// kernel-state divergence — e.g. an operator running `nft -f
+// /etc/nftables.conf` to reset corrupt state, or a kernel reboot
+// stripping the sets to bootstrap-time empty. Without observing,
+// the reconciler's in-process fingerprint cache could think state
+// was already applied while the kernel actually shows something
+// different.
+//
+// Each observe method returns a canonical fingerprint string matching
+// the format peerFingerprint / tenantPortsFingerprint produces for
+// the desired state, so reconcile can compare them directly. On a
+// netlink read error the implementation returns ("", err); the
+// reconcile path falls back to "force apply" behavior in that case.
 type applier interface {
 	applyPeerSets(s peerNftSets) error
 	applyTenantPorts(s tenantPortSets) error
+	observePeerFingerprint() (string, error)
+	observeTenantPortsFingerprint() (string, error)
 }
 
 // realApplier holds an open lasting netlink connection. Reused across
@@ -202,6 +221,296 @@ func (r *realApplier) applyTenantPorts(s tenantPortSets) error {
 		return fmt.Errorf("commit tenant member updates: %w", err)
 	}
 	return nil
+}
+
+// observePeerFingerprint reads the current kernel state of the four
+// peer/trusted sets via netlink and computes the canonical fingerprint
+// string. Any decode failure (set missing, malformed elements,
+// netlink error) returns ("", err) — reconcile interprets that as
+// "must apply" so we don't silently skip writes when state is unknown.
+func (r *realApplier) observePeerFingerprint() (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	conn, table, err := r.openAndPreflight()
+	if err != nil {
+		return "", err
+	}
+	defer conn.CloseLasting() //nolint:errcheck
+
+	pV4, err := r.readAddrSet(conn, table, setPeersV4, false)
+	if err != nil {
+		return "", err
+	}
+	pV6, err := r.readAddrSet(conn, table, setPeersV6, true)
+	if err != nil {
+		return "", err
+	}
+	tV4, err := r.readCidrSet(conn, table, setTrustedV4, false)
+	if err != nil {
+		return "", err
+	}
+	tV6, err := r.readCidrSet(conn, table, setTrustedV6, true)
+	if err != nil {
+		return "", err
+	}
+	return peerFingerprint(peerNftSets{
+		PeersV4: pV4, PeersV6: pV6, TrustedV4: tV4, TrustedV6: tV6,
+	}), nil
+}
+
+// observeTenantPortsFingerprint reads the two tenant_ports_{tcp,udp}
+// sets and computes the canonical fingerprint. Same error semantics
+// as observePeerFingerprint — empty + error means "force apply".
+func (r *realApplier) observeTenantPortsFingerprint() (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	conn, table, err := r.openAndPreflight()
+	if err != nil {
+		return "", err
+	}
+	defer conn.CloseLasting() //nolint:errcheck
+
+	tcp, err := r.readPortSet(conn, table, setTenantTCP)
+	if err != nil {
+		return "", err
+	}
+	udp, err := r.readPortSet(conn, table, setTenantUDP)
+	if err != nil {
+		return "", err
+	}
+	return tenantPortsFingerprint(tenantPortSets{TCP: tcp, UDP: udp}), nil
+}
+
+// readAddrSet returns the bare IPs encoded in an interval address set.
+// A "bare IP" is encoded as a degenerate range [ip, ip+1) — start key
+// + IntervalEnd marker. We pair consecutive elements and recover the
+// start address; non-degenerate ranges are skipped (cluster_peers
+// only ever holds bare IPs by construction). Empty / missing set
+// returns nil — matches "no elements".
+func (r *realApplier) readAddrSet(conn *nftables.Conn, table *nftables.Table, name string, isV6 bool) ([]string, error) {
+	set, err := conn.GetSetByName(table, name)
+	if err != nil {
+		// Not-found is treated as empty (the bootstrap may not have
+		// run yet on a fresh node; in that case the apply path will
+		// create the set + populate it).
+		return nil, nil //nolint:nilerr
+	}
+	elems, err := conn.GetSetElements(set)
+	if err != nil {
+		return nil, fmt.Errorf("get %s elements: %w", name, err)
+	}
+	out := []string{}
+	var pendingStart netip.Addr
+	havePending := false
+	for _, e := range elems {
+		if !e.IntervalEnd {
+			a, ok := bytesToAddr(e.Key, isV6)
+			if !ok {
+				havePending = false
+				continue
+			}
+			pendingStart = a
+			havePending = true
+			continue
+		}
+		if !havePending {
+			continue
+		}
+		endA, ok := bytesToAddr(e.Key, isV6)
+		havePending = false
+		if !ok {
+			continue
+		}
+		// Bare-IP encoding: [ip, ip+1). If the gap is 1, recover ip.
+		next := pendingStart.Next()
+		if next == endA {
+			out = append(out, pendingStart.String())
+		}
+		// Else it's a CIDR-shaped range in an address set, which
+		// shouldn't happen for cluster_peers — skip silently.
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// readCidrSet returns the CIDR strings encoded in an interval address
+// set used for trusted_ranges. Each CIDR is a [network, network+2^k)
+// range. We pair consecutive elements and check that the gap is a
+// power of two; if so, recover the prefix bits. Non-power-of-two
+// gaps are skipped (defensive — would indicate a non-CIDR write
+// landed in the trusted_ranges set).
+func (r *realApplier) readCidrSet(conn *nftables.Conn, table *nftables.Table, name string, isV6 bool) ([]string, error) {
+	set, err := conn.GetSetByName(table, name)
+	if err != nil {
+		return nil, nil //nolint:nilerr
+	}
+	elems, err := conn.GetSetElements(set)
+	if err != nil {
+		return nil, fmt.Errorf("get %s elements: %w", name, err)
+	}
+	out := []string{}
+	totalBits := 32
+	if isV6 {
+		totalBits = 128
+	}
+	var pendingStart netip.Addr
+	havePending := false
+	for _, e := range elems {
+		if !e.IntervalEnd {
+			a, ok := bytesToAddr(e.Key, isV6)
+			if !ok {
+				havePending = false
+				continue
+			}
+			pendingStart = a
+			havePending = true
+			continue
+		}
+		if !havePending {
+			continue
+		}
+		havePending = false
+		endA, ok := bytesToAddr(e.Key, isV6)
+		if !ok {
+			continue
+		}
+		bits, ok := prefixFromInterval(pendingStart, endA, totalBits)
+		if !ok {
+			continue
+		}
+		out = append(out, pendingStart.String()+"/"+strconv.Itoa(bits))
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// readPortSet returns the canonical port-or-range strings encoded in
+// a tenant_ports_{tcp,udp} interval set. Decoding mirrors
+// portsToElements: for each (start, end-exclusive) pair, if
+// end == start+1 emit "<port>", else emit "<lo>-<hi>" with hi=end-1.
+// Handles the wraparound case where end-bytes == {0x00, 0x00} (which
+// portsToElements emits when the high port is 65535).
+func (r *realApplier) readPortSet(conn *nftables.Conn, table *nftables.Table, name string) ([]string, error) {
+	set, err := conn.GetSetByName(table, name)
+	if err != nil {
+		return nil, nil //nolint:nilerr
+	}
+	elems, err := conn.GetSetElements(set)
+	if err != nil {
+		return nil, fmt.Errorf("get %s elements: %w", name, err)
+	}
+	out := []string{}
+	var pendingStart uint16
+	havePending := false
+	for _, e := range elems {
+		if !e.IntervalEnd {
+			p, ok := bytesToPort(e.Key)
+			if !ok {
+				havePending = false
+				continue
+			}
+			pendingStart = p
+			havePending = true
+			continue
+		}
+		if !havePending {
+			continue
+		}
+		havePending = false
+		endRaw, ok := bytesToPort(e.Key)
+		if !ok {
+			continue
+		}
+		// Wraparound: portsToElements emits {0x00, 0x00} as the
+		// IntervalEnd when hi == 65535. Convert the observed 0 back to
+		// the conceptual 65536 by treating the inclusive end as 65535.
+		var hi uint16
+		if endRaw == 0 {
+			hi = 65535
+		} else if endRaw <= pendingStart {
+			// Non-wraparound but end <= start: malformed range, skip.
+			continue
+		} else {
+			hi = endRaw - 1
+		}
+		if hi == pendingStart {
+			out = append(out, strconv.FormatUint(uint64(pendingStart), 10))
+		} else {
+			out = append(out,
+				strconv.FormatUint(uint64(pendingStart), 10)+
+					"-"+strconv.FormatUint(uint64(hi), 10))
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// bytesToAddr is the inverse of addrBytes.
+func bytesToAddr(b []byte, isV6 bool) (netip.Addr, bool) {
+	if isV6 {
+		if len(b) != 16 {
+			return netip.Addr{}, false
+		}
+		var a16 [16]byte
+		copy(a16[:], b)
+		return netip.AddrFrom16(a16), true
+	}
+	if len(b) != 4 {
+		return netip.Addr{}, false
+	}
+	var a4 [4]byte
+	copy(a4[:], b)
+	return netip.AddrFrom4(a4), true
+}
+
+// bytesToPort is the inverse of portBytes.
+func bytesToPort(b []byte) (uint16, bool) {
+	if len(b) != 2 {
+		return 0, false
+	}
+	return (uint16(b[0]) << 8) | uint16(b[1]), true
+}
+
+// prefixFromInterval recovers the CIDR prefix length from a
+// [network, network+2^k) range. Returns the prefix bits and true if
+// (end - network) is a non-zero power of two; false otherwise. Uses
+// math/big because IPv6 spans 128 bits.
+func prefixFromInterval(start, end netip.Addr, totalBits int) (int, bool) {
+	if start == end {
+		return 0, false
+	}
+	startBig := addrToBig(start)
+	endBig := addrToBig(end)
+	diff := new(big.Int).Sub(endBig, startBig)
+	if diff.Sign() <= 0 {
+		return 0, false
+	}
+	// k = log2(diff) iff diff is a power of two
+	bitLen := diff.BitLen() // index of the highest set bit + 1
+	// power-of-two test: only the high bit should be set, all others zero
+	pow2 := new(big.Int).Lsh(big.NewInt(1), uint(bitLen-1))
+	if diff.Cmp(pow2) != 0 {
+		return 0, false
+	}
+	k := bitLen - 1
+	bits := totalBits - k
+	if bits < 0 || bits > totalBits {
+		return 0, false
+	}
+	return bits, true
+}
+
+// addrToBig converts a netip.Addr (4 or 16 bytes) to a math/big.Int
+// (unsigned). Used by prefixFromInterval for log2-of-difference math.
+func addrToBig(a netip.Addr) *big.Int {
+	if a.Is6() && !a.Is4() {
+		b := a.As16()
+		return new(big.Int).SetBytes(b[:])
+	}
+	b := a.As4()
+	return new(big.Int).SetBytes(b[:])
 }
 
 // openAndPreflight opens a fresh netlink conn and verifies the inet

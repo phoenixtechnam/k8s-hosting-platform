@@ -65,16 +65,15 @@ func fakeReconcilerSetup(
 
 	fa := &fakeApplier{}
 	r := &reconciler{
-		nodes:        staticLister{items: nodes},
-		ctrLister:    mkLister(ctrs, ctrGVR),
-		cppLister:    mkLister(cpps, cppGVR),
-		ctrClient:    dynClient.Resource(ctrGVR),
-		cppClient:    dynClient.Resource(cppGVR),
-		cppGrace:     defaultCppPostClaimGrace,
-		now:          func() time.Time { return now },
-		applier:      fa,
-		trigger:      make(chan struct{}, 1),
-		fingerprints: make(map[string]string, 2),
+		nodes:     staticLister{items: nodes},
+		ctrLister: mkLister(ctrs, ctrGVR),
+		cppLister: mkLister(cpps, cppGVR),
+		ctrClient: dynClient.Resource(ctrGVR),
+		cppClient: dynClient.Resource(cppGVR),
+		cppGrace:  defaultCppPostClaimGrace,
+		now:       func() time.Time { return now },
+		applier:   fa,
+		trigger:   make(chan struct{}, 1),
 	}
 	return r, fa, dynClient
 }
@@ -83,11 +82,26 @@ func fakeReconcilerSetup(
 // peer / tenant-port set state. failNth/failErr applies to peerSet
 // calls only; tenantPortCalls is independent so error injection in
 // one loop doesn't perturb the other.
+//
+// The observe* methods simulate kernel state by returning the
+// fingerprint of the LAST applied state. This matches the real
+// applier's behavior on a healthy kernel + lets tests verify the
+// "no apply when state already matches" short-circuit. Tests can
+// override observePeerFP/observeTenantFP to simulate kernel-state
+// divergence (e.g. an out-of-band reset).
 type fakeApplier struct {
 	calls           []peerNftSets
 	tenantPortCalls []tenantPortSets
 	failNth         int   // 0 = never fail; N = fail on the Nth peerSet call (1-indexed)
 	failErr         error // returned when failNth fires
+
+	// Optional overrides for the observe path. When nil, observe
+	// returns the fingerprint of the last applied state (or empty
+	// string if nothing applied yet). Tests use these to simulate
+	// out-of-band kernel-state divergence.
+	observePeerFP   *string
+	observeTenantFP *string
+	observeErr      error
 }
 
 func (f *fakeApplier) applyPeerSets(s peerNftSets) error {
@@ -101,6 +115,32 @@ func (f *fakeApplier) applyPeerSets(s peerNftSets) error {
 func (f *fakeApplier) applyTenantPorts(s tenantPortSets) error {
 	f.tenantPortCalls = append(f.tenantPortCalls, s)
 	return nil
+}
+
+func (f *fakeApplier) observePeerFingerprint() (string, error) {
+	if f.observeErr != nil {
+		return "", f.observeErr
+	}
+	if f.observePeerFP != nil {
+		return *f.observePeerFP, nil
+	}
+	if len(f.calls) == 0 {
+		return "", nil
+	}
+	return peerFingerprint(f.calls[len(f.calls)-1]), nil
+}
+
+func (f *fakeApplier) observeTenantPortsFingerprint() (string, error) {
+	if f.observeErr != nil {
+		return "", f.observeErr
+	}
+	if f.observeTenantFP != nil {
+		return *f.observeTenantFP, nil
+	}
+	if len(f.tenantPortCalls) == 0 {
+		return "", nil
+	}
+	return tenantPortsFingerprint(f.tenantPortCalls[len(f.tenantPortCalls)-1]), nil
 }
 
 func mkCTR(name, cidr string, gen int64) *unstructured.Unstructured {

@@ -69,6 +69,42 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          ports:
+            # HTTP probe endpoint. hostNetwork: true means containerPort
+            # already binds on the node's IP — no separate hostPort
+            # needed (and would be redundant). The existing input chain
+            # (default drop, iif lo accept) protects external traffic;
+            # kubelet probes go node→node-IP which traverses lo and is
+            # allowed.
+            - name: healthz
+              containerPort: 8081
+              protocol: TCP
+          # Liveness: restart pod if /healthz has been failing for
+          # >90s. /healthz returns 503 when either reconcile loop
+          # hasn't reported a success within healthMaxAge (90s in
+          # the binary). With periodSeconds=30 + failureThreshold=3,
+          # kubelet declares the pod unhealthy after ~90s of stalls,
+          # which lines up with the observability window in /healthz.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+          # Readiness: pull the pod out of any future Service in front
+          # of the reconciler when reconciles stall. Today nothing
+          # selects this DS via Service, so readiness is informational
+          # — `kubectl rollout status` blocks on it during deploys.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
           securityContext:
             # libnftnl talks to netfilter via netlink — needs CAP_NET_ADMIN.
             # Drop everything else; no privileged, no host PID/IPC.

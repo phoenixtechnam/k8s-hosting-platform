@@ -29,8 +29,7 @@ func fakeTenantSetup(t *testing.T, nodeName string, pods []*corev1.Pod, nses []*
 	}
 	fa := &fakeApplier{}
 	parent := &reconciler{
-		applier:      fa,
-		fingerprints: make(map[string]string, 2),
+		applier: fa,
 	}
 	tpr := &tenantPortsReconciler{
 		nodeName: nodeName,
@@ -261,22 +260,55 @@ func TestReconcileOnce_emptyDesiredYieldsZeroState(t *testing.T) {
 	}
 }
 
-func TestReconcileOnce_fingerprintCacheIsolated(t *testing.T) {
-	// peer + tenant fingerprints live in different keys — invalidating
-	// one (via different desired state) must NOT trigger a re-apply on
-	// the other.
-	parent := &reconciler{
-		applier:      &fakeApplier{},
-		fingerprints: make(map[string]string, 2),
-	}
-	// Seed a fake "previous" tenant fingerprint.
-	_, _ = parent.applyTenantPortsIfChanged(tenantPortSets{TCP: []string{"3478"}})
-	tenantFP := parent.fingerprints[fpTenantPorts]
-	// Simulate the peer loop changing its sets.
+func TestReconcileOnce_outOfBandKernelResetForcesReApply(t *testing.T) {
+	// Regression for the staging bug observed 2026-05-09: an operator
+	// runs `nft -f /etc/nftables.conf` to reset corrupt state, the
+	// reconciler's old in-process cache thought "{4 IPs}" was already
+	// applied and skipped the re-write, leaving the kernel set empty.
+	//
+	// The new design observes kernel state on every tick. Simulate a
+	// kernel-state divergence by overriding observePeerFP to an empty
+	// fingerprint AFTER the first apply — and verify the next call
+	// re-applies.
+	fa := &fakeApplier{}
+	parent := &reconciler{applier: fa}
+
+	// First call: empty observed (initial state) → applies.
 	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
-	if parent.fingerprints[fpTenantPorts] != tenantFP {
-		t.Errorf("tenant fingerprint should not change when peer sets change; got %q want %q",
-			parent.fingerprints[fpTenantPorts], tenantFP)
+	if len(fa.calls) != 1 {
+		t.Fatalf("expected 1 apply on first call; got %d", len(fa.calls))
+	}
+
+	// Second call with same desired state: observe matches → skip.
+	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
+	if len(fa.calls) != 1 {
+		t.Fatalf("expected 1 apply when desired matches observed; got %d", len(fa.calls))
+	}
+
+	// Out-of-band reset: observed is now empty (kernel was reset).
+	empty := ""
+	fa.observePeerFP = &empty
+	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
+	if len(fa.calls) != 2 {
+		t.Errorf("expected re-apply after observed kernel state diverges; got %d total calls", len(fa.calls))
+	}
+}
+
+func TestReconcileOnce_observeErrorTriggersForceApply(t *testing.T) {
+	// When netlink is briefly unhappy, observe* returns an error.
+	// Reconciler should fall back to "force apply" — better to
+	// over-write than under-write when state is unknown.
+	fa := &fakeApplier{observeErr: errReconcile}
+	parent := &reconciler{applier: fa}
+
+	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
+	if len(fa.calls) != 1 {
+		t.Fatalf("expected force-apply on observe error; got %d calls", len(fa.calls))
+	}
+	// And again, even if desired didn't change, observe-error keeps forcing.
+	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
+	if len(fa.calls) != 2 {
+		t.Errorf("observe-error should keep forcing apply; got %d calls", len(fa.calls))
 	}
 }
 

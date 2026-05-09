@@ -56,9 +56,14 @@ type tenantPortsReconciler struct {
 	nodeName string
 	pods     corelisters.PodLister
 	nses     corelisters.NamespaceLister
-	parent   *reconciler // for r.applier + r.fingerprints
+	parent   *reconciler // for parent.applier (shared netlink writer)
 
 	trigger chan struct{}
+
+	// health publishes the most recent successful tenant-ports
+	// reconcile time so the kubelet liveness/readiness HTTP probe
+	// can detect stalls. Wired by main(); may be nil in tests.
+	health *healthState
 }
 
 // newTenantPortsReconciler wires the informers + lister into a
@@ -91,7 +96,9 @@ func (t *tenantPortsReconciler) kick() {
 
 // run drives reconcileOnce on tick + on event. Same shape as the
 // peer-reconciler run() loop. Recovery boundary lives at the goroutine
-// top in main(); a panic here unwinds to runWithRecover.
+// top in main(); a panic here unwinds to runWithRecover. On a
+// successful reconcile we publish a timestamp to the health probe
+// so kubelet can detect stalls.
 func (t *tenantPortsReconciler) run(ctx context.Context) {
 	t.kick()
 	tk := time.NewTicker(floorReconcile)
@@ -105,6 +112,10 @@ func (t *tenantPortsReconciler) run(ctx context.Context) {
 		}
 		if err := t.reconcileOnce(ctx); err != nil {
 			slog.Error("tenant-ports reconcile", "err", err)
+			continue
+		}
+		if t.health != nil {
+			t.health.markTenantHealthy(time.Now())
 		}
 	}
 }

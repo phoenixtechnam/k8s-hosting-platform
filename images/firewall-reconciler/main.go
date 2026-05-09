@@ -144,19 +144,21 @@ func main() {
 	cppInformer := dynFactory.ForResource(cppGVR).Informer()
 	cppLister := dynFactory.ForResource(cppGVR).Lister()
 
+	hs := &healthState{}
 	r := &reconciler{
-		nodes:        nodeLister,
-		ctrLister:    ctrLister,
-		cppLister:    cppLister,
-		ctrClient:    dynClient.Resource(ctrGVR),
-		cppClient:    dynClient.Resource(cppGVR),
-		cppGrace:     defaultCppPostClaimGrace,
-		now:          time.Now,
-		applier:      newRealApplier(),
-		trigger:      make(chan struct{}, 1),
-		fingerprints: make(map[string]string, 2),
+		nodes:     nodeLister,
+		ctrLister: ctrLister,
+		cppLister: cppLister,
+		ctrClient: dynClient.Resource(ctrGVR),
+		cppClient: dynClient.Resource(cppGVR),
+		cppGrace:  defaultCppPostClaimGrace,
+		now:       time.Now,
+		applier:   newRealApplier(),
+		trigger:   make(chan struct{}, 1),
+		health:    hs,
 	}
 	tpr := newTenantPortsReconciler(nodeName, podLister, nsLister, r)
+	tpr.health = hs
 
 	// Peer loop event handlers — Node + the two CRDs.
 	for _, inf := range []cache.SharedIndexInformer{nodeInformer, ctrInformer, cppInformer} {
@@ -194,6 +196,11 @@ func main() {
 	}
 	slog.Info("informer caches synced — entering reconcile loops",
 		"node", nodeName)
+
+	// Health probe: kubelet liveness/readiness lands here. Start before
+	// the reconcile loops so kubelet sees /healthz returning 503
+	// (warming up) until both loops have reconciled at least once.
+	startHealthServer(ctx, hs)
 
 	// Run the two loops as separate goroutines with recover() at the
 	// boundary so a panic in one loop doesn't crash the pod (and
@@ -244,7 +251,9 @@ func runWithRecover(wg *sync.WaitGroup, ctx context.Context, name string, fn fun
 // run kicks reconcileOnce on informer events and at the floor cadence.
 // Errors are logged but never fatal — informer event handlers requeue
 // implicitly on next change, the floor ticker drives liveness even if
-// no events arrive (e.g. permanent kube-API outage).
+// no events arrive (e.g. permanent kube-API outage). On a successful
+// reconcile we publish a timestamp to the health probe so kubelet
+// can detect stalls.
 func (r *reconciler) run(ctx context.Context) {
 	r.kick() // kick once at start so we don't wait floorReconcile for the first pass
 	t := time.NewTicker(floorReconcile)
@@ -258,6 +267,10 @@ func (r *reconciler) run(ctx context.Context) {
 		}
 		if err := r.reconcileOnce(ctx); err != nil {
 			slog.Error("reconcile", "err", err)
+			continue
+		}
+		if r.health != nil {
+			r.health.markPeerHealthy(time.Now())
 		}
 	}
 }
@@ -304,12 +317,16 @@ type reconciler struct {
 
 	trigger chan struct{}
 
-	// fingerprints is the per-loop last-applied state cache. Each
-	// reconcile loop owns one slot (fpPeers, fpTenantPorts) so a
-	// transient error in one loop doesn't invalidate the other's
-	// short-circuit. r.mu protects the map across the two goroutines.
-	mu           sync.Mutex
-	fingerprints map[string]string
+	// mu serializes the two reconcile loops' state inspection inside
+	// applyPeersIfChanged / applyTenantPortsIfChanged. Each loop reads
+	// observed kernel state via the applier, then compares to desired
+	// and applies — under r.mu so the two loops can't interleave reads
+	// and writes through the shared netlink applier.
+	mu sync.Mutex
+
+	// health publishes the most recent successful peer reconcile time
+	// so the kubelet liveness/readiness HTTP probe can detect stalls.
+	health *healthState
 }
 
 // Type assertions (compile-time guarantees that we use the right
