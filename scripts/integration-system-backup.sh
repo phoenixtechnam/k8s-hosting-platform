@@ -116,11 +116,17 @@ pass "downloadUrl present, expires at $EXPIRES_AT, size=$SIZE1 sha256=${SHA1:0:1
 
 log "5) GET the URL once — bundle bytes returned, sha256 header matches"
 TMP=$(mktemp -t sysbk-XXXXXX.tar.age)
-HTTP=$(curl -sS -k -o "$TMP" -w '%{http_code}' -D /tmp/sysbk-headers.txt "$ADMIN_HOST$URL")
+SCRATCH_DIR=$(mktemp -d -t sysbk-scratch-XXXXXX)
+HEADERS_FILE="$SCRATCH_DIR/headers.txt"
+LISTING_FILE="$SCRATCH_DIR/listing.txt"
+# Trap-on-EXIT so early `fail` calls don't leave bundle bytes pinning tmpfs
+# (see feedback_e2e_tmp_cleanup — staging1 once held 3.7 GB of leftovers).
+trap 'rm -rf "$TMP" "$SCRATCH_DIR"' EXIT
+HTTP=$(curl -sS -k -o "$TMP" -w '%{http_code}' -D "$HEADERS_FILE" "$ADMIN_HOST$URL")
 [[ "$HTTP" = "200" ]] || fail "first download returned HTTP $HTTP"
 ACTUAL_SHA=$(sha256sum "$TMP" | awk '{print $1}')
 [[ "$ACTUAL_SHA" = "$SHA1" ]] || fail "downloaded sha256 ($ACTUAL_SHA) != run sha256 ($SHA1)"
-HEADER_SHA=$(grep -i '^x-content-sha256:' /tmp/sysbk-headers.txt | tr -d '\r' | awk '{print $2}')
+HEADER_SHA=$(grep -i '^x-content-sha256:' "$HEADERS_FILE" | tr -d '\r' | awk '{print $2}')
 [[ "$HEADER_SHA" = "$SHA1" ]] || fail "X-Content-SHA256 header ($HEADER_SHA) != run sha256 ($SHA1)"
 pass "first download bytes-identical (sha256 + header match)"
 
@@ -133,18 +139,18 @@ log "7) Decrypt round-trip: age decrypt → gunzip → tar listing"
 if [[ ! -r "$AGE_KEY" ]]; then
   warn "AGE_KEY not readable at $AGE_KEY — skipping decrypt step. Run: make secrets-fetch HOST=$SSH_HOST"
 else
-  if ! age -d -i "$AGE_KEY" "$TMP" 2>/dev/null | gunzip -c | tar -tf - > /tmp/sysbk-listing.txt 2>&1; then
+  if ! age -d -i "$AGE_KEY" "$TMP" 2>/dev/null | gunzip -c | tar -tf - > "$LISTING_FILE" 2>&1; then
     warn "decrypt+extract failed; listing:"
-    head -5 /tmp/sysbk-listing.txt
+    head -5 "$LISTING_FILE"
     fail "decrypt round-trip failed (wrong key? corrupt bundle?)"
   fi
-  CONTAINED=$(grep -c '^platform__\|^mail__\|^MANIFEST.txt$' /tmp/sysbk-listing.txt)
+  CONTAINED=$(grep -c '^platform__\|^mail__\|^MANIFEST.txt$' "$LISTING_FILE")
   [[ "$CONTAINED" -ge 5 ]] || fail "decrypted bundle has $CONTAINED expected entries, want ≥5"
   pass "decrypted bundle contains $CONTAINED expected entries"
-  grep -q '^MANIFEST.txt$' /tmp/sysbk-listing.txt || fail "bundle missing MANIFEST.txt"
+  grep -q '^MANIFEST.txt$' "$LISTING_FILE" || fail "bundle missing MANIFEST.txt"
   pass "MANIFEST.txt present"
 fi
-rm -f "$TMP" /tmp/sysbk-headers.txt /tmp/sysbk-listing.txt
+# Cleanup is handled by the EXIT trap registered after mktemp above.
 
 log "8) Second export (fresh) yields different runId + sha256"
 RUN_ID_2=$(trigger_and_wait "integration-system-backup harness — second export")

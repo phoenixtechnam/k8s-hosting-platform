@@ -10,6 +10,15 @@ on:
       - 'packages/api-contracts/**'
       - 'images/peer-firewall-reconciler/**'
       - '.github/workflows/build-deploy.yml'
+      # Infra-only commits also need to reach staging via Flux. Without
+      # these paths, k8s/** changes (LimitRanges, manifests) and scripts/**
+      # changes never hit the update-staging-version job, so origin/staging
+      # never fast-forwards and Flux can't see them. Build-* jobs gate on
+      # their own dorny/paths-filter so this is cheap when no images need
+      # building — only update-staging-version actually runs to advance
+      # staging.
+      - 'k8s/**'
+      - 'scripts/**'
   workflow_dispatch:
 
 permissions:

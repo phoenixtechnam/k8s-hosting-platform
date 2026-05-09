@@ -57,6 +57,10 @@ curl_admin() {
   curl -sS -k -H "Authorization: Bearer $TOKEN" "$@"
 }
 
+# EXIT trap clears scratch JSON even when fail() short-circuits the harness
+# (avoids tmpfs leftovers — see feedback_e2e_tmp_cleanup).
+trap 'rm -f /tmp/snap-take.json /tmp/pitr.json' EXIT
+
 # Run a kubectl command on the staging server. Pass the full kubectl
 # argv as a single quoted string to avoid double-shell interpretation
 # of SQL/JSON arguments (otherwise parens, semicolons, quotes get

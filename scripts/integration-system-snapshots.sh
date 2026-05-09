@@ -40,6 +40,14 @@ curl_admin() {
   curl -sS -k -H "Authorization: Bearer $TOKEN" "$@"
 }
 
+# EXIT trap removes scratch JSON files even when `fail` short-circuits the
+# script (avoids tmpfs leftovers — see feedback_e2e_tmp_cleanup).
+# /tmp paths are intentional: they're also referenced from single-quoted
+# python heredocs where shell variables would not expand.
+trap 'rm -f /tmp/sys-snaps.json /tmp/pg-snaps.json /tmp/take.json \
+              /tmp/wrong.json /tmp/cnpg-marker.json /tmp/cnpg-restore.json \
+              /tmp/marker.json /tmp/restore.json /tmp/pg-pvcs.json /tmp/cp.txt' EXIT
+
 log "1) Login"
 TOKEN=$(curl -sS -k -X POST "$ADMIN_HOST/api/v1/auth/login" \
   -H 'Content-Type: application/json' \

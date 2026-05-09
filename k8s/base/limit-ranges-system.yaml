@@ -91,3 +91,91 @@ spec:
       defaultRequest:
         cpu: 10m
         memory: 32Mi
+---
+# Phase 3b (2026-05-09): close gap found during empty-cluster resource audit.
+# These namespaces had pods running with NO memory request, hiding ~1 GB of
+# real usage from the scheduler. Defaults are intentionally tiny — same QoS
+# flip rationale as above.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: redis-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
