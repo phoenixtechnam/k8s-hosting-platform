@@ -30,10 +30,15 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/reconciler ./...
 
 # Distroless static — no shell, no package manager, no `nft`. Just the
 # Go binary + ca-certs (for in-cluster apiserver TLS via service VIP).
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:latest
 COPY --from=build /out/reconciler /usr/local/bin/peer-firewall-reconciler
-# nonroot user (UID 65532) is fine — CAP_NET_ADMIN is granted via
-# DaemonSet securityContext.capabilities.add and applies regardless
-# of UID. The library uses unprivileged netlink sockets.
-USER nonroot:nonroot
+# Runs as root (UID 0) inside the container. DaemonSet drops all caps
+# except NET_ADMIN (the only one libnftnl needs for set writes via
+# netlink). We tried distroless:nonroot first but the netlink socket
+# operations returned EPERM — capabilities granted via container
+# runtime aren't automatically in the EFFECTIVE set for non-root,
+# and we don't have ambient-cap or setcap wired. Root inside a
+# locked-down (drop:ALL, no privileged, readOnlyRootFilesystem,
+# RuntimeDefault seccomp) container is acceptable for a binary that
+# only uses NET_ADMIN.
 ENTRYPOINT ["/usr/local/bin/peer-firewall-reconciler"]
