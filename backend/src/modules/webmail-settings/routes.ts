@@ -97,11 +97,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
     const settings = await withMailHostnameLock(app.db, async () => {
       if (parsed.data.mailServerHostname !== undefined) {
         try {
-          const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as
-            | string
-            | undefined;
           stalwartUpdate = await applyMailServerHostnameToStalwart(
-            kubeconfigPath,
             parsed.data.mailServerHostname,
           );
         } catch (err) {

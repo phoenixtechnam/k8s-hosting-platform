@@ -20,7 +20,18 @@
 import { eq, sql } from 'drizzle-orm';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { proxyStalwartRequest } from '../mail-admin/service.js';
+import { readStalwartCredentials } from '../mail-admin/credentials.js';
+
+// In-cluster URL of Stalwart's management HTTP API. We call this
+// directly (NOT through the K8s apiserver-proxy) because the proxy's
+// `services/proxy` verb consumes the Authorization header for its own
+// SA-token authentication — and we need to send Basic auth to
+// Stalwart on the SAME header. The two collide and K8s returns 401.
+// Direct in-cluster DNS sidesteps that: platform-api pod can reach
+// stalwart-mgmt.mail.svc.cluster.local on port 8080 with a single
+// Authorization header that goes straight to Stalwart untouched.
+const STALWART_MGMT_URL = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
+const STALWART_JMAP_TIMEOUT_MS = 10_000;
 
 // JMAP method-response envelope. Each entry is a 3-tuple:
 // [methodName, payload, callId]. We only consume `payload`; the call
@@ -29,6 +40,51 @@ type JmapMethodResponse = readonly [string, Record<string, unknown>, string];
 
 interface JmapResponse {
   readonly methodResponses: readonly JmapMethodResponse[];
+}
+
+/**
+ * POST a JMAP request body to Stalwart's mgmt API. Authenticates via
+ * the mounted Stalwart admin Secret (file or env via the canonical
+ * readStalwartCredentials helper). Returns { status, body } so the
+ * caller can do its own JSON validation.
+ */
+async function postJmap(body: string): Promise<{ status: number; body: string }> {
+  const { username, password } = readStalwartCredentials(process.env);
+  const auth = Buffer.from(`${username}:${password}`).toString('base64');
+  const url = new URL(`${STALWART_MGMT_URL}/jmap`);
+  const { default: http } = await import('node:http');
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: url.hostname,
+        port: url.port || 8080,
+        path: url.pathname,
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'Content-Type': 'application/json',
+          'Content-Length': String(Buffer.byteLength(body, 'utf8')),
+          Accept: 'application/json',
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 500,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }),
+        );
+      },
+    );
+    req.setTimeout(STALWART_JMAP_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Stalwart JMAP timed out after ${STALWART_JMAP_TIMEOUT_MS}ms`));
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
 }
 
 /**
@@ -218,7 +274,6 @@ export async function withMailHostnameLock<T>(
 }
 
 export async function applyMailServerHostnameToStalwart(
-  kubeconfigPath: string | undefined,
   hostname: string,
 ): Promise<{ defaultDomainId: string; previousHostname: string }> {
   const trimmed = hostname.trim();
@@ -239,7 +294,7 @@ export async function applyMailServerHostnameToStalwart(
     using: ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'],
     methodCalls: [['x:Domain/query', {}, 'q']],
   });
-  const queryRes = await proxyStalwartRequest(kubeconfigPath, 'POST', '/jmap', queryBody);
+  const queryRes = await postJmap(queryBody);
   if (queryRes.status >= 400) {
     throw new Error(
       `Stalwart JMAP Domain/query failed (${queryRes.status}): ${queryRes.body.slice(0, 200)}`,
@@ -258,7 +313,7 @@ export async function applyMailServerHostnameToStalwart(
       ['x:Domain/get', { ids: domainIds, properties: ['id', 'name'] }, 'g'],
     ],
   });
-  const getRes = await proxyStalwartRequest(kubeconfigPath, 'POST', '/jmap', getBody);
+  const getRes = await postJmap(getBody);
   if (getRes.status >= 400) {
     throw new Error(
       `Stalwart JMAP Domain/get failed (${getRes.status}): ${getRes.body.slice(0, 200)}`,
@@ -299,7 +354,7 @@ export async function applyMailServerHostnameToStalwart(
       ],
     ],
   });
-  const beforeRes = await proxyStalwartRequest(kubeconfigPath, 'POST', '/jmap', beforeBody);
+  const beforeRes = await postJmap(beforeBody);
   if (beforeRes.status >= 400) {
     throw new Error(
       `Stalwart JMAP SystemSettings/get failed (${beforeRes.status}): ${beforeRes.body.slice(0, 200)}`,
@@ -335,7 +390,7 @@ export async function applyMailServerHostnameToStalwart(
       ],
     ],
   });
-  const setRes = await proxyStalwartRequest(kubeconfigPath, 'POST', '/jmap', setBody);
+  const setRes = await postJmap(setBody);
   if (setRes.status >= 400) {
     throw new Error(
       `Stalwart JMAP SystemSettings/set failed (${setRes.status}): ${setRes.body.slice(0, 300)}`,

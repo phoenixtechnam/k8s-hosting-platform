@@ -65,11 +65,7 @@ export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
         parsed.data.mailServerHostname !== null
       ) {
         try {
-          const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as
-            | string
-            | undefined;
           stalwartHostnameUpdate = await applyMailServerHostnameToStalwart(
-            kubeconfigPath,
             parsed.data.mailServerHostname,
           );
         } catch (err) {
