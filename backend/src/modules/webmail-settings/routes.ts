@@ -87,7 +87,12 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
     // Returning the previous value in the response gives the operator
     // a confirmation handle for rollback.
     let stalwartUpdate:
-      | { defaultDomainId: string; previousHostname: string }
+      | {
+          defaultDomainId: string;
+          previousHostname: string;
+          rolloutTriggered: boolean;
+          sanAdded: boolean;
+        }
       | undefined;
 
     // Hostname change path is locked end-to-end (advisory xact lock)
@@ -99,6 +104,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
         try {
           stalwartUpdate = await applyMailServerHostnameToStalwart(
             parsed.data.mailServerHostname,
+            k8s,
           );
         } catch (err) {
           throw new ApiError(
@@ -120,9 +126,17 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
           previousHostname: stalwartUpdate.previousHostname,
           newHostname: parsed.data.mailServerHostname,
           defaultDomainId: stalwartUpdate.defaultDomainId,
+          rolloutTriggered: stalwartUpdate.rolloutTriggered,
+          sanAdded: stalwartUpdate.sanAdded,
         },
         'mail-server-hostname: Stalwart SystemSettings.defaultHostname updated',
       );
+      if (!stalwartUpdate.rolloutTriggered && stalwartUpdate.previousHostname !== parsed.data.mailServerHostname) {
+        app.log.warn(
+          { newHostname: parsed.data.mailServerHostname },
+          'mail-server-hostname: pod rollout NOT triggered — operator should run `kubectl -n mail rollout restart deploy stalwart-mail` so banners pick up the new hostname',
+        );
+      }
       // Persist a queryable audit record so a forensic review of "who
       // renamed the mail hostname and when" has a discoverable answer.
       // Mail-hostname changes affect SMTP banners, cert SAN

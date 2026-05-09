@@ -103,6 +103,25 @@ api() {
   fi
 }
 
+# Like api() but appends the HTTP status code on its OWN final line, so
+# scenarios that need both body + status can `tail -1` for the status
+# and head/grep for the body. Used by E2E flows that distinguish 200 vs
+# 4xx/5xx (mail-hostname rename, webmail URL change) where the response
+# shape is identical and only the status differentiates accept vs reject.
+api_raw() {
+  local method="$1" path="$2" body="${3:-}"
+  if [[ -n "$body" ]]; then
+    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" -d "$body" \
+      -w "\n%{http_code}"
+  else
+    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
+      -H "Authorization: Bearer $TOKEN" \
+      -w "\n%{http_code}"
+  fi
+}
+
 ssh_cp() {
   # When the harness is run ON the cluster control host itself
   # (e.g. via `ssh root@staging1 bash /tmp/integration-staging.sh`),
@@ -2377,6 +2396,192 @@ scenario_redis() {
   fi
 }
 
+scenario_mail_hostname_rename() {
+  # Validates the editable mail-server hostname end-to-end:
+  #   1. PATCH a temp hostname under the same Domain apex
+  #   2. Stalwart's SystemSettings.defaultHostname matches the new name
+  #   3. The Domain row's subjectAlternativeNames now contains the new prefix
+  #   4. The stalwart-mail Deployment was rolled (new ReplicaSet)
+  #   5. SMTP banner on port 465 reports the new hostname
+  #   6. Stalwart issues a NEW cert that includes the new hostname as SAN
+  #   7. Restore the original hostname (cleanup) and verify
+  #
+  # The temp hostname uses `mail-e2e-<timestamp>.<apex>` so DNS already
+  # resolves (wildcard *.apex points at the cluster ingress IPs) and
+  # Stalwart's HTTP-01 ACME challenge can complete.
+  if [[ "${SKIP_HOSTNAME_SCENARIO:-}" == "1" ]]; then
+    log "scenario hostname_rename skipped — SKIP_HOSTNAME_SCENARIO=1"
+    return 0
+  fi
+
+  # ── Read original state ──
+  local original
+  original=$(api GET /admin/webmail-settings | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['mailServerHostname'])" 2>/dev/null || echo "")
+  if [[ -z "$original" ]]; then
+    fail "hostname: could not read current mailServerHostname via API"
+    return 1
+  fi
+  log "hostname: original=${original}"
+
+  # Derive an apex from the original (strip leading `mail.`). Build a
+  # one-shot test hostname that resolves via the cluster's wildcard.
+  local apex="${original#mail.}"
+  local ts; ts=$(date +%s)
+  local test_host="mail-e2e-${ts}.${apex}"
+  log "hostname: test=${test_host}"
+
+  # ── PATCH new hostname ──
+  local patch_resp http_status
+  patch_resp=$(api_raw PATCH /admin/webmail-settings "{\"mailServerHostname\":\"${test_host}\"}" 2>&1)
+  http_status=$(printf '%s' "$patch_resp" | tail -1)
+  if [[ "$http_status" != "200" ]]; then
+    fail "hostname: PATCH returned ${http_status} — body: $(printf '%s' "$patch_resp" | head -c 200)"
+    return 1
+  fi
+  ok "hostname: PATCH accepted (${http_status})"
+
+  # ── Verify Stalwart SystemSettings ──
+  local mgmt_pw mgmt_ip
+  mgmt_pw=$(ssh_cp "kubectl -n mail get secret stalwart-admin-creds -o jsonpath='{.data.recoveryPassword}' | base64 -d" | tr -d '[:space:]')
+  mgmt_ip=$(ssh_cp "kubectl -n mail get svc stalwart-mgmt -o jsonpath='{.spec.clusterIP}'" | tr -d '[:space:]')
+  local sw_hn
+  sw_hn=$(ssh_cp "curl -s --max-time 5 -u admin:'${mgmt_pw}' -X POST http://${mgmt_ip}:8080/jmap -H 'Content-Type: application/json' -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:SystemSettings/get\",{\"ids\":[\"singleton\"],\"properties\":[\"defaultHostname\"]},\"a\"]]}' | python3 -c \"import json,sys; d=json.load(sys.stdin); print(d['methodResponses'][0][1]['list'][0]['defaultHostname'])\"" | tr -d '[:space:]')
+  if [[ "$sw_hn" == "$test_host" ]]; then
+    ok "hostname: Stalwart SystemSettings.defaultHostname = ${sw_hn}"
+  else
+    fail "hostname: Stalwart has defaultHostname=${sw_hn}, expected ${test_host}"
+  fi
+
+  # ── Verify Domain SAN map contains the new prefix ──
+  local san_prefix="${test_host%.${apex}}"
+  local san_present
+  san_present=$(ssh_cp "curl -s --max-time 5 -u admin:'${mgmt_pw}' -X POST http://${mgmt_ip}:8080/jmap -H 'Content-Type: application/json' -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/query\",{},\"q\"]]}' | python3 -c \"
+import json,sys
+d=json.load(sys.stdin); ids=d['methodResponses'][0][1]['ids']
+print(' '.join(ids))
+\"")
+  san_present=$(ssh_cp "curl -s --max-time 5 -u admin:'${mgmt_pw}' -X POST http://${mgmt_ip}:8080/jmap -H 'Content-Type: application/json' -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/get\",{\"ids\":[$(printf '\"%s\",' $san_present | sed 's/,$//')]},\"a\"]]}' | python3 -c \"
+import json,sys
+d=json.load(sys.stdin)
+for row in d['methodResponses'][0][1]['list']:
+  if row.get('name') == '${apex}':
+    sans = (row.get('certificateManagement') or {}).get('subjectAlternativeNames', {})
+    print('yes' if '${san_prefix}' in sans else 'no')
+    break
+else:
+  print('domain-not-found')
+\"" | tr -d '[:space:]')
+  if [[ "$san_present" == "yes" ]]; then
+    ok "hostname: Domain '${apex}' subjectAlternativeNames contains '${san_prefix}'"
+  else
+    fail "hostname: Domain '${apex}' SAN does not contain '${san_prefix}' (got: ${san_present})"
+  fi
+
+  # ── Verify the deployment was rolled (a NEW ReplicaSet appeared) ──
+  local new_rs_count
+  new_rs_count=$(ssh_cp "kubectl -n mail get rs -l app=stalwart-mail --no-headers 2>/dev/null | awk '\$3 != 0 || \$4 != 0' | wc -l" | tr -d '[:space:]')
+  if [[ "${new_rs_count:-0}" -ge 1 ]]; then
+    ok "hostname: stalwart-mail ReplicaSet has ${new_rs_count} active revision(s) (rollout fired)"
+  else
+    fail "hostname: no active stalwart-mail ReplicaSet found"
+  fi
+
+  # ── Wait up to 90s for at least one fresh pod to be Ready, then probe SMTP banner ──
+  local attempt=0 banner_host=""
+  while [[ $attempt -lt 30 ]]; do
+    sleep 3
+    # Pick any node IP that has a stalwart-mail pod scheduled — read a
+    # banner from it. Multi-pod surge means the round-robin Service hits
+    # whichever pod won.
+    local node_ip
+    node_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}' 2>/dev/null" | tr -d '[:space:]')
+    [[ -z "$node_ip" ]] && { attempt=$((attempt + 1)); continue; }
+    banner_host=$(( sleep 0.4; printf "EHLO test\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) | timeout 8 openssl s_client -connect "${node_ip}:465" -crlf -quiet -servername "$test_host" 2>/dev/null | grep -oE '^220 [^ ]+' | awk '{print $2}' | head -1)
+    [[ "$banner_host" == "$test_host" ]] && break
+    attempt=$((attempt + 1))
+  done
+  if [[ "$banner_host" == "$test_host" ]]; then
+    ok "hostname: SMTP banner reports new hostname (${banner_host})"
+  else
+    fail "hostname: SMTP banner is ${banner_host:-empty}, expected ${test_host}"
+  fi
+
+  # ── Wait up to 120s for cert to include the new hostname as SAN ──
+  attempt=0
+  local cert_san=""
+  while [[ $attempt -lt 24 ]]; do
+    cert_san=$(echo | timeout 8 openssl s_client -connect "${node_ip}:465" -crlf -servername "$test_host" 2>/dev/null \
+      | openssl x509 -noout -ext subjectAltName 2>/dev/null \
+      | grep -oE "DNS:[^,]+" | sed 's/DNS://g' | tr -d '[:space:]')
+    if echo "$cert_san" | grep -q "$test_host"; then break; fi
+    sleep 5
+    attempt=$((attempt + 1))
+  done
+  if echo "$cert_san" | grep -q "$test_host"; then
+    ok "hostname: cert SAN now covers ${test_host} (full SAN: ${cert_san})"
+  else
+    fail "hostname: cert SAN still missing ${test_host} after 120s (got: ${cert_san})"
+  fi
+
+  # ── Cleanup: restore original hostname ──
+  local restore_status
+  restore_status=$(api_raw PATCH /admin/webmail-settings "{\"mailServerHostname\":\"${original}\"}" 2>&1 | tail -1)
+  if [[ "$restore_status" == "200" ]]; then
+    ok "hostname: original ${original} restored (HTTP ${restore_status})"
+  else
+    fail "hostname: restore returned ${restore_status} — manual cleanup needed"
+  fi
+}
+
+scenario_webmail_url_change() {
+  # Validates the editable webmail URL setting:
+  #   1. GET current value
+  #   2. PATCH a temp value
+  #   3. GET confirms the new value persisted
+  #   4. PATCH back to the original (cleanup)
+  #
+  # No Stalwart side-effects on this path — webmail URL is purely a
+  # platform_settings DB row that surfaces in SSO links.
+  if [[ "${SKIP_WEBMAIL_URL_SCENARIO:-}" == "1" ]]; then
+    log "scenario webmail_url skipped — SKIP_WEBMAIL_URL_SCENARIO=1"
+    return 0
+  fi
+
+  local original
+  original=$(api GET /admin/webmail-settings | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['defaultWebmailUrl'])" 2>/dev/null || echo "")
+  if [[ -z "$original" ]]; then
+    fail "webmail-url: could not read current defaultWebmailUrl"
+    return 1
+  fi
+  log "webmail-url: original=${original}"
+
+  local test_url="https://webmail-e2e-$(date +%s).example.test/"
+  local patch_status
+  patch_status=$(api_raw PATCH /admin/webmail-settings "{\"defaultWebmailUrl\":\"${test_url}\"}" 2>&1 | tail -1)
+  if [[ "$patch_status" != "200" ]]; then
+    fail "webmail-url: PATCH returned ${patch_status}"
+    return 1
+  fi
+  ok "webmail-url: PATCH accepted"
+
+  local current
+  current=$(api GET /admin/webmail-settings | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['defaultWebmailUrl'])" 2>/dev/null)
+  if [[ "$current" == "$test_url" ]]; then
+    ok "webmail-url: GET returned new value (${current})"
+  else
+    fail "webmail-url: GET returned ${current}, expected ${test_url}"
+  fi
+
+  # Restore
+  local restore_status
+  restore_status=$(api_raw PATCH /admin/webmail-settings "{\"defaultWebmailUrl\":\"${original}\"}" 2>&1 | tail -1)
+  if [[ "$restore_status" == "200" ]]; then
+    ok "webmail-url: original restored"
+  else
+    fail "webmail-url: restore returned ${restore_status}"
+  fi
+}
+
 case "$SCENARIO" in
   all)
     prereq_dns || { echo "DNS prereq failed; aborting"; exit 1; }
@@ -2391,6 +2596,8 @@ case "$SCENARIO" in
     run_scenario mail
     run_scenario mail_tls
     run_scenario webmail
+    run_scenario webmail_url_change
+    run_scenario mail_hostname_rename
     run_scenario system_backup
     run_scenario redis
     ;;

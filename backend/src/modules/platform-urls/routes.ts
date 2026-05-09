@@ -11,6 +11,8 @@ import {
 } from '../webmail-settings/service.js';
 import { auditLogs } from '../../db/schema.js';
 import crypto from 'node:crypto';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 function zodMessage(err: ZodError): string {
   return err.issues
@@ -24,6 +26,20 @@ function zodMessage(err: ZodError): string {
 export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
+
+  // K8s client for triggering Stalwart pod rollouts on hostname change.
+  // Created once at plugin registration; null in degraded mode (e.g.
+  // no kubeconfig in unit-test runs).
+  let k8s: K8sClients | undefined;
+  try {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as
+      | string
+      | undefined;
+    k8s = createK8sClients(kubeconfigPath);
+  } catch (err) {
+    app.log.warn({ err }, 'platform-urls: k8s client unavailable — Stalwart rollout disabled');
+    k8s = undefined;
+  }
 
   // GET /api/v1/admin/platform-urls — resolved URLs + apex + defaults.
   // Consumed by the admin panel on every page load that needs to embed
@@ -57,7 +73,12 @@ export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
     // concurrent PATCHes can't apply different hostnames in
     // interleaved order (Stalwart-A → Stalwart-B → DB-B → DB-A).
     let stalwartHostnameUpdate:
-      | { defaultDomainId: string; previousHostname: string }
+      | {
+          defaultDomainId: string;
+          previousHostname: string;
+          rolloutTriggered: boolean;
+          sanAdded: boolean;
+        }
       | undefined;
     const result = await withMailHostnameLock(app.db, async () => {
       if (
@@ -67,6 +88,7 @@ export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
         try {
           stalwartHostnameUpdate = await applyMailServerHostnameToStalwart(
             parsed.data.mailServerHostname,
+            k8s,
           );
         } catch (err) {
           throw new ApiError(

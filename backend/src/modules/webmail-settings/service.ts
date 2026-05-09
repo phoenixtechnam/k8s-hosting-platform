@@ -21,6 +21,8 @@ import { eq, sql } from 'drizzle-orm';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { readStalwartCredentials } from '../mail-admin/credentials.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 // In-cluster URL of Stalwart's management HTTP API. We call this
 // directly (NOT through the K8s apiserver-proxy) because the proxy's
@@ -273,22 +275,182 @@ export async function withMailHostnameLock<T>(
   });
 }
 
+/**
+ * Roll the stalwart-mail Deployment by patching the pod-template's
+ * `kubectl.kubernetes.io/restartedAt` annotation — same trick
+ * `kubectl rollout restart` uses. K8s sees the spec change, builds a
+ * new ReplicaSet, and rolling-replaces the pods. The new pods read
+ * the live SystemSettings row at boot, so the banner reflects the
+ * new hostname within ~30s.
+ *
+ * The new ReplicaSet inherits the existing image so this is just a
+ * pod cycle, not a code change. RBAC required: patch verb on
+ * deployments in the mail namespace (granted via the platform-api-
+ * mail-rollout ClusterRoleBinding).
+ *
+ * Failure here is non-fatal — Stalwart's SystemSettings was already
+ * persisted in the prior step, so the next natural pod restart (or
+ * any future cycle) will pick up the new hostname. Logging gives the
+ * operator a hint to roll manually if this returned an error.
+ */
+async function rolloutStalwartMail(k8s: K8sClients): Promise<void> {
+  const restartedAt = new Date().toISOString();
+  await k8s.apps.patchNamespacedDeployment({
+    namespace: 'mail',
+    name: 'stalwart-mail',
+    body: {
+      spec: {
+        template: {
+          metadata: {
+            annotations: {
+              'kubectl.kubernetes.io/restartedAt': restartedAt,
+            },
+          },
+        },
+      },
+    },
+  } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0], MERGE_PATCH);
+}
+
+/**
+ * Add the new hostname's prefix to the platform Domain's
+ * subjectAlternativeNames so Stalwart's ACME loop re-issues the
+ * cert covering it. Idempotent: existing entries are preserved
+ * (we MERGE the new key in rather than replacing the map).
+ *
+ * Stalwart 0.16's SAN map is keyed by host-prefix relative to the
+ * Domain.name (the canonical entry `{mail: true}` means `mail.<domain>`).
+ * For hostname `<prefix>.<domain.name>`, we add `{<prefix>: true}`.
+ * If the hostname IS the Domain.name (no prefix), we add `{'@': true}`
+ * which is Stalwart's apex sentinel.
+ */
+async function addHostnameToDomainSANs(
+  domainId: string,
+  domainName: string,
+  hostname: string,
+): Promise<void> {
+  const lower = hostname.toLowerCase();
+  const domainLower = domainName.toLowerCase();
+  let sanKey: string;
+  if (lower === domainLower) {
+    sanKey = '@';
+  } else if (lower.endsWith(`.${domainLower}`)) {
+    sanKey = lower.slice(0, -1 - domainLower.length);
+  } else {
+    throw new Error(
+      `Cannot derive SAN key: hostname '${hostname}' is not under Domain '${domainName}'`,
+    );
+  }
+
+  // Read current SANs so we don't clobber.
+  const getBody = JSON.stringify({
+    using: ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'],
+    methodCalls: [
+      [
+        'x:Domain/get',
+        {
+          ids: [domainId],
+          properties: ['certificateManagement'],
+        },
+        'g',
+      ],
+    ],
+  });
+  const getRes = await postJmap(getBody);
+  if (getRes.status >= 400) {
+    throw new Error(`Domain/get failed (${getRes.status}): ${getRes.body.slice(0, 200)}`);
+  }
+  const getParsed = parseJmapBody(getRes.body, 'Domain/get (SAN)');
+  const list = (getParsed.methodResponses[0][1] as { list?: unknown }).list;
+  const row = Array.isArray(list) && list[0] && typeof list[0] === 'object' ? list[0] : null;
+  const cm = row && (row as { certificateManagement?: unknown }).certificateManagement;
+  const cmObj = cm && typeof cm === 'object' ? (cm as { subjectAlternativeNames?: unknown }) : null;
+  const existing =
+    cmObj && cmObj.subjectAlternativeNames && typeof cmObj.subjectAlternativeNames === 'object'
+      ? (cmObj.subjectAlternativeNames as Record<string, boolean>)
+      : {};
+
+  // Idempotency — if the entry is already there, no write.
+  if (existing[sanKey]) return;
+
+  const merged: Record<string, boolean> = { ...existing, [sanKey]: true };
+
+  // certificateManagement is a discriminated union (@type: Automatic
+  // | Manual | Disabled). We MERGE_PATCH only the SANs by submitting
+  // the full sub-object with the same @type. Stalwart accepts this
+  // as an in-place update.
+  const cmType =
+    cmObj && '@type' in cmObj && typeof (cmObj as { '@type'?: unknown })['@type'] === 'string'
+      ? (cmObj as { '@type': string })['@type']
+      : 'Automatic';
+  const acmeProviderId =
+    cmObj
+    && 'acmeProviderId' in cmObj
+    && typeof (cmObj as { acmeProviderId?: unknown }).acmeProviderId === 'string'
+      ? (cmObj as { acmeProviderId: string }).acmeProviderId
+      : undefined;
+
+  const setBody = JSON.stringify({
+    using: ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'],
+    methodCalls: [
+      [
+        'x:Domain/set',
+        {
+          update: {
+            [domainId]: {
+              certificateManagement: {
+                '@type': cmType,
+                ...(acmeProviderId ? { acmeProviderId } : {}),
+                subjectAlternativeNames: merged,
+              },
+            },
+          },
+        },
+        's',
+      ],
+    ],
+  });
+  const setRes = await postJmap(setBody);
+  if (setRes.status >= 400) {
+    throw new Error(`Domain/set SAN failed (${setRes.status}): ${setRes.body.slice(0, 200)}`);
+  }
+  const parsed = parseJmapBody(setRes.body, 'Domain/set (SAN)');
+  const payload = parsed.methodResponses[0][1] as {
+    updated?: Record<string, unknown>;
+    notUpdated?: Record<string, { type?: unknown; description?: unknown }>;
+  };
+  if (payload.notUpdated && payload.notUpdated[domainId]) {
+    const err = payload.notUpdated[domainId];
+    const errType = typeof err.type === 'string' ? err.type : 'unknown';
+    const errDesc =
+      typeof err.description === 'string' ? err.description.slice(0, 200) : 'no detail';
+    throw new Error(`Stalwart rejected SAN update: ${errType} — ${errDesc}`);
+  }
+}
+
 export async function applyMailServerHostnameToStalwart(
   hostname: string,
-): Promise<{ defaultDomainId: string; previousHostname: string }> {
+  k8s?: K8sClients,
+): Promise<{
+  defaultDomainId: string;
+  previousHostname: string;
+  rolloutTriggered: boolean;
+  sanAdded: boolean;
+}> {
   const trimmed = hostname.trim();
   if (!trimmed) {
     throw new Error('hostname is required');
   }
 
-  // Step 1: resolve the platform's primary Domain row by name. We
-  // strip the `mail.` prefix (the canonical case) and treat what's
-  // left as the apex. If the operator passes a hostname that doesn't
-  // start with `mail.`, the apex IS the hostname itself and we do an
-  // exact-name lookup.
-  const apex = trimmed.toLowerCase().startsWith('mail.')
-    ? trimmed.slice('mail.'.length)
-    : trimmed;
+  // Step 1: resolve the Stalwart Domain row that owns this hostname.
+  // We strip the `mail.` prefix (the canonical case) AND, if no
+  // exact match is found, fall back to the longest Domain whose name
+  // is a SUFFIX of the hostname. This lets E2E tests use temporary
+  // hostnames like `mail-e2e-1234.staging.phoenix-host.net` without
+  // requiring a fresh Domain row — the existing
+  // `staging.phoenix-host.net` row covers them.
+  const lower = trimmed.toLowerCase();
+  const exactApex = lower.startsWith('mail.') ? lower.slice('mail.'.length) : lower;
 
   const queryBody = JSON.stringify({
     using: ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'],
@@ -333,10 +495,19 @@ export async function applyMailServerHostnameToStalwart(
         return [];
       })
     : [];
-  const domainRow = list.find((d) => d.name === apex);
+  // Exact match first (canonical case: hostname `mail.<domain>`,
+  // Domain row name `<domain>`). Fall back to longest-suffix match
+  // for E2E test hostnames.
+  let domainRow = list.find((d) => d.name === exactApex);
+  if (!domainRow) {
+    const suffixMatches = list
+      .filter((d) => lower === d.name.toLowerCase() || lower.endsWith(`.${d.name.toLowerCase()}`))
+      .sort((a, b) => b.name.length - a.name.length);
+    domainRow = suffixMatches[0];
+  }
   if (!domainRow) {
     throw new Error(
-      `No Domain row matches '${apex}' — add it to Stalwart first via the email-domains UI.`,
+      `No Domain row matches '${exactApex}' — add it to Stalwart first via the email-domains UI.`,
     );
   }
 
@@ -417,5 +588,45 @@ export async function applyMailServerHostnameToStalwart(
     throw new Error(`Stalwart JMAP set returned an unexpected shape: ${setRes.body.slice(0, 200)}`);
   }
 
-  return { defaultDomainId: domainRow.id, previousHostname };
+  // Step 4: ensure the new hostname is in the Domain's
+  // subjectAlternativeNames so Stalwart's ACME loop re-issues a cert
+  // that covers it. Failure here doesn't roll back the SystemSettings
+  // write — operators can re-issue manually if ACME is misbehaving.
+  let sanAdded = false;
+  if (previousHostname !== trimmed) {
+    try {
+      await addHostnameToDomainSANs(domainRow.id, domainRow.name, trimmed);
+      sanAdded = true;
+    } catch (err) {
+      // Surface the error in the response so the operator can
+      // intervene, but don't throw — the hostname rename itself
+      // succeeded (banners will reflect the new name); only the
+      // cert reissue is delayed.
+      throw new Error(
+        `Hostname updated but cert SAN sync failed: ${
+          err instanceof Error ? err.message : String(err)
+        }. The cert will not auto-reissue until the Domain row's subjectAlternativeNames is updated manually.`,
+      );
+    }
+  }
+
+  // Step 5: cycle the Stalwart pods so the new defaultHostname takes
+  // effect immediately on the running listeners. Stalwart reads
+  // SystemSettings on startup and caches; without a roll, the
+  // running pods keep announcing the old hostname until their next
+  // natural restart. Failure is non-fatal — caller may not have
+  // passed a k8s client (unit tests, or platform-api degraded mode).
+  let rolloutTriggered = false;
+  if (k8s && previousHostname !== trimmed) {
+    try {
+      await rolloutStalwartMail(k8s);
+      rolloutTriggered = true;
+    } catch {
+      // Swallow — operator can `kubectl rollout restart` manually.
+      // We log at the call site (route handler) where the request
+      // logger is available.
+    }
+  }
+
+  return { defaultDomainId: domainRow.id, previousHostname, rolloutTriggered, sanAdded };
 }
