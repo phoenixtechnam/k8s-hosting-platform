@@ -98,33 +98,64 @@ func (r *realApplier) apply(s nftSets) error {
 		return errors.New("inet filter table not found — bootstrap.sh nftables config not loaded")
 	}
 
-	// Phase 1: ensure each of the 4 sets exists. Pre-commit any new
-	// sets BEFORE referencing them by *Set pointer in FlushSet /
-	// SetAddElements — the library's GetSetByName reads live kernel
-	// state, not the batched AddSet, so a freshly-AddSet'd set is
-	// invisible until conn.Flush() is called.
+	// Phase 1: ensure each of the 4 sets exists. Any new set is
+	// AddSet-queued; the conn.Flush() at the end of Phase 1 commits
+	// them so the kernel knows about them before Phase 2 references
+	// them via FlushSet / SetAddElements.
 	createdAny := false
 	created := func(c bool) { createdAny = createdAny || c }
-	pV4, c1, err := r.ensureSet(conn, table, setPeersV4, false)
-	if err != nil { return err }
-	created(c1)
-	pV6, c2, err := r.ensureSet(conn, table, setPeersV6, true)
-	if err != nil { return err }
-	created(c2)
-	tV4, c3, err := r.ensureSet(conn, table, setTrustedV4, false)
-	if err != nil { return err }
-	created(c3)
-	tV6, c4, err := r.ensureSet(conn, table, setTrustedV6, true)
-	if err != nil { return err }
-	created(c4)
+	if _, c, err := r.ensureSet(conn, table, setPeersV4, false); err != nil {
+		return err
+	} else {
+		created(c)
+	}
+	if _, c, err := r.ensureSet(conn, table, setPeersV6, true); err != nil {
+		return err
+	} else {
+		created(c)
+	}
+	if _, c, err := r.ensureSet(conn, table, setTrustedV4, false); err != nil {
+		return err
+	} else {
+		created(c)
+	}
+	if _, c, err := r.ensureSet(conn, table, setTrustedV6, true); err != nil {
+		return err
+	} else {
+		created(c)
+	}
 	if createdAny {
 		if err := conn.Flush(); err != nil {
 			return fmt.Errorf("commit set creations: %w", err)
 		}
 	}
 
-	// Phase 2: flush+add per set in a single batch. The *Set pointers
-	// from Phase 1 are valid handles into the kernel state.
+	// Re-fetch the canonical *Set handles from the kernel. Even though
+	// AddSet returns a *Set pointer, the kernel-assigned ID isn't
+	// populated until after a commit. FlushSet / SetAddElements
+	// resolve the set by ID internally; using a stale (ID=0) handle
+	// makes the library send a netlink dump-by-name probe that fails
+	// with "no such file or directory" if the conn's cache hasn't seen
+	// the set yet. Re-fetching after Phase 1 commit guarantees a
+	// proper handle.
+	pV4, err := conn.GetSetByName(table, setPeersV4)
+	if err != nil {
+		return fmt.Errorf("post-create lookup %s: %w", setPeersV4, err)
+	}
+	pV6, err := conn.GetSetByName(table, setPeersV6)
+	if err != nil {
+		return fmt.Errorf("post-create lookup %s: %w", setPeersV6, err)
+	}
+	tV4, err := conn.GetSetByName(table, setTrustedV4)
+	if err != nil {
+		return fmt.Errorf("post-create lookup %s: %w", setTrustedV4, err)
+	}
+	tV6, err := conn.GetSetByName(table, setTrustedV6)
+	if err != nil {
+		return fmt.Errorf("post-create lookup %s: %w", setTrustedV6, err)
+	}
+
+	// Phase 2: flush+add per set in a single batch.
 	r.flushAndAddElements(conn, pV4, ipsToElements(s.PeersV4, false))
 	r.flushAndAddElements(conn, pV6, ipsToElements(s.PeersV6, true))
 	r.flushAndAddElements(conn, tV4, cidrsToElements(s.TrustedV4, false))
