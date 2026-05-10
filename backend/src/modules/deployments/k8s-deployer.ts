@@ -100,7 +100,7 @@ export interface DeployCatalogEntryInput {
    * Runtime-firewall declaration propagated from the catalog manifest.
    * When present, the deployer stamps two annotations onto the Pod
    * template (`platform.io/firewall-tcp-ports`, `platform.io/firewall-udp-ports`)
-   * which the worker-firewall-reconciler DaemonSet picks up to populate
+   * which the firewall-reconciler DaemonSet picks up to populate
    * the host nft sets `tenant_ports_{tcp,udp}`. The catalog deploy gate
    * in service.ts is responsible for refusing to deploy when the
    * corresponding system_settings.allow_host_ports_{server,worker}
@@ -167,7 +167,7 @@ function deploymentLabels(deploymentName: string, componentName: string): Record
 
 /**
  * Render the catalog manifest's `firewall` block into the two pod
- * annotations the worker-firewall-reconciler watches for. Returns
+ * annotations the firewall-reconciler watches for. Returns
  * `undefined` when no host ports are requested so the rendered Pod
  * carries no annotations at all (clean diff for non-firewall apps).
  *
@@ -585,7 +585,7 @@ async function deployK8sDeployment(
   storageTier?: 'local' | 'ha' | null,
   // Firewall annotations from the catalog manifest's `firewall` block.
   // Stamped onto the pod template's metadata (NOT the Deployment's
-  // top-level metadata) so the worker-firewall-reconciler can read them
+  // top-level metadata) so the firewall-reconciler can read them
   // off `kubectl get pods` output. The deploy gate in service.ts has
   // already enforced the per-role allow_host_ports toggle by the time
   // we land here.

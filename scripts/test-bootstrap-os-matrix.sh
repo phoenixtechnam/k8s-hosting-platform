@@ -145,73 +145,59 @@ done
 
 echo
 echo "════════════════════════════════════════════════"
-echo "  nft version drift guard"
+echo "  reconciler image: no userspace nft binary (regression guard)"
 echo "════════════════════════════════════════════════"
-# Contract: the peer-firewall-reconciler ships nft pinned to
-# NFTABLES_VERSION (compiled from netfilter.org sources). On the host,
-# nft is whatever apt/dnf installs from the distro repo. The reconciler
-# parses the host's netlink ruleset dump, so:
+# Contract (effective 2026-05-09 after the libnftnl rewrite):
+# the firewall-reconciler image MUST NOT contain any userspace
+# `nft` binary. The Go reconciler talks netlink directly via
+# github.com/google/nftables — no fork+exec, no nft serialisation,
+# no version skew with the host. Reintroducing `nft` in the image
+# would also reintroduce the failure class observed twice in 24h:
 #
-#   container nft >= host nft  → safe (backward-compatible parse)
-#   container nft <  host nft  → SIGSEGV in libnftnl on `nft list set`
-#                                 (observed staging1 2026-05-08 with
-#                                 alpine 1.0.9 / 1.1.1 vs trixie 1.1.3)
+#   2026-05-08: container nft 1.0.9 segfaulted reading host nft 1.1.3
+#               kernel attrs (read-direction skew).
+#   2026-05-09: container nft 1.1.6 wrote attrs that host nft 1.1.3
+#               could not parse → host nft segfaulted on every list,
+#               broke ssh on the staging cluster.
 #
-# This guard installs nftables in each Tier-1/2 container, captures
-# `nft --version`, and fails the build if any host's version is
-# strictly newer than the reconciler's pinned NFTABLES_VERSION.
-#
-# Dependency: the Dockerfile's `ARG NFTABLES_VERSION=` is the source
-# of truth.
+# This guard pulls the reconciler image, scans its filesystem, and
+# fails if anything matching "nft" or "nftables" is found in the
+# usual binary search paths.
 
-DOCKERFILE=$REPO/images/peer-firewall-reconciler/Dockerfile
-CONTAINER_NFT=$(grep -E "^ARG NFTABLES_VERSION=" "$DOCKERFILE" | head -1 | sed 's/.*=//')
-if [[ -z "$CONTAINER_NFT" ]]; then
-  echo "  ✗ could not parse NFTABLES_VERSION from $DOCKERFILE — drift guard skipped"
+DOCKERFILE=$REPO/images/firewall-reconciler/Dockerfile
+echo "  Dockerfile path: $DOCKERFILE"
+if grep -qE "(apt-get|apk add|dnf).*\bnftables\b" "$DOCKERFILE"; then
+  echo "  ✗ Dockerfile installs the nftables package — REGRESSION; the reconciler is supposed to use libnftnl netlink directly with no userspace nft binary"
   FAIL=$((FAIL + 1))
-  FAILED_IMAGES+=("nft-version-guard (NFTABLES_VERSION not found)")
+  FAILED_IMAGES+=("Dockerfile nftables package install detected")
 else
-  echo "  reconciler pins nft v$CONTAINER_NFT"
+  echo "  ✓ Dockerfile does not install the nftables package"
+fi
 
-  # Convert "1.1.6" to "001001006" for lexical comparison.
-  ver_to_int() {
-    local v=$1
-    IFS='.' read -r a b c <<<"$v"
-    printf '%03d%03d%03d' "${a:-0}" "${b:-0}" "${c:-0}"
-  }
-  container_int=$(ver_to_int "$CONTAINER_NFT")
-
-  for img in "${TIER_OK[@]}"; do
-    case "$img" in
-      debian:*|ubuntu:*)
-        host_nft_cmd="apt-get update >/dev/null 2>&1 && apt-get install -y -q nftables >/dev/null 2>&1 && nft --version | head -1"
-        ;;
-      rockylinux:*|almalinux:*|quay.io/centos/centos:*)
-        host_nft_cmd="dnf install -y -q nftables >/dev/null 2>&1 && nft --version | head -1"
-        ;;
-      amazonlinux:*)
-        host_nft_cmd="dnf install -y -q nftables >/dev/null 2>&1 && nft --version | head -1"
-        ;;
-      *)
-        echo "  ⊘ $img — drift check skipped (unknown package manager)"
-        continue
-        ;;
-    esac
-    output=$(docker run --rm "$img" bash -c "$host_nft_cmd" 2>&1 | tail -1)
-    host_version=$(echo "$output" | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+" | sed 's/^v//' | head -1)
-    if [[ -z "$host_version" ]]; then
-      echo "  ⊘ $img — could not extract nft version from: $output"
-      continue
-    fi
-    host_int=$(ver_to_int "$host_version")
-    if (( host_int > container_int )); then
-      echo "  ✗ $img host nft v$host_version > container nft v$CONTAINER_NFT — DRIFT, container WILL segfault"
-      FAIL=$((FAIL + 1))
-      FAILED_IMAGES+=("$img nft-drift host=$host_version > container=$CONTAINER_NFT")
-    else
-      echo "  ✓ $img host nft v$host_version ≤ container v$CONTAINER_NFT"
-    fi
-  done
+# Pull + inspect the locally-tagged image if it exists. CI builds the
+# image just before this script in its workflow; locally the operator
+# can prime the image with `docker build images/firewall-reconciler`.
+LOCAL_IMG="${PFWR_IMAGE:-pfwr-libnftnl:local}"
+if docker image inspect "$LOCAL_IMG" >/dev/null 2>&1; then
+  echo "  inspecting image: $LOCAL_IMG"
+  # Run an ad-hoc container that scans common bin paths. The image is
+  # distroless so we can't `find` from inside; `docker create` +
+  # `docker export` gives us the raw filesystem to grep.
+  cid=$(docker create "$LOCAL_IMG")
+  trap "docker rm -v '$cid' >/dev/null 2>&1 || true" RETURN
+  found=$(docker export "$cid" | tar -t 2>/dev/null | grep -E "(usr/sbin|usr/bin|sbin|bin|usr/local/bin)/nft$" || true)
+  docker rm -v "$cid" >/dev/null 2>&1 || true
+  if [[ -n "$found" ]]; then
+    echo "  ✗ nft binary found in image filesystem:"
+    echo "$found" | sed 's/^/      /'
+    FAIL=$((FAIL + 1))
+    FAILED_IMAGES+=("$LOCAL_IMG contains nft binary")
+  else
+    echo "  ✓ no nft binary in $LOCAL_IMG (libnftnl netlink-only design intact)"
+  fi
+else
+  echo "  ⊘ $LOCAL_IMG not built locally — skipping image FS scan"
+  echo "    To enable: docker build -t $LOCAL_IMG images/firewall-reconciler/"
 fi
 
 echo

@@ -73,7 +73,7 @@ spec:
         app: stalwart-mail
         app.kubernetes.io/part-of: hosting-platform
       annotations:
-        # Declarative hostPort manifest read by worker-firewall-reconciler:
+        # Declarative hostPort manifest read by firewall-reconciler:
         # each port listed here is added to the host's nft `tenant_ports_tcp`
         # set when this pod is scheduled onto that node, and removed when
         # it leaves. Static bootstrap.sh rules already accept these

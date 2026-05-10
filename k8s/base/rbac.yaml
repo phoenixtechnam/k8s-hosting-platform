@@ -251,7 +251,7 @@ rules:
     resources: ["kustomizations"]
     verbs: ["get", "list", "patch"]
   # Phase 4: cluster-network admin module — CRUD on the firewall-trust
-  # CRDs that the peer-firewall-reconciler converges into nft sets on
+  # CRDs that the firewall-reconciler converges into nft sets on
   # every node. ClusterTrustedRange is permanent; ClusterPendingPeer is
   # short-lived (TTL-enforced by the reconciler) so platform-api needs
   # only get/list/create/patch/delete (no /status — the reconciler

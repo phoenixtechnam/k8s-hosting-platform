@@ -27,21 +27,23 @@ resources:
   - sftp-gateway-netpol.yaml
   # cluster-network — CRDs (ClusterTrustedRange, ClusterPendingPeer)
   # that drive the always-on set-mode firewall. Must apply BEFORE
-  # peer-firewall-reconciler so the reconciler's informers can resolve
+  # firewall-reconciler so the reconciler's informers can resolve
   # the kinds at startup. See docs/04-deployment/CLUSTER_NETWORK.md.
   - cluster-network/
-  # peer-firewall-reconciler — keeps host nft sets cluster_peers_v{4,6},
-  # trusted_ranges_v{4,6}, and pending_peers_v{4,6} in sync with kube-API
-  # Nodes + ClusterTrustedRange/ClusterPendingPeer CRs. Always-on set
-  # mode; bootstrap.sh seeds the local nft sets and this DaemonSet keeps
-  # them converged across every node.
-  - peer-firewall-reconciler/
-  # worker-firewall-reconciler — keeps host nft sets
-  # tenant_ports_{tcp,udp} in sync with Pods scheduled to this node
-  # (hostPort + platform.io/firewall-{tcp,udp}-ports annotations).
-  # bootstrap.sh declares the sets empty; this DaemonSet is the only
-  # writer at runtime. See docs/04-deployment/RUNTIME_FIREWALL.md.
-  - worker-firewall-reconciler/
+  # firewall-reconciler — single DaemonSet running TWO reconcile
+  # goroutines against the host's nft state via libnftnl netlink:
+  #   peer goroutine (cluster scope):
+  #     Nodes + ClusterPendingPeer + ClusterTrustedRange
+  #       → cluster_peers_v{4,6}, trusted_ranges_v{4,6}
+  #   tenant-ports goroutine (per-node scope):
+  #     Pods on $NODE_NAME (filtered to tenant namespaces)
+  #       → tenant_ports_{tcp,udp}
+  # bootstrap.sh declares all six nft sets on every node; this
+  # DaemonSet is the only writer at runtime. Replaces the prior
+  # peer-firewall-reconciler + worker-firewall-reconciler split.
+  # See docs/04-deployment/CLUSTER_NETWORK.md +
+  # docs/04-deployment/RUNTIME_FIREWALL.md.
+  - firewall-reconciler/
   - oauth2-proxy/
   # private-worker-tunnel — cluster-wide singletons for the Private
   # Worker feature: cert-manager Certificate for tunnels.${DOMAIN} and

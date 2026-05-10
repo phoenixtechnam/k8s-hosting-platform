@@ -1,6 +1,6 @@
 # ClusterTrustedRange — CIDR or single IP that the host firewall trusts
 # for full TCP/UDP. Converged onto every node's nft set
-# `trusted_ranges_v{4,6}` by peer-firewall-reconciler. Cluster-scoped
+# `trusted_ranges_v{4,6}` by firewall-reconciler. Cluster-scoped
 # because firewall trust is a cluster-wide concern, not per-namespace.
 #
 # Lifecycle:
@@ -63,7 +63,7 @@ spec:
                       - bare IPv6 (2001:db8::1)        → /128 implied
                       - IPv6 CIDR (fd00::/8)
                     The pattern is a coarse first filter; the
-                    peer-firewall-reconciler does authoritative IP/CIDR
+                    firewall-reconciler does authoritative IP/CIDR
                     validation via Go's net/netip and writes a Failed
                     condition on bad input. The IPv4 prefix is bounded
                     0..32 and the IPv6 prefix is bounded 0..128 by

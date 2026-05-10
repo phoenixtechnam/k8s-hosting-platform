@@ -89,6 +89,18 @@ CLUSTER_NETWORK_CIDR_V6=""
 # Calico's WG endpoint is announced as the underlay (eth0) IP, not the
 # mesh IP, so scoping would block legitimate handshakes.
 CALICO_WG_PUBLIC="true"
+# Calico pod-network MTU. Empty = auto-detect at install time:
+# pick the underlay interface (mesh first via wt0/tailscale0/wg0,
+# else default-route iface) and subtract 110 bytes for Calico's
+# overhead (WireGuard 60 + VXLAN 50). Operators with mixed
+# underlays should pin --calico-mtu to the smallest expected
+# underlay − 110 to avoid frag-on-the-mesh-side pain.
+# Examples:
+#   public-only Ethernet:           1500 − 110 = 1390 (we'll round to 1380 for headroom)
+#   on a NetBird mesh (wt0=1420):   1420 − 110 = 1310
+#   on Tailscale (tailscale0=1280): 1280 − 110 = 1170
+# Floor: 1280 (IPv6 minimum). Ceiling: 8990 (jumbo-frame headroom).
+CALICO_MTU=""
 # DRY_RUN: when true, bootstrap exits cleanly after Phase 1 package
 # install. Used by scripts/test-bootstrap-os-matrix.sh to validate the
 # OS-family detection + package availability across distros in
@@ -237,7 +249,7 @@ FIREWALL TRUST (always-on set mode):
   Cluster firewall is always set-mode: cluster-internal control-plane
   ports (6443/8443/10250/5473/2379-2380) gate via the cluster_peers_v{4,6}
   nft sets, converged from kube-API node InternalIPs by the
-  peer-firewall-reconciler DaemonSet. Operator-trusted source ranges
+  firewall-reconciler DaemonSet. Operator-trusted source ranges
   (workstation IPs, private LANs, monitoring scrapers) gate via the
   trusted_ranges_v{4,6} nft sets. Day-2 management of trusted ranges
   is via the admin panel under Settings → Cluster Networking, which
@@ -278,6 +290,17 @@ FIREWALL TRUST (always-on set mode):
                          public-key auth makes exposure safe AND mesh
                          underlays can't carry Calico's WG endpoint
                          reliably. Set false to scope to trusted_ranges.
+  --calico-mtu <bytes>   Pin Calico's pod-network MTU. Default: auto-
+                         detect — picks the smallest of the local
+                         node's viable underlays (mesh first via
+                         wt0/tailscale0/wg0, else default-route iface)
+                         and subtracts 110 (Calico WG 60 + VXLAN 50).
+                         Override on mixed-underlay clusters where
+                         the smallest expected underlay is on a node
+                         that hasn't joined yet. Range: [1280, 8990].
+                         Examples: 1380 (1500-byte Ethernet underlay),
+                         1310 (NetBird wt0 at 1420), 1170 (Tailscale
+                         at 1280).
 
 PRE-REQUISITES (sysadmin, BEFORE running this script):
   Bootstrap does NOT install or enrol VPN/mesh CLIENTS (NetBird,
@@ -428,6 +451,7 @@ parse_args() {
       --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; shift 2 ;;
       --allow-source)    parse_allow_source_arg "$2"; shift 2 ;;
       --calico-wg-public) CALICO_WG_PUBLIC="$2"; shift 2 ;;
+      --calico-mtu)      CALICO_MTU="$2"; shift 2 ;;
       --with-monitoring) ENABLE_MONITORING=true; shift ;;
       --skip-monitoring) shift ;; # Deprecated — monitoring is now opt-in via --with-monitoring
       --skip-flux)       SKIP_FLUX=true; shift ;;
@@ -524,6 +548,19 @@ parse_args() {
   # Validate CALICO_WG_PUBLIC.
   if [[ "$CALICO_WG_PUBLIC" != "true" && "$CALICO_WG_PUBLIC" != "false" ]]; then
     error "Invalid --calico-wg-public: '${CALICO_WG_PUBLIC}'. Must be 'true' or 'false'."
+  fi
+
+  # Validate CALICO_MTU when provided. Empty = auto-detect at install
+  # time (see detect_calico_mtu). Non-empty must be an integer in
+  # [1280, 8990] — IPv6 minimum link MTU at the low end, jumbo-frame
+  # underlay headroom at the high end.
+  if [[ -n "$CALICO_MTU" ]]; then
+    if ! [[ "$CALICO_MTU" =~ ^[0-9]+$ ]]; then
+      error "Invalid --calico-mtu: '${CALICO_MTU}'. Must be a positive integer."
+    fi
+    if (( CALICO_MTU < 1280 || CALICO_MTU > 8990 )); then
+      error "Invalid --calico-mtu: ${CALICO_MTU}. Must be in [1280, 8990] (IPv6 min link MTU through jumbo-frame headroom)."
+    fi
   fi
 
   # CONVENIENCE: when --cluster-network-cidr{,-v6} is set explicitly,
@@ -955,13 +992,13 @@ configure_firewall() {
   #     via Settings → Cluster Networking; bootstrap seeds from
   #     --allow-source.
   local cluster_allow="    # Cluster peers (control-plane ports only) — converged from kube-API
-    # by peer-firewall-reconciler. Helpers /usr/local/bin/peer-firewall-
+    # by firewall-reconciler. Helpers /usr/local/bin/peer-firewall-
     # {add,remove} are break-glass for the bootstrap-time window.
     ip  saddr @cluster_peers_v4 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept
     ip6 saddr @cluster_peers_v6 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept
 
     # Trusted ranges (full TCP/UDP) — converged from ClusterTrustedRange
-    # CRDs by peer-firewall-reconciler. Bootstrap-time entries from
+    # CRDs by firewall-reconciler. Bootstrap-time entries from
     # --allow-source flag are seeded directly into the nft set.
     ip  saddr @trusted_ranges_v4 ip protocol tcp accept
     ip  saddr @trusted_ranges_v4 ip protocol udp accept
@@ -985,9 +1022,9 @@ configure_firewall() {
   # rules referencing an empty set are no-ops, so single-node clusters
   # and freshly-bootstrapped first servers work without special-casing.
   #
-  #   cluster_peers_v{4,6}   — converged by peer-firewall-reconciler from
+  #   cluster_peers_v{4,6}   — converged by firewall-reconciler from
   #     kube-API node InternalIPs.
-  #   trusted_ranges_v{4,6}  — converged by peer-firewall-reconciler from
+  #   trusted_ranges_v{4,6}  — converged by firewall-reconciler from
   #     ClusterTrustedRange CRDs; bootstrap also seeds from --allow-source.
   #   tenant_ports_{tcp,udp} — runtime-managed by worker-firewall-
   #     reconciler from Pod hostPort + platform.io/firewall-{tcp,udp}-
@@ -1075,7 +1112,7 @@ ${calico_wg_rule}
     tcp dport 4190 accept    # ManageSieve
 
     # Runtime-managed tenant host ports — populated by
-    # worker-firewall-reconciler DaemonSet at runtime as Pods land
+    # firewall-reconciler DaemonSet at runtime as Pods land
     # with hostPort or the platform.io/firewall-{tcp,udp}-ports
     # annotations. Bootstrap leaves the sets empty; the reconciler
     # is the only writer. Same chain on server + worker nodes (server-
@@ -1194,7 +1231,7 @@ install_peer_firewall_helpers() {
 # peer-firewall-add — Break-glass: add a cluster peer to the local nft
 # set. The admin panel (Settings → Cluster Networking → Pre-Enroll Node)
 # is the preferred path. Use this helper only when the platform UI is
-# unreachable. The peer-firewall-reconciler DaemonSet converges
+# unreachable. The firewall-reconciler DaemonSet converges
 # membership from kube-API once the new node has registered.
 set -euo pipefail
 [[ $# -eq 1 ]] || { echo "usage: $0 <ip>" >&2; exit 2; }
@@ -1259,7 +1296,7 @@ HELPER
 seed_cluster_trusted_range_crs() {
   # Apply ClusterTrustedRange CRs from the operator's --allow-source
   # entries (and the auto-detected mesh CIDR) so the
-  # peer-firewall-reconciler converges them into trusted_ranges_v{4,6}
+  # firewall-reconciler converges them into trusted_ranges_v{4,6}
   # nft sets across all nodes — and so they survive reconciler ticks
   # (the reconciler's atomic flush+add would otherwise wipe the
   # bootstrap-time-only nft seed on first reconcile).
@@ -2092,6 +2129,78 @@ install_k3s_worker() {
   error "k3s agent did not start within 60 seconds."
 }
 
+# detect_calico_mtu — pick the right Calico pod-network MTU.
+#
+# When the operator passes --calico-mtu N, that wins and we just
+# echo N (validated upstream in parse_args / install_calico). When
+# unset, we walk a priority list of mesh interfaces (wt0 = NetBird,
+# tailscale0, wg0) and use the first one that's UP. Mesh-first
+# matters because operators with both a mesh and a public NIC almost
+# always intend pod traffic to traverse the mesh, and the mesh's
+# MTU is the smaller of the two — pinning to public would fragment.
+# If no mesh iface, fall back to the default-route iface (typically
+# eth0).
+#
+# Subtracts 110 bytes for Calico's encapsulation overhead:
+#   60 bytes — Calico-managed WireGuard (UDP/51821)
+#   50 bytes — VXLAN (the IPPool encapsulation setting)
+# Even when WireGuard is enabled and replaces VXLAN as the actual
+# wire format for pod-to-pod traffic, Calico still installs a
+# wireguard.cali interface whose MTU = pod-MTU − 60. Subtracting
+# the full 110 leaves headroom for both encapsulation paths and
+# any future kernel-overhead bumps.
+#
+# Floor: 1280 (IPv6 minimum). Ceiling: 8990 (jumbo-frame headroom).
+# Echoes the chosen MTU to stdout; logs the derivation to stderr.
+detect_calico_mtu() {
+  if [[ -n "$CALICO_MTU" ]]; then
+    echo "$CALICO_MTU"
+    return 0
+  fi
+
+  local underlay_iface=""
+  local underlay_mtu=""
+  for iface in wt0 wt1 tailscale0 wg0; do
+    if ip link show "$iface" up >/dev/null 2>&1; then
+      underlay_iface=$iface
+      break
+    fi
+  done
+
+  if [[ -z "$underlay_iface" ]]; then
+    underlay_iface=$(ip -4 route show default 2>/dev/null \
+      | awk '/default/ {print $5; exit}')
+  fi
+
+  if [[ -z "$underlay_iface" ]]; then
+    warn "Could not detect underlay interface — defaulting Calico MTU to 1380 (assumes 1500-byte Ethernet)"
+    echo "1380"
+    return 0
+  fi
+
+  underlay_mtu=$(cat "/sys/class/net/${underlay_iface}/mtu" 2>/dev/null || echo "")
+  if [[ -z "$underlay_mtu" ]] || ! [[ "$underlay_mtu" =~ ^[0-9]+$ ]]; then
+    warn "Could not read MTU on ${underlay_iface} — defaulting Calico MTU to 1380"
+    echo "1380"
+    return 0
+  fi
+
+  local mtu=$((underlay_mtu - 110))
+  # Clamp to reasonable bounds. RFC 8200 sets the IPv6 minimum link
+  # MTU at 1280; going below that breaks dual-stack pods. Ceiling
+  # accommodates jumbo-frame underlays (typical 9000) − 110 = 8890.
+  if (( mtu < 1280 )); then
+    warn "Detected Calico MTU ${mtu} (underlay ${underlay_iface}=${underlay_mtu}) is below the IPv6 minimum 1280 — clamping. Pod traffic on this cluster may have issues; consider increasing the underlay MTU."
+    mtu=1280
+  fi
+  if (( mtu > 8990 )); then
+    mtu=8990
+  fi
+
+  log "Calico MTU auto-detect: underlay iface=${underlay_iface} mtu=${underlay_mtu} → calico mtu=${mtu}" >&2
+  echo "$mtu"
+}
+
 install_calico() {
   export KUBECONFIG
 
@@ -2136,13 +2245,21 @@ install_calico() {
   #   * wireguard.port: 51821 — non-standard port to avoid collisions
   #     with NetBird (51820) on the same hosts.
   #   * bgp: Disabled — no BIRD process, one less failure surface.
-  #   * mtu: 1380 — 1500 underlay − 60 WireGuard overhead − 50 VXLAN
-  #     overhead − some headroom. Auto-discovery used in plain Calico
-  #     can pick wrong values; explicit pin avoids the Felix MTU loop.
+  #   * mtu: detect_calico_mtu — picks the smallest of the local node's
+  #     viable underlays (mesh-first via wt0/tailscale0/wg0, else
+  #     default-route iface) and subtracts 110 for Calico's WG + VXLAN
+  #     overhead. Operator can override via --calico-mtu N. Pinning
+  #     here (instead of relying on Calico's auto-discovery) avoids
+  #     the Felix MTU loop and surfaces the chosen value in `bootstrap`
+  #     logs for post-mortem.
   #   * nodeAddressAutodetectionV4: when --cluster-network-cidr is set,
-  #     pin to that CIDR (private underlay). Otherwise firstFound: true
-  #     picks the public IP of eth0. Calico's WireGuard mesh terminates
-  #     on whichever IP is autodetected.
+  #     pin to that CIDR explicitly. Otherwise inherit k3s' --node-ip
+  #     choice via 'kubernetes: NodeInternalIP'. Calico's VXLAN/WG
+  #     tunnel endpoint follows whichever IP k3s already advertised
+  #     for the kubelet/apiserver — wt0 mesh IP if NetBird is up, else
+  #     the default-route public IP. This matches per-node correctness
+  #     in mixed clusters where some nodes joined publicly and others
+  #     via the mesh.
   local autodetect_block=""
   # ipv6_pool: kept here as a documented placeholder for the future
   # dual-stack v2 mode (see ROADMAP.md). When enabled, this string
@@ -2158,15 +2275,25 @@ install_calico() {
     # bgp:Disabled is rejected anyway, and k3s was launched with
     # IPv4-only cluster-cidr in install_k3s_server.
   else
-    # Public-underlay autodetect: skipInterface excludes known VPN
-    # tunnel names. Tigera rejects more than one autodetection method
-    # per family, so we pick this one (instead of canReach) because
-    # it doesn't depend on routing — even when an operator VPN
-    # carries a default-route to public IPs, Calico still picks the
-    # native cloud NIC. Calico iterates remaining interfaces in
-    # numeric order and takes the first global IPv4.
+    # Inherit k3s' --node-ip choice: Calico picks whatever IP
+    # Node.status.addresses[InternalIP] already shows. install_k3s_*
+    # auto-detects wt0 / tailscale0 and pins --node-ip to the mesh
+    # IP when present, else to the default-route IP. By inheriting
+    # via 'kubernetes: NodeInternalIP' we get the right behavior on
+    # both public-only and mesh-private nodes without needing
+    # separate code paths or per-node Installation overrides.
+    #
+    # Earlier (until 2026-05-09) we used 'skipInterface' to exclude
+    # known VPN tunnel names. That worked for pure-public clusters
+    # but actively broke mesh-private nodes — Calico would skip wt0
+    # and pick the public NIC for its tunnel endpoint, even after
+    # k3s --node-ip pinned the kubelet-side IP to the mesh address.
+    # The result was Node.status.InternalIP = mesh, but Calico
+    # tunnels (VXLAN/WG outer header) sourced from public NIC →
+    # firewall on the receiving server dropped the packet because
+    # cluster_peers_v4 contained the mesh IP, not the public one.
     autodetect_block="    nodeAddressAutodetectionV4:
-      skipInterface: \"^(wt[0-9]*|tailscale[0-9]*|wg[0-9]*|tun[0-9]*|tap[0-9]*|ipsec[0-9]*|cali[0-9a-f]+|vxlan\\\\.calico|wireguard\\\\.cali)\$\""
+      kubernetes: NodeInternalIP"
     # IPv6 dropped — see install_k3s_server: cluster-cidr is IPv4-only.
   fi
 
@@ -2183,6 +2310,10 @@ install_calico() {
   # Installation CR's typhaDeployment.spec.replicas field is silently
   # dropped at admission. For small clusters where 2 typhas is excess,
   # there is no supported override.
+  local calico_mtu
+  calico_mtu=$(detect_calico_mtu)
+  log "Calico Installation will use mtu=${calico_mtu}"
+
   cat <<EOF | kubectl apply -f -
 apiVersion: operator.tigera.io/v1
 kind: Installation
@@ -2192,7 +2323,7 @@ spec:
   controlPlaneReplicas: 1
   calicoNetwork:
     bgp: Disabled
-    mtu: 1380
+    mtu: ${calico_mtu}
 ${autodetect_block}
     ipPools:
     - blockSize: 26

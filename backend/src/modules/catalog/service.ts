@@ -88,7 +88,7 @@ interface EntryManifest {
    * gate (modules/deployments/service.ts) refuses to schedule the workload
    * unless the operator has flipped `system_settings.allow_host_ports_*`
    * for the target node role. When approved, the host nft sets
-   * `tenant_ports_{tcp,udp}` are populated by the worker-firewall-reconciler
+   * `tenant_ports_{tcp,udp}` are populated by the firewall-reconciler
    * DaemonSet on the node hosting the pod.
    *
    * UDP supports nft-style ranges as strings (e.g. `"16384-32768"`) so

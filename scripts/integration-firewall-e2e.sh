@@ -5,7 +5,7 @@
 #   1. allow_host_ports_worker=true lets a coturn-style deploy succeed
 #   2. The Pod template carries the platform.io/firewall-{tcp,udp}-ports
 #      annotations
-#   3. The worker-firewall-reconciler DaemonSet has populated the host's
+#   3. The firewall-reconciler DaemonSet has populated the host's
 #      nft set `tenant_ports_tcp` with the requested ports (3478, 5349)
 #   4. Toggling allow_host_ports_worker=false makes a fresh deploy of
 #      the same catalog entry fail with 403 / HOST_PORTS_DISABLED
@@ -206,7 +206,7 @@ else
 fi
 
 # ─── Phase 4: nft set on the host has the ports ────────────────────────────
-log "── waiting up to 60s for worker-firewall-reconciler to converge ──"
+log "── waiting up to 60s for firewall-reconciler to converge ──"
 NFT_TCP=""
 for _ in $(seq 1 12); do
   NFT_TCP=$(ssh_cluster "ssh -o StrictHostKeyChecking=no $POD_NODE 'nft list set inet filter tenant_ports_tcp 2>/dev/null'" 2>/dev/null || \

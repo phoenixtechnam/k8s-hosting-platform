@@ -438,7 +438,7 @@ describe('deployCatalogEntry: firewall annotations on Pod template', () => {
     });
     // The Deployment's top-level metadata must NOT carry the firewall
     // annotations — only the Pod template does, because that's what the
-    // worker-firewall-reconciler reads.
+    // firewall-reconciler reads.
     expect(body.metadata.annotations).toBeUndefined();
   });
 

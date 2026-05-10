@@ -4,7 +4,7 @@
 **always-on set-mode** firewall. Every cluster, every install, ships
 the same four nft sets and a deterministic input chain. CRD-driven
 trust changes converge onto every node via the
-`peer-firewall-reconciler` DaemonSet. Day-2 trust management is via
+`firewall-reconciler` DaemonSet. Day-2 trust management is via
 the admin panel under **Settings → Cluster Networking** — no
 per-node SSH, no firewall flags after bootstrap.
 
@@ -149,7 +149,7 @@ The bootstrap **auto-detects** a mesh underlay at firewall-config time:
   bootstrap can't auto-detect arbitrary interface names.
 
 If the mesh isn't up when bootstrap runs and no CIDR is passed, the
-firewall enters **set mode** instead and a peer-firewall-reconciler
+firewall enters **set mode** instead and a firewall-reconciler
 DaemonSet maintains the allowlist from kube-API. Adding a new node in
 that mode requires one `peer-firewall-add <new-IP>` call on an existing
 peer (see below).
@@ -241,7 +241,7 @@ ip6 saddr @cluster_peers_v6 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } acc
 ```
 
 `cluster_peers_v{4,6}` are nft sets. Their members are reconciled by
-the **peer-firewall-reconciler DaemonSet** (`platform-system` namespace)
+the **firewall-reconciler DaemonSet** (`platform-system` namespace)
 which watches kube-API `Node` objects and reflects every node's
 `InternalIP` into the local set on every host.
 

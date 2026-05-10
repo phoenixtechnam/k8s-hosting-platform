@@ -1,36 +1,46 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: peer-firewall-reconciler
+  name: firewall-reconciler
   namespace: platform-system
   labels:
-    app: peer-firewall-reconciler
+    app: firewall-reconciler
     app.kubernetes.io/part-of: hosting-platform
 ---
-# RBAC for the always-on set-mode firewall reconciler.
+# RBAC for the consolidated firewall reconciler.
 #
-#   Nodes                  read     — kube-API InternalIPs converge into
-#                                     cluster_peers_v{4,6} nft sets.
-#   ClusterTrustedRange    read     — spec.cidr converges into
-#                                     trusted_ranges_v{4,6} nft sets.
+# Peer goroutine:
+#   Nodes                  read     — InternalIPs → cluster_peers_v{4,6}.
+#   ClusterTrustedRange    read     — spec.cidr → trusted_ranges_v{4,6}.
 #   ClusterTrustedRange    write    — status subresource (normalizedCidr,
 #   /status                          family, lastSyncedAt, conditions).
-#   ClusterPendingPeer     read     — spec.ip converges into
-#                                     cluster_peers_v{4,6} nft sets
+#   ClusterPendingPeer     read     — spec.ip → cluster_peers_v{4,6}
 #                                     (union with Node InternalIPs).
 #   ClusterPendingPeer     write    — status subresource (claimedAt,
 #   /status                          family, expiresAt, conditions).
 #   ClusterPendingPeer     delete   — TTL cleanup + post-claim cleanup.
 #
-# No read/write on host firewall via API — that happens via the host's
-# nft binary using CAP_NET_ADMIN, which the DaemonSet has natively.
+# Tenant-ports goroutine:
+#   Pods                   read     — spec.containers[*].ports[*].hostPort
+#                                     + platform.io/firewall-{tcp,udp}-ports
+#                                     annotations → tenant_ports_{tcp,udp}.
+#                                     Filtered server-side by
+#                                     spec.nodeName == NODE_NAME.
+#   Namespaces             read     — annotation
+#                                     platform.phoenix-host.net/tenant-namespace
+#                                     classifies which Pods the tenant
+#                                     reconciler considers.
+#
+# No write outside the two CRD /status subresources. Host firewall
+# state is mutated locally via libnftnl + CAP_NET_ADMIN, not via the
+# kube-API.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: peer-firewall-reconciler
+  name: firewall-reconciler
 rules:
   - apiGroups: [""]
-    resources: ["nodes"]
+    resources: ["nodes", "namespaces", "pods"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.platform.phoenix-host.net"]
     resources: ["clustertrustedranges", "clusterpendingpeers"]
@@ -45,12 +55,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: peer-firewall-reconciler
+  name: firewall-reconciler
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: peer-firewall-reconciler
+  name: firewall-reconciler
 subjects:
   - kind: ServiceAccount
-    name: peer-firewall-reconciler
+    name: firewall-reconciler
     namespace: platform-system

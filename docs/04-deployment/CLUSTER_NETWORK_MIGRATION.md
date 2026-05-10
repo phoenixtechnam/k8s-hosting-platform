@@ -72,7 +72,7 @@ For a future production cluster that's already on the legacy script.
 
 ## Reconciler upgrade
 
-The peer-firewall-reconciler image is bumped as part of the same
+The firewall-reconciler image is bumped as part of the same
 release. On a node that's been re-bootstrapped, the new reconciler:
 1. Probes for the four required sets at startup. If any is missing,
    logs a clear ERROR pointing back at re-running `bootstrap.sh`,

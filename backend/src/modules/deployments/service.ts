@@ -482,7 +482,7 @@ export async function createDeployment(
         storageTier: (client.storageTier ?? null) as 'local' | 'ha' | null,
         // Phase 3: propagate the manifest's runtime-firewall block. The
         // deployer stamps it as Pod annotations which the
-        // worker-firewall-reconciler converges into the host's nft sets
+        // firewall-reconciler converges into the host's nft sets
         // tenant_ports_{tcp,udp}. Already gated above; null here means
         // either the manifest didn't declare any host ports OR the
         // toggle let the deploy through with no ports requested.

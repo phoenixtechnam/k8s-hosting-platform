@@ -1,0 +1,126 @@
+# firewall-reconciler — always-on set-mode firewall converger.
+#
+# Consolidates the prior peer-firewall-reconciler + worker-firewall-reconciler
+# into one DaemonSet. One container per node runs two reconcile goroutines
+# against a shared libnftnl applier:
+#
+#   peer goroutine (cluster-scope):
+#     Nodes                  → cluster_peers_v{4,6}     (read InternalIPs)
+#     ClusterPendingPeer     → cluster_peers_v{4,6}     (TTL pre-auth)
+#     ClusterTrustedRange    → trusted_ranges_v{4,6}    (operator-blessed)
+#
+#   tenant-ports goroutine (node-scope):
+#     Pods on this node       → tenant_ports_{tcp,udp}  (hostPort + annotation)
+#       (filtered to namespaces with prefix "client-" or annotation
+#        platform.phoenix-host.net/tenant-namespace=true)
+#
+# bootstrap.sh declares all six nft sets on every node; this DaemonSet
+# is the only writer at runtime. The container has NO `nft` binary —
+# libnftnl talks netlink directly so the host's nft tooling never sees
+# a userspace version-skewed write.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: firewall-reconciler
+  namespace: platform-system
+  labels:
+    app: firewall-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  selector:
+    matchLabels:
+      app: firewall-reconciler
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: firewall-reconciler
+    spec:
+      serviceAccountName: firewall-reconciler
+      # Share the host's network namespace so libnftnl writes land in
+      # the host's netfilter ruleset, not the container's own.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # Tolerate every node, including control-plane and any platform
+      # taints — the reconciler must run on every node whose firewall
+      # holds a cluster_peers / tenant_ports set (i.e. every cluster
+      # node in set mode).
+      tolerations:
+        - operator: Exists
+      priorityClassName: system-node-critical
+      containers:
+        - name: reconciler
+          image: ghcr.io/phoenixtechnam/hosting-platform/firewall-reconciler:latest # {"$imagepolicy": "flux-system:firewall-reconciler"}
+          # Always pull on pod start because the manifest pins :latest;
+          # kubelet's IfNotPresent cache otherwise sticks at the first-
+          # ever image SHA forever. The deploy-rev annotation in the
+          # staging overlay rolls the DaemonSet on every CI push, which
+          # combined with Always means each rollout picks up the just-
+          # built reconciler image.
+          imagePullPolicy: Always
+          env:
+            # Downward API: the tenant-ports goroutine narrows its Pod
+            # informer with fields.spec.nodeName=$NODE_NAME so the
+            # cache only sees Pods scheduled to this host.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            # HTTP probe endpoint. hostNetwork: true means containerPort
+            # already binds on the node's IP — no separate hostPort
+            # needed (and would be redundant). The existing input chain
+            # (default drop, iif lo accept) protects external traffic;
+            # kubelet probes go node→node-IP which traverses lo and is
+            # allowed.
+            - name: healthz
+              containerPort: 8081
+              protocol: TCP
+          # Liveness: restart pod if /healthz has been failing for
+          # >90s. /healthz returns 503 when either reconcile loop
+          # hasn't reported a success within healthMaxAge (90s in
+          # the binary). With periodSeconds=30 + failureThreshold=3,
+          # kubelet declares the pod unhealthy after ~90s of stalls,
+          # which lines up with the observability window in /healthz.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+          # Readiness: pull the pod out of any future Service in front
+          # of the reconciler when reconciles stall. Today nothing
+          # selects this DS via Service, so readiness is informational
+          # — `kubectl rollout status` blocks on it during deploys.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
+          securityContext:
+            # libnftnl talks to netfilter via netlink — needs CAP_NET_ADMIN.
+            # Drop everything else; no privileged, no host PID/IPC.
+            # Replaces the worker-firewall-reconciler's `privileged: true`
+            # — peer-firewall-reconciler proved CAP_NET_ADMIN is enough.
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_ADMIN"]
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 5m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

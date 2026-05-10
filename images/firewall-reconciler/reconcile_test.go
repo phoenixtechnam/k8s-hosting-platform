@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"strings"
+	"sort"
 	"testing"
 	"time"
 
@@ -26,7 +26,7 @@ func fakeReconcilerSetup(
 	now time.Time,
 	nodes []*corev1.Node,
 	ctrs, cpps []*unstructured.Unstructured,
-) (*reconciler, *[]string, *dynamicfake.FakeDynamicClient) {
+) (*reconciler, *fakeApplier, *dynamicfake.FakeDynamicClient) {
 	t.Helper()
 
 	scheme := runtime.NewScheme()
@@ -63,7 +63,7 @@ func fakeReconcilerSetup(
 		return cache.NewGenericLister(store, gvr.GroupResource())
 	}
 
-	scripts := &[]string{}
+	fa := &fakeApplier{}
 	r := &reconciler{
 		nodes:     staticLister{items: nodes},
 		ctrLister: mkLister(ctrs, ctrGVR),
@@ -72,13 +72,75 @@ func fakeReconcilerSetup(
 		cppClient: dynClient.Resource(cppGVR),
 		cppGrace:  defaultCppPostClaimGrace,
 		now:       func() time.Time { return now },
-		runNft: func(b []byte) error {
-			*scripts = append(*scripts, string(b))
-			return nil
-		},
-		trigger: make(chan struct{}, 1),
+		applier:   fa,
+		trigger:   make(chan struct{}, 1),
 	}
-	return r, scripts, dynClient
+	return r, fa, dynClient
+}
+
+// fakeApplier records every apply call. Tests assert on the recorded
+// peer / tenant-port set state. failNth/failErr applies to peerSet
+// calls only; tenantPortCalls is independent so error injection in
+// one loop doesn't perturb the other.
+//
+// The observe* methods simulate kernel state by returning the
+// fingerprint of the LAST applied state. This matches the real
+// applier's behavior on a healthy kernel + lets tests verify the
+// "no apply when state already matches" short-circuit. Tests can
+// override observePeerFP/observeTenantFP to simulate kernel-state
+// divergence (e.g. an out-of-band reset).
+type fakeApplier struct {
+	calls           []peerNftSets
+	tenantPortCalls []tenantPortSets
+	failNth         int   // 0 = never fail; N = fail on the Nth peerSet call (1-indexed)
+	failErr         error // returned when failNth fires
+
+	// Optional overrides for the observe path. When nil, observe
+	// returns the fingerprint of the last applied state (or empty
+	// string if nothing applied yet). Tests use these to simulate
+	// out-of-band kernel-state divergence.
+	observePeerFP   *string
+	observeTenantFP *string
+	observeErr      error
+}
+
+func (f *fakeApplier) applyPeerSets(s peerNftSets) error {
+	f.calls = append(f.calls, s)
+	if f.failNth > 0 && len(f.calls) == f.failNth {
+		return f.failErr
+	}
+	return nil
+}
+
+func (f *fakeApplier) applyTenantPorts(s tenantPortSets) error {
+	f.tenantPortCalls = append(f.tenantPortCalls, s)
+	return nil
+}
+
+func (f *fakeApplier) observePeerFingerprint() (string, error) {
+	if f.observeErr != nil {
+		return "", f.observeErr
+	}
+	if f.observePeerFP != nil {
+		return *f.observePeerFP, nil
+	}
+	if len(f.calls) == 0 {
+		return "", nil
+	}
+	return peerFingerprint(f.calls[len(f.calls)-1]), nil
+}
+
+func (f *fakeApplier) observeTenantPortsFingerprint() (string, error) {
+	if f.observeErr != nil {
+		return "", f.observeErr
+	}
+	if f.observeTenantFP != nil {
+		return *f.observeTenantFP, nil
+	}
+	if len(f.tenantPortCalls) == 0 {
+		return "", nil
+	}
+	return tenantPortsFingerprint(f.tenantPortCalls[len(f.tenantPortCalls)-1]), nil
 }
 
 func mkCTR(name, cidr string, gen int64) *unstructured.Unstructured {
@@ -119,33 +181,32 @@ func TestReconcileOnce_happyPath(t *testing.T) {
 		mkCPP("new-worker", "10.0.0.5", "worker", 1800, 60, now, 1),         // active, age=60s, ttl=1800
 		mkCPP("expired-server", "10.0.0.99", "server", 1800, 3600, now, 1), // expired, age=3600s > ttl=1800
 	}
-	r, scripts, dyn := fakeReconcilerSetup(t, now, nodes, ctrs, cpps)
+	r, fa, dyn := fakeReconcilerSetup(t, now, nodes, ctrs, cpps)
 
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 
-	// Expect exactly 1 nft apply (script changed from initial empty).
-	if len(*scripts) != 1 {
-		t.Fatalf("expected 1 nft apply, got %d:\n%v", len(*scripts), *scripts)
+	// Expect exactly 1 apply (state changed from initial empty).
+	if len(fa.calls) != 1 {
+		t.Fatalf("expected 1 nft apply, got %d", len(fa.calls))
 	}
-	got := (*scripts)[0]
+	got := fa.calls[0]
 
-	wantContains := []string{
-		// peers: Node IPs (10.0.0.1, 10.0.0.2) + active CPP (10.0.0.5)
-		"add element inet filter cluster_peers_v4 { 10.0.0.1, 10.0.0.2, 10.0.0.5 }",
-		"add element inet filter cluster_peers_v6 { fd00::1 }",
-		// trusted_ranges: both CTRs, sorted lexically
-		"add element inet filter trusted_ranges_v4 { 10.99.0.0/16, 198.51.100.0/24 }",
+	if want := []string{"10.0.0.1", "10.0.0.2", "10.0.0.5"}; !equalSorted(got.PeersV4, want) {
+		t.Errorf("peers_v4 = %v, want %v", got.PeersV4, want)
 	}
-	for _, w := range wantContains {
-		if !strings.Contains(got, w) {
-			t.Errorf("nft script missing %q\nfull script:\n%s", w, got)
+	if want := []string{"fd00::1"}; !equalSorted(got.PeersV6, want) {
+		t.Errorf("peers_v6 = %v, want %v", got.PeersV6, want)
+	}
+	if want := []string{"10.99.0.0/16", "198.51.100.0/24"}; !equalSorted(got.TrustedV4, want) {
+		t.Errorf("trusted_v4 = %v, want %v", got.TrustedV4, want)
+	}
+	// Expired CPP must NOT appear in peers
+	for _, p := range got.PeersV4 {
+		if p == "10.0.0.99" {
+			t.Errorf("expired CPP IP 10.0.0.99 should not be in peers_v4: %v", got.PeersV4)
 		}
-	}
-	// Expired CPP must NOT appear in cluster_peers
-	if strings.Contains(got, "10.0.0.99") {
-		t.Errorf("expired CPP IP 10.0.0.99 should not be in nft script:\n%s", got)
 	}
 
 	// Verify the expired CPP was deleted.
@@ -298,19 +359,19 @@ func TestReconcileOnce_invalidCidrPatchesFailedCondition(t *testing.T) {
 	ctrs := []*unstructured.Unstructured{
 		mkCTR("bogus", "not-a-cidr", 1),
 	}
-	r, scripts, dyn := fakeReconcilerSetup(t, now, nil, ctrs, nil)
+	r, fa, dyn := fakeReconcilerSetup(t, now, nil, ctrs, nil)
 
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 
-	// nft script should still apply (peers + trusted both empty),
+	// Apply should still happen (peers + trusted both empty),
 	// but bogus CTR must NOT contribute to trusted_ranges.
-	if len(*scripts) != 1 {
-		t.Fatalf("expected 1 nft apply, got %d", len(*scripts))
+	if len(fa.calls) != 1 {
+		t.Fatalf("expected 1 nft apply, got %d", len(fa.calls))
 	}
-	if strings.Contains((*scripts)[0], "add element inet filter trusted_ranges_v4") {
-		t.Errorf("bogus CTR should not produce trusted_ranges_v4 add element:\n%s", (*scripts)[0])
+	if len(fa.calls[0].TrustedV4) != 0 {
+		t.Errorf("bogus CTR should not contribute to trusted_v4; got %v", fa.calls[0].TrustedV4)
 	}
 
 	// CTR status must reflect the failure.
@@ -336,7 +397,7 @@ func TestReconcileOnce_invalidCidrPatchesFailedCondition(t *testing.T) {
 
 func TestReconcileOnce_noOpWhenScriptUnchanged(t *testing.T) {
 	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	r, scripts, _ := fakeReconcilerSetup(t, now, nil, nil, nil)
+	r, fa, _ := fakeReconcilerSetup(t, now, nil, nil, nil)
 
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("first reconcileOnce: %v", err)
@@ -344,15 +405,33 @@ func TestReconcileOnce_noOpWhenScriptUnchanged(t *testing.T) {
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("second reconcileOnce: %v", err)
 	}
-	if len(*scripts) != 1 {
-		t.Errorf("expected exactly 1 apply (second is cached no-op), got %d", len(*scripts))
+	if len(fa.calls) != 1 {
+		t.Errorf("expected exactly 1 apply (second is cached no-op), got %d", len(fa.calls))
 	}
+}
+
+// equalSorted compares two slices for value-equality after sorting.
+// Helps test assertions when ordering is implementation-detail.
+func equalSorted(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	a2 := append([]string(nil), a...)
+	b2 := append([]string(nil), b...)
+	sort.Strings(a2)
+	sort.Strings(b2)
+	for i := range a2 {
+		if a2[i] != b2[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestReconcileOnce_propagatesNftError(t *testing.T) {
 	now := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	r, _, _ := fakeReconcilerSetup(t, now, nil, nil, nil)
-	r.runNft = func(b []byte) error { return errReconcile }
+	r.applier = &fakeApplier{failNth: 1, failErr: errReconcile}
 
 	if err := r.reconcileOnce(context.Background()); err == nil {
 		t.Error("expected error from nft runner, got nil")

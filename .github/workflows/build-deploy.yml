@@ -8,7 +8,7 @@ on:
       - 'frontend/admin-panel/**'
       - 'frontend/client-panel/**'
       - 'packages/api-contracts/**'
-      - 'images/peer-firewall-reconciler/**'
+      - 'images/firewall-reconciler/**'
       - '.github/workflows/build-deploy.yml'
       # Infra-only commits also need to reach staging via Flux. Without
       # these paths, k8s/** changes (LimitRanges, manifests) and scripts/**
@@ -313,13 +313,13 @@ jobs:
                 annotations:
                   platform.phoenix-host.net/deploy-rev: "${VERSION}"
           ---
-          # peer-firewall-reconciler — :latest-tagged DaemonSet that needs
+          # firewall-reconciler — :latest-tagged DaemonSet that needs
           # rolling on every push so the new image SHA is picked up
           # (imagePullPolicy: Always on the container).
           apiVersion: apps/v1
           kind: DaemonSet
           metadata:
-            name: peer-firewall-reconciler
+            name: firewall-reconciler
             namespace: platform-system
           spec:
             template:
