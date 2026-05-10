@@ -118,14 +118,20 @@ spec:
               args:
                 - |
                   set -euo pipefail
-                  # POSIX arithmetic — alpine ships busybox `date` which
-                  # does not support GNU's `-d "N days ago"`. Using
-                  # epoch + N*86400 works everywhere.
+                  # IMPORTANT: this file is rendered by Flux Kustomization
+                  # with `postBuild.substituteFrom` enabled, which expands
+                  # every `${VAR}` against `platform-cluster-config`. Bash
+                  # variable references therefore MUST be written as
+                  # `$${VAR}` here so a single `${VAR}` survives Flux into
+                  # the running pod. Bare `$VAR` (no braces) is safe.
+                  #
+                  # Busybox `date` (alpine/k8s) does not understand GNU's
+                  # `-d "N days ago"`, so we use POSIX arithmetic.
                   NOW=$(date -u +%s)
                   CUTOFF=$((NOW - JOB_GC_MAX_AGE_DAYS * 86400))
-                  DRY="${JOB_GC_DRY_RUN:-false}"
-                  EXCLUDE="${JOB_GC_EXCLUDE_NS_REGEX:-^$}"
-                  echo "[job-gc] cutoff=${CUTOFF} (${JOB_GC_MAX_AGE_DAYS}d) dryRun=${DRY} excludeNs=${EXCLUDE}"
+                  DRY="$${JOB_GC_DRY_RUN:-false}"
+                  EXCLUDE="$${JOB_GC_EXCLUDE_NS_REGEX:-^$$}"
+                  echo "[job-gc] cutoff=$${CUTOFF} ($${JOB_GC_MAX_AGE_DAYS}d) dryRun=$${DRY} excludeNs=$${EXCLUDE}"
                   # Select Jobs that are completed OR failed AND whose
                   # terminal condition is older than the cutoff. A Job
                   # without a completionTime but with a failed condition
@@ -150,7 +156,7 @@ spec:
                     '
                   )
                   if [ -z "$TARGETS" ]; then
-                    echo "[job-gc] no completed Jobs older than ${JOB_GC_MAX_AGE_DAYS}d"
+                    echo "[job-gc] no completed Jobs older than $${JOB_GC_MAX_AGE_DAYS}d"
                   else
                     COUNT=0
                     # Process substitution (not pipe) so $COUNT survives — a
@@ -159,17 +165,17 @@ spec:
                     while IFS=$'\t' read -r ns name done_at; do
                       [ -z "$ns" ] && continue
                       if [ "$DRY" = "true" ]; then
-                        echo "[job-gc] would delete: ${ns}/${name} (terminal at ${done_at})"
+                        echo "[job-gc] would delete: $${ns}/$${name} (terminal at $${done_at})"
                       else
-                        echo "[job-gc] deleting: ${ns}/${name} (terminal at ${done_at})"
+                        echo "[job-gc] deleting: $${ns}/$${name} (terminal at $${done_at})"
                         # --wait=false so a stuck finalizer doesn't pin
                         # the GC pod; the apiserver schedules the delete.
                         kubectl -n "$ns" delete job "$name" --wait=false || \
-                          echo "[job-gc] warn: delete failed for ${ns}/${name}"
+                          echo "[job-gc] warn: delete failed for $${ns}/$${name}"
                       fi
                       COUNT=$((COUNT+1))
                     done < <(printf '%s\n' "$TARGETS")
-                    echo "[job-gc] processed ${COUNT} Jobs"
+                    echo "[job-gc] processed $${COUNT} Jobs"
                   fi
                   echo "[job-gc] done"
               resources:
