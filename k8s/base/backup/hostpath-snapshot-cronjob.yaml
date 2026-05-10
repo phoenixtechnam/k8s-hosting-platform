@@ -95,31 +95,31 @@ spec:
                   # `find` supports `-mtime` which is all we use.
                   apk add --no-cache openssh-client rsync >/dev/null
                   SRC=/snapshots
-                  if [ ! -d "${SRC}" ]; then
-                    echo "[hostpath] ${SRC} missing, nothing to do"; exit 0
+                  if [ ! -d "$${SRC}" ]; then
+                    echo "[hostpath] $${SRC} missing, nothing to do"; exit 0
                   fi
                   # Count + size for telemetry; if empty we exit fast.
-                  COUNT=$(find "${SRC}" -type f -mtime -2 2>/dev/null | wc -l)
-                  if [ "${COUNT}" -eq 0 ]; then
+                  COUNT=$(find "$${SRC}" -type f -mtime -2 2>/dev/null | wc -l)
+                  if [ "$${COUNT}" -eq 0 ]; then
                     echo "[hostpath] no files modified in last 48h, exiting"; exit 0
                   fi
-                  echo "[hostpath] ${COUNT} files to upload"
-                  KIND=${TARGET_KIND:-s3}
-                  PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}node-hostpath-snapshots"
-                  case "${KIND}" in
+                  echo "[hostpath] $${COUNT} files to upload"
+                  KIND=$${TARGET_KIND:-s3}
+                  PREFIX="$${S3_PATH_PREFIX:+$${S3_PATH_PREFIX}/}node-hostpath-snapshots"
+                  case "$${KIND}" in
                     s3)
-                      aws s3 sync --endpoint-url="${AWS_ENDPOINT_URL}" \
+                      aws s3 sync --endpoint-url="$${AWS_ENDPOINT_URL}" \
                         --exclude "*" --include "*.tar*" --size-only \
-                        "${SRC}/" "s3://${S3_BUCKET}/${PREFIX}/"
+                        "$${SRC}/" "s3://$${S3_BUCKET}/$${PREFIX}/"
                       ;;
                     ssh)
                       chmod 600 /secrets/ssh/key
                       rsync -az --delete \
-                        -e "ssh -i /secrets/ssh/key -p ${SSH_PORT:-22} -o StrictHostKeyChecking=accept-new" \
-                        "${SRC}/" "${SSH_USER}@${SSH_HOST}:${SSH_PATH}/node-hostpath-snapshots/"
+                        -e "ssh -i /secrets/ssh/key -p $${SSH_PORT:-22} -o StrictHostKeyChecking=accept-new" \
+                        "$${SRC}/" "$${SSH_USER}@$${SSH_HOST}:$${SSH_PATH}/node-hostpath-snapshots/"
                       ;;
                     *)
-                      echo "[hostpath] ERROR: unknown TARGET_KIND=${KIND}"; exit 1
+                      echo "[hostpath] ERROR: unknown TARGET_KIND=$${KIND}"; exit 1
                       ;;
                   esac
                   echo "[hostpath] done"

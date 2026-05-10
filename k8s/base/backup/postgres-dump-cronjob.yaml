@@ -103,27 +103,27 @@ spec:
                   set -euo pipefail
                   apk add --no-cache aws-cli >/dev/null
                   STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-                  PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}db/platform"
-                  KEY="${PREFIX}/pg-${STAMP}.dump"
-                  echo "[pg-dump] start ${KEY}"
-                  pg_dump --format=custom --compress=6 --dbname="${DATABASE_URL}" \
-                    | aws s3 cp --endpoint-url="${AWS_ENDPOINT_URL}" \
+                  PREFIX="$${S3_PATH_PREFIX:+$${S3_PATH_PREFIX}/}db/platform"
+                  KEY="$${PREFIX}/pg-$${STAMP}.dump"
+                  echo "[pg-dump] start $${KEY}"
+                  pg_dump --format=custom --compress=6 --dbname="$${DATABASE_URL}" \
+                    | aws s3 cp --endpoint-url="$${AWS_ENDPOINT_URL}" \
                         --expected-size $((20*1024*1024*1024)) \
-                        - "s3://${S3_BUCKET}/${KEY}"
-                  echo "[pg-dump] wrote s3://${S3_BUCKET}/${KEY}"
+                        - "s3://$${S3_BUCKET}/$${KEY}"
+                  echo "[pg-dump] wrote s3://$${S3_BUCKET}/$${KEY}"
                   # Retain the 14 newest dumps. List sorted newest-first,
                   # delete anything past row 14. Prefix-filtered so we
                   # never touch etcd/ or cluster-state/ objects.
-                  aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
-                    "s3://${S3_BUCKET}/${PREFIX}/" \
+                  aws s3 ls --endpoint-url="$${AWS_ENDPOINT_URL}" \
+                    "s3://$${S3_BUCKET}/$${PREFIX}/" \
                     | awk '{print $4}' \
                     | grep -E '^pg-.*\.dump$' \
                     | sort -r \
                     | tail -n +15 \
                     | while read -r f; do
-                        echo "[pg-dump] evict ${PREFIX}/${f}"
-                        aws s3 rm --endpoint-url="${AWS_ENDPOINT_URL}" \
-                          "s3://${S3_BUCKET}/${PREFIX}/${f}"
+                        echo "[pg-dump] evict $${PREFIX}/$${f}"
+                        aws s3 rm --endpoint-url="$${AWS_ENDPOINT_URL}" \
+                          "s3://$${S3_BUCKET}/$${PREFIX}/$${f}"
                       done
                   echo "[pg-dump] done"
               resources:
