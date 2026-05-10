@@ -371,10 +371,14 @@ export async function createDeployment(
   const catalogCpu = resources?.recommended?.cpu ?? resources?.minimum?.cpu ?? '0.1';
   const catalogMemory = resources?.recommended?.memory ?? resources?.minimum?.memory ?? '256Mi';
 
-  // Generate secrets for env_vars.generated entries
+  // Generate secrets for env_vars.generated entries.
+  // Phoenix/Elixir apps (Plausible, others) require SECRET_KEY_BASE >= 64
+  // bytes — Plug.Session.COOKIE.validate_secret_key_base errors below that.
+  // Use 64 chars for any key matching that convention; 32 for everything else.
   const generatedSecrets: Record<string, string> = {};
   for (const key of generatedEnvKeys) {
-    generatedSecrets[key] = generateSecurePassword(32);
+    const length = /KEY_BASE$/i.test(key) ? 64 : 32;
+    generatedSecrets[key] = generateSecurePassword(length);
   }
 
   // Merge: fixed env vars + user config + generated secrets (generated cannot be overridden by user)

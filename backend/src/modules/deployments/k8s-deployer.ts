@@ -299,6 +299,10 @@ function buildVolumeMountSpec(
  *       `${deploymentName}` when the app has one component).
  *   {{ENV:<env-var-name>}} → value of that env var if already declared in
  *       this deployment's env map, else throws.
+ *   {{ENV_URLSAFE:<env-var-name>}} → same as {{ENV:*}} but the value is
+ *       percent-encoded for use inside URLs. Necessary when a generated
+ *       password contains reserved chars (`@:/?&=#`) that would corrupt
+ *       a connection string like `mongodb://user:pass@host/db`.
  *
  * Unknown component refs throw loudly — a typo would otherwise produce a
  * silent empty string and confuse debugging later.
@@ -314,6 +318,14 @@ function expandTokens(
       throw new Error(`env template: unknown component "${name}" referenced via {{SERVICE:${name}}}`);
     }
     return ctx.componentCount <= 1 ? ctx.deploymentName : `${ctx.deploymentName}-${name}`;
+  });
+  out = out.replace(/\{\{ENV_URLSAFE:([^}]+)\}\}/g, (_m, envName: string) => {
+    const name = envName.trim();
+    const v = ctx.envMap.get(name);
+    if (v === undefined) {
+      throw new Error(`env template: unknown env var "${name}" referenced via {{ENV_URLSAFE:${name}}}`);
+    }
+    return encodeURIComponent(v);
   });
   out = out.replace(/\{\{ENV:([^}]+)\}\}/g, (_m, envName: string) => {
     const name = envName.trim();
