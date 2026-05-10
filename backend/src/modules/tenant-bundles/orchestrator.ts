@@ -247,7 +247,11 @@ export async function runBundle(
         if (!deps.platformApiUrl) {
           throw new Error('files component requires platformApiUrl on OrchestratorDeps (Phase 3 HTTP-upload pattern)');
         }
-        const pvcName = await resolveTenantPvc(deps.db, input.clientId);
+        // Reviewer #2: derive pvcName from the namespace already
+        // resolved at line 153 — saves a redundant SELECT on `clients`
+        // in the bundle hot path. Convention `${ns}-storage` mirrors
+        // resolveTenantPvc / component-registry.ts.
+        const pvcName = `${namespace}-storage`;
 
         // Phase 1 piece #6 (ADR-036): pre-capture DB dump hook. Walks
         // every database deployment for the tenant and dispatches
@@ -862,13 +866,11 @@ async function recordResticSnapshotForFiles(args: {
       .where(eq(backupConfigurations.id, targetConfigId))
       .limit(1);
     if (cfg) {
-      target = resolveBackupTarget(
-        {
-          ...cfg,
-          hostpathPath: (cfg as Record<string, unknown>).hostpathPath as string | null | undefined ?? null,
-        },
-        { secretsKeyHex: deps.secretsKeyHex },
-      );
+      // Reviewer #3: drop the dead `hostpathPath` cast. The hostpath
+      // production path was retired; backup_configurations has no such
+      // column. resolveBackupTarget treats missing optional fields
+      // safely (resolves only if storageType matches an active branch).
+      target = resolveBackupTarget(cfg, { secretsKeyHex: deps.secretsKeyHex });
     }
   }
   // Build the canonical per-tenant repo URI. If the BackupConfiguration
@@ -879,10 +881,15 @@ async function recordResticSnapshotForFiles(args: {
     : '';
 
   // Region id derivation: read the override from settings, fall back
-  // to the slugified PLATFORM_BASE_DOMAIN.
+  // to the slugified PLATFORM_BASE_DOMAIN. Reviewer #1: do NOT pass
+  // '' — `resolveBaseDomain` falls back to DEV_DEFAULT_BASE_DOMAIN
+  // ('k8s-platform.test') only when the value is undefined; an empty
+  // string short-circuits the ?? chain and yields '' which then
+  // throws in deriveRegionId, silently breaking state-row writes on
+  // every dev/CI cluster.
   const [settings] = await deps.db.select().from(tenantBackupV2Settings).limit(1);
   const apex = resolveBaseDomain({
-    PLATFORM_BASE_DOMAIN: deps.platformBaseDomain ?? '',
+    PLATFORM_BASE_DOMAIN: deps.platformBaseDomain,
     INGRESS_BASE_DOMAIN: undefined,
   });
   const regionId = deriveRegionId(apex, settings?.regionIdOverride ?? '');
