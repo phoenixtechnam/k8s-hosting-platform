@@ -2263,6 +2263,117 @@ export type NewBackupComponent = typeof backupComponents.$inferInsert;
 export type ClientBackupSchedule = typeof clientBackupSchedules.$inferSelect;
 export type NewClientBackupSchedule = typeof clientBackupSchedules.$inferInsert;
 
+// ─── Tenant Backup v2 (ADR-036, migration 0093) ─────────────────────────
+// Per-tenant restic repository state + per-mailbox JMAP state + global
+// settings. See docs/07-reference/ADR-036-tenant-backup-restic-jmap.md.
+
+export const tenantResticRepoState = pgTable('tenant_restic_repo_state', {
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  // Component name matching backup_components.component. Today only
+  // 'files' and 'mailboxes' use restic.
+  component: varchar('component', { length: 32 }).notNull(),
+  repoUri: varchar('repo_uri', { length: 2000 }).notNull(),
+  targetConfigId: varchar('target_config_id', { length: 36 })
+    .references(() => backupConfigurations.id, { onDelete: 'set null' }),
+  lastSnapshotId: varchar('last_snapshot_id', { length: 64 }),
+  lastBackupJobId: varchar('last_backup_job_id', { length: 64 })
+    .references(() => backupJobs.id, { onDelete: 'set null' }),
+  lastRepoSizeBytes: bigint('last_repo_size_bytes', { mode: 'number' }).notNull().default(0),
+  lastSnapshotAt: timestamp('last_snapshot_at'),
+  lastRunAt: timestamp('last_run_at'),
+  lastCheckStatus: varchar('last_check_status', { length: 32 }),
+  lastCheckAt: timestamp('last_check_at'),
+  lastCheckError: text('last_check_error'),
+  // Phase 1.5 multi-region/DR (migration 0094). Nullable for existing
+  // (pre-Phase-1.5) rows; orchestrator stamps with BUNDLE_SCHEMA_VERSION
+  // on next backup. See migration 0094 for the rationale.
+  bundleSchemaVersion: integer('bundle_schema_version'),
+  sourceRegionId: varchar('source_region_id', { length: 63 }),
+  drKeyAddedAt: timestamp('dr_key_added_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  primaryKey({ columns: [table.clientId, table.component] }),
+  index('tenant_restic_repo_state_target_idx').on(table.targetConfigId),
+]);
+
+export const tenantJmapState = pgTable('tenant_jmap_state', {
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  mailboxJmapId: varchar('mailbox_jmap_id', { length: 255 }).notNull(),
+  mailboxAddress: varchar('mailbox_address', { length: 255 }).notNull(),
+  // NULL = no prior state, do a full pull. Persisted ONLY after restic
+  // snapshot acks the corresponding backup. At-least-once semantics.
+  lastJmapState: text('last_jmap_state'),
+  lastSyncedAt: timestamp('last_synced_at'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  primaryKey({ columns: [table.clientId, table.mailboxJmapId] }),
+  index('tenant_jmap_state_client_idx').on(table.clientId, table.lastSyncedAt),
+]);
+
+// Single-row global settings for tenant-backup v2. CHECK constraint in
+// the migration enforces id=1.
+export const tenantBackupV2Settings = pgTable('tenant_backup_v2_settings', {
+  id: integer('id').primaryKey().default(1),
+  retentionDays: integer('retention_days').notNull().default(30),
+  checkIntervalDays: integer('check_interval_days').notNull().default(7),
+  maxConcurrentRestic: integer('max_concurrent_restic').notNull().default(4),
+  globalMaxInFlight: integer('global_max_in_flight').notNull().default(0),
+  // Phase 1.5 multi-region/DR (migration 0094):
+  // Override for the auto-derived (slugified PLATFORM_BASE_DOMAIN)
+  // region id. NULL = use the derived value.
+  regionIdOverride: varchar('region_id_override', { length: 63 }),
+  // Encrypted-at-rest 32-byte secret used to derive per-tenant DR
+  // recovery passwords (HKDF info=`dr-recovery:${clientId}`). NULL
+  // disables auto-add of the DR key — operator runs Option B
+  // (one-shot migration keys) only.
+  drRecoveryKeyEncrypted: text('dr_recovery_key_encrypted'),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// External read-only repos for cross-region migration / DR. Operator
+// registers a backup_configurations row (S3/SFTP) with read-only IAM
+// as a remote source the cross-region restore executor is allowed to
+// read from. The registry IS the allowlist.
+export const externalBackupRepos = pgTable('external_backup_repos', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  targetConfigId: varchar('target_config_id', { length: 36 })
+    .notNull()
+    .references(() => backupConfigurations.id, { onDelete: 'restrict' }),
+  sourceRegionId: varchar('source_region_id', { length: 63 }).notNull(),
+  drRecoveryKeyEncrypted: text('dr_recovery_key_encrypted'),
+  label: varchar('label', { length: 255 }).notNull(),
+  // Hard-defaulted TRUE; CHECK constraint in migration 0094 enforces
+  // it at the database layer (`CHECK (read_only = TRUE)`). The Phase 3
+  // cross-region restore executor's allowlist guard treats every row in
+  // this table as read-only — a future migration that drops the CHECK
+  // would silently bypass that guard, so DO NOT remove it without
+  // also removing the executor's reliance on this invariant.
+  readOnly: boolean('read_only').notNull().default(true),
+  lastSeenAt: timestamp('last_seen_at'),
+  addedAt: timestamp('added_at').notNull().defaultNow(),
+  addedByUserId: varchar('added_by_user_id', { length: 36 })
+    .references(() => users.id, { onDelete: 'set null' }),
+  notes: text('notes'),
+}, (table) => [
+  index('external_backup_repos_target_idx').on(table.targetConfigId),
+  index('external_backup_repos_region_idx').on(table.sourceRegionId),
+]);
+
+export type TenantResticRepoState = typeof tenantResticRepoState.$inferSelect;
+export type NewTenantResticRepoState = typeof tenantResticRepoState.$inferInsert;
+export type TenantJmapState = typeof tenantJmapState.$inferSelect;
+export type NewTenantJmapState = typeof tenantJmapState.$inferInsert;
+export type TenantBackupV2Settings = typeof tenantBackupV2Settings.$inferSelect;
+export type ExternalBackupRepo = typeof externalBackupRepos.$inferSelect;
+export type NewExternalBackupRepo = typeof externalBackupRepos.$inferInsert;
+
 // ─── Private Workers (migration 0076) ─────────────────────────────────────
 // Per-client tunnel agents. A home box runs the private-worker-agent docker
 // container which dials in over WSS to tunnels.${DOMAIN}/c/{slug}/. A frps pod

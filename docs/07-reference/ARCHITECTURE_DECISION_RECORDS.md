@@ -2401,6 +2401,30 @@ migration project.
 
 ---
 
+## ADR-036: Tenant Backup v2 — restic + JMAP + Maildir
+
+See [ADR-036-tenant-backup-restic-jmap.md](ADR-036-tenant-backup-restic-jmap.md).
+
+Summary (2026-05-09): Replace the Phase-4 daily-bundle path (full tar
+of every PVC + mbsync per mailbox) with two primitives. Files: a
+per-tenant restic repository at `<store>/restic-files/<clientId>/`,
+streamed in via the existing HMAC upload route, with restic running on
+the platform-api side (S3/SFTP creds never enter the tenant ns).
+Mail: a `jmap-sync.py` (Python stdlib, ~200 lines) that walks
+`Email/changes` per mailbox, fetches changed bodies via `Blob/get`,
+writes a Maildir-shaped tarball, and feeds the same restic pipeline.
+Pre-capture hook walks `databases/*/` on tenant PVCs and runs
+`mysqldump --single-transaction` / `pg_dump` so application-DB
+contents land in the restic snapshot guaranteed-consistent. Config and
+secrets stay full each run. Cluster-level DR continues via the existing
+CNPG WAL archive on `mail-db` and `system-db`. No backwards
+compatibility with legacy bundles; legacy mbsync removed in same PR.
+Storage at 100 tenants drops from ~18 TiB to ~640 GiB (~28×). Object-
+level restore via `restic restore --include` (files) and JMAP
+`Email/import` (mail) becomes a first-class operation.
+
+---
+
 ## References
 
 - ADR Format: https://adr.github.io/

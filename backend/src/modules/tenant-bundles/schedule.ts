@@ -167,7 +167,19 @@ async function runOneScheduledBundle(app: FastifyInstance, clientId: string, ret
     ?? 'http://platform-api.platform.svc:3000';
 
   await runBundle(
-    { db: app.db, k8s, store, platformVersion, secretsKeyHex, platformApiUrl },
+    {
+      db: app.db,
+      k8s,
+      store,
+      platformVersion,
+      secretsKeyHex,
+      platformApiUrl,
+      // Phase 1.5+ (ADR-036): scheduled runs tag with region id
+      // and persist tenant_restic_repo_state.
+      platformBaseDomain: (app.config as Record<string, unknown>).PLATFORM_BASE_DOMAIN as string | undefined
+        ?? (app.config as Record<string, unknown>).INGRESS_BASE_DOMAIN as string | undefined,
+      kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
+    },
     {
       clientId,
       initiator: 'system',

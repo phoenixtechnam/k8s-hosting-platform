@@ -24,16 +24,33 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Readable } from 'node:stream';
 import { eq } from 'drizzle-orm';
-import { backupJobs, backupConfigurations } from '../../db/schema.js';
+import { backupJobs, backupConfigurations, clients, tenantBackupV2Settings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { decrypt } from '../oidc/crypto.js';
+import { resolveBaseDomain } from '../../config/domains.js';
 import { verifyUploadToken } from './upload-token.js';
 import { success } from '../../shared/response.js';
+import { resolveBackupTarget } from './resolve-backup-target.js';
+import {
+  buildSnapshotTags,
+  deriveResticPassword,
+  deriveRegionId,
+  runResticBackup,
+  type ResticComponent,
+} from './restic-driver.js';
 
 const ALLOWED_COMPONENTS = new Set(['files', 'mailboxes', 'config', 'secrets'] as const);
+const RESTIC_COMPONENTS: ReadonlySet<ResticComponent> = new Set(['files', 'mailboxes']);
+// Canonical artifact name bound into the HMAC token for the restic
+// streaming endpoint. There is no individual file being uploaded —
+// the entire request body is piped into `restic backup --stdin`. This
+// fixed string keeps the upload-token shape unchanged from the
+// non-restic path.
+const RESTIC_STREAM_ARTIFACT = 'restic-stream';
+const ALLOWED_STDIN_FILENAMES = /^[A-Za-z0-9._-]{1,64}$/;
 
 export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promise<void> {
   const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
@@ -127,6 +144,144 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     });
 
     return success({ bundleId, component, artifactName, sizeBytes: ref.sizeBytes });
+  });
+
+  // ─── Restic streaming endpoint (Phase 1, ADR-036) ─────────────────────
+  //
+  // The tenant Job tars the captured tree (PVC contents + pre-dumped DB
+  // SQL files for files-component, or the JMAP-built Maildir tree for
+  // mailboxes-component) and uploads it via `curl --upload-file -` to
+  // this endpoint. The body is piped straight into `restic backup
+  // --stdin` running in this process; the snapshot id is parsed from
+  // restic's --json summary line and returned to the Job.
+  //
+  // Trust boundary: tenant Job has tenant data + an HMAC upload token
+  // BUT NO BACKEND CREDS. Backend creds (S3 access key, SSH private
+  // key) materialise only here, decrypted from backup_configurations.
+  // The per-tenant restic password is derived from
+  // OIDC_ENCRYPTION_KEY + clientId via HKDF-SHA256 — the same vector
+  // asserted in restic-driver.test.ts and the Phase 0 spike.
+  app.put('/internal/bundles/:bundleId/components/:component/restic-stream', {
+    schema: {
+      tags: ['TenantBundles-Internal'],
+      summary: 'Stream a tarball into per-tenant restic repo (no intermediate file)',
+    },
+  }, async (request, reply) => {
+    const { bundleId, component } = request.params as {
+      bundleId: string;
+      component: string;
+    };
+    const query = request.query as { token?: string; filename?: string };
+    const token = query.token ?? '';
+    const stdinFilename = query.filename ?? 'archive.tar';
+
+    // Validate before touching the DB so probes (no token) don't burn cycles.
+    if (!RESTIC_COMPONENTS.has(component as ResticComponent)) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        `restic stream not supported for component '${component}' (only 'files' and 'mailboxes')`,
+        400,
+      );
+    }
+    if (!ALLOWED_STDIN_FILENAMES.test(stdinFilename)) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        `invalid filename '${stdinFilename}' (must match ${ALLOWED_STDIN_FILENAMES.source})`,
+        400,
+      );
+    }
+    if (!token) throw new ApiError('UNAUTHORIZED', 'missing upload token', 401);
+
+    // Token binds (bundleId, component, RESTIC_STREAM_ARTIFACT) — a
+    // file-upload token cannot be replayed for the restic stream and
+    // vice versa. Server-side log carries the rejection reason; client
+    // body is generic per the same rationale as the file-upload route.
+    const verifyErr = verifyUploadToken(
+      token,
+      { bundleId, component: component as ResticComponent, artifactName: RESTIC_STREAM_ARTIFACT },
+      secretsKeyHex,
+    );
+    if (verifyErr) {
+      app.log.warn({ verifyErr, bundleId, component }, 'tenant-bundles restic-stream: token rejected');
+      throw new ApiError('UNAUTHORIZED', 'upload token invalid', 401);
+    }
+
+    const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, bundleId)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    if (!job.targetConfigId) {
+      throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id', 400);
+    }
+
+    const [cfg] = await app.db
+      .select()
+      .from(backupConfigurations)
+      .where(eq(backupConfigurations.id, job.targetConfigId))
+      .limit(1);
+    if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
+
+    const target = resolveBackupTarget(
+      // hostpathPath isn't on the existing backup_configurations row
+      // shape; pass undefined so the resolver throws CONFIG_INVALID
+      // for hostpath until it's added (test backends use S3/SSH).
+      {
+        ...cfg,
+        hostpathPath: (cfg as Record<string, unknown>).hostpathPath as string | null | undefined ?? null,
+      },
+      { secretsKeyHex },
+    );
+
+    // Per-tenant HKDF password — pinned by Phase 0 lock vector.
+    const password = deriveResticPassword(secretsKeyHex, job.clientId);
+
+    // Snapshot tags carry the full metadata Region B needs to identify
+    // and restore this snapshot from outside (ADR-036 multi-region).
+    const [client] = await app.db.select().from(clients).where(eq(clients.id, job.clientId)).limit(1);
+    if (!client) throw new ApiError('NOT_FOUND', 'Bundle client missing', 404);
+    const [settings] = await app.db.select().from(tenantBackupV2Settings).limit(1);
+    const regionOverride = settings?.regionIdOverride ?? '';
+    const apex = resolveBaseDomain({
+      PLATFORM_BASE_DOMAIN: app.config.PLATFORM_BASE_DOMAIN,
+      INGRESS_BASE_DOMAIN: app.config.INGRESS_BASE_DOMAIN,
+    });
+    const regionId = deriveRegionId(apex, regionOverride);
+    const platformVersion = app.config.PLATFORM_VERSION;
+    const tags = buildSnapshotTags({
+      bundleId,
+      clientId: job.clientId,
+      tenantSlug: client.kubernetesNamespace,
+      component: component as ResticComponent,
+      regionId,
+      platformVersion,
+    });
+
+    let result;
+    try {
+      result = await runResticBackup({
+        target,
+        clientId: job.clientId,
+        component: component as ResticComponent,
+        passwordHex: password,
+        stdinFilename,
+        tags,
+        stdin: request.raw as unknown as Readable,
+      });
+    } catch (err) {
+      app.log.error(
+        { err, bundleId, component, clientId: job.clientId },
+        'tenant-bundles restic-stream: restic backup failed',
+      );
+      throw new ApiError('RESTIC_BACKUP_FAILED', err instanceof Error ? err.message : String(err), 500);
+    }
+
+    return success({
+      bundleId,
+      component,
+      snapshotId: result.snapshotId,
+      sizeBytes: result.totalBytesProcessed,
+      fileCount: result.totalFilesProcessed,
+      regionId,
+      tags,
+    });
   });
 }
 

@@ -1,32 +1,52 @@
-# mail-backup-tools — IMAP-driven mailbox backup/restore image.
+# tenant-backup-tools (image still named mail-backup-tools for the
+# Phase 1 window — rename to tenant-backup-tools deferred to a cleanup
+# PR per ADR-036 roadmap).
 #
-# Used by Tenant Backup Phase 4 mailbox component (Stalwart 0.16
-# dropped stalwart-cli, so per-account export now goes through IMAP
-# master-user proxy auth at <mailbox>%<master>).
+# Used by:
+#   - Tenant Backup Phase 1 files component (tar | curl --upload-file -
+#     to platform-api restic-stream endpoint; restic runs server-side)
+#   - Tenant Backup Phase 4 mailbox component (mbsync IMAP master-user
+#     proxy → Maildir tarball; replaced by JMAP in Phase 2)
+#
+# Phase 1 (ADR-036) tooling additions:
+#   - restic           — for cross-region restore Jobs (Phase 1.5+)
+#   - debian:trixie-slim base — matches peer-firewall-reconciler so the
+#                        platform's distinct base-image surface stays small.
+#                        Container nft >= host nft constraint that the
+#                        firewall image set lives by also matters here for
+#                        future restic-running Jobs.
 #
 # Tools shipped:
-#   - mbsync (isync)  — capture: IMAP → Maildir, UIDVALIDITY-aware
-#   - python3 stdlib  — restore: imaplib APPEND with Message-ID dedup
-#   - curl            — upload artefact, download artefact, HMAC token
-#   - tar+gzip+busybox — Option F streaming pipeline
-#   - sha256sum (coreutils) — integrity check
+#   - restic            — Phase 1.5+ cross-region restore inside tenant ns
+#                         (server-side restic runs on platform-api;
+#                         this image is for restore-side pulls)
+#   - python3-minimal   — Phase 2 jmap-sync.py + existing restore-mailbox.py
+#   - curl              — upload + download artifacts, HMAC tokens
+#   - tar + gzip        — files-component pipeline
+#   - coreutils         — sha256sum + standard tools (debian default)
+#   - ca-certificates   — TLS to platform-api + S3
+#   - isync             — mbsync, mailbox component (until Phase 2 JMAP)
 #
-# Image size budget: <50 MiB (measured ~44 MiB on alpine 3.19 with
-# python3 + isync + curl + ca-certificates + tar). Trivy CRITICAL
-# must pass; HIGH currently advisory.
+# Image size budget: <120 MiB (debian:trixie-slim ~80 MiB base + restic
+# ~25 MiB + python3-minimal ~10 MiB). Trivy CRITICAL/HIGH must pass.
 
-FROM alpine:3.20
+FROM debian:trixie-slim
 
-RUN apk add --no-cache \
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      restic \
       isync \
-      python3 \
+      python3-minimal \
       curl \
       tar \
+      gzip \
+      coreutils \
       ca-certificates \
-      openssl \
- && rm -rf /var/cache/apk/* /usr/lib/python3.*/test /usr/lib/python3.*/idlelib \
-           /usr/lib/python3.*/lib2to3 /usr/lib/python3.*/ensurepip \
-           /usr/lib/python3.*/__pycache__
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
+           /usr/share/doc/* /usr/share/man/*
 
 # Restore script in-image — Python stdlib only, runs under sh -c
 # from the orchestrator's Job spec. Argv:
@@ -37,9 +57,10 @@ RUN chmod 755 /usr/local/bin/restore-mailbox.py
 
 # Capture helper — wraps mbsync + Option F streaming upload.
 # Argv: capture-mailbox.sh <addr> <upload_url>
+# Will be replaced by jmap-sync.py in Phase 2.
 COPY capture-mailbox.sh /usr/local/bin/capture-mailbox.sh
 RUN chmod 755 /usr/local/bin/capture-mailbox.sh
 
-# Default to a no-op so `docker run mail-backup-tools` doesn't error;
-# the orchestrator always overrides command/args.
-CMD ["sh", "-c", "echo mail-backup-tools image ready; sleep 1"]
+# Default to a no-op so `docker run …` doesn't error; the orchestrator
+# always overrides command/args.
+CMD ["sh", "-c", "echo tenant-backup-tools image ready; sleep 1"]

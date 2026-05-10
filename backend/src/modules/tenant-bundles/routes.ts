@@ -338,7 +338,19 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       exportPassphrase: input.exportPassphrase ?? null,
       triggeredByUserId,
     };
-    const orchDeps = { db: app.db, k8s, store, platformVersion, secretsKeyHex, platformApiUrl };
+    const orchDeps = {
+      db: app.db,
+      k8s,
+      store,
+      platformVersion,
+      secretsKeyHex,
+      platformApiUrl,
+      // Phase 1.5+ (ADR-036): orchestrator derives the snapshot-tag
+      // region id from PLATFORM_BASE_DOMAIN and persists
+      // tenant_restic_repo_state with it.
+      platformBaseDomain: app.config.PLATFORM_BASE_DOMAIN ?? app.config.INGRESS_BASE_DOMAIN,
+      kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
+    };
 
     if (input.async) {
       // Async path: return as soon as the orchestrator has reserved

@@ -48,6 +48,17 @@ import {
   FilesComponentSkippedError,
   type FilesComponentResult,
 } from './components/files.js';
+import { runPreCaptureDatabaseDumps } from './components/database-predump-orchestration.js';
+import { recordResticSnapshot, recordResticRunFailed } from './repo-state.js';
+import {
+  buildResticRepoUri,
+  deriveRegionId,
+  type BackupTarget,
+  type ResticComponent,
+} from './restic-driver.js';
+import { resolveBackupTarget } from './resolve-backup-target.js';
+import { resolveBaseDomain } from '../../config/domains.js';
+import { backupConfigurations, tenantBackupV2Settings } from '../../db/schema.js';
 import { captureConfigComponent, type ConfigComponentResult } from './components/config.js';
 import { captureSecretsComponent, type SecretsComponentResult } from './components/secrets.js';
 
@@ -68,6 +79,15 @@ export interface OrchestratorDeps {
    *  in favour of off-site-only stores. Kept on the type for unit
    *  tests that still pass it; ignored by the orchestrator. */
   readonly hostpathRoot?: string;
+  /** Platform DNS apex used to derive the snapshot-tag region id
+   *  (slugified). Caller passes app.config.PLATFORM_BASE_DOMAIN.
+   *  Falls back to a placeholder for unit tests where region tagging
+   *  is not under test. */
+  readonly platformBaseDomain?: string;
+  /** Path to a kubeconfig file for `kubectl exec` inside the SQL
+   *  Manager pre-dump path. NULL/undefined → use the in-cluster
+   *  serviceaccount (the standard production path). */
+  readonly kubeconfigPath?: string;
 }
 
 export interface RunBundleInput {
@@ -227,15 +247,47 @@ export async function runBundle(
         if (!deps.platformApiUrl) {
           throw new Error('files component requires platformApiUrl on OrchestratorDeps (Phase 3 HTTP-upload pattern)');
         }
-        const pvcName = await resolveTenantPvc(deps.db, input.clientId);
+        // Reviewer #2: derive pvcName from the namespace already
+        // resolved at line 153 — saves a redundant SELECT on `clients`
+        // in the bundle hot path. Convention `${ns}-storage` mirrors
+        // resolveTenantPvc / component-registry.ts.
+        const pvcName = `${namespace}-storage`;
+
+        // Phase 1 piece #6 (ADR-036): pre-capture DB dump hook. Walks
+        // every database deployment for the tenant and dispatches
+        // mysqldump/pg_dump INSIDE the live tenant DB pod via the
+        // existing SQL Manager primitive. Dumps land at /exports/...
+        // on the tenant PVC and are picked up by the tar stream below.
+        // Failures are per-deployment + per-database; never abort the
+        // bundle (the file-system snapshot is still valid even if
+        // logical dumps fail).
+        try {
+          const predumpResults = await runPreCaptureDatabaseDumps({
+            db: deps.db,
+            k8s: deps.k8s,
+            clientId: input.clientId,
+            namespace,
+            backupId: bundleId,
+            kubeconfigPath: deps.kubeconfigPath,
+          });
+          for (const r of predumpResults) {
+            if (r.error) {
+              // eslint-disable-next-line no-console
+              console.warn(`[bundle ${bundleId}] pre-dump failed for ${r.deploymentName}: ${r.error}`);
+            }
+          }
+        } catch (err) {
+          // Non-fatal — log and proceed with the FS snapshot anyway.
+          // eslint-disable-next-line no-console
+          console.warn(`[bundle ${bundleId}] pre-dump orchestration error: ${(err as Error).message}`);
+        }
+
         filesResult = await captureFilesComponent({
           k8s: deps.k8s,
           namespace,
           pvcName,
           clientId: input.clientId,
           backupId: bundleId,
-          store: deps.store,
-          handle,
           platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
         });
@@ -245,6 +297,24 @@ export async function runBundle(
           fileCount: filesResult.fileCount,
           sha256: filesResult.sha256,
         };
+
+        // Persist tenant_restic_repo_state so the admin UI + retention
+        // sweeper can reach the per-tenant repo without re-resolving
+        // the BackupConfiguration. Best-effort — a write failure here
+        // does NOT mark the bundle failed (snapshot is already on the
+        // store). Operator surfaces it via the staleness query.
+        try {
+          await recordResticSnapshotForFiles({
+            deps,
+            input,
+            bundleId,
+            snapshotId: filesResult.snapshotId,
+            sizeBytes: filesResult.sizeBytes,
+          });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[bundle ${bundleId}] could not persist tenant_restic_repo_state: ${(err as Error).message}`);
+        }
       } catch (err) {
         if (err instanceof FilesComponentSkippedError) {
           // PVC missing → record skipped, do NOT add to errors[].
@@ -254,6 +324,14 @@ export async function runBundle(
         const msg = (err as Error).message ?? 'files capture failed';
         errors.push(`files: ${msg}`);
         await markComponentRowFailed(deps.db, componentRowId, msg);
+        // Bump last_run_at so "stale tenant" alerts pick this up
+        // even on first-attempt failures (no prior row exists).
+        await recordResticRunFailed({
+          db: deps.db,
+          clientId: input.clientId,
+          component: 'files',
+          runAt: new Date(),
+        }).catch(() => undefined);
       }
     })());
   }
@@ -761,4 +839,71 @@ async function tenantNamespaceHasSecrets(
   } catch {
     return true;
   }
+}
+
+/**
+ * Persist the per-tenant restic state for the files component after a
+ * successful capture. Resolves the BackupConfiguration → BackupTarget
+ * → repo URI, looks up the region id (with operator override), then
+ * upserts the row. Throws on internal errors so the caller can log
+ * (orchestrator catches around the call so a state-write failure
+ * never marks the bundle failed).
+ */
+async function recordResticSnapshotForFiles(args: {
+  deps: OrchestratorDeps;
+  input: RunBundleInput;
+  bundleId: string;
+  snapshotId: string;
+  sizeBytes: number;
+}): Promise<void> {
+  const { deps, input, bundleId, snapshotId, sizeBytes } = args;
+  const targetConfigId = input.targetConfigId ?? null;
+  let target: BackupTarget | null = null;
+  if (targetConfigId) {
+    const [cfg] = await deps.db
+      .select()
+      .from(backupConfigurations)
+      .where(eq(backupConfigurations.id, targetConfigId))
+      .limit(1);
+    if (cfg) {
+      // Reviewer #3: drop the dead `hostpathPath` cast. The hostpath
+      // production path was retired; backup_configurations has no such
+      // column. resolveBackupTarget treats missing optional fields
+      // safely (resolves only if storageType matches an active branch).
+      target = resolveBackupTarget(cfg, { secretsKeyHex: deps.secretsKeyHex });
+    }
+  }
+  // Build the canonical per-tenant repo URI. If the BackupConfiguration
+  // was missing (e.g. ad-hoc bundle without a target), record the row
+  // anyway with an empty repoUri — the admin UI will surface the gap.
+  const repoUri = target
+    ? buildResticRepoUri(target, input.clientId, 'files' satisfies ResticComponent)
+    : '';
+
+  // Region id derivation: read the override from settings, fall back
+  // to the slugified PLATFORM_BASE_DOMAIN. Reviewer #1: do NOT pass
+  // '' — `resolveBaseDomain` falls back to DEV_DEFAULT_BASE_DOMAIN
+  // ('k8s-platform.test') only when the value is undefined; an empty
+  // string short-circuits the ?? chain and yields '' which then
+  // throws in deriveRegionId, silently breaking state-row writes on
+  // every dev/CI cluster.
+  const [settings] = await deps.db.select().from(tenantBackupV2Settings).limit(1);
+  const apex = resolveBaseDomain({
+    PLATFORM_BASE_DOMAIN: deps.platformBaseDomain,
+    INGRESS_BASE_DOMAIN: undefined,
+  });
+  const regionId = deriveRegionId(apex, settings?.regionIdOverride ?? '');
+
+  await recordResticSnapshot({
+    db: deps.db,
+    clientId: input.clientId,
+    component: 'files',
+    repoUri,
+    targetConfigId,
+    snapshotId,
+    backupJobId: bundleId,
+    sizeBytes,
+    regionId,
+    snapshotAt: new Date(),
+  });
 }
