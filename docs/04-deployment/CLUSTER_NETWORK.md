@@ -156,6 +156,13 @@ peer (see below).
 
 ## Mode selection
 
+> **Picking your underlay first?** Read
+> [CHOOSING_YOUR_UNDERLAY.md](CHOOSING_YOUR_UNDERLAY.md) for the
+> decision criteria (public-only vs private VLAN vs mesh overlay) and
+> the rules for what you can and cannot mix in a single cluster.
+> The mode-selection diagram below is the mechanical implementation
+> of those choices.
+
 ```
 operator passes --cluster-network-cidr ──────┐
                                              │
