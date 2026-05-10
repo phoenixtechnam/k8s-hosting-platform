@@ -93,11 +93,11 @@ spec:
                   # Build a JSON array of IPs without depending on jq.
                   IP_LIST=$(echo "$IPS" | awk 'BEGIN{ORS=""} {if(NR>1) printf ","; printf "\""$0"\""}')
                   echo "Ready ExternalIPs: $(echo "$IPS" | tr '\n' ' ')"
-                  PATCH="{\"spec\":{\"externalIPs\":[${IP_LIST}]}}"
+                  PATCH="{\"spec\":{\"externalIPs\":[$${IP_LIST}]}}"
                   CURRENT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
                     -o jsonpath='{.spec.externalIPs}')
-                  echo "current: ${CURRENT}"
-                  echo "desired: [${IP_LIST}]"
+                  echo "current: $${CURRENT}"
+                  echo "desired: [$${IP_LIST}]"
                   kubectl patch svc -n ingress-nginx ingress-nginx-controller \
                     --type=merge --patch "$PATCH"
                   echo "ok"

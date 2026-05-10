@@ -118,8 +118,8 @@ spec:
                   # No install step required.
                   OUT=$(mktemp -d)
                   STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-                  PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}cluster-state"
-                  KEY="${PREFIX}/cluster-state-${STAMP}.tar.gz"
+                  PREFIX="$${S3_PATH_PREFIX:+$${S3_PATH_PREFIX}/}cluster-state"
+                  KEY="$${PREFIX}/cluster-state-$${STAMP}.tar.gz"
 
                   # Platform-wide inventory. Output captures enough to
                   # rebuild the surface — Deployments, Services,
@@ -128,7 +128,7 @@ spec:
                   # not contents.
                   dump() {
                     local name=$1; shift
-                    kubectl "$@" -o yaml 2>/dev/null > "${OUT}/${name}.yaml" || true
+                    kubectl "$@" -o yaml 2>/dev/null > "$${OUT}/$${name}.yaml" || true
                   }
                   dump namespaces               get ns
                   dump deployments              get deploy -A
@@ -146,23 +146,23 @@ spec:
                   dump longhorn-recurringjobs   get recurringjobs.longhorn.io -A
                   # Secret names + types only.
                   kubectl get secrets -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,TYPE:.type' \
-                    > "${OUT}/secrets-inventory.txt" 2>/dev/null || true
+                    > "$${OUT}/secrets-inventory.txt" 2>/dev/null || true
 
-                  tar -czf "${OUT}.tar.gz" -C "${OUT}" .
-                  aws s3 cp --endpoint-url="${AWS_ENDPOINT_URL}" \
-                    "${OUT}.tar.gz" "s3://${S3_BUCKET}/${KEY}"
-                  echo "[cluster-state] wrote s3://${S3_BUCKET}/${KEY}"
+                  tar -czf "$${OUT}.tar.gz" -C "$${OUT}" .
+                  aws s3 cp --endpoint-url="$${AWS_ENDPOINT_URL}" \
+                    "$${OUT}.tar.gz" "s3://$${S3_BUCKET}/$${KEY}"
+                  echo "[cluster-state] wrote s3://$${S3_BUCKET}/$${KEY}"
 
                   # Retain 14 newest bundles.
-                  aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
-                    "s3://${S3_BUCKET}/${PREFIX}/" \
+                  aws s3 ls --endpoint-url="$${AWS_ENDPOINT_URL}" \
+                    "s3://$${S3_BUCKET}/$${PREFIX}/" \
                     | awk '{print $4}' \
                     | grep -E '^cluster-state-.*\.tar\.gz$' \
                     | sort -r \
                     | tail -n +15 \
                     | while read -r f; do
-                        aws s3 rm --endpoint-url="${AWS_ENDPOINT_URL}" \
-                          "s3://${S3_BUCKET}/${PREFIX}/${f}"
+                        aws s3 rm --endpoint-url="$${AWS_ENDPOINT_URL}" \
+                          "s3://$${S3_BUCKET}/$${PREFIX}/$${f}"
                       done
                   echo "[cluster-state] done"
               resources:

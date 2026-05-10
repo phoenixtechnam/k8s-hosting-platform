@@ -109,12 +109,12 @@ spec:
                 - |
                   set -eu
                   SRC=/snapshots
-                  PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}etcd"
-                  if [ ! -d "${SRC}" ]; then
+                  PREFIX="$${S3_PATH_PREFIX:+$${S3_PATH_PREFIX}/}etcd"
+                  if [ ! -d "$${SRC}" ]; then
                     echo "[etcd] snapshot dir missing — is this a k3s server node?"
                     exit 1
                   fi
-                  cd "${SRC}"
+                  cd "$${SRC}"
                   # Match k3s's auto-snapshot naming (etcd-snapshot-<host>-
                   # <timestamp>) AND operator-created on-demand snapshots
                   # (any filename the snapshot API produced). First-run
@@ -122,33 +122,33 @@ spec:
                   # in that case rather than treating "nothing to upload"
                   # as an error.
                   TMP_FILES=/tmp/etcd-files
-                  find . -maxdepth 1 -type f -mtime -2 2>/dev/null | sed 's|^\./||' > "${TMP_FILES}" || true
-                  COUNT=$(wc -l < "${TMP_FILES}" | tr -d ' ')
-                  if [ "${COUNT}" -eq 0 ]; then
+                  find . -maxdepth 1 -type f -mtime -2 2>/dev/null | sed 's|^\./||' > "$${TMP_FILES}" || true
+                  COUNT=$(wc -l < "$${TMP_FILES}" | tr -d ' ')
+                  if [ "$${COUNT}" -eq 0 ]; then
                     echo "[etcd] no snapshots <36h old — k3s auto-snapshot-schedule-cron defaults to 0 */12 * * *; first run on a fresh cluster may skip an upload cycle. Exiting clean."
                     exit 0
                   fi
                   while IFS= read -r name; do
-                    [ -z "${name}" ] && continue
-                    echo "[etcd] upload ${name}"
-                    aws s3 cp --endpoint-url="${AWS_ENDPOINT_URL}" \
-                      "${name}" "s3://${S3_BUCKET}/${PREFIX}/${name}"
-                  done < "${TMP_FILES}"
+                    [ -z "$${name}" ] && continue
+                    echo "[etcd] upload $${name}"
+                    aws s3 cp --endpoint-url="$${AWS_ENDPOINT_URL}" \
+                      "$${name}" "s3://$${S3_BUCKET}/$${PREFIX}/$${name}"
+                  done < "$${TMP_FILES}"
                   # Retention: keep 14 newest in S3. `aws s3 ls` on an
                   # empty prefix returns 0 with no output.
                   TMP_EVICT=/tmp/etcd-evict
-                  aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
-                    "s3://${S3_BUCKET}/${PREFIX}/" 2>/dev/null \
+                  aws s3 ls --endpoint-url="$${AWS_ENDPOINT_URL}" \
+                    "s3://$${S3_BUCKET}/$${PREFIX}/" 2>/dev/null \
                     | awk '{print $4}' \
                     | sort -r \
-                    | tail -n +15 > "${TMP_EVICT}" || true
+                    | tail -n +15 > "$${TMP_EVICT}" || true
                   while IFS= read -r f; do
-                    [ -z "${f}" ] && continue
-                    echo "[etcd] evict ${PREFIX}/${f}"
-                    aws s3 rm --endpoint-url="${AWS_ENDPOINT_URL}" \
-                      "s3://${S3_BUCKET}/${PREFIX}/${f}"
-                  done < "${TMP_EVICT}"
-                  echo "[etcd] done (${COUNT} uploaded)"
+                    [ -z "$${f}" ] && continue
+                    echo "[etcd] evict $${PREFIX}/$${f}"
+                    aws s3 rm --endpoint-url="$${AWS_ENDPOINT_URL}" \
+                      "s3://$${S3_BUCKET}/$${PREFIX}/$${f}"
+                  done < "$${TMP_EVICT}"
+                  echo "[etcd] done ($${COUNT} uploaded)"
               volumeMounts:
                 - name: snapshots
                   mountPath: /snapshots

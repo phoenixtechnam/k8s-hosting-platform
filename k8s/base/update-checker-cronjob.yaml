@@ -37,7 +37,7 @@ spec:
                 - |
                   # Query the platform API for pending updates using internal secret
                   RESPONSE=$(wget -qO- \
-                    --header="X-Internal-Secret: ${PLATFORM_INTERNAL_SECRET}" \
+                    --header="X-Internal-Secret: $${PLATFORM_INTERNAL_SECRET}" \
                     "http://platform-api.platform.svc.cluster.local:3000/api/v1/internal/platform/version" \
                     2>/dev/null || echo '{}')
 
@@ -48,7 +48,7 @@ spec:
                     exit 0
                   fi
 
-                  echo "Pending update detected: ${PENDING}"
+                  echo "Pending update detected: $${PENDING}"
 
                   # Unsuspend the production Kustomization (if suspended)
                   kubectl patch kustomization hosting-platform-production \
@@ -61,7 +61,7 @@ spec:
                     -n flux-system \
                     reconcile.fluxcd.io/requestedAt="$(date +%s)"
 
-                  echo "Reconciliation triggered for version ${PENDING}."
+                  echo "Reconciliation triggered for version $${PENDING}."
 
                   # Re-suspend after triggering (Flux will complete the current reconcile)
                   sleep 10
