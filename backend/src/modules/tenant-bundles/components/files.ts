@@ -201,7 +201,11 @@ export function buildFilesComponentJobSpec(input: {
       command: ['sh', '-c', script],
       resources: {
         requests: { cpu: '100m', memory: '128Mi' },
-        limits: { cpu: '500m', memory: '512Mi' },
+        // Phase 1 piece #10 perf: 1500m lets tar+curl saturate a Hetzner
+        // Storage Box / Object Storage bandwidth slot without the kernel
+        // throttling the streaming pipeline. Memory limit unchanged —
+        // the streaming pipeline keeps RSS bounded regardless of CPU.
+        limits: { cpu: '1500m', memory: '512Mi' },
       },
       volumeMounts: [
         { name: 'source', mountPath: '/source', readOnly: true },

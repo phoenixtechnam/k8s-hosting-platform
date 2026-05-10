@@ -86,6 +86,9 @@ SFTP_LINE=$(grep -m1 'install-ssh-key' "$SERVERS_TXT" | strip_cr || true)
 SFTP_USER=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+) ([^@]+)@.*|\2|p')
 SFTP_HOST=$(echo "$SFTP_LINE" | sed -nE 's|.*@([^ ]+) install-ssh-key.*|\1|p')
 SFTP_PORT=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+).*|\1|p')
+# SFTP key path (override SFTP_KEY env if a different identity is used
+# for the storage-box vs the cluster). Defaults to the same key as SSH_KEY.
+SFTP_KEY="${SFTP_KEY:-$SSH_KEY}"
 
 [ -n "$S3_ENDPOINT" ] && [ -n "$S3_BUCKET" ] && [ -n "$S3_KEY" ] && [ -n "$S3_SECRET" ] || {
   echo "ERROR: S3 creds missing from $SERVERS_TXT" >&2; exit 2; }
@@ -356,8 +359,14 @@ export RESTIC_PASSWORD_FILE="$PASS_FILE"
 # Resolve the actual storage target from the bundle target_kind so
 # the local restic CLI knows whether to read S3 or SFTP. Both repo
 # layouts use restic-files/<clientId> per ADR-036 §"repo URI portability".
-TARGET_KIND=$(apij "$API_BASE/api/v1/admin/backup-configs/$EXISTING_CFG" \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["storageType"])' 2>/dev/null || echo s3)
+# No GET-by-id endpoint exists; read storageType from the list response.
+TARGET_KIND=$(apij "$API_BASE/api/v1/admin/backup-configs" \
+  | python3 -c "
+import json, sys
+for c in json.load(sys.stdin)['data']:
+    if c.get('id') == '$EXISTING_CFG':
+        print(c.get('storageType', 's3')); break
+" 2>/dev/null || echo s3)
 echo "  target kind: $TARGET_KIND"
 
 if [ "$TARGET_KIND" = "s3" ]; then
