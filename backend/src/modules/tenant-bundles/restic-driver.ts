@@ -487,6 +487,14 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
     cliArgs.push('--stdin');
     cliArgs.push('--stdin-filename', args.stdinFilename);
     cliArgs.push('--json');
+    // Memory-bounded restic flags (Phase 1 piece #8 — staging measured
+    // 389 MiB peak on 5 GiB stream; target <256 MiB):
+    // - read-concurrency 1: single reader (no concurrent stdin makes sense)
+    // - compression off: tenant tar carries already-compressed content
+    //   (jpegs, mp4, .gz dumps) where restic compression wastes CPU + RAM
+    //   for ≤1% gain. Drops restic working set by ~80–120 MiB.
+    cliArgs.push('--read-concurrency', '1');
+    cliArgs.push('--compression', 'off');
     for (const tag of args.tags) {
       cliArgs.push('--tag', tag);
     }
