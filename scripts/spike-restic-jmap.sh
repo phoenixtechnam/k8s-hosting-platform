@@ -30,7 +30,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034  # ROOT/ROADMAP held for the doc-update path
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck disable=SC2034
 ROADMAP="$ROOT/docs/02-operations/TENANT_BACKUP_V2_ROADMAP.md"
 
 RESTIC="${SPIKE_RESTIC:-/tmp/restic}"
@@ -133,6 +135,9 @@ mkdir -p "$SOURCE/var/www/uploads/2026/05"
 echo "fake user upload" > "$SOURCE/var/www/uploads/2026/05/photo.jpg"
 # Simulate a pre-capture DB dump.
 dd if=/dev/urandom of="$SOURCE/databases/maria-spike/_backup/2026-05-09T13-00.sql.gz" bs=1M count=10 status=none
+# Reference: full-tree sha is captured per-target inside the SFTP block
+# (SOURCE_SHA_LATEST). The base value is informational only.
+# shellcheck disable=SC2034
 SOURCE_SHA_BASE=$(cd "$SOURCE" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
 
 # Write per-tenant passwords to mode-600 tmpfiles. We pass them to restic via
@@ -180,7 +185,8 @@ echo "  backup incremental (~$DELTA_MB MiB delta): ${S3_INCR_S}s, snapshot ${SNA
 S3_STATS=$("$RESTIC" --quiet --repo "$S3_REPO" stats --mode raw-data --json 2>/dev/null || echo '{}')
 S3_BYTES=$(echo "$S3_STATS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(String(JSON.parse(s).total_size||0))}catch(e){process.stdout.write("0")}})')
 S3_MB=$(awk -v b="$S3_BYTES" 'BEGIN{printf "%.1f", b/1024/1024}')
-echo "  repo raw size after 2 snapshots: ${S3_MB} MiB (baseline ~$((BASE_MB+10)) MiB; ratio = "$(awk -v r="$S3_MB" -v b="$((BASE_MB+10))" 'BEGIN{printf "%.2f", r/b}')")"
+RATIO=$(awk -v r="$S3_MB" -v b="$((BASE_MB+10))" 'BEGIN{printf "%.2f", r/b}')
+echo "  repo raw size after 2 snapshots: ${S3_MB} MiB (baseline ~$((BASE_MB+10)) MiB; ratio = ${RATIO})"
 
 # Object-level restore: pull only var/www/uploads/2026/05/photo.jpg
 RESTORE="$WORK/restore-s3"

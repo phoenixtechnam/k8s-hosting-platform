@@ -45,6 +45,7 @@
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { signUploadToken } from '../upload-token.js';
+import { STRATEGIC_MERGE_PATCH } from '../../../shared/k8s-patch.js';
 
 export interface FilesComponentResult {
   /** Restic snapshot id (full 64-char) returned by the platform-api endpoint. */
@@ -542,19 +543,19 @@ async function wireSecretOwnerRef(
       }],
     },
   };
+  // Use the project-wide STRATEGIC_MERGE_PATCH middleware shim — the
+  // ci-k8s-patch-check audit enforces this pattern across all
+  // patchNamespaced* call sites (kubernetes-client v1.4 defaults to
+  // json-patch+json which the apiserver rejects for merge objects).
   await (k8s.core as unknown as {
-    patchNamespacedSecret: (args: {
-      name: string;
-      namespace: string;
-      body: unknown;
-      headers?: Record<string, string>;
-    }) => Promise<unknown>;
-  }).patchNamespacedSecret({
-    name: secretName,
-    namespace,
-    body,
-    headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
-  });
+    patchNamespacedSecret: (
+      args: { name: string; namespace: string; body: unknown },
+      override: typeof STRATEGIC_MERGE_PATCH,
+    ) => Promise<unknown>;
+  }).patchNamespacedSecret(
+    { name: secretName, namespace, body },
+    STRATEGIC_MERGE_PATCH,
+  );
 }
 
 async function checkPvcExists(

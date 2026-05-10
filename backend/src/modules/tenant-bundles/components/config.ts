@@ -118,6 +118,14 @@ export const CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES: ReadonlyMap<string, string> 
   // are platform-managed; restoring a workers row resurrects stale
   // tunnel state that the issuer no longer trusts.
   ['privateWorkers', 'tunnel agent registration state; re-issued on restore'],
+  // Tenant-backup v2 (ADR-036, migration 0093) orchestrator state.
+  // Both tables are platform-owned operator state — they encode the
+  // restic repo URI + last-snapshot id + per-mailbox JMAP state token
+  // as of the source region. Restoring them into a bundle would point
+  // a fresh tenant at a stranger's repo; restore-side code reseeds
+  // them on next backup.
+  ['tenantResticRepoState', 'restic per-tenant repo state, regenerated on next backup (ADR-036)'],
+  ['tenantJmapState', 'per-mailbox JMAP state-token cache, regenerated on next mail capture (ADR-036)'],
 ]);
 
 type ConfigDumpTable = typeof CONFIG_DUMP_TABLES[number];

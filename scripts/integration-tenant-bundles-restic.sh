@@ -58,6 +58,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034  # ROOT used for path construction by future variants of this script
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 API_BASE="${API_BASE:-https://admin.testing.phoenix-host.net}"
@@ -82,8 +83,13 @@ S3_BUCKET=$(awk '/^Bucket: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
 S3_KEY=$(awk '/^Access Key: /{print $3; exit}' "$SERVERS_TXT" | strip_cr)
 S3_SECRET=$(awk '/^Key: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
 SFTP_LINE=$(grep -m1 'install-ssh-key' "$SERVERS_TXT" | strip_cr || true)
+# Reserved for INTEGRATE_SFTP=1 path (Phase 2 stub at the bottom of
+# this script). shellcheck doesn't see the future use; suppress.
+# shellcheck disable=SC2034
 SFTP_USER=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+) ([^@]+)@.*|\2|p')
+# shellcheck disable=SC2034
 SFTP_HOST=$(echo "$SFTP_LINE" | sed -nE 's|.*@([^ ]+) install-ssh-key.*|\1|p')
+# shellcheck disable=SC2034
 SFTP_PORT=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+).*|\1|p')
 
 [ -n "$S3_ENDPOINT" ] && [ -n "$S3_BUCKET" ] && [ -n "$S3_KEY" ] && [ -n "$S3_SECRET" ] || {
@@ -249,6 +255,7 @@ echo "  bundle id: $BUNDLE_ID"
 # ── Step 7: poll until terminal ─────────────────────────────────────────────
 echo
 echo "[7/9] polling bundle status…"
+# shellcheck disable=SC2034  # i is loop counter only; we use ELAPSED for time
 for i in $(seq 1 120); do
   DETAIL=$(apij "$API_BASE/api/v1/admin/tenant-bundles/$BUNDLE_ID")
   STATUS=$(echo "$DETAIL" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["status"])')
