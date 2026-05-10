@@ -78,6 +78,70 @@ This is the operator's explicit decision: deleting prior staging bundles is acce
 - Same-tenant double-dispatch: prevented by both the scheduler CAS and restic's per-repo lockfile (defence in depth).
 - Cluster-wide concurrency cap: `tenant_backup_global_max_in_flight` (default 0). Recommended value 8 for 3-replica HA at 500 tenants to bound object-store rate-limit pressure.
 
+### Multi-region migration + DR (Phase 1.5)
+
+The tenant-backup repo is designed so a Region B operator can mount a Region A repo **read-only** and restore tenants from it without write access or shared master credentials. This supports two operator scenarios uniformly:
+
+1. **Migration**: tenant moves from Region A to Region B. Region B mounts the bucket read-only, picks the tenant's latest snapshot, restores it under a new (or reused) tenant identity.
+2. **Disaster recovery**: Region A is wiped. Region B's operator-owned mirror of the bucket (or the same bucket if it survived) is mounted read-only; tenants are restored one by one.
+
+**Snapshot tag schema (mandatory at write time, frozen as `BUNDLE_SCHEMA_VERSION = 2`):**
+
+```
+bundle-version=2          # bumps with breaking restore-side changes
+platform-version=<sha>    # source-region platform-api version
+region=<source-region-id> # derived from PLATFORM_BASE_DOMAIN, slugified
+tenant-id=<clientId>      # source-region clientId
+tenant-slug=<slug>        # human-friendly identifier from clients.slug
+bundle-id=<backupId>      # links to source-region backup_jobs row
+component=files|mailboxes
+```
+
+`restic snapshots --tag region=eu-fsn1 --tag tenant-slug=acme-corp --json` is the canonical way for any operator (in any region) to identify portable snapshots.
+
+**Region id**: derived from `PLATFORM_BASE_DOMAIN` (already in `backend/src/config/domains.ts`). Slugified by replacing dots with dashes so tags stay shell-safe in any context. e.g. `staging.success.com.na` → `staging-success-com-na`. Operator-overridable via `tenant_backup_v2_settings.region_id_override` if needed.
+
+**Repo URL portability**: `s3:https://fsn1.your-objectstorage.com/k8s-staging/restic-files/<clientId>` works identically from any cluster that can reach the endpoint. No region-specific transformation. Region B creates a `backup_configurations` row pointing at the same bucket (read-only IAM on its side) and registers it as an `external_backup_repos` row.
+
+**DR key derivation (Option A + C — chosen 2026-05-09)**:
+
+Per-tenant restic password used by the source region remains `HKDF(OIDC_ENCRYPTION_KEY, "restic-tenant-" + clientId)` — only the source region can derive it. After the first successful backup for a (clientId, component), the orchestrator runs `restic key add` to attach a SECOND password derived from a separate `DR_RECOVERY_KEY` held in `tenant_backup_v2_settings.dr_recovery_key_encrypted`:
+
+```
+dr_password = HKDF(DR_RECOVERY_KEY, "dr-recovery:" + clientId)
+```
+
+`DR_RECOVERY_KEY` is a 32-byte secret generated once per cluster, stored encrypted at rest under `OIDC_ENCRYPTION_KEY`, shared out-of-band with Region B's operator. Region B reproduces `dr_password` deterministically. Rotation = generate new key, run `restic key add new; restic key remove old` cluster-wide via background sweeper.
+
+**Option C (per-migration ad-hoc keys)**: in addition, the admin UI exposes "Generate one-shot migration key" which calls `restic key add` with a freshly random 32-byte password, prints it once, and the operator hands it to Region B for a single migration. Operator's responsibility to revoke after.
+
+Operator may run with **Option A only** (default), **Option B only** (set `dr_recovery_key_encrypted = NULL` so no auto-add happens; use one-shot keys per migration), or **A + C** (both available).
+
+**Read-only restore**: `restic --no-lock` is used for all reads against external repos. Restic's lock model only takes locks for write operations (`backup`, `forget`, `prune`); reads with `--no-lock` skip lock acquisition entirely. Region A backing up while Region B restores from the same repo is safe. Region B's bucket access SHOULD additionally be IAM-restricted to read on its side; documented in the operator runbook.
+
+**Concurrent access safety**:
+- Region A `restic backup` takes per-repo lock during write.
+- Region B `restic snapshots --no-lock` and `restic restore --no-lock` skip the lock.
+- A Region A `restic forget --prune` mid-restore could in theory race a snapshot the Region B reader is materialising. Mitigation: `forget --prune` runs on a separate retention cron, NOT during a backup window; AND the read-only restore uses `--no-lock` so it sees the snapshot list as-of-open and reads packs that match. If a pack is pruned mid-restore, restic surfaces a clear error and the restore can be retried. Documented in the operator runbook.
+
+**Cross-region restore executor**:
+
+```ts
+restoreFromExternalRepo({
+  sourceTarget,            // resolved BackupTarget (read-only)
+  sourceSnapshotId,        // restic snapshot id from sourceTarget
+  targetClientId?,         // override: which local clientId receives the data
+  targetSlug?,             // override: tenant slug at the destination
+  passwordHex,             // either DR password or one-shot key
+})
+```
+
+If `targetClientId` is omitted, parsed from snapshot tag `tenant-id=…`. If `targetSlug` is omitted, parsed from `tenant-slug=…`. Cross-tenant guard adapted: skips the local `dump.clientId === restoreJob.clientId` invariant (it's intentionally cross-region) but enforces:
+
+1. The source repo URI matches a row in `external_backup_repos` (operator-allowlisted).
+2. Every snapshot's `bundle-version` is ≤ the local `BUNDLE_SCHEMA_VERSION` (forward-compatible only).
+3. UI requires explicit operator confirmation: "Restore tenant X (region eu-fsn1) INTO this region as tenant Y" with the source region prominently displayed.
+
 ### Future open door (NOT in scope)
 
 When Stalwart is configured to use S3 as its blob store, JMAP `Blob/get` becomes a server-side proxy that re-reads from S3. In that configuration there is a path where the backup does not transfer bytes at all — it just records the blob hash and Stalwart's bucket reference. This is documented as a future optimisation in this ADR but is **not implemented now**.

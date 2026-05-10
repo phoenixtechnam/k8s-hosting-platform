@@ -24,16 +24,23 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Readable } from 'node:stream';
 import { eq } from 'drizzle-orm';
-import { backupJobs, backupConfigurations } from '../../db/schema.js';
+import { backupJobs, backupConfigurations, clients, tenantBackupV2Settings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { decrypt } from '../oidc/crypto.js';
+import { resolveBaseDomain } from '../../config/domains.js';
 import { verifyUploadToken } from './upload-token.js';
 import { success } from '../../shared/response.js';
 import { resolveBackupTarget } from './resolve-backup-target.js';
-import { deriveResticPassword, runResticBackup, type ResticComponent } from './restic-driver.js';
+import {
+  buildSnapshotTags,
+  deriveResticPassword,
+  deriveRegionId,
+  runResticBackup,
+  type ResticComponent,
+} from './restic-driver.js';
 
 const ALLOWED_COMPONENTS = new Set(['files', 'mailboxes', 'config', 'secrets'] as const);
 const RESTIC_COMPONENTS: ReadonlySet<ResticComponent> = new Set(['files', 'mailboxes']);
@@ -226,6 +233,27 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     // Per-tenant HKDF password — pinned by Phase 0 lock vector.
     const password = deriveResticPassword(secretsKeyHex, job.clientId);
 
+    // Snapshot tags carry the full metadata Region B needs to identify
+    // and restore this snapshot from outside (ADR-036 multi-region).
+    const [client] = await app.db.select().from(clients).where(eq(clients.id, job.clientId)).limit(1);
+    if (!client) throw new ApiError('NOT_FOUND', 'Bundle client missing', 404);
+    const [settings] = await app.db.select().from(tenantBackupV2Settings).limit(1);
+    const regionOverride = settings?.regionIdOverride ?? '';
+    const apex = resolveBaseDomain({
+      PLATFORM_BASE_DOMAIN: app.config.PLATFORM_BASE_DOMAIN,
+      INGRESS_BASE_DOMAIN: app.config.INGRESS_BASE_DOMAIN,
+    });
+    const regionId = deriveRegionId(apex, regionOverride);
+    const platformVersion = app.config.PLATFORM_VERSION;
+    const tags = buildSnapshotTags({
+      bundleId,
+      clientId: job.clientId,
+      tenantSlug: client.kubernetesNamespace,
+      component: component as ResticComponent,
+      regionId,
+      platformVersion,
+    });
+
     let result;
     try {
       result = await runResticBackup({
@@ -234,7 +262,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
         component: component as ResticComponent,
         passwordHex: password,
         stdinFilename,
-        tags: [`bundle=${bundleId}`, `clientId=${job.clientId}`, `component=${component}`],
+        tags,
         stdin: request.raw as unknown as Readable,
       });
     } catch (err) {
@@ -251,6 +279,8 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       snapshotId: result.snapshotId,
       sizeBytes: result.totalBytesProcessed,
       fileCount: result.totalFilesProcessed,
+      regionId,
+      tags,
     });
   });
 }

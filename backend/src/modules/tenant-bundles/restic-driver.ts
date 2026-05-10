@@ -109,7 +109,12 @@ export interface RunResticBackupArgs {
   readonly stdin: Readable;
   /** Per-pod concurrency gate. Defaults to a process-singleton (DEFAULT_SEM). */
   readonly semaphore?: ResticConcurrencySemaphore;
+  /** Hard wall-clock ceiling. Default: 1 hour. Mitigates reviewer #8
+   *  (semaphore-exhaustion if restic neither reads stdin nor exits). */
+  readonly timeoutMs?: number;
 }
+
+const DEFAULT_BACKUP_TIMEOUT_MS = 60 * 60 * 1000;
 
 // ─── Password derivation ────────────────────────────────────────────────────
 
@@ -125,17 +130,134 @@ export interface RunResticBackupArgs {
  * This is asserted in restic-driver.test.ts.
  */
 export function deriveResticPassword(secretHex: string, clientId: string): string {
+  return hkdfHex(secretHex, `restic-tenant-${assertClientId(clientId)}`);
+}
+
+/**
+ * Derive the per-tenant DR-recovery password from the cluster's
+ * DR_RECOVERY_KEY (a separate 32-byte secret from
+ * OIDC_ENCRYPTION_KEY). Phase 1.5 multi-region/DR.
+ *
+ * Region B reproduces this deterministically given DR_RECOVERY_KEY +
+ * the source-region clientId; that lets it open Region A's restic
+ * repo via the secondary password added by `restic key add`. The
+ * primary HKDF-over-OIDC password stays Region-A-only.
+ *
+ * Distinct info prefix prevents collision with the primary
+ * derivation: even if an operator mistakenly uses the same key for
+ * both, the resulting passwords differ.
+ */
+export function deriveDrRecoveryPassword(secretHex: string, clientId: string): string {
+  return hkdfHex(secretHex, `dr-recovery:${assertClientId(clientId)}`);
+}
+
+function hkdfHex(secretHex: string, info: string): string {
   if (typeof secretHex !== 'string' || !/^[0-9a-fA-F]{64}$/.test(secretHex)) {
-    throw new Error('deriveResticPassword: key must be 32 bytes (64 hex chars)');
-  }
-  if (typeof clientId !== 'string' || clientId.length === 0) {
-    throw new Error('deriveResticPassword: clientId must be a non-empty string');
+    throw new Error('HKDF: key must be 32 bytes (64 hex chars)');
   }
   const secret = Buffer.from(secretHex, 'hex');
-  const info = Buffer.from(`restic-tenant-${clientId}`);
   // Salt is empty buffer per ADR-036 spec; matches Phase 0 spike.
-  const out = hkdfSync('sha256', secret, Buffer.alloc(0), info, 32);
+  const out = hkdfSync('sha256', secret, Buffer.alloc(0), Buffer.from(info), 32);
   return Buffer.from(out).toString('hex');
+}
+
+function assertClientId(clientId: string): string {
+  // Reviewer #1 HIGH: enforce the same CLIENT_ID_RE that the URI builder
+  // uses, so derivation, repo path, and runtime guard all agree on the
+  // valid id space. Otherwise a Phase 3 executor that parses tenant-id
+  // from a snapshot tag could pass derivation but fail later — confusing.
+  if (typeof clientId !== 'string' || !CLIENT_ID_RE.test(clientId)) {
+    throw new Error(`clientId '${String(clientId).slice(0, 64)}' fails CLIENT_ID_RE`);
+  }
+  return clientId;
+}
+
+// ─── Region id derivation (Phase 1.5) ───────────────────────────────────────
+
+const REGION_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/**
+ * Derive the snapshot-tag region id from the platform DNS apex
+ * (PLATFORM_BASE_DOMAIN). Slugified so the value is shell-safe in
+ * any context that consumes the tag (CLI args, SQL LIKE, URL paths).
+ *
+ * Operator may override via `tenant_backup_v2_settings.region_id_override`
+ * if the auto-derived value collides with another cluster sharing the
+ * same domain.
+ */
+export function deriveRegionId(domain: string, override?: string): string {
+  if (override) {
+    if (!REGION_ID_RE.test(override)) {
+      throw new Error(
+        `deriveRegionId: override '${override}' must match ${REGION_ID_RE.source}`,
+      );
+    }
+    return override;
+  }
+  const slug = domain.toLowerCase().replace(/\./g, '-');
+  if (!REGION_ID_RE.test(slug)) {
+    throw new Error(
+      `deriveRegionId: derived '${slug}' from domain '${domain}' is not a valid region id`,
+    );
+  }
+  return slug;
+}
+
+// ─── Snapshot tag schema (Phase 1.5) ────────────────────────────────────────
+
+/**
+ * Bumps when the on-store snapshot tag layout or restore-side
+ * interpretation changes in a way that requires migration. Read-side
+ * code refuses to restore a snapshot whose `bundle-version=` exceeds
+ * this constant (forward-incompat).
+ */
+export const BUNDLE_SCHEMA_VERSION = 2;
+
+/** Restic tag values must avoid whitespace and shell metacharacters.
+ *  Reviewer #6 MEDIUM: include `+` so semver build metadata
+ *  (e.g. 1.2.3+build.456) does not silently fail at backup time. */
+const TAG_VALUE_RE = /^[A-Za-z0-9._@+/-]+$/;
+/** Format-checked, used to reject argv-flag-injection-style values
+ *  in tag filters and key labels (reviewer #3, #5). The leading-char
+ *  guard rejects '--rm' and similar that would be parsed as an argv
+ *  flag if argv parsing ever changed in restic. */
+const TAG_FILTER_RE = /^[A-Za-z0-9_][A-Za-z0-9._@+=/-]{0,254}$/;
+const LABEL_RE = /^[A-Za-z0-9_][A-Za-z0-9._@/-]{0,254}$/;
+/** Absolute path with no `..` segments. Used for runResticRestore
+ *  targetDir + includes (reviewer #4). */
+const ABS_PATH_RE = /^\/(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]*$/;
+
+export interface SnapshotTagInputs {
+  readonly bundleId: string;
+  readonly clientId: string;
+  readonly tenantSlug: string;
+  readonly component: ResticComponent;
+  readonly regionId: string;
+  readonly platformVersion: string;
+}
+
+export function buildSnapshotTags(inputs: SnapshotTagInputs): string[] {
+  const fields: ReadonlyArray<readonly [string, string]> = [
+    ['bundle-version', String(BUNDLE_SCHEMA_VERSION)],
+    ['platform-version', inputs.platformVersion],
+    ['region', inputs.regionId],
+    ['tenant-id', inputs.clientId],
+    ['tenant-slug', inputs.tenantSlug],
+    ['bundle-id', inputs.bundleId],
+    ['component', inputs.component],
+  ];
+  for (const [k, v] of fields) {
+    if (typeof v !== 'string' || v.length === 0 || v.length > 255) {
+      throw new Error(`buildSnapshotTags: empty or oversized value for '${k}'`);
+    }
+    if (!TAG_VALUE_RE.test(v)) {
+      throw new Error(`buildSnapshotTags: tag value for '${k}' contains disallowed characters`);
+    }
+  }
+  if (!ALLOWED_COMPONENTS.has(inputs.component)) {
+    throw new Error(`buildSnapshotTags: invalid component '${inputs.component}'`);
+  }
+  return fields.map(([k, v]) => `${k}=${v}`);
 }
 
 // ─── Repo URI builder ───────────────────────────────────────────────────────
@@ -293,12 +415,16 @@ async function prepareSftpArgs(target: Extract<BackupTarget, { kind: 'ssh' }>): 
   const dir = await mkdtemp(join(tmpdir(), 'restic-sftp-'));
   const keyPath = join(dir, 'id');
   await writeFile(keyPath, target.sshKey, { mode: 0o600 });
+  // Reviewer #2 HIGH: every interpolation defensively shQuote'd. The
+  // sftp.command string is passed to /bin/sh -c by SSH itself, so a
+  // metacharacter in sshUser or sshHost would otherwise inject options
+  // or commands. shQuote is a no-op on already-safe values.
   const cmd =
-    `ssh -i ${shQuote(keyPath)} -p ${target.sshPort} ` +
+    `ssh -i ${shQuote(keyPath)} -p ${shQuote(String(target.sshPort))} ` +
     `-o StrictHostKeyChecking=accept-new ` +
     `-o BatchMode=yes ` +
     `-o ServerAliveInterval=30 ` +
-    `-s ${target.sshUser}@${target.sshHost} sftp`;
+    `-s ${shQuote(`${target.sshUser}@${target.sshHost}`)} sftp`;
   const args = ['-o', `sftp.command=${cmd}`];
   return {
     args,
@@ -393,19 +519,48 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
       child.on('close', finish);
     });
 
+    // Reviewer #8 MEDIUM: hard timeout. Without this, a stalled
+    // restic (network black-hole to S3, lock contention, kernel pipe
+    // back-pressure deadlock) would hold the per-pod semaphore slot
+    // indefinitely. With cap=4, four such stalls halt every tenant
+    // backup in this pod until restart.
+    const timeoutMs = args.timeoutMs ?? DEFAULT_BACKUP_TIMEOUT_MS;
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    const timeoutP = new Promise<{ kind: 'timeout' }>((resolveTimeout) => {
+      timeoutTimer = setTimeout(() => resolveTimeout({ kind: 'timeout' }), timeoutMs);
+    });
+
     try {
-      await stdinPromise;
+      const winner = await Promise.race([
+        Promise.all([stdinPromise, exitPromise]).then(([_, code]) => ({ kind: 'done' as const, code })),
+        timeoutP,
+      ]);
+      if (winner.kind === 'timeout') {
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          /* ignore */
+        }
+        // Best-effort wait so the process unwinds before we return; do
+        // NOT await indefinitely.
+        await Promise.race([
+          exitPromise,
+          new Promise((res) => setTimeout(res, 5_000)),
+        ]);
+        throw new Error(
+          `restic backup timed out after ${Math.round(timeoutMs / 1000)}s (clientId=${args.clientId} component=${args.component})`,
+        );
+      }
+      if (winner.code !== 0) {
+        throw new Error(`restic backup exited ${winner.code}: ${stderrBuf.trim() || stdoutBuf.trim()}`);
+      }
     } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
       try {
         child.stdin.end();
       } catch {
         /* ignore — child may already be gone */
       }
-    }
-
-    const code = await exitPromise;
-    if (code !== 0) {
-      throw new Error(`restic backup exited ${code}: ${stderrBuf.trim() || stdoutBuf.trim()}`);
     }
 
     // Parse last JSON summary line. restic emits one JSON object per line
@@ -443,6 +598,309 @@ function parseResticSummary(stdoutBuf: string): ResticBackupResult | null {
     }
   }
   return null;
+}
+
+// ─── Restore (Phase 1.5) ────────────────────────────────────────────────────
+
+const SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
+
+export interface RunResticRestoreArgs {
+  readonly target: BackupTarget;
+  readonly snapshotId: string;
+  readonly passwordHex: string;
+  readonly targetDir: string;
+  readonly includes?: ReadonlyArray<string>;
+  /** When true, passes --no-lock — required for read-only buckets and
+   *  for cross-region external restores where Region B has no write
+   *  access to Region A's lock keyspace. */
+  readonly readOnly: boolean;
+  readonly semaphore?: ResticConcurrencySemaphore;
+}
+
+/**
+ * Run `restic restore <snapshotId> --target <dir> [--include …]
+ * [--no-lock]`. Used both for in-region restores (readOnly=false) and
+ * cross-region read-only restores from external repos
+ * (readOnly=true).
+ */
+export async function runResticRestore(args: RunResticRestoreArgs): Promise<void> {
+  if (!SNAPSHOT_ID_RE.test(args.snapshotId)) {
+    throw new Error(`runResticRestore: invalid snapshotId '${args.snapshotId}'`);
+  }
+  // Reviewer #4 MEDIUM: validate targetDir (must be an absolute path
+  // without `..` segments) and every include path before they reach
+  // restic argv. nodeSpawn protects against shell injection, but a
+  // value like `--rm` would silently no-op (no matches) and a path
+  // like `/` would let the restore overwrite the platform root.
+  if (!ABS_PATH_RE.test(args.targetDir)) {
+    throw new Error(`runResticRestore: invalid targetDir '${args.targetDir}'`);
+  }
+  for (const inc of args.includes ?? []) {
+    if (!ABS_PATH_RE.test(inc)) {
+      throw new Error(`runResticRestore: invalid include path '${inc}'`);
+    }
+  }
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const repoUriComponentScan = args.target;
+    const repoUri = buildResticRepoUriForRestore(repoUriComponentScan, args.snapshotId);
+    const env = {
+      ...buildResticEnv(args.target),
+      RESTIC_PASSWORD: args.passwordHex,
+    };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', repoUri);
+    if (args.readOnly) cliArgs.push('--no-lock');
+    cliArgs.push('restore', args.snapshotId);
+    cliArgs.push('--target', args.targetDir);
+    for (const inc of args.includes ?? []) {
+      cliArgs.push('--include', inc);
+    }
+    cliArgs.push('--json');
+
+    const child = spawnRestic(cliArgs, env);
+    let stderrBuf = '';
+    child.stderr.on('data', (c: Buffer) => {
+      stderrBuf += c.toString('utf8');
+    });
+    // Drain stdout so the child doesn't block on pipe back-pressure.
+    child.stdout.on('data', () => {
+      /* drop */
+    });
+    const code = await new Promise<number>((resolve) => {
+      const finish = (c: number | null) => resolve(c ?? 0);
+      child.on('exit', finish);
+      child.on('close', finish);
+    });
+    if (code !== 0) {
+      throw new Error(`restic restore exited ${code}: ${stderrBuf.trim()}`);
+    }
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+    release();
+  }
+}
+
+// ─── Snapshot listing (Phase 1.5) ───────────────────────────────────────────
+
+export interface ResticSnapshotMeta {
+  readonly id: string;
+  readonly shortId: string;
+  readonly time: string;
+  readonly tags: ReadonlyArray<string>;
+}
+
+export interface ListResticSnapshotsArgs {
+  readonly target: BackupTarget;
+  readonly passwordHex: string;
+  readonly readOnly: boolean;
+  /** Server-side narrowing: every filter becomes `--tag <k=v>`. */
+  readonly tagFilters?: ReadonlyArray<string>;
+  readonly semaphore?: ResticConcurrencySemaphore;
+}
+
+export async function listResticSnapshots(args: ListResticSnapshotsArgs): Promise<ResticSnapshotMeta[]> {
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    // For listing we don't need a per-component repo URI — the restic
+    // repo IS the per-(client,component) directory. Caller passes a
+    // BackupTarget already pointed at a specific repo prefix; we
+    // mirror it without appending. Use a pseudo-component to satisfy
+    // the type constraint on the URI builder; for listing we skip the
+    // URI rewrite and use the target's repo path directly. Implementation
+    // detail: callers always invoke via resolveExternalRepoUri which
+    // yields the exact repo URI — listing is a thin shim around that.
+    const repoUri = buildResticRepoUriForRestore(args.target, 'list-only');
+    const env = {
+      ...buildResticEnv(args.target),
+      RESTIC_PASSWORD: args.passwordHex,
+    };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', repoUri);
+    if (args.readOnly) cliArgs.push('--no-lock');
+    cliArgs.push('snapshots', '--json');
+    // Reviewer #3 HIGH: validate every tag filter before it reaches
+    // argv. A filter starting with `--` would not inject a flag (restic
+    // parses positionally) but inconsistent shapes are still a smell;
+    // we want a tight allowlist so route-bound callers can't pass
+    // arbitrary user input through.
+    for (const t of args.tagFilters ?? []) {
+      if (!TAG_FILTER_RE.test(t)) {
+        throw new Error(`listResticSnapshots: invalid tag filter '${t}'`);
+      }
+      cliArgs.push('--tag', t);
+    }
+    const child = spawnRestic(cliArgs, env);
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    child.stdout.on('data', (c: Buffer) => {
+      stdoutBuf += c.toString('utf8');
+    });
+    child.stderr.on('data', (c: Buffer) => {
+      stderrBuf += c.toString('utf8');
+    });
+    const code = await new Promise<number>((resolve) => {
+      const finish = (c: number | null) => resolve(c ?? 0);
+      child.on('exit', finish);
+      child.on('close', finish);
+    });
+    if (code !== 0) {
+      throw new Error(`restic snapshots exited ${code}: ${stderrBuf.trim()}`);
+    }
+    const parsed = parseSnapshotList(stdoutBuf);
+    return parsed;
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+    release();
+  }
+}
+
+function parseSnapshotList(stdoutBuf: string): ResticSnapshotMeta[] {
+  const trimmed = stdoutBuf.trim();
+  if (!trimmed) return [];
+  let arr: unknown;
+  try {
+    arr = JSON.parse(trimmed);
+  } catch (err) {
+    throw new Error(`restic snapshots: malformed JSON (${(err as Error).message})`);
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.map((row) => {
+    const r = row as Record<string, unknown>;
+    return {
+      id: String(r.id ?? ''),
+      shortId: String(r.short_id ?? ''),
+      time: String(r.time ?? ''),
+      tags: Array.isArray(r.tags) ? (r.tags as unknown[]).map(String) : [],
+    };
+  });
+}
+
+/**
+ * For restore + list operations the caller provides a BackupTarget
+ * that ALREADY points at the per-tenant repo. We pass it through
+ * verbatim to restic. (For backup we own the prefix construction —
+ * see buildResticRepoUri.)
+ */
+function buildResticRepoUriForRestore(target: BackupTarget, _hint: string): string {
+  switch (target.kind) {
+    case 's3':
+      return `s3:${target.s3Endpoint.replace(/\/$/, '')}/${target.s3Bucket}${
+        target.s3Prefix ? `/${target.s3Prefix.replace(/^\/+|\/+$/g, '')}` : ''
+      }`;
+    case 'ssh': {
+      const path = target.sshPath.replace(/^\/+|\/+$/g, '');
+      return path
+        ? `sftp:${target.sshUser}@${target.sshHost}:${path}`
+        : `sftp:${target.sshUser}@${target.sshHost}:`;
+    }
+    case 'hostpath':
+      return target.hostPath.replace(/\/$/, '');
+  }
+}
+
+// ─── Key management (Phase 1.5) ─────────────────────────────────────────────
+
+const PASSWORD_HEX_RE = /^[0-9a-fA-F]{64}$/;
+
+export interface AddResticKeyArgs {
+  readonly target: BackupTarget;
+  /** Existing password that already opens the repo (typically the
+   *  source-region primary password). */
+  readonly currentPasswordHex: string;
+  /** New password to add (DR-recovery or one-shot migration key). */
+  readonly newPasswordHex: string;
+  /** Free-text label restic stores with the new key. Helps operators
+   *  identify which key to remove later. */
+  readonly hostLabel?: string;
+  readonly userLabel?: string;
+  readonly semaphore?: ResticConcurrencySemaphore;
+}
+
+/**
+ * Run `restic key add`. The new password is fed via stdin so it never
+ * appears on argv or in /proc/<pid>/environ. Used by the orchestrator
+ * after first-successful-backup to attach the cluster's DR-recovery
+ * password, and by the admin UI for one-shot migration keys.
+ */
+export async function addResticKey(args: AddResticKeyArgs): Promise<void> {
+  if (!PASSWORD_HEX_RE.test(args.currentPasswordHex)) {
+    throw new Error('addResticKey: currentPasswordHex must be 64 hex chars');
+  }
+  if (!PASSWORD_HEX_RE.test(args.newPasswordHex)) {
+    throw new Error('addResticKey: newPasswordHex must be 64 hex chars');
+  }
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const repoUri = buildResticRepoUriForRestore(args.target, 'key-add');
+    const env = {
+      ...buildResticEnv(args.target),
+      RESTIC_PASSWORD: args.currentPasswordHex,
+    };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', repoUri);
+    cliArgs.push('key', 'add');
+    cliArgs.push('--new-password-file', '/dev/stdin');
+    // Reviewer #5 MEDIUM: validate labels — a value like
+    // '--new-password-file' would push '--host' '--new-password-file'
+    // into argv, redirecting restic's password file to whatever the
+    // userLabel value happens to be (the next argv element).
+    if (args.hostLabel) {
+      if (!LABEL_RE.test(args.hostLabel)) {
+        throw new Error(`addResticKey: invalid hostLabel '${args.hostLabel}'`);
+      }
+      cliArgs.push('--host', args.hostLabel);
+    }
+    if (args.userLabel) {
+      if (!LABEL_RE.test(args.userLabel)) {
+        throw new Error(`addResticKey: invalid userLabel '${args.userLabel}'`);
+      }
+      cliArgs.push('--user', args.userLabel);
+    }
+
+    const child = spawnRestic(cliArgs, env);
+    let stderrBuf = '';
+    child.stdout.on('data', () => {
+      /* drop */
+    });
+    child.stderr.on('data', (c: Buffer) => {
+      stderrBuf += c.toString('utf8');
+    });
+    child.stdin.write(args.newPasswordHex);
+    child.stdin.end();
+    const code = await new Promise<number>((resolve) => {
+      const finish = (c: number | null) => resolve(c ?? 0);
+      child.on('exit', finish);
+      child.on('close', finish);
+    });
+    if (code !== 0) {
+      throw new Error(`restic key add exited ${code}: ${stderrBuf.trim()}`);
+    }
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+    release();
+  }
 }
 
 // ─── Random-suffix helper (used by initRepoIfMissing follow-ups) ────────────
