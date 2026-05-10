@@ -800,6 +800,59 @@ EOF
   log "Node logging caps configured (cores=disabled, journal=2GB cap, calico=daily rotate)."
 }
 
+configure_node_net_tuning() {
+  # Raise the kernel UDP receive limits so VXLAN, WireGuard, and any
+  # tenant UDP workload don't hit rcvbuf overflow under gigabit bursts.
+  #
+  # Symptom this prevents (observed 2026-05-10 on staging1): UDP @1 Gbps
+  # ingress dropped 15% packets even though the host was idle. Root
+  # cause was rmem_max=212992 (kernel default ≈ 256 KB) clamping
+  # iperf3 / Calico VXLAN / NetBird socket buffers far below the BDP.
+  # Other staging hosts had rmem_max=16M from the cloud image;
+  # staging1 didn't — classic config drift. Codifying it here keeps
+  # every node consistent regardless of image variant.
+  #
+  # Values:
+  #   rmem_max = 16 MB     — ceiling for setsockopt(SO_RCVBUF). Sized
+  #                          for 10 Gbps cross-DC with autotuning.
+  #   rmem_default = 4 MB  — default UDP socket buffer (TCP uses its
+  #                          own tcp_rmem autotuning, unaffected).
+  #   wmem_* mirrors rmem_* for symmetry.
+  #   netdev_max_backlog = 10000 — per-CPU RX queue before the kernel
+  #                          drops under softirq saturation. Default
+  #                          1000 is too tight at gigabit+.
+  #
+  # Memory cost is bounded: ~50 MB per host worst case on a 4-CPU VM.
+  # No effect on TCP (TCP autotuning is governed by net.ipv4.tcp_*).
+  if [[ "$SKIP_HARDENING" == true ]]; then
+    log "Skipping node net-tuning (--skip-hardening)."
+    return 0
+  fi
+  if marker_exists "node-net-tuning"; then
+    log "Node net-tuning already configured, skipping."
+    return 0
+  fi
+
+  log "Configuring node net-tuning (UDP rcvbuf / netdev backlog)..."
+
+  install -d -m 0755 /etc/sysctl.d
+  cat > /etc/sysctl.d/99-cluster-net-tune.conf <<'EOF'
+# Cluster network tuning — prevents UDP rcvbuf overflow under bursts.
+# Set by bootstrap.sh (configure_node_net_tuning). See that function
+# for the why; override by editing this file if a host genuinely
+# needs different limits.
+net.core.rmem_max = 16777216
+net.core.rmem_default = 4194304
+net.core.wmem_max = 16777216
+net.core.wmem_default = 4194304
+net.core.netdev_max_backlog = 10000
+EOF
+  sysctl --system >/dev/null
+
+  marker_set "node-net-tuning"
+  log "Node net-tuning configured (rmem_max=16M, rmem_default=4M, backlog=10000)."
+}
+
 install_packages() {
   log "Installing base packages (family=${OS_FAMILY})..."
   case "$OS_FAMILY" in
@@ -4850,6 +4903,7 @@ main() {
   install_packages
   if [[ "$DRY_RUN" != true ]]; then
     configure_node_logging_caps
+    configure_node_net_tuning
   fi
   if [[ "$DRY_RUN" == true ]]; then
     log ""
