@@ -18,8 +18,11 @@ describe('buildFilesComponentJobSpec', () => {
     clientId: 'abc',
     backupId: 'bkp-test',
     jobImage: 'alpine:3.20',
-    uploadUrl:
-      'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-test/components/files/restic-stream?token=t.deadbeef&filename=archive.tar',
+    // Reviewer #5 (Phase 1.5+): token NOT in URL; mounted via Secret
+    // and concatenated by the script after $(cat /var/run/upload-token/token).
+    uploadUrlNoToken:
+      'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-test/components/files/restic-stream?filename=archive.tar',
+    uploadTokenSecretName: 'bk-files-token-bkp-test',
   };
 
   it('produces a Job with backoffLimit=0 and ttlSecondsAfterFinished=600', () => {
@@ -56,9 +59,43 @@ describe('buildFilesComponentJobSpec', () => {
       spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
     };
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
-    expect(cmd).toContain(baseInput.uploadUrl);
+    expect(cmd).toContain(baseInput.uploadUrlNoToken);
     expect(cmd).toContain('tar cf - .');
     expect(cmd).toContain('--upload-file -');
+  });
+
+  it('mounts the upload token from a per-Job Secret (NOT inlined in command)', () => {
+    // Reviewer #5: HMAC token in command body would land in etcd
+    // and be readable by anyone with `get jobs` RBAC. Now sourced
+    // from a tmpfs-backed projected Secret at mode 0400.
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: {
+        containers: Array<{ command: string[]; volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }> }>;
+        volumes: Array<{ name: string; secret?: { secretName: string; defaultMode?: number; items?: Array<{ key: string; path: string }> } }>;
+      } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    // Command reads the token from the mounted file; URL has no &token=
+    // baked in; concatenation happens in the script.
+    expect(cmd).toContain('TOKEN=$(cat /var/run/upload-token/token)');
+    expect(cmd).toContain('&token=$TOKEN');
+    expect(cmd).not.toMatch(/[?&]token=[^$]/); // no literal token in URL
+    // Volume + mount wired correctly.
+    const mount = spec.spec.template.spec.containers[0]!.volumeMounts.find((m) => m.name === 'upload-token');
+    expect(mount?.mountPath).toBe('/var/run/upload-token');
+    expect(mount?.readOnly).toBe(true);
+    const vol = spec.spec.template.spec.volumes.find((v) => v.name === 'upload-token');
+    expect(vol?.secret?.secretName).toBe('bk-files-token-bkp-test');
+    expect(vol?.secret?.defaultMode).toBe(0o400);
+    expect(vol?.secret?.items).toEqual([{ key: 'token', path: 'token' }]);
+  });
+
+  it('fails the script loudly if the token Secret is missing', () => {
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).toContain('[ -n "$TOKEN" ] || { echo "ERROR: upload token missing"; exit 1; }');
   });
 
   it('does NOT gzip the tar stream (restic dedups raw blocks)', () => {

@@ -100,7 +100,7 @@ const JOB_DEADLINE_BUFFER_SEC = 60;
 const RESTIC_STREAM_ARTIFACT = 'restic-stream';
 const STDIN_FILENAME = 'archive.tar';
 
-function buildScript(opts: { uploadUrl: string; bundleId: string }): string {
+function buildScript(opts: { uploadUrlNoToken: string; bundleId: string }): string {
   // Job script:
   //   1. tar cf - .  (uncompressed — restic dedups raw blocks)
   //      Run in a subshell so the exit code lands in /tmp/tar.exit.
@@ -128,7 +128,14 @@ function buildScript(opts: { uploadUrl: string; bundleId: string }): string {
     'command -v curl >/dev/null 2>&1 || apk add --no-cache curl >/dev/null 2>&1 || { echo "ERROR: curl not available"; exit 1; }',
     'cd /source',
     'echo "Streaming tar to platform-api restic-stream..."',
-    `( tar cf - . 2>/tmp/tar.err; echo $? > /tmp/tar.exit ) | curl --fail-with-body -sS -o /tmp/restic-resp.json -w "%{http_code}" --upload-file - -H "Content-Type: application/x-tar" "${opts.uploadUrl}" > /tmp/http_status`,
+    // Reviewer #5 (Phase 1.5+): the HMAC token is mounted from a
+    // per-Job Secret at /var/run/upload-token/token rather than
+    // embedded in the Job spec body. The token never lands in
+    // etcd's `command` field; an attacker with `get jobs` RBAC in
+    // the tenant ns sees the URL skeleton but not the secret.
+    'TOKEN=$(cat /var/run/upload-token/token)',
+    '[ -n "$TOKEN" ] || { echo "ERROR: upload token missing"; exit 1; }',
+    `( tar cf - . 2>/tmp/tar.err; echo $? > /tmp/tar.exit ) | curl --fail-with-body -sS -o /tmp/restic-resp.json -w "%{http_code}" --upload-file - -H "Content-Type: application/x-tar" "${opts.uploadUrlNoToken}&token=$TOKEN" > /tmp/http_status`,
     'TAR_EXIT=$(cat /tmp/tar.exit 2>/dev/null || echo "missing")',
     '[ "$TAR_EXIT" = "0" ] || { echo "ERROR: tar exited $TAR_EXIT; tar.err:"; cat /tmp/tar.err 2>/dev/null || true; exit 1; }',
     'HTTP=$(tr -d "\\r\\n " < /tmp/http_status)',
@@ -170,11 +177,19 @@ export function buildFilesComponentJobSpec(input: {
   clientId: string;
   backupId: string;
   jobImage: string;
-  uploadUrl: string;
+  /** Upload URL WITHOUT the &token=... query param. The script
+   *  appends `&token=$TOKEN` after reading the token from the
+   *  per-Job Secret mounted at /var/run/upload-token/token. */
+  uploadUrlNoToken: string;
+  /** Name of the per-Job Secret in the same namespace that holds the
+   *  HMAC upload token under data.token. The orchestrator creates it
+   *  before launching this Job and sets ownerReferences pointing at
+   *  the Job so it auto-cleans on Job GC. */
+  uploadTokenSecretName: string;
   pinToNode?: string | null;
   activeDeadlineSeconds?: number;
 }): Record<string, unknown> {
-  const script = buildScript({ uploadUrl: input.uploadUrl, bundleId: input.backupId });
+  const script = buildScript({ uploadUrlNoToken: input.uploadUrlNoToken, bundleId: input.backupId });
   const podSpec: Record<string, unknown> = {
     restartPolicy: 'Never',
     priorityClassName: 'platform-tenant-overhead',
@@ -190,13 +205,28 @@ export function buildFilesComponentJobSpec(input: {
       volumeMounts: [
         { name: 'source', mountPath: '/source', readOnly: true },
         // Scratch is now tiny — only side-channel files (tar.exit,
-        // curl.meta, restic-resp.json, tar.err). 256Mi is generous.
+        // http_status, restic-resp.json, tar.err). 256Mi is generous.
         { name: 'scratch', mountPath: '/tmp' },
+        {
+          name: 'upload-token',
+          mountPath: '/var/run/upload-token',
+          readOnly: true,
+        },
       ],
     }],
     volumes: [
       { name: 'source', persistentVolumeClaim: { claimName: input.pvcName, readOnly: true } },
       { name: 'scratch', emptyDir: { sizeLimit: '256Mi' } },
+      {
+        name: 'upload-token',
+        secret: {
+          secretName: input.uploadTokenSecretName,
+          // tmpfs-backed; defaultMode 0400 — only root in the
+          // container can read.
+          defaultMode: 0o400,
+          items: [{ key: 'token', path: 'token' }],
+        },
+      },
     ],
   };
   if (input.pinToNode) {
@@ -265,14 +295,20 @@ export async function captureFilesComponent(
   const pinToNode = await findNodeAttachingPvc(opts.k8s, opts.namespace, opts.pvcName);
 
   const apiBase = opts.platformApiUrl.replace(/\/$/, '');
-  const uploadUrl =
+  const uploadUrlNoToken =
     `${apiBase}/api/v1/internal/bundles/${opts.backupId}` +
     `/components/files/restic-stream` +
-    `?token=${encodeURIComponent(archiveToken)}` +
-    `&filename=${encodeURIComponent(STDIN_FILENAME)}`;
+    `?filename=${encodeURIComponent(STDIN_FILENAME)}`;
 
   const jobName = `bk-files-${opts.backupId}`.slice(0, 63);
+  const tokenSecretName = `bk-files-token-${opts.backupId}`.slice(0, 63);
   const orchestratorTimeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  // Create the per-Job token Secret BEFORE the Job. ownerReferences
+  // wiring happens in step 2 after the Job is created (we need its
+  // UID). This ordering matches kubelet's expectation that referenced
+  // Secrets exist before the pod schedules.
+  await createTokenSecret(opts.k8s, opts.namespace, tokenSecretName, archiveToken);
 
   const spec = buildFilesComponentJobSpec({
     jobName,
@@ -281,14 +317,35 @@ export async function captureFilesComponent(
     clientId: opts.clientId,
     backupId: opts.backupId,
     jobImage: opts.jobImage ?? 'alpine:3.20',
-    uploadUrl,
+    uploadUrlNoToken,
+    uploadTokenSecretName: tokenSecretName,
     pinToNode,
     activeDeadlineSeconds: Math.max(60, Math.ceil(orchestratorTimeoutMs / 1000) - JOB_DEADLINE_BUFFER_SEC),
   });
 
-  await (opts.k8s.batch as unknown as {
-    createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+  const createdJob = await (opts.k8s.batch as unknown as {
+    createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } }>;
   }).createNamespacedJob({ namespace: opts.namespace, body: spec });
+
+  // Wire the Secret to the Job via ownerReferences so kube-controller
+  // GCs it when the Job's ttlSecondsAfterFinished elapses. Best-effort
+  // — if this fails, the Secret will live on as orphaned data; the
+  // tenant ns has no cred-bearing Secret in the spec itself, just an
+  // HMAC token that expires in 30 min anyway.
+  const jobUid = createdJob.metadata?.uid;
+  if (jobUid) {
+    await wireSecretOwnerRef(opts.k8s, opts.namespace, tokenSecretName, jobName, jobUid).catch(
+      (err: unknown) => {
+        // Log only — token Secret without ownerRef merely lingers.
+        // Caller's logger will pick this up via stderr if running
+        // locally; in production the orchestrator writes a warning.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[files-component] could not wire ownerRef on token Secret '${tokenSecretName}': ${(err as Error).message}`,
+        );
+      },
+    );
+  }
 
   await waitForJob(opts.k8s, opts.namespace, jobName, orchestratorTimeoutMs, opts.onProgress);
 
@@ -418,6 +475,86 @@ async function findNodeAttachingPvc(
   } catch {
     return null;
   }
+}
+
+/**
+ * Create a per-Job token Secret. data.token holds the HMAC upload
+ * token base64-encoded by the kube API. Mode 0400 enforced via the
+ * pod's volume mount (defaultMode in buildFilesComponentJobSpec).
+ *
+ * Idempotent on AlreadyExists (replays during transient Job-create
+ * retries are safe).
+ */
+async function createTokenSecret(
+  k8s: K8sClients,
+  namespace: string,
+  name: string,
+  token: string,
+): Promise<void> {
+  const body = {
+    metadata: {
+      name,
+      namespace,
+      labels: {
+        'platform.io/component': 'backup-files',
+        'platform.io/managed-by': 'tenant-bundles',
+      },
+    },
+    type: 'Opaque',
+    // The kube API base64-encodes data values; we pass the raw token
+    // and let the SDK marshal. Some SDK builds expect data already
+    // base64'd — we use stringData which is always plain.
+    stringData: { token },
+  };
+  try {
+    await (k8s.core as unknown as {
+      createNamespacedSecret: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+    }).createNamespacedSecret({ namespace, body });
+  } catch (err) {
+    const httpErr = err as { code?: number; statusCode?: number };
+    const code = httpErr.code ?? httpErr.statusCode;
+    if (code === 409) return; // AlreadyExists — idempotent retry.
+    throw err;
+  }
+}
+
+/**
+ * After the Job is created, set ownerReferences on the token Secret
+ * so kube-controller-manager GCs it when the Job is GC'd via
+ * ttlSecondsAfterFinished. Strategic patch.
+ */
+async function wireSecretOwnerRef(
+  k8s: K8sClients,
+  namespace: string,
+  secretName: string,
+  jobName: string,
+  jobUid: string,
+): Promise<void> {
+  const body = {
+    metadata: {
+      ownerReferences: [{
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        name: jobName,
+        uid: jobUid,
+        controller: true,
+        blockOwnerDeletion: false,
+      }],
+    },
+  };
+  await (k8s.core as unknown as {
+    patchNamespacedSecret: (args: {
+      name: string;
+      namespace: string;
+      body: unknown;
+      headers?: Record<string, string>;
+    }) => Promise<unknown>;
+  }).patchNamespacedSecret({
+    name: secretName,
+    namespace,
+    body,
+    headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
+  });
 }
 
 async function checkPvcExists(
