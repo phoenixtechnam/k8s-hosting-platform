@@ -147,45 +147,69 @@ for cfg in d:
 ')
 if [ -z "$EXISTING_CFG" ]; then
   echo "  creating…"
+  # Schema is snake_case (createBackupConfigSchema in
+  # packages/api-contracts/src/backup-config.ts). The `active` flag is
+  # named `enabled` in create input; cluster-side it becomes the
+  # is_active bool on backup_configurations.
   EXISTING_CFG=$(apij -X POST "$API_BASE/api/v1/admin/backup-configs" \
     -d "$(python3 -c "
-import json, os
+import json
 print(json.dumps({
   'name': 'integration-test-s3',
-  'storageType': 's3',
-  's3Endpoint': '$S3_ENDPOINT',
-  's3Bucket': '$S3_BUCKET',
-  's3Region': 'fsn1',
-  's3Prefix': 'tenant-bundles-itest',
-  's3AccessKey': '$S3_KEY',
-  's3SecretKey': '$S3_SECRET',
-  'active': True,
+  'storage_type': 's3',
+  's3_endpoint': '$S3_ENDPOINT',
+  's3_bucket': '$S3_BUCKET',
+  's3_region': 'fsn1',
+  's3_prefix': 'tenant-bundles-itest',
+  's3_access_key': '$S3_KEY',
+  's3_secret_key': '$S3_SECRET',
+  'retention_days': 7,
+  'enabled': True,
 }))
-")" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')
+")" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r["data"]["id"]) if "data" in r else print(json.dumps(r))')
 fi
 echo "  S3 config id: $EXISTING_CFG"
+
+# Ensure the target is active (separate flag from `enabled`; only one
+# target may be is_active=true at a time per the partial unique
+# index). Idempotent — POST /activate on an already-active config is
+# a no-op success.
+# /activate accepts no body but Fastify rejects empty body when
+# Content-Type is application/json. Send an explicit empty object.
+ACTIVATE_RESP=$(apij -X POST "$API_BASE/api/v1/admin/backup-configs/$EXISTING_CFG/activate" -d '{}')
+echo "  activate: $(echo "$ACTIVATE_RESP" | python3 -c 'import json,sys; r=json.load(sys.stdin); print("OK" if "data" in r else json.dumps(r))')"
 
 # ── Step 3: ensure test client exists ───────────────────────────────────────
 echo
 echo "[3/9] ensuring test client exists…"
-TEST_EMAIL="itest-restic@phoenix-host.net"
-CID=$(apij "$API_BASE/api/v1/clients?limit=100" \
-  | python3 -c "
+TEST_EMAIL="${TEST_EMAIL:-itest-restic@phoenix-host.net}"
+if [ -n "${CLIENT_ID_OVERRIDE:-}" ]; then
+  CID="$CLIENT_ID_OVERRIDE"
+  echo "  reusing operator-supplied CLIENT_ID_OVERRIDE: $CID"
+else
+  CID=$(apij "$API_BASE/api/v1/clients?limit=100" \
+    | python3 -c "
 import json, sys
 d = json.load(sys.stdin)['data']
 for c in d:
     if c.get('companyEmail') == '$TEST_EMAIL':
         print(c['id']); break
 ")
-if [ -z "$CID" ]; then
-  echo "  creating…"
-  PLAN_ID=$(apij "$API_BASE/api/v1/plans?limit=1" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')
-  REGION_ID=$(apij "$API_BASE/api/v1/regions?limit=1" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')
-  echo "    plan=$PLAN_ID region=$REGION_ID"
-  CID=$(apij -X POST "$API_BASE/api/v1/clients" \
-    -d "$(python3 -c "
+  if [ -z "$CID" ]; then
+    echo "  creating…"
+    # Pick the smallest plan that fits cluster capacity. Premium (200 GiB) tends
+    # to fail PROVISION_OVER_CAPACITY on lab clusters. Prefer 'starter'.
+    PLAN_ID=$(apij "$API_BASE/api/v1/plans?limit=10" | python3 -c "
+import json, sys
+plans = json.load(sys.stdin)['data']
+for p in sorted(plans, key=lambda x: float(x['storageLimit'])):
+    print(p['id']); break
+")
+    REGION_ID=$(apij "$API_BASE/api/v1/regions?limit=1" \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')
+    echo "    plan=$PLAN_ID region=$REGION_ID"
+    CREATE_RESP=$(apij -X POST "$API_BASE/api/v1/clients" \
+      -d "$(python3 -c "
 import json
 print(json.dumps({
   'company_name': 'itest-restic',
@@ -193,7 +217,14 @@ print(json.dumps({
   'plan_id': '$PLAN_ID',
   'region_id': '$REGION_ID',
 }))
-")" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')
+")")
+    CID=$(echo "$CREATE_RESP" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r["data"]["id"]) if "data" in r else None')
+    if [ -z "$CID" ]; then
+      echo "FAIL: could not create client. Response was:"; echo "$CREATE_RESP" | python3 -m json.tool | head -20
+      echo "Hint: pass CLIENT_ID_OVERRIDE=<existing-active-client-id> to reuse a tenant."
+      exit 1
+    fi
+  fi
 fi
 echo "  client id: $CID"
 
@@ -202,36 +233,74 @@ NS=$(apij "$API_BASE/api/v1/clients/$CID" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["kubernetesNamespace"])')
 echo "  namespace: $NS"
 
-# ── Step 4: wait for namespace + PVC ready ──────────────────────────────────
+# ── Step 4: wait for namespace + PVC ready, find a writer pod ──────────────
+# Prefer file-manager (purpose-built for PVC writes); fall back to any
+# pod that has the tenant PVC mounted. Writer must already be Running.
 echo
-echo "[4/9] waiting for namespace + PVC + file-manager…"
-ssh -i "$SSH_KEY" "$TESTING_HOST" "
-  for i in \$(seq 1 60); do
-    NS_OK=\$(kubectl get ns $NS --no-headers 2>/dev/null | awk '{print \$2}')
-    PVC_OK=\$(kubectl -n $NS get pvc ${NS}-storage --no-headers 2>/dev/null | awk '{print \$2}')
-    FM_POD=\$(kubectl -n $NS get pods -l app=file-manager --field-selector status.phase=Running -o name 2>/dev/null | head -1)
-    if [ \"\$NS_OK\" = 'Active' ] && [ \"\$PVC_OK\" = 'Bound' ] && [ -n \"\$FM_POD\" ]; then
-      echo \"  ready (i=\$i): NS=\$NS_OK PVC=\$PVC_OK FM=\$FM_POD\"
+echo "[4/9] waiting for namespace + PVC + writer pod…"
+# Use a here-doc with NO substitutions at the bash level — instead
+# pass NS via env. This sidesteps the shell-quoting trap that broke
+# the Python f-string literal in earlier rev.
+WRITER_INFO=$(ssh -i "$SSH_KEY" "$TESTING_HOST" "NS=$NS bash -s" <<'REMOTE'
+set -e
+PVC_NAME="${NS}-storage"
+for i in $(seq 1 60); do
+  NS_OK=$(kubectl get ns "$NS" --no-headers 2>/dev/null | awk '{print $2}')
+  PVC_OK=$(kubectl -n "$NS" get pvc "$PVC_NAME" --no-headers 2>/dev/null | awk '{print $2}')
+  if [ "$NS_OK" = 'Active' ] && [ "$PVC_OK" = 'Bound' ]; then
+    # 1. Prefer a Running file-manager pod (purpose-built; mount=/data)
+    FM=$(kubectl -n "$NS" get pods -l app=file-manager --field-selector status.phase=Running -o name 2>/dev/null | head -1 | sed 's|pod/||')
+    if [ -n "$FM" ]; then
+      echo "POD=$FM"
+      echo "MOUNT=/data"
+      echo "CONTAINER=file-manager"
       exit 0
     fi
-    sleep 2
-  done
-  echo 'TIMEOUT waiting for namespace/PVC/file-manager'
-  kubectl get ns $NS -o yaml 2>&1 | head -20
-  kubectl -n $NS get pvc 2>&1 | head -5
-  kubectl -n $NS get pods 2>&1 | head -5
-  exit 1
-"
+    # 2. Fall back: scan Running pods, look for one whose volumes list
+    # contains a persistentVolumeClaim with claimName=$PVC_NAME, then
+    # find the matching volumeMount under any container.
+    while IFS= read -r POD; do
+      [ -z "$POD" ] && continue
+      VOL_NAMES=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{range .spec.volumes[?(@.persistentVolumeClaim.claimName=="'"$PVC_NAME"'")]}{.name}{"\n"}{end}' 2>/dev/null | head -3)
+      [ -z "$VOL_NAMES" ] && continue
+      for VOL in $VOL_NAMES; do
+        # Walk every container's volumeMounts looking for this volume.
+        MAPPING=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{range .spec.containers[*]}{.name}{"|"}{range .volumeMounts[?(@.name=="'"$VOL"'")]}{.mountPath}{"\n"}{end}{end}' 2>/dev/null | grep -v '|$' | head -1)
+        if [ -n "$MAPPING" ]; then
+          CONT=$(echo "$MAPPING" | cut -d'|' -f1)
+          MNT=$(echo "$MAPPING" | cut -d'|' -f2)
+          echo "POD=$POD"
+          echo "MOUNT=$MNT"
+          echo "CONTAINER=$CONT"
+          exit 0
+        fi
+      done
+    done < <(kubectl -n "$NS" get pods --field-selector status.phase=Running -o name 2>/dev/null | sed 's|pod/||')
+  fi
+  sleep 2
+done
+echo "TIMEOUT" >&2
+kubectl -n "$NS" get pods 2>&1 | head -10 >&2
+exit 1
+REMOTE
+)
+WRITER_POD=$(echo "$WRITER_INFO" | grep "^POD=" | cut -d'=' -f2)
+WRITER_MOUNT=$(echo "$WRITER_INFO" | grep "^MOUNT=" | cut -d'=' -f2)
+WRITER_CONTAINER=$(echo "$WRITER_INFO" | grep "^CONTAINER=" | cut -d'=' -f2)
+[ -n "$WRITER_POD" ] || { echo "FAIL: no writer pod found"; exit 1; }
+echo "  writer pod: $WRITER_POD container: $WRITER_CONTAINER mount: $WRITER_MOUNT"
 
 # ── Step 5: seed the PVC with a known-content fixture ───────────────────────
 echo
 echo "[5/9] seeding PVC with fixture data…"
-FIXTURE_PATH="var/www/uploads/2026/05/photo.jpg"
+FIXTURE_REL="itest-restic/photo-$(date +%s).bin"   # path relative to PVC root
+FIXTURE_PATH="${WRITER_MOUNT}/${FIXTURE_REL}"
 FIXTURE_SHA=$(ssh -i "$SSH_KEY" "$TESTING_HOST" "
-  FM=\$(kubectl -n $NS get pods -l app=file-manager --field-selector status.phase=Running -o name | head -1)
-  kubectl -n $NS exec \$FM -- sh -c 'mkdir -p /data/var/www/uploads/2026/05 && head -c 102400 /dev/urandom > /data/$FIXTURE_PATH && sha256sum /data/$FIXTURE_PATH | awk \"{print \\\$1}\"'
+  kubectl -n $NS exec $WRITER_POD -c $WRITER_CONTAINER -- sh -c 'mkdir -p \$(dirname $FIXTURE_PATH) && head -c 102400 /dev/urandom > $FIXTURE_PATH && sha256sum $FIXTURE_PATH | awk \"{print \\\$1}\"'
 ")
-echo "  fixture sha256: $FIXTURE_SHA"
+echo "  fixture in-pod path: $FIXTURE_PATH"
+echo "  fixture rel-to-PVC:  $FIXTURE_REL"
+echo "  fixture sha256:      $FIXTURE_SHA"
 
 # ── Step 6: trigger bundle ──────────────────────────────────────────────────
 echo
@@ -297,15 +366,24 @@ for required in "bundle-version=2" "tenant-id=$CID" "component=files" "bundle-id
 done
 echo "  ✓ ADR-036 tag set complete"
 
-# Restore single file.
+# Restore the streamed archive.tar then extract the fixture.
+# `restic backup --stdin --stdin-filename archive.tar` stores the
+# entire stream as a single restic file. Per-file restore is a
+# two-step extract (restore the tar, then untar the entry).
 RESTORE="$WORK/restore"
 mkdir -p "$RESTORE"
-"$RESTIC" --quiet --repo "$S3_REPO" restore "$SNAP_ID" --target "$RESTORE" --include "/$FIXTURE_PATH" >/dev/null
-RESTORED=$(find "$RESTORE" -name photo.jpg -type f | head -1)
-[ -n "$RESTORED" ] || { echo "FAIL: object-level restore missing $FIXTURE_PATH"; "$RESTIC" --repo "$S3_REPO" ls "$SNAP_ID" 2>&1 | head -10; exit 1; }
-RESTORED_SHA=$(sha256sum "$RESTORED" | awk '{print $1}')
+"$RESTIC" --quiet --repo "$S3_REPO" restore "$SNAP_ID" --target "$RESTORE" >/dev/null
+RESTORED_TAR=$(find "$RESTORE" -name archive.tar -type f | head -1)
+[ -n "$RESTORED_TAR" ] || { echo "FAIL: archive.tar missing from restore output"; ls -la "$RESTORE"; "$RESTIC" --repo "$S3_REPO" ls "$SNAP_ID" 2>&1 | head -10; exit 1; }
+echo "  ✓ archive.tar restored ($(stat -c%s "$RESTORED_TAR") bytes)"
+mkdir -p "$WORK/extract"
+tar xf "$RESTORED_TAR" -C "$WORK/extract" "./$FIXTURE_REL" 2>/dev/null \
+  || tar xf "$RESTORED_TAR" -C "$WORK/extract" "$FIXTURE_REL" 2>/dev/null \
+  || { echo "FAIL: fixture not present in archive.tar at ./$FIXTURE_REL"; tar tf "$RESTORED_TAR" | head -20; exit 1; }
+RESTORED_FIXTURE=$(find "$WORK/extract" -name "$(basename "$FIXTURE_REL")" -type f | head -1)
+RESTORED_SHA=$(sha256sum "$RESTORED_FIXTURE" | awk '{print $1}')
 [ "$RESTORED_SHA" = "$FIXTURE_SHA" ] || { echo "FAIL: restored sha mismatch (orig=$FIXTURE_SHA restored=$RESTORED_SHA)"; exit 1; }
-echo "  ✓ single-file restore byte-identical (sha256 ${FIXTURE_SHA:0:16}…)"
+echo "  ✓ fixture round-trip byte-identical (sha256 ${FIXTURE_SHA:0:16}…)"
 
 # ── Step 9: optional cleanup + SFTP repeat ──────────────────────────────────
 if [ "${INTEGRATE_FORGET:-0}" = "1" ]; then
