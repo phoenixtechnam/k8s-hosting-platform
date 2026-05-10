@@ -83,13 +83,8 @@ S3_BUCKET=$(awk '/^Bucket: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
 S3_KEY=$(awk '/^Access Key: /{print $3; exit}' "$SERVERS_TXT" | strip_cr)
 S3_SECRET=$(awk '/^Key: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
 SFTP_LINE=$(grep -m1 'install-ssh-key' "$SERVERS_TXT" | strip_cr || true)
-# Reserved for INTEGRATE_SFTP=1 path (Phase 2 stub at the bottom of
-# this script). shellcheck doesn't see the future use; suppress.
-# shellcheck disable=SC2034
 SFTP_USER=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+) ([^@]+)@.*|\2|p')
-# shellcheck disable=SC2034
 SFTP_HOST=$(echo "$SFTP_LINE" | sed -nE 's|.*@([^ ]+) install-ssh-key.*|\1|p')
-# shellcheck disable=SC2034
 SFTP_PORT=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+).*|\1|p')
 
 [ -n "$S3_ENDPOINT" ] && [ -n "$S3_BUCKET" ] && [ -n "$S3_KEY" ] && [ -n "$S3_SECRET" ] || {
@@ -135,8 +130,15 @@ echo "  TOKEN length: ${#TOKEN}"
 apij() { api -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"; }
 
 # ── Step 2: ensure backup config exists ─────────────────────────────────────
+# Operator can override with BACKUP_CONFIG_OVERRIDE=<uuid> to drive a
+# pre-configured target (e.g. SFTP). When unset, find-or-create the
+# default S3 config.
 echo
-echo "[2/9] ensuring S3 backup config exists…"
+echo "[2/9] ensuring backup config exists…"
+if [ -n "${BACKUP_CONFIG_OVERRIDE:-}" ]; then
+  EXISTING_CFG="$BACKUP_CONFIG_OVERRIDE"
+  echo "  using operator-supplied BACKUP_CONFIG_OVERRIDE: $EXISTING_CFG"
+else
 EXISTING_CFG=$(apij "$API_BASE/api/v1/admin/backup-configs" \
   | python3 -c '
 import json, sys
@@ -167,8 +169,9 @@ print(json.dumps({
   'enabled': True,
 }))
 ")" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r["data"]["id"]) if "data" in r else print(json.dumps(r))')
+  fi
 fi
-echo "  S3 config id: $EXISTING_CFG"
+echo "  config id: $EXISTING_CFG"
 
 # Ensure the target is active (separate flag from `enabled`; only one
 # target may be is_active=true at a time per the partial unique
@@ -348,12 +351,32 @@ echo "[8/9] validating restic snapshot in S3 via local CLI…"
 PASS=$(hkdf_password "$PLATFORM_OIDC_KEY" "$CID")
 PASS_FILE="$WORK/pw"
 ( umask 077 && printf '%s' "$PASS" > "$PASS_FILE" )
-S3_REPO="s3:$S3_ENDPOINT/$S3_BUCKET/tenant-bundles-itest/restic-files/$CID"
-export AWS_ACCESS_KEY_ID="$S3_KEY"
-export AWS_SECRET_ACCESS_KEY="$S3_SECRET"
 export RESTIC_PASSWORD_FILE="$PASS_FILE"
 
-SNAP_LIST=$("$RESTIC" --quiet --repo "$S3_REPO" snapshots --tag "bundle-id=$BUNDLE_ID" --json 2>&1)
+# Resolve the actual storage target from the bundle target_kind so
+# the local restic CLI knows whether to read S3 or SFTP. Both repo
+# layouts use restic-files/<clientId> per ADR-036 §"repo URI portability".
+TARGET_KIND=$(apij "$API_BASE/api/v1/admin/backup-configs/$EXISTING_CFG" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["storageType"])' 2>/dev/null || echo s3)
+echo "  target kind: $TARGET_KIND"
+
+if [ "$TARGET_KIND" = "s3" ]; then
+  REPO="s3:$S3_ENDPOINT/$S3_BUCKET/tenant-bundles-itest/restic-files/$CID"
+  export AWS_ACCESS_KEY_ID="$S3_KEY"
+  export AWS_SECRET_ACCESS_KEY="$S3_SECRET"
+  RESTIC_OPTS=()
+elif [ "$TARGET_KIND" = "ssh" ]; then
+  REPO="sftp:$SFTP_USER@$SFTP_HOST:tenant-bundles-itest/restic-files/$CID"
+  key_q=$(printf '%q' "$SFTP_KEY")
+  port_q=$(printf '%q' "$SFTP_PORT")
+  dest_q=$(printf '%q' "$SFTP_USER@$SFTP_HOST")
+  SFTP_CMD="ssh -i $key_q -p $port_q -o StrictHostKeyChecking=accept-new -o BatchMode=yes -s $dest_q sftp"
+  RESTIC_OPTS=(-o "sftp.command=$SFTP_CMD")
+else
+  echo "FAIL: unknown target kind '$TARGET_KIND'"; exit 1
+fi
+
+SNAP_LIST=$("$RESTIC" --quiet --repo "$REPO" "${RESTIC_OPTS[@]}" snapshots --tag "bundle-id=$BUNDLE_ID" --json 2>&1)
 SNAP_COUNT=$(echo "$SNAP_LIST" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d) if isinstance(d,list) else 0)')
 [ "$SNAP_COUNT" = "1" ] || { echo "FAIL: expected 1 snapshot tagged bundle-id=$BUNDLE_ID, got $SNAP_COUNT"; echo "$SNAP_LIST"; exit 1; }
 SNAP_ID=$(echo "$SNAP_LIST" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
@@ -372,9 +395,9 @@ echo "  ✓ ADR-036 tag set complete"
 # two-step extract (restore the tar, then untar the entry).
 RESTORE="$WORK/restore"
 mkdir -p "$RESTORE"
-"$RESTIC" --quiet --repo "$S3_REPO" restore "$SNAP_ID" --target "$RESTORE" >/dev/null
+"$RESTIC" --quiet --repo "$REPO" "${RESTIC_OPTS[@]}" restore "$SNAP_ID" --target "$RESTORE" >/dev/null
 RESTORED_TAR=$(find "$RESTORE" -name archive.tar -type f | head -1)
-[ -n "$RESTORED_TAR" ] || { echo "FAIL: archive.tar missing from restore output"; ls -la "$RESTORE"; "$RESTIC" --repo "$S3_REPO" ls "$SNAP_ID" 2>&1 | head -10; exit 1; }
+[ -n "$RESTORED_TAR" ] || { echo "FAIL: archive.tar missing from restore output"; ls -la "$RESTORE"; "$RESTIC" --repo "$REPO" "${RESTIC_OPTS[@]}" ls "$SNAP_ID" 2>&1 | head -10; exit 1; }
 echo "  ✓ archive.tar restored ($(stat -c%s "$RESTORED_TAR") bytes)"
 mkdir -p "$WORK/extract"
 tar xf "$RESTORED_TAR" -C "$WORK/extract" "./$FIXTURE_REL" 2>/dev/null \
@@ -389,7 +412,7 @@ echo "  ✓ fixture round-trip byte-identical (sha256 ${FIXTURE_SHA:0:16}…)"
 if [ "${INTEGRATE_FORGET:-0}" = "1" ]; then
   echo
   echo "[9/9] forget+prune the test snapshot…"
-  "$RESTIC" --quiet --repo "$S3_REPO" forget "$SNAP_ID" --prune >/dev/null
+  "$RESTIC" --quiet --repo "$REPO" "${RESTIC_OPTS[@]}" forget "$SNAP_ID" --prune >/dev/null
   echo "  ✓ pruned"
 fi
 
