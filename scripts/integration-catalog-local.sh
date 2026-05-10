@@ -186,6 +186,17 @@ for e in d.get('data', []):
   rname=$(echo "$entry_json" | python3 -c "import json,sys;print(json.load(sys.stdin)['name'])")
   info "code=${code} type=${type} name='${rname}' id=${entry_id}"
 
+  # Early-skip path: readiness rule with kind=skip means the entry can't be
+  # verified in DinD (e.g., coturn needs hostPort 3478 not exposed locally).
+  # Record SKIP and exit before paying for plan/client/deploy.
+  local _skip_kind
+  _skip_kind=$(resolve_readiness "$code" "$type" | python3 -c "import json,sys;print(json.load(sys.stdin).get('kind',''))")
+  if [[ "$_skip_kind" == "skip" ]]; then
+    info "${code} SKIPPED — readiness.kind=skip (verify on real staging)"
+    echo -e "${code}\t${type}\tSKIP\t0\tskip\tDinD limitation — see readiness.json comment\t-" >> "$RESULTS_TSV"
+    return 0
+  fi
+
   # Resolve plan + region (cached at first call so we don't pay every entry).
   # Pick the LARGEST plan so multi-component apps (paperless-ngx, plausible,
   # nextcloud — 3+ components) don't trip the starter-plan ResourceQuota.
@@ -345,14 +356,16 @@ write_report() {
       printf("| %s | %s | %s | %ss | %s | %s |\n", $1, $2, $3, $4, $5, $6)
     }'
     echo
-    local total pass fail
+    local total pass fail skip
     total=$(tail -n +2 "$RESULTS_TSV" | wc -l)
     pass=$(awk -F'\t' '$3=="PASS"' "$RESULTS_TSV" | wc -l)
     fail=$(awk -F'\t' '$3=="FAIL"' "$RESULTS_TSV" | wc -l)
+    skip=$(awk -F'\t' '$3=="SKIP"' "$RESULTS_TSV" | wc -l)
     echo "## Summary"; echo
     echo "- Total: ${total}"
     echo "- Passed: ${pass}"
     echo "- Failed: ${fail}"
+    echo "- Skipped: ${skip}"
     echo
     if [[ "$fail" -gt 0 ]]; then
       echo "## Failures"; echo

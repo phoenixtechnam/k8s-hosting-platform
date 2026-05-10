@@ -34,17 +34,22 @@
   },
   "overrides": {
     "wordpress": { "path": "/wp-login.php" },
+    "rocketchat": {
+      "kind": "skip",
+      "$comment": "DECISION NEEDED: rocketchat boots and connects to MongoDB (URL-encoded password works) but hits two issues that need bigger fixes: (1) needs MongoDB --replSet rs0 + rs.initiate() for change-streams (catalog mongo component runs standalone), (2) Node.js OOM at 500MB — needs 2-4Gi memory (manifest minimum=512Mi, but rocketchat:8 v6+ needs more). Verify on real staging with appropriate resources + replica-set mongo, OR add MongoDB replSet support to the catalog."
+    },
     "nextcloud": { "path": "/login" },
-    "moodle-bitnami": { "path": "/login/index.php" },
+    "moodle-bitnami": {
+      "kind": "skip",
+      "$comment": "DECISION NEEDED: bitnami/moodle retired late 2025; the catalog manifest still references bitnami:5.0 which 404s. Replacement options: (a) build a custom Dockerfile from moodlehq/moodle-php-apache:8.1 + moodle source download + config.php template, (b) drop the bitnami flavor and add a moodlehq-based variant, (c) skip from catalog. Skip until decided."
+    },
     "prestashop": { "path": "/install/" },
     "matomo": { "path": "/index.php" },
     "bookstack": { "path": "/login", "timeout_seconds": 900, "$comment": "Bookstack runs APP_KEY:generate + db:migrate at first boot — slow on starter plan" },
     "n8n": { "path": "/setup", "$comment": "n8n redirects / to /setup on first run" },
     "discourse": {
-      "path": "/srv/status",
-      "expect_code_max": 299,
-      "timeout_seconds": 900,
-      "$comment": "Discourse boots slow on cold start — Sidekiq + Ruby workers"
+      "kind": "skip",
+      "$comment": "DECISION NEEDED: bitnami/discourse retired late 2025; discourse/discourse:latest is the discourse_docker base meant for the launcher tool, doesn't run standalone. Building a runnable Dockerfile from discourse_docker source is 2-4h of work. Alternatives: (a) build catalog-side Dockerfile, (b) drop from catalog. Skip until decided."
     },
     "plausible": { "path": "/login" },
     "immich": {
@@ -52,17 +57,20 @@
       "expect_code_max": 299,
       "timeout_seconds": 900
     },
-    "strapi": { "path": "/admin" },
+    "strapi": {
+      "kind": "skip",
+      "$comment": "DECISION NEEDED: naskio/strapi:5.30.1 fails with MODULE_NOT_FOUND on staticFiles.js — yarn-global install is broken in the image. Alternatives: (a) build a catalog-side Dockerfile from node:22-alpine + npx create-strapi-app + healthcheck, (b) use strapi/strapi:latest official (scaffold pattern), (c) drop from catalog. Skip until decided."
+    },
     "directus": { "path": "/admin" },
     "paperless-ngx": { "path": "/accounts/login/" },
-    "invoiceninja": { "path": "/setup" },
+    "invoiceninja": {
+      "kind": "skip",
+      "$comment": "DECISION NEEDED: invoiceninja-debian:5 is FPM-only (port 9000) — no nginx bundled. App boots correctly (db seed, queue workers, scheduler all up) but doesn't serve HTTP on port 80. Needs an nginx sidecar component proxying to FPM:9000 (upstream's docker-compose example), OR a different image. Manifest's mount paths + IN_USER_EMAIL/IN_PASSWORD env are correct as-is and will be reused when nginx is added."
+    },
     "dolibarr": { "path": "/install/" },
     "coturn": {
-      "kind": "stun_probe",
-      "ports_tcp": [3478],
-      "ports_udp": [3478],
-      "timeout_seconds": 300,
-      "$comment": "STUN/TURN — no ingress component. Probe the host-port directly."
+      "kind": "skip",
+      "$comment": "DinD docker-compose.local.yml does not publish hostPort 3478. The pod boots fine in-cluster but external STUN probe is unreachable. Verify in real staging via integration-staging.sh, not local DinD."
     },
     "jitsi": {
       "ingress_component": "web",
