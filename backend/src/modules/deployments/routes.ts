@@ -15,22 +15,7 @@ import { generateSecurePassword } from './service.js';
 import { eq, and, ne, inArray, desc, sql } from 'drizzle-orm';
 import { catalogEntries, deployments, clients } from '../../db/schema.js';
 import { fileManagerRequest } from '../file-manager/service.js';
-
-// Same FM_IMAGE resolution as file-manager/routes.ts and
-// k8s-provisioner/service.ts — env var first (set from the
-// platform-config ConfigMap → resolves to a registry-qualified
-// path like ghcr.io/.../file-manager-sidecar:<tag>), bare image
-// name only as a last-resort local-dev fallback.
-//
-// History: this used to be a hard-coded `'file-manager-sidecar:latest'`.
-// When deployments/routes.ts → /folder-size hit fileManagerRequest →
-// ensureFileManagerRunning with that bare name, the existing FM
-// Deployment got patched to use the bare image, which containerd
-// resolves as docker.io/library/file-manager-sidecar:latest →
-// ErrImagePull → ImagePullBackOff → the pod stuck → held the RWO
-// PVC → blocked every other deployment in the tenant namespace with
-// Multi-Attach. See 2026-05-11 Normal Test incident.
-const FM_IMAGE = process.env.FILE_MANAGER_IMAGE ?? 'file-manager-sidecar:latest';
+import { getFileManagerImage } from '../file-manager/image.js';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // Phase 6: method-aware role guard — read for all client roles,
@@ -411,7 +396,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     let storageUsedFormatted = '0 B';
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      const fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/folder-size', {
+      const fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/folder-size', {
         query: { path: deployment.storagePath ? `/${deployment.storagePath}` : `/databases/${deployment.name}` },
       });
       if (fmResult.status === 200) {

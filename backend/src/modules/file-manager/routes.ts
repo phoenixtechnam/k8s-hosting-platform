@@ -7,13 +7,8 @@ import { success, errorResponse } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { fileManagerRequest, streamToFileManager, streamFromFileManager, getFileManagerStatus, ensureFileManagerRunning, stopFileManager, resolveFmServiceUrlForRoute, ensureFileManagerReady } from './service.js';
+import { getFileManagerImage } from './image.js';
 import { recordFileManagerAccess } from './idle-cleanup.js';
-
-// File-manager sidecar image. Default is the bare name used by local.sh
-// which imports the image into DinD's containerd with that exact tag. On
-// real clusters (staging/production) the platform-config ConfigMap
-// provides the registry-qualified path via FILE_MANAGER_IMAGE.
-const FM_IMAGE = process.env.FILE_MANAGER_IMAGE ?? 'file-manager-sidecar:latest';
 
 async function resolveNamespace(app: FastifyInstance, clientId: string): Promise<string> {
   const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
@@ -81,7 +76,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const { clientId } = request.params as { clientId: string };
     const namespace = await resolveNamespace(app, clientId);
     const { k8sClients } = getK8s();
-    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE);
+    await ensureFileManagerRunning(k8sClients, namespace, getFileManagerImage());
     // Refresh idle timer so the cleanup loop doesn't immediately
     // scale the pod we just asked for back down. /start is a clear
     // user intent to USE the file-manager.
@@ -110,7 +105,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/disk-usage', {});
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/disk-usage', {});
     if (result.status !== 200) {
       const err = JSON.parse(result.body);
       throw new ApiError('FILE_ERROR', err.error || 'Failed to get disk usage', result.status);
@@ -128,7 +123,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/folder-size', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/folder-size', {
       query: { path: query.path },
     });
     if (result.status !== 200) {
@@ -149,7 +144,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
       query: { path },
     });
 
@@ -172,7 +167,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/read', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/read', {
       query: { path: query.path },
     });
 
@@ -198,7 +193,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     // Probe-first ready helper: ~10 ms when FM is healthy (most calls),
     // skips the K8s API ensure+status round-trips that previously made
     // download/preview cold-start take 3-7 s.
-    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, FM_IMAGE);
+    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, getFileManagerImage());
 
     // streamFromFileManager throws on non-2xx upstream BEFORE writing
     // any response headers (it drains a bounded 16 KiB error buffer
@@ -248,7 +243,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/mkdir', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/mkdir', {
       method: 'POST',
       body: JSON.stringify({ path: parsed.data.path }),
       contentType: 'application/json',
@@ -273,7 +268,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/write', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/write', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -298,7 +293,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/rename', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/rename', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -324,7 +319,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/rm', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/rm', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -349,7 +344,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/copy', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/copy', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -374,7 +369,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/archive', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/archive', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -399,7 +394,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/extract', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/extract', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -424,7 +419,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/git-clone', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/git-clone', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -449,7 +444,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/chmod', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/chmod', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -474,7 +469,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/chown', {
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/chown', {
       method: 'POST',
       body: JSON.stringify(parsed.data),
       contentType: 'application/json',
@@ -504,7 +499,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const { k8sClients, kubeconfigPath } = getK8s();
 
     // Probe-first ready helper (same fast path as /download).
-    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, FM_IMAGE);
+    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, getFileManagerImage());
 
     // Forward `offset` query param to enable parallel-chunked uploads.
     // When the client splits a file into N chunks and POSTs each with
@@ -563,7 +558,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, FM_IMAGE);
+    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, getFileManagerImage());
     const { proxyToFileManagerStream } = await import('./service.js');
     reply.hijack();
     await proxyToFileManagerStream(
@@ -591,7 +586,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, FM_IMAGE);
+    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, getFileManagerImage());
     const { proxyToFileManagerStream } = await import('./service.js');
     reply.hijack();
     await proxyToFileManagerStream(

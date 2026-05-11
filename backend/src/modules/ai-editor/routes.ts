@@ -4,6 +4,7 @@ import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { fileManagerRequest } from '../file-manager/service.js';
+import { getFileManagerImage } from '../file-manager/image.js';
 import * as deploymentService from '../deployments/service.js';
 import {
   createAiProviderSchema,
@@ -268,10 +269,9 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       if (!k8sClients) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
 
       const namespace = await deploymentService.getClientNamespace(app.db, clientId);
-      const FM_IMAGE = 'file-manager-sidecar:latest';
 
       // List files recursively via sidecar
-      const lsResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
+      const lsResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
         query: { path: parsed.data.folder_path, recursive: 'true' },
       });
       if (lsResult.status !== 200) throw new ApiError('FILE_MANAGER_ERROR', 'Failed to list directory', 500);
@@ -295,7 +295,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
       // Combined folder mode — plan + execute in one call
       const readFileFn = async (filePath: string) => {
-        const readResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/read', {
+        const readResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/read', {
           query: { path: filePath },
         });
         if (readResult.status !== 200) throw new Error(`Failed to read ${filePath}`);
@@ -341,7 +341,6 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       if (!k8sClients) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
 
       const namespace = await deploymentService.getClientNamespace(app.db, clientId);
-      const FM_IMAGE = 'file-manager-sidecar:latest';
 
       const result = await service.executeFolderEdit(app.db, {
         folderPath: parsed.data.folder_path,
@@ -353,7 +352,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
         deploymentId: parsed.data.deployment_id ?? null,
         isAdmin,
         readFile: async (filePath: string) => {
-          const readResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/read', {
+          const readResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, getFileManagerImage(), '/read', {
             query: { path: filePath },
           });
           if (readResult.status !== 200) throw new Error(`Failed to read ${filePath}`);

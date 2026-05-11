@@ -20,6 +20,7 @@ import { clients } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { getFileManagerImage } from '../file-manager/image.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import * as service from './service.js';
 import { writeSendmailAuthFile } from './pvc-writer.js';
@@ -38,9 +39,6 @@ const encryptionKey = (): string => {
     'OIDC_ENCRYPTION_KEY is required in non-dev environments (mail-submit routes)',
   );
 };
-
-const fileManagerImage = (): string =>
-  process.env.FILE_MANAGER_IMAGE ?? 'file-manager-sidecar:latest';
 
 // Resolve the Stalwart SMTP host. Priority: DB-configured
 // webmail-settings.mailServerHostname (set via the Email Management page)
@@ -125,7 +123,7 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
           {
             k8sClients: k8s,
             kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
-            fileManagerImage: fileManagerImage(),
+            fileManagerImage: getFileManagerImage(),
           },
           client.namespace,
           {
@@ -197,7 +195,7 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
       {
         k8sClients: k8s,
         kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
-        fileManagerImage: fileManagerImage(),
+        fileManagerImage: getFileManagerImage(),
       },
       client.namespace,
       {

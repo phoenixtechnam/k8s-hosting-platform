@@ -4,6 +4,7 @@ import type { ProvisioningStep } from '@k8s-hosting/api-contracts';
 import { toSafeText } from '@k8s-hosting/api-contracts';
 import { clients, provisioningTasks, hostingPlans } from '../../db/schema.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
+import { getFileManagerImage } from '../file-manager/image.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
@@ -825,13 +826,7 @@ export async function runProvisionNamespace(
     // Step 5: Start file-manager sidecar (Deployment + Service)
     if (!(await guardClientExists())) return;
     await updateProgress('Start File Manager', 'running');
-    // Same FM_IMAGE resolution as file-manager/routes.ts — env var
-    // first (set from the platform-config ConfigMap), fall back to
-    // the bare local-dev tag. The bare tag resolves to
-    // docker.io/library/file-manager-sidecar:latest in production,
-    // which doesn't exist (ImagePullBackOff). The env var has to win.
-    const FM_IMAGE = process.env.FILE_MANAGER_IMAGE ?? 'file-manager-sidecar:latest';
-    await ensureFileManagerRunning(k8s, namespace, FM_IMAGE);
+    await ensureFileManagerRunning(k8s, namespace, getFileManagerImage());
     await updateProgress('Start File Manager', 'completed');
 
     // All done — mark task and client as provisioned

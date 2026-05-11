@@ -1,5 +1,6 @@
 import * as k8s from '@kubernetes/client-node';
 import { ensureFileManagerRunning, getFileManagerStatus } from './k8s-lifecycle.js';
+import { getFileManagerImage } from './image.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { FileManagerStatus } from '@k8s-hosting/api-contracts';
 
@@ -886,7 +887,7 @@ export async function fileManagerRequest(
 export async function getReadyFileManagerPod(
   k8sClients: K8sClients,
   namespace: string,
-  image = 'file-manager-sidecar:latest',
+  image = getFileManagerImage(),
 ): Promise<string> {
   // Same on-demand semantics as fileManagerRequest — scale up to 1
   // even if provisioner created it at 0.

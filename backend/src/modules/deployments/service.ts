@@ -1368,15 +1368,8 @@ export async function listStorageFolders(
     const namespace = await getClientNamespace(db, clientId);
     try {
       const { fileManagerRequest } = await import('../file-manager/service.js');
-      // Match the FM_IMAGE resolution used in file-manager/routes.ts —
-      // env-var first, fall back to the bare local-dev tag. The bare
-      // tag resolves to docker.io/library/file-manager-sidecar in
-      // production (which doesn't exist) so the env var is required
-      // for any non-localhost deploy. Surfaced by the integration
-      // harness when a tenant workload share-mounts the same RWO PVC
-      // as a stuck-on-pull FM and gets blocked with Multi-Attach.
-      const FM_IMAGE = process.env.FILE_MANAGER_IMAGE ?? 'file-manager-sidecar:latest';
-      const listing = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
+      const { getFileManagerImage } = await import('../file-manager/image.js');
+      const listing = await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
         query: { path: basePath, dirs_only: 'true' },
       });
       const entries = (JSON.parse(listing.body) as { entries?: Array<{ name: string; type: string; size?: number }> })?.entries ?? [];
@@ -1387,7 +1380,7 @@ export async function listStorageFolders(
           // Check if directory is empty by listing its contents
           let isEmpty = true;
           try {
-            const subListing = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
+            const subListing = await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/ls', {
               query: { path: fullPath },
             });
             const subEntries = (JSON.parse(subListing.body) as { entries?: unknown[] })?.entries ?? [];
