@@ -117,7 +117,7 @@ const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string 
   { namespace: 'flux-system', name: 'notification-controller' },
   { namespace: 'kube-system', name: 'sealed-secrets-controller' },
   { namespace: 'kube-system', name: 'snapshot-controller' },
-  { namespace: 'cnpg-system', name: 'cnpg-controller-manager' },
+  { namespace: 'cnpg-system', name: 'cnpg-cloudnative-pg' },
 ];
 
 // Leader-elect cap is 2 — see the LEADER_ELECT_DEPLOYMENTS comment.
