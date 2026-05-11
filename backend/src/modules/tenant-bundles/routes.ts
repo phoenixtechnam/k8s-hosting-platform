@@ -400,6 +400,40 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
                 'tenant-bundles: failed to mark async bundle as failed',
               );
             }
+            // Mirror to the task chip + notifications bell so the
+            // operator's session learns about the failure without
+            // having to manually re-poll. The orchestrator does this
+            // in its happy-path terminal block; we duplicate here for
+            // the case where runBundle threw before reaching that
+            // block (lost DB conn, programmer error, OOM). The chip
+            // entry is auto-cleared (clearImmediately) so a permanent
+            // red row doesn't linger after the bell catches it.
+            if (orchInput.triggeredByUserId) {
+              try {
+                const { finishByRef } = await import('./../tasks/service.js');
+                const { toSafeText } = await import('@k8s-hosting/api-contracts');
+                await finishByRef(app.db, 'backup.bundle', reservedBundleId, {
+                  status: 'failed',
+                  text: toSafeText('aborted'),
+                  error: operatorMsg,
+                  clearImmediately: true,
+                });
+              } catch (e) {
+                app.log.warn({ err: e }, 'tenant-bundles: async failure → finishByRef failed');
+              }
+              try {
+                const { notifyUser } = await import('./../notifications/service.js');
+                await notifyUser(app.db, orchInput.triggeredByUserId, {
+                  type: 'error',
+                  title: 'Backup bundle failed',
+                  message: `Bundle ${reservedBundleId} (${orchInput.clientId.slice(0, 8)}…) aborted: ${operatorMsg}`,
+                  resourceType: 'backup_bundle',
+                  resourceId: reservedBundleId,
+                });
+              } catch (e) {
+                app.log.warn({ err: e }, 'tenant-bundles: async failure → notifyUser failed');
+              }
+            }
           }
         });
       });

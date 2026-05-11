@@ -254,6 +254,25 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       platformVersion,
     });
 
+    // Phase 1 piece #11 — abort the spawned restic when the inbound
+    // HTTP request is cancelled (tenant Job crash, NIC reset, client
+    // disconnect). Without this, the spawn loiters on stdin forever
+    // and accumulating zombies OOM-kill the pod (staging 2026-05-11
+    // showed 5 stuck "running" backup_jobs producing that exact
+    // pattern). The signal is also fired on response close in case
+    // Fastify itself drops the connection mid-stream.
+    const abortController = new AbortController();
+    const onClientGone = () => abortController.abort();
+    request.raw.on('aborted', onClientGone);
+    request.raw.on('close', () => {
+      // 'close' fires on both successful end + connection abort. We
+      // only treat it as an abort if we have NOT yet handed control
+      // back to the success branch below — runResticBackup() will
+      // have returned and abortController.abort() at that point is a
+      // no-op.
+      if (!request.raw.readableEnded) onClientGone();
+    });
+
     let result;
     try {
       result = await runResticBackup({
@@ -264,13 +283,27 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
         stdinFilename,
         tags,
         stdin: request.raw as unknown as Readable,
+        abortSignal: abortController.signal,
       });
     } catch (err) {
-      app.log.error(
-        { err, bundleId, component, clientId: job.clientId },
-        'tenant-bundles restic-stream: restic backup failed',
+      const msg = err instanceof Error ? err.message : String(err);
+      const aborted = msg.includes('aborted (HTTP request cancelled)');
+      app.log[aborted ? 'warn' : 'error'](
+        { err, bundleId, component, clientId: job.clientId, aborted },
+        aborted
+          ? 'tenant-bundles restic-stream: aborted by client disconnect'
+          : 'tenant-bundles restic-stream: restic backup failed',
       );
-      throw new ApiError('RESTIC_BACKUP_FAILED', err instanceof Error ? err.message : String(err), 500);
+      if (aborted) {
+        // 499 Client Closed Request — body is informational only since
+        // the client is already gone. The orchestrator's component
+        // wait-for-Job path will see the Job pod's curl exit non-zero
+        // and mark the component failed independently.
+        return reply.code(499).send({ error: { code: 'CLIENT_ABORTED', message: msg } });
+      }
+      throw new ApiError('RESTIC_BACKUP_FAILED', msg, 500);
+    } finally {
+      request.raw.off('aborted', onClientGone);
     }
 
     return success({

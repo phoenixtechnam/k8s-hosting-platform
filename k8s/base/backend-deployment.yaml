@@ -293,8 +293,16 @@ spec:
               cpu: 100m
               memory: 128Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              # 1500m / 1Gi matches ADR-036 "Locked decisions": per-pod
+              # restic concurrency cap = 4, platform-api memory budget
+              # 1 GiB. Prior 500m / 512Mi caused OOMKill mid-restic-stream
+              # — staging swqhg 2026-05-11T10:35:48Z + l4jn7 00:31:37Z.
+              # The restic capture pipeline (highWaterMark 256 KiB +
+              # --pack-size 64 in-flight pack ~48 MiB) plus ambient
+              # platform-api workload (mail-stats, certificate-reconciler,
+              # principals-sync) does not fit in 512 MiB.
+              cpu: 1500m
+              memory: 1Gi
           livenessProbe:
             httpGet:
               path: /api/v1/healthz

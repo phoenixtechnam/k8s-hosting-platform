@@ -365,6 +365,71 @@ describe('runResticBackup', () => {
     ).rejects.toThrow(/bad password/);
   });
 
+  it('kills the spawned restic when abortSignal fires + rejects with an aborted error', async () => {
+    // The spawned child stays "running" until the test fires the abort
+    // signal, at which point our route's abort hook SIGKILLs the child.
+    // We model this by exposing a kill() that resolves the exit promise
+    // with code 137 (SIGKILL convention).
+    let exitCb: ((code: number) => void) | undefined;
+    let killCalled = false;
+    __setResticSpawnForTest((_bin, args) => {
+      const isInit = args.includes('init');
+      return {
+        stdout: isInit ? Readable.from([]) : Readable.from([], { objectMode: false }),
+        stderr: Readable.from([]),
+        stdin: { write: () => true, end: () => undefined, on: () => undefined },
+        on: (ev: string, cb: (code?: number) => void) => {
+          if (ev === 'exit' || ev === 'close') {
+            if (isInit) {
+              // init exits cleanly so the backup proceeds
+              setImmediate(() => cb(0));
+            } else {
+              // backup spawn — wait for kill() to fire
+              exitCb = cb as (code: number) => void;
+            }
+          }
+          return undefined;
+        },
+        kill: () => {
+          killCalled = true;
+          // restic receiving SIGKILL exits with code 137 — match
+          // the convention so the runResticBackup error branch fires.
+          if (exitCb) setImmediate(() => exitCb!(137));
+          return true;
+        },
+      };
+    });
+
+    const abortController = new AbortController();
+    const target: BackupTarget = { kind: 'hostpath', hostPath: '/tmp/r' };
+    // Source stream that never ends — simulates the tenant Job streaming
+    // a large tar that never completes because the client disconnected.
+    let pushChunk: ((chunk: Buffer | null) => boolean) | undefined;
+    const stdin = new Readable({
+      read() { pushChunk = (c) => this.push(c); },
+    });
+    // Push a few bytes so the pipeline starts, then leave the stream
+    // open until we abort.
+    setImmediate(() => pushChunk?.(Buffer.from('payload')));
+
+    const promise = runResticBackup({
+      target,
+      clientId: 'client-abc',
+      component: 'files',
+      passwordHex: FIXTURE_PASSWORD,
+      stdinFilename: 'archive.tar',
+      tags: [],
+      stdin,
+      abortSignal: abortController.signal,
+    });
+
+    // Fire the abort after the spawn has begun.
+    setTimeout(() => abortController.abort(), 20);
+
+    await expect(promise).rejects.toThrow(/aborted/i);
+    expect(killCalled).toBe(true);
+  });
+
   it('rejects an oversized clientId (defence against header-injection-style abuse)', async () => {
     await expect(
       runResticBackup({

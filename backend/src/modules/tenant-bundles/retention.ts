@@ -27,8 +27,20 @@ import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
+import { finishByRef as finishTaskByRef } from '../tasks/service.js';
+import { notifyUser } from '../notifications/service.js';
+import { toSafeText } from '@k8s-hosting/api-contracts';
 
-const STUCK_RUNNING_HOURS = 24;
+// Lowered from the legacy 24h to 1h: the restic capture path's
+// 95-percentile is ~5 min at the current 5.4 GiB tenant size, and
+// Phase 1's `runResticBackup` has a 1h internal timeout (DEFAULT_BACKUP_TIMEOUT_MS).
+// Anything still 'running' past 1h is a stuck row left behind by a
+// platform-api OOMKill or pod eviction — the orchestrator process is
+// gone, no progress is happening, and the chip would otherwise spin
+// forever. Operator can re-trigger from the bundle list.
+const STUCK_RUNNING_HOURS = Number.parseFloat(
+  process.env.TENANT_BUNDLES_STUCK_RUNNING_HOURS ?? '1',
+);
 
 export interface RetentionSweepResult {
   readonly expiredDeleted: number;
@@ -86,26 +98,61 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
     }
   }
 
-  // ── 2. Stuck `running` bundles older than 24h ─────────────────────
+  // ── 2. Stuck `running` bundles older than STUCK_RUNNING_HOURS ─────
   // The orchestrator never crashes mid-bundle in normal operation
   // (it wraps each phase in try/catch and writes 'failed' on error).
-  // But pod kills (OOM, eviction) can leave 'running' rows behind
-  // forever. 24h is far longer than any legitimate bundle should
-  // take; anything past that is definitely stuck.
+  // But pod kills (OOM, eviction) leave 'running' rows behind forever
+  // because the orchestrator process is gone. Mark them failed here so
+  // the operator can re-trigger from the bundle list. Also clear the
+  // user's task chip row (clearImmediately) and surface the failure on
+  // the bell, matching the happy-path failure UX in `orchestrator.runBundle`.
   const cutoff = new Date(Date.now() - STUCK_RUNNING_HOURS * 60 * 60 * 1000);
+  const stuckErr =
+    `stuck in 'running' for >${STUCK_RUNNING_HOURS}h — orchestrator pod likely killed mid-bundle ` +
+    `(check platform-api restarts + memory usage). Re-trigger from the bundle list.`;
   const stuckRes = await app.db.execute(sql`
     UPDATE backup_jobs
     SET status = 'failed',
-        last_error = ${`stuck in 'running' for >${STUCK_RUNNING_HOURS}h — orchestrator pod likely killed mid-bundle. Re-trigger from the bundle list.`},
+        last_error = ${stuckErr},
         finished_at = COALESCE(finished_at, now()),
         updated_at = now()
     WHERE status = 'running'
       AND started_at < ${cutoff}
-    RETURNING id
-  `) as unknown as { rows: Array<{ id: string }> };
+    RETURNING id, client_id
+  `) as unknown as { rows: Array<{ id: string; client_id: string }> };
   stuckMarkedFailed = stuckRes.rows.length;
   if (stuckMarkedFailed > 0) {
     app.log.warn({ count: stuckMarkedFailed, ids: stuckRes.rows.map((r) => r.id) }, 'tenant-backup retention: marked stuck running bundles as failed');
+    // Look up the originating user_id from the matching task row(s),
+    // then close the chip + ring the bell. One DB hit per stuck bundle
+    // — the count is bounded (sweep runs every 5 min, anyone but a
+    // disaster scenario won't have more than a handful past the
+    // cutoff).
+    for (const { id: bundleId, client_id: clientId } of stuckRes.rows) {
+      try {
+        const taskRow = await app.db.execute(sql`
+          SELECT user_id FROM tasks WHERE kind = 'backup.bundle' AND ref_id = ${bundleId} LIMIT 1
+        `) as unknown as { rows: Array<{ user_id: string | null }> };
+        const userId = taskRow.rows[0]?.user_id ?? null;
+        await finishTaskByRef(app.db, 'backup.bundle', bundleId, {
+          status: 'failed',
+          text: toSafeText('reaped'),
+          error: stuckErr,
+          clearImmediately: true,
+        });
+        if (userId) {
+          await notifyUser(app.db, userId, {
+            type: 'error',
+            title: 'Backup bundle reaped (stuck)',
+            message: `Bundle ${bundleId} (${clientId.slice(0, 8)}…) was stuck in 'running' past the ${STUCK_RUNNING_HOURS}h cutoff. ${stuckErr}`,
+            resourceType: 'backup_bundle',
+            resourceId: bundleId,
+          });
+        }
+      } catch (err) {
+        app.log.warn({ err, bundleId }, 'tenant-backup retention: stuck-bundle UX cleanup failed');
+      }
+    }
   }
 
   return { expiredDeleted, expiredFailed, stuckMarkedFailed };

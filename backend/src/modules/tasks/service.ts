@@ -187,6 +187,15 @@ export interface TaskFinishArgs {
   readonly detailsPatch?: Record<string, unknown> | null;
   /** Final progress text (e.g., "12 / 12"). */
   readonly text?: SafeText | null;
+  /**
+   * Set `cleared_at = NOW()` atomically with the status flip so the
+   * task vanishes from the chip immediately rather than lingering for
+   * the 5-min terminal window. Used for failure UX where the surface
+   * is a notification (bell), not the chip — keeps the chip focused
+   * on in-flight work and removes the dead row the moment we know it
+   * failed. See orchestrator `runBundle` finishByRef call.
+   */
+  readonly clearImmediately?: boolean;
 }
 
 /**
@@ -196,50 +205,36 @@ export interface TaskFinishArgs {
  * `finishByRef('client.transition', transitionId, { status })` without
  * an extra SELECT.
  */
+function buildFinishUpdate(args: TaskFinishArgs): Record<string, unknown> {
+  const update: Record<string, unknown> = {
+    status: args.status,
+    finishedAt: sql`NOW()`,
+    updatedAt: sql`NOW()`,
+    errorMessage: args.error ?? null,
+  };
+  if (args.text !== undefined) update.progressText = args.text;
+  if (args.status === 'succeeded') update.progressPct = 100;
+  if (args.detailsPatch !== undefined && args.detailsPatch !== null) {
+    update.details = sql`COALESCE(${tasks.details}, '{}'::jsonb) || ${JSON.stringify(args.detailsPatch)}::jsonb`;
+  }
+  if (args.clearImmediately) update.clearedAt = sql`NOW()`;
+  return update;
+}
+
 export async function finishByRef(
   db: Database,
   kind: string,
   refId: string,
   args: TaskFinishArgs,
 ): Promise<void> {
-  const update: Record<string, unknown> = {
-    status: args.status,
-    finishedAt: sql`NOW()`,
-    updatedAt: sql`NOW()`,
-    errorMessage: args.error ?? null,
-  };
-  if (args.text !== undefined) {
-    update.progressText = args.text;
-  }
-  if (args.status === 'succeeded') {
-    update.progressPct = 100;
-  }
-  if (args.detailsPatch !== undefined && args.detailsPatch !== null) {
-    update.details = sql`COALESCE(${tasks.details}, '{}'::jsonb) || ${JSON.stringify(args.detailsPatch)}::jsonb`;
-  }
   await db
     .update(tasks)
-    .set(update)
+    .set(buildFinishUpdate(args))
     .where(and(eq(tasks.kind, kind), eq(tasks.refId, refId)));
 }
 
 export async function finish(db: Database, id: string, args: TaskFinishArgs): Promise<void> {
-  const update: Record<string, unknown> = {
-    status: args.status,
-    finishedAt: sql`NOW()`,
-    updatedAt: sql`NOW()`,
-    errorMessage: args.error ?? null,
-  };
-  if (args.text !== undefined) {
-    update.progressText = args.text;
-  }
-  if (args.status === 'succeeded') {
-    update.progressPct = 100;
-  }
-  if (args.detailsPatch !== undefined && args.detailsPatch !== null) {
-    update.details = sql`COALESCE(${tasks.details}, '{}'::jsonb) || ${JSON.stringify(args.detailsPatch)}::jsonb`;
-  }
-  await db.update(tasks).set(update).where(eq(tasks.id, id));
+  await db.update(tasks).set(buildFinishUpdate(args)).where(eq(tasks.id, id));
 }
 
 // ─── tracked() — try/finally sugar ───────────────────────────────────────

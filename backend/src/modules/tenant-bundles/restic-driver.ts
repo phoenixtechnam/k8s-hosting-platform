@@ -114,6 +114,17 @@ export interface RunResticBackupArgs {
   /** Hard wall-clock ceiling. Default: 1 hour. Mitigates reviewer #8
    *  (semaphore-exhaustion if restic neither reads stdin nor exits). */
   readonly timeoutMs?: number;
+  /**
+   * Caller-supplied abort signal. When fired, the spawned restic
+   * process is SIGKILL'd and `runResticBackup` rejects with
+   * `restic backup aborted`. Used by the HTTP restic-stream route to
+   * release pod resources when the tenant Job's PUT connection drops
+   * — otherwise the spawn loiters waiting on stdin forever, holding
+   * a semaphore slot + ~200 MiB of RSS per failed attempt.
+   * (Staging 2026-05-11: 5 stuck "running" backup_jobs each leaving a
+   * zombie restic alive long enough to OOMKill the platform-api pod.)
+   */
+  readonly abortSignal?: AbortSignal;
 }
 
 const DEFAULT_BACKUP_TIMEOUT_MS = 60 * 60 * 1000;
@@ -553,6 +564,44 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
 
     const child = spawnRestic(cliArgs, env);
 
+    // Phase 1 piece #11 — abort hook. When the route's HTTP request is
+    // aborted (tenant Job crashed mid-PUT, platform-api gets ECONNRESET
+    // from the upstream NIC, etc.), the caller fires args.abortSignal
+    // and we SIGKILL the spawned restic so the semaphore slot + ~200
+    // MiB RSS get released immediately. Without this, the spawn loiters
+    // on stdin forever (the pipeline source is dead but the child has
+    // no way to learn that) and accumulating zombies eventually OOM-kill
+    // the pod. Staging 2026-05-11 showed 5 stuck "running" backup_jobs,
+    // each leaving one such zombie.
+    //
+    // The source stream (args.stdin) is also destroyed — otherwise the
+    // `pipeline(args.stdin, safeRestStdin)` Promise stays pending forever
+    // because the source keeps producing chunks while the sink is gone,
+    // and Promise.all([stdinPromise, exitPromise]) below would block on
+    // it until the timeout. Destroying the source rejects the pipeline,
+    // freeing the awaiter.
+    const cancelSpawn = () => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* ignore — child may already be gone */
+      }
+      try {
+        (args.stdin as Readable).destroy?.(new Error('restic backup aborted'));
+      } catch {
+        /* ignore — source may already be ended */
+      }
+    };
+    let abortListener: (() => void) | undefined;
+    if (args.abortSignal) {
+      if (args.abortSignal.aborted) {
+        cancelSpawn();
+      } else {
+        abortListener = cancelSpawn;
+        args.abortSignal.addEventListener('abort', abortListener, { once: true });
+      }
+    }
+
     // Phase 1 piece #7 OOM fix: pipe with proper backpressure.
     // The previous data-event listener didn't respect child.stdin's
     // returned-false from write() — chunks piled up in the writable
@@ -612,6 +661,11 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
       // EPIPE through pipeline: treat as benign so the exit watcher
       // can surface restic's true exit code/stderr instead.
       if ((err as NodeJS.ErrnoException).code === 'EPIPE') return;
+      // Abort path: cancelSpawn destroys the source with this exact
+      // message so the pipeline can unblock. Swallow so the exit
+      // watcher reports the SIGKILL, then the post-await check on
+      // abortSignal.aborted throws the user-facing aborted error.
+      if (err instanceof Error && /restic backup aborted/.test(err.message)) return;
       throw err;
     });
 
@@ -662,11 +716,22 @@ export async function runResticBackup(args: RunResticBackupArgs): Promise<Restic
           `restic backup timed out after ${Math.round(timeoutMs / 1000)}s (clientId=${args.clientId} component=${args.component})`,
         );
       }
+      if (args.abortSignal?.aborted) {
+        // SIGKILL'd exit codes are reported as 137 on Linux, but the
+        // exit watcher is generic. Throw a recognisable error so the
+        // caller can map it to a 499/ABORTED HTTP response and the
+        // orchestrator can record it as a transient failure rather
+        // than a "real" restic crash.
+        throw new Error('restic backup aborted (HTTP request cancelled)');
+      }
       if (winner.code !== 0) {
         throw new Error(`restic backup exited ${winner.code}: ${stderrBuf.trim() || stdoutBuf.trim()}`);
       }
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (abortListener && args.abortSignal) {
+        args.abortSignal.removeEventListener('abort', abortListener);
+      }
       try {
         child.stdin.end();
       } catch {

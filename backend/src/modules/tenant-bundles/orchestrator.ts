@@ -548,17 +548,44 @@ export async function runBundle(
     })
     .where(eq(backupJobs.id, bundleId));
 
-  // Mirror terminal state to the chip.
+  // Mirror terminal state to the chip + bell.
+  //
+  // UX contract: the chip surfaces in-flight + recent-success work.
+  // Failures land in the notifications bell instead — the chip would
+  // otherwise show a red row for 5 min and operators have to manually
+  // dismiss it. `clearImmediately: true` sets the task's cleared_at
+  // alongside the failed status so the chip hides it the moment we
+  // know it failed. The same details (truncated error, bundleId) flow
+  // into a per-user notification so the operator can still find the
+  // failure on the bell.
   if (input.triggeredByUserId) {
     try {
       const { finishByRef } = await import('../tasks/service.js');
       const { toSafeText } = await import('@k8s-hosting/api-contracts');
-      const taskStatus = errors.length === 0 ? 'succeeded' : 'failed';
+      const failed = errors.length > 0;
+      const taskStatus = failed ? 'failed' : 'succeeded';
+      const errText = failed ? errors.join('; ').slice(0, 4096) : null;
       await finishByRef(deps.db, 'backup.bundle', bundleId, {
         status: taskStatus,
         text: toSafeText(`${(totalSize / (1024 * 1024)).toFixed(1)} MiB captured`),
-        error: errors.length === 0 ? null : errors.join('; ').slice(0, 4096),
+        error: errText,
+        clearImmediately: failed,
       });
+      if (failed) {
+        try {
+          const { notifyUser } = await import('../notifications/service.js');
+          await notifyUser(deps.db, input.triggeredByUserId, {
+            type: 'error',
+            title: 'Backup bundle failed',
+            message: `Bundle ${bundleId} (${input.clientId.slice(0, 8)}…) failed: ${errText ?? 'unknown error'}`,
+            resourceType: 'backup_bundle',
+            resourceId: bundleId,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[tenant-bundles] notification publish failed for ${bundleId}: ${msg}`);
+        }
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[tenant-bundles] task tracker finish failed for ${bundleId}: ${msg}`);

@@ -67,7 +67,7 @@ function pgMemDatabase(mem: IMemoryDb): { execute: (q: { queryChunks: unknown[] 
 }
 
 describe('runRetentionSweep', () => {
-  it('marks stuck running bundles older than 24h as failed', async () => {
+  it('marks stuck running bundles older than the cutoff as failed', async () => {
     const mem = newDb();
     mem.public.none(`
       CREATE TABLE backup_jobs (
@@ -88,12 +88,15 @@ describe('runRetentionSweep', () => {
         updated_at      TIMESTAMP NOT NULL DEFAULT now()
       );
     `);
-    // Two bundles: one stuck >24h (should be marked failed), one
-    // running but only 1h old (should be left alone).
+    // Two bundles: one stuck far past the cutoff (should be marked
+    // failed), one fresh (should be left alone). The current cutoff is
+    // 1h (process.env.TENANT_BUNDLES_STUCK_RUNNING_HOURS, default 1) —
+    // see retention.ts. The test uses 48h / 5 min to be well past /
+    // under the boundary regardless of any small future tweaks.
     mem.public.none(`
       INSERT INTO backup_jobs(id, client_id, status, started_at) VALUES
         ('bkp-stuck', 'c1', 'running', now() - interval '48 hours'),
-        ('bkp-fresh', 'c1', 'running', now() - interval '1 hour');
+        ('bkp-fresh', 'c1', 'running', now() - interval '5 minutes');
     `);
     const db = pgMemDatabase(mem);
     const app = {
