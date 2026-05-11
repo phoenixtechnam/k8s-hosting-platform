@@ -132,6 +132,39 @@ export function useRevokeMtlsCertificate(clientId: string, providerId: string) {
   });
 }
 
+export function useUnrevokeMtlsCertificate(clientId: string, providerId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (certId: string) => {
+      const res = await apiFetch<ApiEnvelope<CertificateResponse>>(
+        `/api/v1/clients/${clientId}/mtls-providers/${providerId}/certificates/${certId}/unrevoke`,
+        { method: 'POST', body: JSON.stringify({}) },
+      );
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mtls-providers', clientId, providerId, 'certificates'] });
+      qc.invalidateQueries({ queryKey: CRL_KEY(clientId, providerId) });
+    },
+  });
+}
+
+export function useDeleteMtlsCertificate(clientId: string, providerId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (certId: string) => {
+      await apiFetch<unknown>(
+        `/api/v1/clients/${clientId}/mtls-providers/${providerId}/certificates/${certId}`,
+        { method: 'DELETE' },
+      );
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mtls-providers', clientId, providerId, 'certificates'] });
+      qc.invalidateQueries({ queryKey: CRL_KEY(clientId, providerId) });
+    },
+  });
+}
+
 export function useMtlsCrlMetadata(clientId: string | undefined, providerId: string | undefined) {
   return useQuery({
     queryKey: CRL_KEY(clientId ?? '', providerId ?? ''),

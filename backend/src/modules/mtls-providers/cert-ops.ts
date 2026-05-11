@@ -181,21 +181,35 @@ export async function bundlePkcs12(input: BundlePkcs12Input): Promise<Uint8Array
     const keyPath = join(dir, 'key.pem');
     const caPath = join(dir, 'ca.pem');
     const outPath = join(dir, 'bundle.p12');
-    // Write the password to a file and use `-passout file:` so the
-    // password is treated as a literal byte sequence. Using
-    // `-passout pass:${input.password}` directly would let a password
-    // starting with `file:`, `env:`, `stdin:`, or `fd:` cause openssl
-    // to dereference the prefix and read the passphrase from
-    // somewhere else (see openssl-passphrase-options(1)). The Zod
-    // contract caps password length at 255 but does not restrict the
-    // bytes, so we close the prefix-injection hole here.
-    const passPath = join(dir, 'pass.txt');
     await Promise.all([
       writeFile(certPath, input.certPem, { mode: 0o600 }),
       writeFile(keyPath, input.keyPem, { mode: 0o600 }),
       writeFile(caPath, input.caCertPem, { mode: 0o600 }),
-      writeFile(passPath, input.password, { mode: 0o600 }),
     ]);
+
+    // Password handling — two paths for two threat models:
+    //   * Empty password: use the literal `pass:` scheme (empty string
+    //     after the colon). There's no injection risk because the value
+    //     is fixed; OpenSSL 3.x produces a valid passwordless .p12 that
+    //     Windows 10/11 + macOS 11+ accept on import.
+    //   * Non-empty password: write to a temp file and use `pass:file:`
+    //     so the password bytes never appear in argv. Closes the openssl
+    //     prefix-injection hole (a literal password starting with `file:`,
+    //     `env:`, `fd:`, `stdin:` would otherwise dereference to somewhere
+    //     else — see openssl-passphrase-options(1)).
+    //
+    // The earlier revision used `-passout file:` unconditionally, which
+    // failed on OpenSSL 3.x for empty-content password files ("Hmac key
+    // length 0 invalid"). The dual-path approach above is what fixes that.
+    const passoutArgs: string[] = [];
+    if (input.password.length === 0) {
+      passoutArgs.push('-passout', 'pass:');
+    } else {
+      const passPath = join(dir, 'pass.txt');
+      await writeFile(passPath, input.password, { mode: 0o600 });
+      passoutArgs.push('-passout', `file:${passPath}`);
+    }
+
     // -macalg sha256 + -keypbe AES-256-CBC + -certpbe AES-256-CBC use
     // modern algorithms; legacy compat (Windows 7) would need
     // -legacy. Default Windows 10/11 + macOS 11+ accept these fine.
@@ -206,7 +220,7 @@ export async function bundlePkcs12(input: BundlePkcs12Input): Promise<Uint8Array
       '-certfile', caPath,
       '-out', outPath,
       '-name', input.friendlyName,
-      '-passout', `file:${passPath}`,
+      ...passoutArgs,
       '-macalg', 'sha256',
     ], { timeout: 15_000 });
     const buf = await readFile(outPath);

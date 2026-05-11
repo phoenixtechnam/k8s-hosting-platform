@@ -42,6 +42,8 @@ import {
   getCertificate,
   getCertificatePem,
   revokeCertificate,
+  unrevokeCertificate,
+  deleteCertificate,
   getOrGenerateCrl,
   getCrlMetadata,
 } from './service.js';
@@ -187,6 +189,35 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
     return certPem;
   });
 
+  // Fan out annotation-sync to every route that consumes this provider
+  // so the freshly-regenerated CRL lands in each route-mtls-* Secret
+  // immediately. The service layer can't do this directly (no K8s
+  // client by design — avoids cyclic deps). Used by revoke / unrevoke
+  // / delete-cert: all three change the CRL membership and need to be
+  // pushed to NGINX in the same request. Best-effort: K8s errors are
+  // logged but don't fail the API call; the periodic reconciler will
+  // pick up any laggards.
+  async function fanOutCrlReconcile(clientId: string, providerId: string, action: string): Promise<void> {
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8s = createK8sClients(kubeconfigPath);
+      const consumers = await app.db
+        .select({ routeId: ingressMtlsConfigs.ingressRouteId })
+        .from(ingressMtlsConfigs)
+        .where(eq(ingressMtlsConfigs.providerId, providerId));
+      for (const c of consumers) {
+        try {
+          await syncRouteAnnotations(app.db, k8s, c.routeId, clientId);
+        } catch (err) {
+          app.log.warn({ err, routeId: c.routeId, providerId, action }, `mtls-${action}: failed to push CRL to route`);
+        }
+      }
+    } catch (err) {
+      // K8s client unavailable (no kubeconfig in tests / local dev).
+      app.log.debug({ err, action }, `mtls-${action}: K8s reconcile skipped`);
+    }
+  }
+
   app.post('/clients/:clientId/mtls-providers/:pid/certificates/:certId/revoke', async (request) => {
     const { clientId, pid, certId } = request.params as { clientId: string; pid: string; certId: string };
     const parsed = revokeCertificateInputSchema.safeParse(request.body ?? {});
@@ -201,34 +232,23 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
       parsed.data.reason,
       actingUserId(request),
     );
-
-    // Trigger annotation-sync for every route that consumes this provider
-    // so the new CRL lands in each route-mtls-* Secret immediately. The
-    // service layer can't do this directly (no K8s client by design), so
-    // the route handler owns the fan-out. Best-effort: errors are logged
-    // but don't fail the revoke API call — the periodic reconciler will
-    // pick up any laggards.
-    try {
-      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      const k8s = createK8sClients(kubeconfigPath);
-      const consumers = await app.db
-        .select({ routeId: ingressMtlsConfigs.ingressRouteId })
-        .from(ingressMtlsConfigs)
-        .where(eq(ingressMtlsConfigs.providerId, pid));
-      for (const c of consumers) {
-        try {
-          await syncRouteAnnotations(app.db, k8s, c.routeId, clientId);
-        } catch (err) {
-          app.log.warn({ err, routeId: c.routeId, providerId: pid }, 'mtls-revoke: failed to push CRL to route');
-        }
-      }
-    } catch (err) {
-      // K8s client unavailable (no kubeconfig in tests / local dev) — silently
-      // skip; the next reconcile sweep will catch up.
-      app.log.debug({ err }, 'mtls-revoke: K8s reconcile skipped');
-    }
-
+    await fanOutCrlReconcile(clientId, pid, 'revoke');
     return success(result);
+  });
+
+  app.post('/clients/:clientId/mtls-providers/:pid/certificates/:certId/unrevoke', async (request) => {
+    const { clientId, pid, certId } = request.params as { clientId: string; pid: string; certId: string };
+    const result = await unrevokeCertificate(app.db, clientId, pid, certId);
+    await fanOutCrlReconcile(clientId, pid, 'unrevoke');
+    return success(result);
+  });
+
+  app.delete('/clients/:clientId/mtls-providers/:pid/certificates/:certId', async (request, reply) => {
+    const { clientId, pid, certId } = request.params as { clientId: string; pid: string; certId: string };
+    await deleteCertificate(app.db, clientId, pid, certId);
+    await fanOutCrlReconcile(clientId, pid, 'delete');
+    reply.status(204);
+    return null;
   });
 
   // CRL metadata (JSON). The /crl.pem sibling below serves the raw body.
