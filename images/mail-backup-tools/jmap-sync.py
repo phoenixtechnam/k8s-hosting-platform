@@ -147,8 +147,22 @@ class JmapClient:
             s = json.loads(body)
         except json.JSONDecodeError as e:
             raise JmapError("SESSION_PARSE", str(e))
-        self._api_url = s["apiUrl"]
-        self._download_url = s["downloadUrl"]  # template
+        # Stalwart's session response returns `apiUrl` / `downloadUrl`
+        # rooted at the configured PUBLIC base URL (HTTPS, public ingress
+        # hostname), even when we reached the session via the in-cluster
+        # HTTP service IP. Following the public URL fails:
+        #   - SSL cert verify (LE staging certs aren't trusted by our
+        #     stdlib SSL context)
+        #   - DNS may not resolve from inside the cluster
+        # Re-root both URLs at the session's ORIGIN so the rest of the
+        # JMAP traffic stays on the same in-cluster HTTP transport.
+        from urllib.parse import urlsplit, urlunsplit
+        our = urlsplit(self.session_url)
+        def _reroot(url: str) -> str:
+            u = urlsplit(url)
+            return urlunsplit((our.scheme, our.netloc, u.path, u.query, u.fragment))
+        self._api_url = _reroot(s["apiUrl"])
+        self._download_url = _reroot(s["downloadUrl"])  # template; placeholders preserved
         # Stalwart returns one mail account; pick the one matching the
         # current proxy login address. Falls back to "the only one"
         # when there's a single mail account.
