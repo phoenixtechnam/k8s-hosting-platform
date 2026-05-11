@@ -134,8 +134,16 @@ export async function notifyUser(
       resourceType: row.resourceType ?? null,
       resourceId: row.resourceId ?? null,
     };
-  } catch {
-    // Fire-and-forget: notification failure must not break the caller
+  } catch (err) {
+    // Fire-and-forget: notification persistence failure must not break
+    // the caller. Log to stderr so silent drops surface in `kubectl
+    // logs` triage — previously a `varchar(36)` violation on
+    // resource_id ate every tenant-bundles failure notification with
+    // no trace at all (staging 2026-05-11).
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[notifyUser] persistence failed for user ${userId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return;
   }
 

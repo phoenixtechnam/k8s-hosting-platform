@@ -486,7 +486,13 @@ export const notifications = pgTable('notifications', {
   title: varchar('title', { length: 255 }).notNull(),
   message: text('message').notNull(),
   resourceType: varchar('resource_type', { length: 50 }),
-  resourceId: varchar('resource_id', { length: 36 }),
+  // 64 chars so non-UUID resource ids (e.g. `bkp-<uuid>` = 40 chars,
+  // future `<kind>-<uuid>` patterns up to 64) fit. The previous 36-char
+  // cap silently dropped notifyUser() calls from the tenant-bundles
+  // orchestrator — createNotification's fire-and-forget try/catch
+  // swallowed the "value too long for type character varying(36)"
+  // error. Caught 2026-05-11 against staging.
+  resourceId: varchar('resource_id', { length: 64 }),
   isRead: integer('is_read').notNull().default(0),
   readAt: timestamp('read_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),

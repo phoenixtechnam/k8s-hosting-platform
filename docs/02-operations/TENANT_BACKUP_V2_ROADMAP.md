@@ -15,7 +15,7 @@ Targeting: ~28× storage reduction at 100 tenants, daily incremental window < 8 
 | Phase | Subject | Status | Branch / Commit | Notes |
 |-------|---------|--------|-----------------|-------|
 | 0 | Spike + budget validation | DONE | feat/tenant-backup-v2-restic-jmap @ eaee5dd8 | `scripts/spike-restic-jmap.sh` green against real S3 + SFTP. Numbers in §"Phase 0a spike — measured numbers". |
-| 1 | files + restic + pre-dump hook | **DONE** | merged to main; pinned to staging at commit `ec4224ad` (image tag `20260510160028-ec4224a`) | All 7 pieces shipped + 3 staging-debug fixes (Dockerfile restic install; repo init + EPIPE handler; pipeline backpressure). End-to-end harness PASSED on staging 2026-05-10. |
+| 1 | files + restic + pre-dump hook | **DONE** | merged to main; pinned to staging at image tag `20260511110850-7fea24d` | All 11 pieces shipped: 7 original + #8 (memory cap), #9 (SFTP target), #10 (perf tuning + re-measurement on 2026-05-11), #11 (abort cleanup + failure UX → bell). End-to-end harness PASSED on staging 2026-05-10; perf re-measurement PASSED 2026-05-11 (see §"Phase 1 piece #10 re-measurement"). |
 | 2 | mail + JMAP + Maildir | blocked on Phase 1 | — | New `jmap-sync.py` (Python stdlib). Replaces mbsync entirely. New `tenant_jmap_state` table. State persistence after restic ack. |
 | 3 | admin + tenant UI | blocked on Phase 2 | — | Snapshot tree browser, single-file/single-message picker, schedule editor, global Settings tab. Both admin panel and client panel. |
 
@@ -53,7 +53,25 @@ See ADR-036 §"Resource budget" for the per-scenario targets. Phase 0 will produ
 | 2026-05-10 | **Memory bound validated under load.** Successive harness runs at 524 MiB / 2.0 GiB / 5.4 GiB tenant PVC sizes showed restic backup peaked at 246 / 388 / 389 MiB respectively — bounded but over the 256 MiB target. Tuning in commit `4f388613` (`--read-concurrency 1 --compression off`) brought the 5.4 GiB peak to **221 MiB** (Δ +54 MiB above idle). Plateau confirmed: memory does NOT scale with payload size. |
 | 2026-05-10 | **SFTP target end-to-end + perf comparison.** Added `openssh-client` to platform-api image (`d11fa782`); restic's `sftp:` backend invokes the system `ssh` binary which Alpine had omitted. Harness extended to drive both targets via `BACKUP_CONFIG_OVERRIDE=<id>`. Comparison on 5.4 GiB tenant: **S3 92s / SFTP 88s capture wall-clock**; **S3 221 MiB / SFTP 240 MiB peak memory**; both under the 256 MiB target. SFTP uses ~20 MiB more memory because of the spawned `ssh` process. Throughput delta <5% at this scale. |
 | 2026-05-10 | **Cold-start S3 vs SFTP measured (5,501 MiB, fresh repos, in-cluster restore Pod):** capture S3=267s @ 20.6 MiB/s, SFTP=229s @ 24.0 MiB/s (SFTP ~17% faster); restore S3=158s @ 34.8 MiB/s, SFTP=26s @ **211.6 MiB/s (6× faster)**. S3's per-pack-file HTTP RTT dominates restore latency; SFTP streams through a single SSH channel. Both stay under 256 MiB peak platform-api memory during capture. |
+| 2026-05-11 | **Piece #10 perf re-measurement + 4 fixes + failure UX overhaul.** First post-perf retry on staging OOMKilled platform-api: `f0e73ca5`'s `s3.connections=10 × --pack-size 64 MiB` pushes the in-flight buffer envelope to ~640 MiB while the previously-claimed "1 GiB" pod limit was actually 512Mi in the manifest (k8s/base/backend-deployment.yaml drifted from ADR-036). 5 zombie backup_jobs from the OOM cascade left zombie `restic` spawns until pod death, each leaking ~200 MiB until the next OOM. Fixes in `8e77fd8f` + `f1a9e4c7` + `d27f7d1e`: (1) Deployment memory 512Mi → 2Gi, CPU 500m → 1500m (1Gi was still too tight under load — observed peak 1281 MiB); (2) restic-stream route wires `request.raw.on('aborted')` into an AbortController that SIGKILLs the spawn + destroys the source stream so the pipeline unblocks; (3) `restic restore --workers 16` removed — never was a valid flag in 0.18.1, silently broken since the perf commit; (4) `STUCK_RUNNING_HOURS` reaper lowered 24h → 1h. **Failure UX overhaul:** failed bundles auto-clear from the chip (new `clearImmediately` on `tasks.finish*`) and fire `notifyUser(type='error')` so the bell catches them — operator never sees a permanent red row in the chip. Re-measured against the same 5.4 GiB tenant on the new image (see "Re-measurement" section below). |
 | 2026-05-09 | Phase 0b (JMAP spike against staging Stalwart) BLOCKED — SSH on port 22 refused on staging1/2/3 (intermittent; was working earlier in the session). ICMP works; control-plane API on 6443 reachable. Worker node reachable but lacks kubeconfig. Surfaced to operator. |
+
+### Phase 1 piece #10 re-measurement (2026-05-11)
+
+Image `20260511110850-7fea24d` (commits `8e77fd8f` + `f1a9e4c7` + `d27f7d1e`), platform-api `2Gi / 1500m`, against the existing 5,501 MiB `client-ingress-test-32f623c8` tenant. Restores executed from an in-cluster scratch Pod (`perf-restore-2`) on the worker node, separate from the platform-api memory budget.
+
+| Operation | Cold-start (2026-05-10) | Post-tuning (2026-05-11) | Speedup | Peak platform-api memory |
+|---|---|---|---|---|
+| Capture S3 | 267s @ 20.6 MiB/s | **112s @ 49.1 MiB/s** | **2.38×** | 221 MiB → 1,281 MiB |
+| Capture SFTP | 229s @ 24.0 MiB/s | **95s @ 57.9 MiB/s** | **2.41×** | 240 MiB → 277 MiB |
+| Restore S3 | 158s @ 34.8 MiB/s | **56s @ 98.2 MiB/s** | **2.82×** | (in-cluster Pod) |
+| Restore SFTP | 26s @ 211.6 MiB/s | 29s @ 189.7 MiB/s | noise | (in-cluster Pod) |
+
+**Memory trade-off.** S3 capture peak grew 5.8× (221 → 1,281 MiB) — the cost of `s3.connections=10 × pack-size=64 MiB` allowing up to 640 MiB of in-flight pack buffers plus restic's own ~200 MiB working set plus ambient platform-api workload (~170 MiB). 2 GiB pod limit absorbs the S3 case with ~750 MiB headroom. SFTP stays light (single SSH channel does no parallel pack-buffering — peak only +37 MiB above cold-start). The trade-off favours throughput: a 2.38× capture speedup at +750 MiB headroom is a clear win, and `TENANT_BUNDLES_MAX_CONCURRENT_RESTIC=4` caps concurrent captures per pod.
+
+**SFTP restore noise.** 26s → 29s is within measurement noise. SFTP restore was already saturating the SSH channel at cold-start; `s3.connections=10` doesn't apply, and `--pack-size 64` is slightly worse for SSH (larger reads at the end of pack-file → idle channel waiting for next read).
+
+**Failure UX validation.** Two consecutive failures on the old 1 GiB image at `10:35:48` + `11:11:19` produced the expected behaviour after the new image deployed: failed bundles vanished from the chip immediately (`tasks.cleared_at` set atomically) and were replaced by a notification on the bell (`notifications` row with `type=error`, `resource_type=backup_bundle`). The stuck-bundle reaper (1h cutoff) cleans up any orchestrator-pod-died-mid-bundle cases that bypass the happy-path. Operators trigger a re-run from the bundle list.
 
 ### Phase 0a spike — measured numbers (2026-05-09)
 
