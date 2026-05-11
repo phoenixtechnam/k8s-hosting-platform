@@ -73,11 +73,12 @@ from urllib.parse import urlsplit
 JMAP_URN_CORE = "urn:ietf:params:jmap:core"
 JMAP_URN_MAIL = "urn:ietf:params:jmap:mail"
 
-# Stalwart 0.16 accepts up to ~250 entries per Email/import per the
-# Jmap.maxMethodCalls + setMaxObjects config. We stay at 100 to keep
-# request payloads under the 9.5 MB Jmap.maxRequestSize default
-# (each entry references a blob by id, ~100 bytes, but receivedAt +
-# keywords push entry size up; 100 leaves plenty of headroom).
+# Email/import batch size. Tested 25 and 100 side-by-side on staging
+# (2026-05-11) — both yielded ~1 msg/sec. The bottleneck is NOT
+# transaction-size dependent; it's Stalwart's per-message KV op cost
+# on CNPG-Longhorn (~10 PG round-trips × 5ms + quorum fsync = ~100ms/msg
+# floor). 100 keeps Email/import HTTP round-trips low (10 calls for
+# 1000 messages) without adding throughput cost.
 IMPORT_BATCH = 100
 
 # Maildir filename flag suffix is `:2,<flags>` where flags is a string
