@@ -66,7 +66,7 @@
 import { sql, eq } from 'drizzle-orm';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../../db/index.js';
-import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
+import { tailJobLog, readJobLogTail } from '../../storage-lifecycle/job-log-tail.js';
 import { signUploadToken } from '../upload-token.js';
 import { tenantJmapState } from '../../../db/schema.js';
 
@@ -522,11 +522,10 @@ export async function captureMailboxesComponent(
 
   await waitForJob(opts.k8s, mailNamespace, jobName, orchestratorTimeoutMs, opts.onProgress);
 
-  // Parse Job log for JMAP_DONE + MAILBOXES_DONE lines.
-  const log = await tailJobLog(opts.k8s, mailNamespace, jobName, {
-    tailLines: 200,
-    maxLineLength: 4000,
-  }).catch(() => null);
+  // Parse Job log for JMAP_DONE + MAILBOXES_DONE lines. We need the
+  // FULL multi-line log (one JMAP_DONE per mailbox), not the
+  // single-last-line summary that tailJobLog returns for progress.
+  const log = await readJobLogTail(opts.k8s, mailNamespace, jobName, { tailLines: 500 }).catch(() => null);
   const { newStates, sizeBytes } = parseMailboxesDone(log ?? '', opts.backupId);
 
   return {
