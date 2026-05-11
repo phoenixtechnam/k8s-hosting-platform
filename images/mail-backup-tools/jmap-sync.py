@@ -259,28 +259,21 @@ def _full_pull_ids(client: JmapClient) -> Tuple[List[str], str]:
         if len(batch) < QUERY_PAGE_LIMIT:
             break
         position += len(batch)
-    # Sample the live state token; Email/query returns a queryState
-    # which is NOT the same as Email/changes state. Take a fresh state
-    # by calling Email/changes with an empty sinceState (servers return
-    # the current state in newState).
-    try:
-        sr = client.call([[
-            "Email/changes",
-            {"accountId": client.account_id, "sinceState": "0"},
-            "0",
-        ]])
-        # Many servers reject sinceState="0" with cannotCalculateChanges;
-        # the newState is still typically present in the error result,
-        # but if not we fall back to using queryState as a placeholder.
-        body = sr[0][1]
-        new_state = body.get("newState") or final_state
-        return ids, new_state or ""
-    except JmapError as e:
-        if e.code == "cannotCalculateChanges":
-            # The error response may include newState in the error
-            # struct. Best-effort: return whatever queryState we have.
-            return ids, final_state or ""
-        raise
+    # Sample the live Email/changes state token. Per RFC 8620, every
+    # `Foo/get` response includes a `state` field that is the current
+    # state for `Foo/changes` on that type. We just need ONE such
+    # response — easiest is an empty Email/get (ids=[] returns an
+    # empty list but still carries the state field). Some servers
+    # reject Email/changes with sinceState="0" outright (Stalwart 0.16
+    # returns `invalidArguments` rather than `cannotCalculateChanges`),
+    # so this empty-Email/get path is more portable.
+    sr = client.call([[
+        "Email/get",
+        {"accountId": client.account_id, "ids": [], "properties": ["id"]},
+        "0",
+    ]])
+    new_state = sr[0][1].get("state", "") or ""
+    return ids, new_state
 
 
 def _incremental_ids(client: JmapClient, since_state: str) -> Tuple[List[str], List[str], str, bool]:

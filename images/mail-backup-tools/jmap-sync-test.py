@@ -140,7 +140,7 @@ class FakeJmapHandler(BaseHTTPRequestHandler):
                         "receivedAt": m.get("receivedAt", "2024-01-01T00:00:00Z"),
                         "messageId": [mid + "@test"],
                     })
-                responses.append(["Email/get", {"accountId": ACCOUNT_ID, "list": out}, tag])
+                responses.append(["Email/get", {"accountId": ACCOUNT_ID, "list": out, "state": SHARED.current_state}, tag])
             elif method == "Email/changes":
                 since = args.get("sinceState", "")
                 if SHARED.fail_changes:
