@@ -422,6 +422,19 @@ export const catalogEntries = pgTable('catalog_entries', {
   services: jsonb('services').$type<Record<string, unknown> | null>(),
   provides: jsonb('provides').$type<Record<string, unknown> | null>(),
   envVars: jsonb('env_vars').$type<{ configurable?: string[]; generated?: string[]; fixed?: Record<string, string> } | null>(),
+  /**
+   * Per-app upgrade policy, synced from manifest's optional `versionLockMode`:
+   *   - 'strict'   — block upgrades unless current version is in target's
+   *                   upgradeFrom array (Nextcloud, Moodle, Wordpress majors).
+   *                   Auto-upgrade cron NEVER touches strict apps.
+   *   - 'advisory' — guard runs but admin can override with `force=true`.
+   *                   Auto-upgrade cron enabled if deployment has autoUpgrade=true.
+   *   - 'open'     — no guard (stateless services, runtimes). Default for
+   *                   manifests that omit the field.
+   * Default is 'advisory' — fail-safe for new manifests until catalog
+   * authors classify them.
+   */
+  versionLockMode: varchar('version_lock_mode', { length: 20 }).notNull().default('advisory'),
   // Metadata
   status: catalogEntryStatusEnum().notNull().default('available'),
   featured: integer('featured').notNull().default(0),
@@ -456,6 +469,21 @@ export const deployments = pgTable('deployments', {
   helmReleaseName: varchar('helm_release_name', { length: 255 }),
   installedVersion: varchar('installed_version', { length: 50 }),
   targetVersion: varchar('target_version', { length: 50 }),
+  /**
+   * Rollback data — populated by upgradeDeploymentVersion() right before
+   * the version flip. Set back to NULL when the deployment is rolled back
+   * (rollback uses these to restore the image refs). Older history isn't
+   * kept; only the immediately preceding version is rollback-eligible.
+   */
+  previousVersion: varchar('previous_version', { length: 50 }),
+  /**
+   * Per-deployment auto-upgrade opt-in. When true, the daily upgrade-cron
+   * picks the latest catalog version that lists the current installedVersion
+   * in its upgradeFrom array and runs the upgrade automatically. Apps with
+   * versionLockMode='strict' (Nextcloud, Moodle, etc.) ignore this flag and
+   * always require a manual click.
+   */
+  autoUpgrade: boolean('auto_upgrade').notNull().default(false),
   lastUpgradedAt: timestamp('last_upgraded_at'),
   lastError: text('last_error'),
   statusMessage: text('status_message'),

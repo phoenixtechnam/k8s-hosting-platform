@@ -5,6 +5,7 @@ import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, Ap
 import { getStatusColor } from '@/lib/status-colors';
 import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
 import NetworkAccessSection from '@/components/NetworkAccessSection';
+import AvailableUpgradesCard from '@/components/AvailableUpgradesCard';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
 import clsx from 'clsx';
 import DatabaseManagementModal from './DatabaseManagementModal';
@@ -286,6 +287,17 @@ export default function InstalledAppDetailModal({
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
             <span>Last error: {deployment.lastError}</span>
           </div>
+        )}
+
+        {/* Available updates — only renders when there's an upgrade or rollback available */}
+        {clientId && (
+          <AvailableUpgradesCard
+            clientId={clientId}
+            deploymentId={deployment.id}
+            deploymentName={deployment.name}
+            installedVersion={deployment.installedVersion}
+            previousVersion={deployment.previousVersion ?? null}
+          />
         )}
 
         {/* Status Section */}

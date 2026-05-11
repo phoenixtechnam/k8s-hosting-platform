@@ -82,6 +82,12 @@ interface EntryManifest {
   readonly services?: Record<string, unknown>;
   readonly provides?: Record<string, unknown>;
   readonly env_vars?: Record<string, unknown>;
+  /**
+   * Upgrade policy. See migration 0095 + manifest.schema.json. Drives both
+   * the runtime guard and the auto-upgrade cron. Defaults to 'advisory'
+   * when absent so new manifests fail-safe until classified.
+   */
+  readonly versionLockMode?: 'strict' | 'advisory' | 'open';
   readonly supportedVersions?: readonly SupportedVersion[];
   /**
    * Optional runtime-firewall declaration. When present, the catalog deploy
@@ -645,10 +651,33 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
         services: (manifest.services ?? null) as typeof catalogEntries.$inferInsert['services'],
         provides: (manifest.provides ?? null) as typeof catalogEntries.$inferInsert['provides'],
         envVars: (manifest.env_vars ?? null) as typeof catalogEntries.$inferInsert['envVars'],
+        versionLockMode: manifest.versionLockMode ?? 'advisory',
         status: 'available' as const,
         sourceRepoId: repoId,
         manifestUrl,
       };
+
+      // Layer 1: validate upgradeFrom refs. Every version in any upgradeFrom
+      // array must resolve to a real supportedVersions entry. A typo or
+      // a stale reference would silently lock customers out of upgrades.
+      if (manifest.supportedVersions && manifest.supportedVersions.length > 0) {
+        const known = new Set(manifest.supportedVersions.map((sv) => sv.version));
+        const badRefs: string[] = [];
+        for (const sv of manifest.supportedVersions) {
+          for (const ref of sv.upgradeFrom ?? []) {
+            if (!known.has(ref)) {
+              badRefs.push(`${sv.version}.upgradeFrom: "${ref}" is not a declared version`);
+            }
+          }
+        }
+        if (badRefs.length > 0) {
+          manifestErrors.push(`${code}: ${badRefs.join('; ')}`);
+          // Continue syncing the entry — the bad version row is rejected
+          // below by skipping inserts for the affected sv rows. The entry
+          // itself is usable for current installs, just not for those
+          // upgrade paths.
+        }
+      }
 
       let catalogId: string;
 
@@ -664,7 +693,12 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       await db.delete(catalogEntryVersions).where(eq(catalogEntryVersions.catalogEntryId, catalogId));
 
       if (manifest.supportedVersions && manifest.supportedVersions.length > 0) {
+        const knownVersions = new Set(manifest.supportedVersions.map((sv) => sv.version));
         for (const sv of manifest.supportedVersions) {
+          // Drop any upgradeFrom refs that don't resolve. Surfaced above
+          // in manifestErrors; here we sanitize so the version row still
+          // gets inserted (the version is otherwise usable for fresh deploys).
+          const safeUpgradeFrom = (sv.upgradeFrom ?? []).filter((r) => knownVersions.has(r));
           await db.insert(catalogEntryVersions).values({
             id: crypto.randomUUID(),
             catalogEntryId: catalogId,
@@ -672,7 +706,7 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
             isDefault: sv.isDefault ? 1 : 0,
             eolDate: sv.eolDate ?? null,
             components: sv.components ?? null,
-            upgradeFrom: sv.upgradeFrom && sv.upgradeFrom.length > 0 ? [...sv.upgradeFrom] : null,
+            upgradeFrom: safeUpgradeFrom.length > 0 ? safeUpgradeFrom : null,
             breakingChanges: sv.breakingChanges ?? null,
             envChanges: sv.envChanges && sv.envChanges.length > 0 ? [...sv.envChanges] : null,
             migrationNotes: sv.migrationNotes ?? null,

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, RotateCcw, History, LayoutGrid, Tag, Play, Square, RefreshCw, Trash2, CheckSquare, ChevronLeft, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import CatalogRepoSettings from '@/components/CatalogRepoSettings';
+import DeploymentUpgradesTab from '@/components/DeploymentUpgradesTab';
 import { useCatalog, useUpdateCatalogBadges, useCatalogEntryVersions } from '@/hooks/use-catalog';
 import type { CatalogEntry } from '@/hooks/use-catalog';
 import { useCapacityCheck } from '@/hooks/use-capacity-check';
@@ -23,7 +24,7 @@ type Tab = 'catalog' | 'installed' | 'upgrades' | 'repos';
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
   { id: 'catalog', label: 'Catalog' },
   { id: 'installed', label: 'Installed' },
-  { id: 'upgrades', label: 'Upgrade History' },
+  { id: 'upgrades', label: 'Upgrades' },
   { id: 'repos', label: 'Repositories' },
 ] as const;
 
@@ -59,7 +60,7 @@ export default function Applications() {
 
       {activeTab === 'catalog' && <CatalogTab />}
       {activeTab === 'installed' && <InstalledTab />}
-      {activeTab === 'upgrades' && <UpgradeHistoryTab />}
+      {activeTab === 'upgrades' && <DeploymentUpgradesTab />}
       {activeTab === 'repos' && <RepositoriesTab />}
     </div>
   );

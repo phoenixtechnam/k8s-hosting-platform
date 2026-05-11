@@ -110,6 +110,14 @@ export const catalogEntryResponseSchema = z.object({
   services: z.record(z.string(), z.unknown()).nullable(),
   provides: z.record(z.string(), z.unknown()).nullable(),
   envVars: z.record(z.string(), z.unknown()).nullable(),
+  /**
+   * Per-app upgrade policy synced from manifest. Drives the upgrade-path
+   * guard + auto-upgrade cron behaviour. See migration 0095.
+   *   - 'strict'   : one-major-at-a-time, force ignored (Nextcloud, Moodle, etc.)
+   *   - 'advisory' : guard runs but admin can force=true override (default)
+   *   - 'open'     : no guard (stateless services, runtimes)
+   */
+  versionLockMode: z.enum(['strict', 'advisory', 'open']).default('advisory'),
   status: z.string(),
   featured: z.number(),
   popular: z.number(),
@@ -172,6 +180,10 @@ export const deploymentResponseSchema = z.object({
   helmReleaseName: z.string().nullable(),
   installedVersion: z.string().nullable(),
   targetVersion: z.string().nullable(),
+  /** Set on upgrade, cleared on rollback. Only the immediately preceding version is rollback-eligible. */
+  previousVersion: z.string().nullable(),
+  /** Per-deployment auto-upgrade opt-in. Honoured only for non-strict apps. */
+  autoUpgrade: z.boolean().default(false),
   lastUpgradedAt: z.string().nullable(),
   lastError: z.string().nullable(),
   statusMessage: z.string().nullable(),
@@ -241,12 +253,73 @@ export const deploymentUpgradeResponseSchema = z.object({
 
 export const triggerUpgradeSchema = z.object({
   target_version: z.string().min(1).max(50),
+  /**
+   * Override the upgrade-path guard for `advisory` apps. Strict apps
+   * always reject force. Defaults to false.
+   */
+  force: z.boolean().optional(),
 });
 
 export const batchUpgradeSchema = z.object({
-  deployment_ids: z.array(z.string().uuid()).min(1).max(50),
+  deployment_ids: z.array(z.string().uuid()).min(1).max(200),
   target_version: z.string().min(1).max(50),
+  force: z.boolean().optional(),
 });
+
+/** GET /clients/:cid/deployments/:id/available-upgrades */
+export const availableUpgradeItemSchema = z.object({
+  version: z.string(),
+  isDefault: z.boolean(),
+  eolDate: z.string().nullable(),
+  breakingChanges: z.string().nullable(),
+  migrationNotes: z.string().nullable(),
+  minResources: z.object({
+    cpu: z.string().optional(),
+    memory: z.string().optional(),
+    storage: z.string().optional(),
+  }).nullable(),
+});
+
+export const availableUpgradesResponseSchema = z.object({
+  from: z.string().nullable(),
+  /** One-hop upgrades reachable from `from`. */
+  direct: z.array(availableUpgradeItemSchema),
+  /** For strict apps that can't reach the newest version directly — the recommended chain. */
+  recommendedChain: z.array(availableUpgradeItemSchema),
+  lockMode: z.enum(['strict', 'advisory', 'open']),
+});
+
+export type AvailableUpgradesResponse = z.infer<typeof availableUpgradesResponseSchema>;
+
+/** Per-deployment row in the admin upgrades overview. */
+export const adminUpgradesDeploymentSchema = z.object({
+  id: z.string(),
+  clientId: z.string(),
+  clientCompanyName: z.string().nullable(),
+  name: z.string(),
+  status: z.string(),
+  installedVersion: z.string().nullable(),
+  previousVersion: z.string().nullable(),
+  autoUpgrade: z.boolean(),
+  lastUpgradedAt: z.string().nullable(),
+  domainName: z.string().nullable(),
+  previewUrl: z.string().nullable(),
+  availableUpgradeCount: z.number(),
+  latestReachable: z.string().nullable(),
+});
+
+export const adminUpgradesGroupSchema = z.object({
+  catalogEntryId: z.string(),
+  code: z.string(),
+  name: z.string(),
+  lockMode: z.enum(['strict', 'advisory', 'open']),
+  latestVersion: z.string().nullable(),
+  defaultVersion: z.string().nullable(),
+  deployments: z.array(adminUpgradesDeploymentSchema),
+});
+
+export type AdminUpgradesGroup = z.infer<typeof adminUpgradesGroupSchema>;
+export type AdminUpgradesDeployment = z.infer<typeof adminUpgradesDeploymentSchema>;
 
 // ─── Delete Preview ─────────────────────────────────────────────────────────
 

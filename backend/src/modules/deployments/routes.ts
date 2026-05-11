@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
 import { createDeploymentSchema, updateDeploymentSchema, updateDeploymentResourcesSchema } from './schema.js';
+import { triggerUpgradeSchema, batchUpgradeSchema } from '@k8s-hosting/api-contracts';
 import * as service from './service.js';
+import * as upgradeVersion from './upgrade-version.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
@@ -137,6 +139,83 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, id } = request.params as { clientId: string; id: string };
     const availability = await service.getResourceAvailability(app.db, clientId, id);
     return success(availability);
+  });
+
+  // ─── Catalog version upgrade ───────────────────────────────────────────────
+  // GET /api/v1/clients/:clientId/deployments/:id/available-upgrades
+  //   Returns { from, direct[], recommendedChain[], lockMode }. Lists every
+  //   catalog version that lists the current installedVersion in its
+  //   upgradeFrom. For strict apps the recommendedChain walks intermediate
+  //   versions toward the newest reachable target.
+  app.get('/clients/:clientId/deployments/:id/available-upgrades', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    // Pass clientId so the service enforces tenant isolation — without
+    // it, a client_admin for tenant A could enumerate upgrades for
+    // tenant B's deployments by UUID guessing.
+    const upgrades = await upgradeVersion.getAvailableUpgrades(app.db, id, clientId);
+    return success(upgrades);
+  });
+
+  // PATCH /api/v1/clients/:clientId/deployments/:id/version
+  //   body: { target_version: "5.1", force?: true }
+  //   Enforces versionLockMode + upgradeFrom chain. 409 on path violation,
+  //   404 on unknown version, 500 on K8s deploy failure (deployment row is
+  //   marked failed so the UI surfaces lastError).
+  app.patch('/clients/:clientId/deployments/:id/version', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const parsed = triggerUpgradeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.issues[0];
+      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${firstError.message}`, 400, { field: firstError.path.join('.') });
+    }
+    // Role-gate the force flag: only admins can override the upgrade-path
+    // guard on advisory apps. A client_admin attempting force=true gets
+    // rejected here — the service layer's JSDoc explicitly delegates this
+    // check to the route.
+    const userRole = (request.user as { role?: string } | undefined)?.role;
+    const isAdmin = userRole === 'super_admin' || userRole === 'admin';
+    if (parsed.data.force && !isAdmin) {
+      throw new ApiError(
+        'FORCE_REQUIRES_ADMIN',
+        'force=true requires admin or super_admin role',
+        403,
+        { role: userRole },
+      );
+    }
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster client unavailable; cannot redeploy', 503);
+    const updated = await upgradeVersion.upgradeDeploymentVersion(app.db, clientId, id, {
+      targetVersion: parsed.data.target_version,
+      force: parsed.data.force,
+    }, k8s);
+    return success(updated);
+  });
+
+  // POST /api/v1/clients/:clientId/deployments/:id/rollback-version
+  //   Restores previous_version (single-step). Schema migrations are NOT
+  //   reversed — the UI shows a warning before calling this.
+  app.post('/clients/:clientId/deployments/:id/rollback-version', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster client unavailable; cannot redeploy', 503);
+    const updated = await upgradeVersion.rollbackDeploymentVersion(app.db, clientId, id, k8s);
+    return success(updated);
+  });
+
+  // PATCH /api/v1/clients/:clientId/deployments/:id/auto-upgrade
+  //   body: { enabled: boolean }
+  //   Toggles the per-deployment opt-in flag for the upgrade cron.
+  //   Strict apps reject the toggle entirely (the cron would skip them
+  //   anyway — surface the intent at API time so the UI doesn't show
+  //   a misleading "auto-upgrade enabled" badge).
+  app.patch('/clients/:clientId/deployments/:id/auto-upgrade', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const body = request.body as { enabled?: unknown };
+    if (typeof body?.enabled !== 'boolean') {
+      throw new ApiError('INVALID_FIELD_VALUE', 'enabled must be a boolean', 400, { field: 'enabled' });
+    }
+    const updated = await upgradeVersion.setAutoUpgrade(app.db, clientId, id, body.enabled);
+    return success(updated);
   });
 
   // GET /api/v1/clients/:clientId/deployments/:id/credentials
@@ -865,6 +944,71 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     return success({ succeeded, failed: errors.length, total: body.deployment_ids.length, errors });
+  });
+
+  // ─── Admin upgrade routes ───────────────────────────────────────────────
+  // GET /api/v1/admin/upgrades/overview
+  //   Returns every running deployment grouped by catalog entry, with
+  //   currentVersion / latestVersion / availableUpgrades counts + per-
+  //   deployment preview URL. Backs the admin /upgrades page.
+  app.get('/admin/upgrades/overview', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Deployments'], summary: 'Admin upgrades overview', security: [{ bearerAuth: [] }] },
+  }, async () => {
+    const overview = await upgradeVersion.getAdminUpgradesOverview(app.db);
+    return success(overview);
+  });
+
+  // POST /api/v1/admin/deployments/bulk-upgrade
+  //   body: { deployment_ids: uuid[], target_version: "5.1", force?: bool }
+  //   Serial-with-skip — each failure is captured in errors[] and the loop
+  //   continues. Force flag is forwarded per-deployment (only honoured for
+  //   advisory apps; strict apps always reject).
+  app.post('/admin/deployments/bulk-upgrade', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Deployments'], summary: 'Bulk upgrade deployments to a target version', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const parsed = batchUpgradeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.issues[0];
+      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${firstError.message}`, 400, { field: firstError.path.join('.') });
+    }
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster client unavailable; cannot redeploy', 503);
+    let succeeded = 0;
+    const errors: Array<{ deploymentId: string; error: string; code?: string }> = [];
+    for (const depId of parsed.data.deployment_ids) {
+      try {
+        const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, depId));
+        if (!dep) { errors.push({ deploymentId: depId, error: 'not found' }); continue; }
+        await upgradeVersion.upgradeDeploymentVersion(app.db, dep.clientId, depId, {
+          targetVersion: parsed.data.target_version,
+          force: parsed.data.force,
+        }, k8s);
+        succeeded++;
+      } catch (err) {
+        if (err instanceof ApiError) {
+          errors.push({ deploymentId: depId, error: err.message, code: err.code });
+        } else {
+          errors.push({ deploymentId: depId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    }
+    return success({ succeeded, failed: errors.length, total: parsed.data.deployment_ids.length, errors });
+  });
+
+  // POST /api/v1/admin/deployments/:id/rollback-version — admin can roll back any deployment
+  app.post('/admin/deployments/:id/rollback-version', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Deployments'], summary: 'Admin rollback a deployment version', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, id));
+    if (!dep) throw new ApiError('DEPLOYMENT_NOT_FOUND', 'Deployment not found', 404);
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Cluster client unavailable; cannot redeploy', 503);
+    const updated = await upgradeVersion.rollbackDeploymentVersion(app.db, dep.clientId, id, k8s);
+    return success(updated);
   });
 
   // POST /api/v1/admin/deployments/reconcile — admin-only, reconcile all deployment statuses
