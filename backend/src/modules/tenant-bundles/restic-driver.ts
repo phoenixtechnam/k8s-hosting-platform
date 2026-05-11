@@ -837,9 +837,13 @@ export async function runResticRestore(args: RunResticRestoreArgs): Promise<void
     if (args.readOnly) cliArgs.push('--no-lock');
     cliArgs.push('restore', args.snapshotId);
     cliArgs.push('--target', args.targetDir);
-    // Phase 1 piece #10 perf: parallel pack decryption (default 8).
-    // Doubles restore throughput on the staging Storage Box test.
-    cliArgs.push('--workers', '16');
+    // Restore parallelism for S3: controlled by `s3.connections=10`
+    // (set in performanceOpts() above). For SFTP: bounded by the single
+    // SSH channel restic opens. There is NO `--workers` flag on
+    // `restic restore` in 0.18.x — the previous perf commit added one
+    // mistakenly (caught 2026-05-11 against the staging restore pod:
+    // `unknown flag: --workers`). Pack-file processing parallelism is
+    // implicit inside restic.
     for (const inc of args.includes ?? []) {
       cliArgs.push('--include', inc);
     }
