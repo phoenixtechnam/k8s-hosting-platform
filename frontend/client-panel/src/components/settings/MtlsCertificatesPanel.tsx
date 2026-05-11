@@ -9,13 +9,19 @@ import {
   Copy,
   CheckCircle,
   Link as LinkIcon,
+  Trash2,
+  RotateCcw,
+  HelpCircle,
 } from 'lucide-react';
 import { API_BASE } from '@/lib/api-client';
 import {
   useMtlsCertificates,
   useMtlsCrlMetadata,
   useRevokeMtlsCertificate,
+  useUnrevokeMtlsCertificate,
+  useDeleteMtlsCertificate,
 } from '@/hooks/use-mtls-providers';
+import HowToUseCertificatesModal from './HowToUseCertificatesModal';
 import type {
   CertificateResponse,
   CertificateStatus,
@@ -55,6 +61,9 @@ interface MtlsCertificatesPanelProps {
 export default function MtlsCertificatesPanel({ clientId, provider }: MtlsCertificatesPanelProps) {
   const [statusFilter, setStatusFilter] = useState<CertificateStatus | 'all'>('all');
   const [revokeTarget, setRevokeTarget] = useState<CertificateResponse | null>(null);
+  const [unrevokeTarget, setUnrevokeTarget] = useState<CertificateResponse | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CertificateResponse | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [copiedCrl, setCopiedCrl] = useState(false);
 
   const certsQuery = useMtlsCertificates(clientId, provider.id, statusFilter);
@@ -151,10 +160,18 @@ export default function MtlsCertificatesPanel({ clientId, provider }: MtlsCertif
             <ShieldCheck size={18} /> Issued certificates — {provider.name}
           </h2>
           <p className="mt-1 text-sm text-gray-600 dark:text-gray-400 max-w-2xl">
-            Every cert minted from this provider's CA. Revoke a cert here and the platform
-            updates the CRL pushed into each ingress route — NGINX will reject the cert on
-            the next reconcile (within ~60s).
+            Every cert minted from this provider's CA. Revoke a cert and the platform
+            pushes the CRL into each ingress route — NGINX rejects the cert within ~10s.
+            Revoked certs can also be reactivated, or deleted entirely.
           </p>
+          <button
+            type="button"
+            onClick={() => setHelpOpen(true)}
+            className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+            data-testid="mtls-help-link"
+          >
+            <HelpCircle size={12} /> How to use certificates on Windows / macOS / Linux / mobile
+          </button>
         </div>
         {provider.canIssue && (
           <CrlMetadataCard
@@ -268,6 +285,26 @@ export default function MtlsCertificatesPanel({ clientId, provider }: MtlsCertif
                           <Ban size={12} /> Revoke
                         </button>
                       )}
+                      {cert.status === 'revoked' && (
+                        <button
+                          type="button"
+                          onClick={() => setUnrevokeTarget(cert)}
+                          title="Reactivate this certificate"
+                          className="inline-flex items-center gap-1 rounded border border-amber-300 dark:border-amber-700 px-2 py-1 text-xs text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/30"
+                          data-testid={`mtls-cert-reactivate-${cert.id}`}
+                        >
+                          <RotateCcw size={12} /> Reactivate
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(cert)}
+                        title="Delete this certificate"
+                        className="rounded p-1 text-gray-500 hover:bg-red-50 hover:text-red-600 dark:text-gray-400 dark:hover:bg-red-900/30 dark:hover:text-red-300"
+                        data-testid={`mtls-cert-delete-${cert.id}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -285,6 +322,23 @@ export default function MtlsCertificatesPanel({ clientId, provider }: MtlsCertif
           onClose={() => setRevokeTarget(null)}
         />
       )}
+      {unrevokeTarget && (
+        <UnrevokeModal
+          cert={unrevokeTarget}
+          clientId={clientId}
+          providerId={provider.id}
+          onClose={() => setUnrevokeTarget(null)}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteCertModal
+          cert={deleteTarget}
+          clientId={clientId}
+          providerId={provider.id}
+          onClose={() => setDeleteTarget(null)}
+        />
+      )}
+      {helpOpen && <HowToUseCertificatesModal onClose={() => setHelpOpen(false)} />}
     </section>
   );
 }
@@ -502,3 +556,217 @@ function RevokeModal({
   );
 }
 
+
+// ─── Unrevoke (reactivate) modal ─────────────────────────────────────
+
+function UnrevokeModal({
+  cert,
+  clientId,
+  providerId,
+  onClose,
+}: {
+  cert: CertificateResponse;
+  clientId: string;
+  providerId: string;
+  onClose: () => void;
+}) {
+  const unrevokeMut = useUnrevokeMtlsCertificate(clientId, providerId);
+  const [confirmText, setConfirmText] = useState('');
+  const confirmRequired = `reactivate ${cert.subjectCn}`;
+  const canConfirm = confirmText.trim().toLowerCase() === confirmRequired.toLowerCase();
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!canConfirm) return;
+    await unrevokeMut.mutateAsync(cert.id);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" data-testid="mtls-unrevoke-modal">
+      <div className="w-full max-w-lg rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-xl">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+          <RotateCcw size={18} className="text-amber-600 dark:text-amber-400" /> Reactivate certificate?
+        </h2>
+        <div className="mt-3 space-y-2 text-sm text-gray-700 dark:text-gray-300">
+          <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+            <strong>Security warning:</strong> reactivating a previously-revoked certificate
+            allows it to be used again. If the cert was revoked due to <em>key compromise</em>
+            (stolen / leaked private key), DO NOT reactivate — issue a fresh cert instead.
+            Within ~10s of confirming, NGINX will accept this cert at every ingress route
+            bound to the provider.
+          </div>
+          <p className="text-xs">
+            <span className="text-gray-500 dark:text-gray-400">Subject:</span>{' '}
+            <code className="font-mono">{cert.subjectFull}</code>
+          </p>
+          <p className="text-xs">
+            <span className="text-gray-500 dark:text-gray-400">Serial:</span>{' '}
+            <code className="font-mono">{cert.serialHex}</code>
+          </p>
+          {cert.revocationReason && (
+            <p className="text-xs">
+              <span className="text-gray-500 dark:text-gray-400">Revoked as:</span>{' '}
+              <code className="font-mono">{cert.revocationReason}</code>
+              {cert.revokedAt && <> on {new Date(cert.revokedAt).toLocaleString()}</>}
+            </p>
+          )}
+        </div>
+
+        <form onSubmit={onSubmit} className="mt-4 space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1" htmlFor="unrevoke-confirm">
+              Type <code className="font-mono text-[11px] bg-gray-100 dark:bg-gray-900 rounded px-1">{confirmRequired}</code> to confirm
+            </label>
+            <input
+              id="unrevoke-confirm"
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 font-mono"
+              data-testid="mtls-unrevoke-confirm-input"
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
+            />
+          </div>
+
+          {unrevokeMut.error != null && (
+            <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+              {unrevokeMut.error instanceof Error ? unrevokeMut.error.message : String(unrevokeMut.error)}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!canConfirm || unrevokeMut.isPending}
+              className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+              data-testid="mtls-unrevoke-submit"
+            >
+              {unrevokeMut.isPending && <Loader2 size={14} className="animate-spin" />}
+              Reactivate
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── Delete cert modal ───────────────────────────────────────────────
+
+function DeleteCertModal({
+  cert,
+  clientId,
+  providerId,
+  onClose,
+}: {
+  cert: CertificateResponse;
+  clientId: string;
+  providerId: string;
+  onClose: () => void;
+}) {
+  const deleteMut = useDeleteMtlsCertificate(clientId, providerId);
+  const [confirmText, setConfirmText] = useState('');
+  const confirmRequired = `delete ${cert.subjectCn}`;
+  const canConfirm = confirmText.trim().toLowerCase() === confirmRequired.toLowerCase();
+  // A revoked cert's serial is on the CRL. Deletion removes it from the
+  // CRL on next regeneration, so a still-extant cert+key pair in the wild
+  // could regain access. The active-cert case is plain "stop tracking it"
+  // and has no in-flight security implication.
+  const isRevoked = cert.status === 'revoked';
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!canConfirm) return;
+    await deleteMut.mutateAsync(cert.id);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" data-testid="mtls-delete-modal">
+      <div className="w-full max-w-lg rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-xl">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+          <Trash2 size={18} className="text-red-600 dark:text-red-400" /> Delete certificate?
+        </h2>
+        <div className="mt-3 space-y-2 text-sm text-gray-700 dark:text-gray-300">
+          {isRevoked ? (
+            <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-900 dark:text-red-200">
+              <strong>Security warning:</strong> this cert is currently revoked. Deleting it
+              removes its serial from the CRL on the next regeneration. If the cert + private
+              key still exist anywhere (operator's laptop, browser store, etc), NGINX would
+              accept it again. Only delete revoked certs once you're sure the key is destroyed
+              everywhere it was used.
+            </div>
+          ) : (
+            <p>
+              This permanently removes the certificate record from the platform. The cert + key
+              you handed to the end user will keep working (it's cryptographic — only revocation
+              tells NGINX to refuse it). To invalidate a cert in use, <em>revoke</em> instead.
+            </p>
+          )}
+          <p className="text-xs">
+            <span className="text-gray-500 dark:text-gray-400">Subject:</span>{' '}
+            <code className="font-mono">{cert.subjectFull}</code>
+          </p>
+          <p className="text-xs">
+            <span className="text-gray-500 dark:text-gray-400">Serial:</span>{' '}
+            <code className="font-mono">{cert.serialHex}</code>
+          </p>
+        </div>
+
+        <form onSubmit={onSubmit} className="mt-4 space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1" htmlFor="delete-confirm">
+              Type <code className="font-mono text-[11px] bg-gray-100 dark:bg-gray-900 rounded px-1">{confirmRequired}</code> to confirm
+            </label>
+            <input
+              id="delete-confirm"
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 font-mono"
+              data-testid="mtls-delete-confirm-input"
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
+            />
+          </div>
+
+          {deleteMut.error != null && (
+            <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+              {deleteMut.error instanceof Error ? deleteMut.error.message : String(deleteMut.error)}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!canConfirm || deleteMut.isPending}
+              className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              data-testid="mtls-delete-submit"
+            >
+              {deleteMut.isPending && <Loader2 size={14} className="animate-spin" />}
+              Delete
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}

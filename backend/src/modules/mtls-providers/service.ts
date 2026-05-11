@@ -285,6 +285,29 @@ export async function issueUserCert(
     validityDays: input.validityDays,
   });
 
+  // Optional PKCS#12 bundle for Windows / macOS keychain import.
+  // Triggered by `pkcs12: true` OR (legacy compat) a non-empty
+  // pkcs12Password. Password is optional — empty string produces a
+  // passwordless .p12 which Windows 10/11 + macOS 11+ accept.
+  //
+  // We build the bundle BEFORE the DB insert so a build failure
+  // (e.g. openssl edge case on a particular password) can't leave a
+  // dangling cert row that has no .p12 next to it. The operator
+  // retries the issuance and gets a single row, not duplicates.
+  let pkcs12Base64: string | null = null;
+  const wantPkcs12 = input.pkcs12 === true
+    || (typeof input.pkcs12Password === 'string' && input.pkcs12Password.length > 0);
+  if (wantPkcs12) {
+    const bundle = await bundlePkcs12({
+      certPem: signed.certPem,
+      keyPem: signed.keyPem,
+      caCertPem,
+      password: input.pkcs12Password ?? '',
+      friendlyName: input.commonName,
+    });
+    pkcs12Base64 = Buffer.from(bundle).toString('base64');
+  }
+
   // Persist the cert (PEM encrypted) so the operator can audit/revoke
   // it later. Private key is NEVER persisted — it's returned once in
   // the response and the operator alone is responsible for it.
@@ -301,24 +324,6 @@ export async function issueUserCert(
     issuedAt: new Date(),
     expiresAt: signed.expiresAt,
   });
-
-  // Optional PKCS#12 bundle for Windows / macOS keychain import.
-  // Triggered by `pkcs12: true` OR (legacy compat) a non-empty
-  // pkcs12Password. Password is optional — empty string produces a
-  // passwordless .p12 which Windows 10/11 + macOS 11+ accept.
-  let pkcs12Base64: string | null = null;
-  const wantPkcs12 = input.pkcs12 === true
-    || (typeof input.pkcs12Password === 'string' && input.pkcs12Password.length > 0);
-  if (wantPkcs12) {
-    const bundle = await bundlePkcs12({
-      certPem: signed.certPem,
-      keyPem: signed.keyPem,
-      caCertPem,
-      password: input.pkcs12Password ?? '',
-      friendlyName: input.commonName,
-    });
-    pkcs12Base64 = Buffer.from(bundle).toString('base64');
-  }
 
   return {
     id: certRowId,
@@ -510,6 +515,120 @@ export async function getCertificatePem(
     serialHex: row.serialHex,
     subjectCn: row.subjectCn,
   };
+}
+
+/**
+ * Hard-delete a certificate. Removes the row and invalidates the CRL
+ * cache so the next regeneration omits this serial. Implicitly
+ * "un-revokes" a previously revoked cert from the CRL's perspective —
+ * a relying party that re-fetches the CRL will no longer see this
+ * serial listed, so a still-extant cert+key pair (in the wild) regains
+ * access. The route handler enforces an explicit confirmation in the
+ * UI; here we just do what's asked.
+ *
+ * Idempotent: deleting a non-existent cert returns silently.
+ */
+export async function deleteCertificate(
+  db: Database,
+  clientId: string,
+  providerId: string,
+  certId: string,
+): Promise<void> {
+  await ensureProviderScope(db, clientId, providerId);
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    const deleted = await tx
+      .delete(clientCertificates)
+      .where(and(
+        eq(clientCertificates.id, certId),
+        eq(clientCertificates.providerId, providerId),
+      ))
+      .returning({ id: clientCertificates.id, revokedAt: clientCertificates.revokedAt });
+    if (deleted.length === 0) {
+      // Already gone — idempotent.
+      return;
+    }
+    // Only invalidate the CRL if the deleted cert was revoked (i.e. it
+    // was actually in the CRL). For an active cert deletion, the CRL is
+    // unchanged.
+    if (deleted[0].revokedAt) {
+      await tx
+        .update(clientMtlsProviders)
+        .set({
+          crlNumber: sql`${clientMtlsProviders.crlNumber} + 1`,
+          crlPem: null,
+          crlLastGeneratedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(clientMtlsProviders.id, providerId));
+      await tx
+        .update(ingressMtlsConfigs)
+        .set({ updatedAt: now })
+        .where(eq(ingressMtlsConfigs.providerId, providerId));
+    }
+  });
+}
+
+/**
+ * Reverse a revocation. NULLs out `revoked_at`, `revocation_reason`,
+ * and `revoked_by_user_id`. Bumps `crl_number` and invalidates the
+ * cached CRL so the next regeneration omits the serial.
+ *
+ * Use case: revoked-by-mistake recovery. Per RFC 5280 §5.3.1 this maps
+ * to CRLReason 8 (`removeFromCRL`); we don't surface that wire-format
+ * code because we never emit it — the relying party just observes the
+ * serial vanish from subsequent CRLs.
+ *
+ * No-op (returns the existing row) when the cert is already active.
+ */
+export async function unrevokeCertificate(
+  db: Database,
+  clientId: string,
+  providerId: string,
+  certId: string,
+): Promise<CertificateResponse> {
+  await ensureProviderScope(db, clientId, providerId);
+  const [existing] = await db
+    .select()
+    .from(clientCertificates)
+    .where(and(
+      eq(clientCertificates.id, certId),
+      eq(clientCertificates.providerId, providerId),
+    ));
+  if (!existing) {
+    throw new ApiError('NOT_FOUND', 'certificate not found', 404);
+  }
+  if (!existing.revokedAt) {
+    return toCertificateResponse(existing, new Date());
+  }
+
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    await tx
+      .update(clientCertificates)
+      .set({
+        revokedAt: null,
+        revocationReason: null,
+        revokedByUserId: null,
+      })
+      .where(eq(clientCertificates.id, certId));
+    await tx
+      .update(clientMtlsProviders)
+      .set({
+        crlNumber: sql`${clientMtlsProviders.crlNumber} + 1`,
+        crlPem: null,
+        crlLastGeneratedAt: null,
+        updatedAt: now,
+      })
+      .where(eq(clientMtlsProviders.id, providerId));
+  });
+
+  await db
+    .update(ingressMtlsConfigs)
+    .set({ updatedAt: now })
+    .where(eq(ingressMtlsConfigs.providerId, providerId));
+
+  return getCertificate(db, clientId, providerId, certId);
 }
 
 export async function revokeCertificate(

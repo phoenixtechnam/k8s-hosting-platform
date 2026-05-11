@@ -4,6 +4,7 @@ import {
   signClientCert,
   generateCrl,
   generateSerialHex,
+  bundlePkcs12,
 } from './cert-ops.js';
 import { X509Certificate, createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -207,5 +208,54 @@ describe('generateCrl', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('bundlePkcs12', () => {
+  // The empty-password edge case used to fail on OpenSSL 3.x when we
+  // routed it through `-passout file:<empty-file>` ("Hmac key length 0
+  // invalid" / "Error reading password from BIO"). The fix dispatches
+  // to `-passout pass:` for empty and `-passout file:<path>` for
+  // non-empty (the latter prevents prefix-injection from user input).
+  // This test guards both code paths.
+  async function setupCert() {
+    const ca = await generateSelfSignedCa({ commonName: 'bundle-test-ca', validityDays: 30 });
+    const u = await signClientCert({
+      caCertPem: ca.certPem, caKeyPem: ca.keyPem,
+      commonName: 'bundle-user', validityDays: 7,
+    });
+    return { ca, u };
+  }
+
+  it('produces a valid .p12 with an empty password', async () => {
+    const { ca, u } = await setupCert();
+    const bytes = await bundlePkcs12({
+      certPem: u.certPem, keyPem: u.keyPem, caCertPem: ca.certPem,
+      password: '', friendlyName: 'bundle-user',
+    });
+    expect(bytes.length).toBeGreaterThan(500);
+    // PKCS#12 magic: starts with DER SEQUENCE (0x30, 0x82) for a non-trivial bundle.
+    expect(bytes[0]).toBe(0x30);
+  });
+
+  it('produces a valid .p12 with a non-empty password', async () => {
+    const { ca, u } = await setupCert();
+    const bytes = await bundlePkcs12({
+      certPem: u.certPem, keyPem: u.keyPem, caCertPem: ca.certPem,
+      password: 'test1234', friendlyName: 'bundle-user',
+    });
+    expect(bytes.length).toBeGreaterThan(500);
+    expect(bytes[0]).toBe(0x30);
+  });
+
+  it('produces a .p12 with a password containing openssl prefix-injection chars', async () => {
+    // Without the file: passout fix this would dereference to /etc/passwd
+    // or similar and either fail or use the file contents as password.
+    const { ca, u } = await setupCert();
+    const bytes = await bundlePkcs12({
+      certPem: u.certPem, keyPem: u.keyPem, caCertPem: ca.certPem,
+      password: 'file:/etc/passwd', friendlyName: 'bundle-user',
+    });
+    expect(bytes.length).toBeGreaterThan(500);
   });
 });

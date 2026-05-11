@@ -438,9 +438,10 @@ function IssueCertModal({
         {!issued ? (
           <form onSubmit={onSubmit} className="mt-4 space-y-3">
             <p className="text-sm text-gray-600 dark:text-gray-400">
-              The server signs a fresh client cert against this CA. Cert + key are returned to
-              your browser ONCE — there is no server-side persistence after this response, so
-              save them right away.
+              The server signs a fresh client cert against this CA. The <strong>private key</strong> is
+              returned to your browser ONCE and is <strong>not stored on the server</strong> — save
+              it right away. The cert itself is saved here for audit, re-download, and revocation
+              from the certificates list below.
             </p>
             <div>
               <label className={LABEL_CLASS}>Common Name (CN)</label>
@@ -519,9 +520,13 @@ function IssueCertModal({
         ) : (
           <div className="mt-4 space-y-4">
             <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-900 dark:text-amber-200">
-              <strong>Save these now.</strong> The cert and private key are not stored on the server and
-              cannot be retrieved later. Subject: <code className="font-mono text-xs">{issued.subject}</code> ·
-              Expires: {new Date(issued.expiresAt).toLocaleDateString()}
+              <strong>Save the private key now.</strong> The key is shown once and is not stored
+              server-side. The cert is saved here and can be re-downloaded from the
+              certificates list below; the key cannot.
+              <div className="mt-1 text-xs">
+                Subject: <code className="font-mono">{issued.subject}</code> ·
+                Expires: {new Date(issued.expiresAt).toLocaleDateString()}
+              </div>
             </div>
             {issued.pkcs12Base64 && (
               <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 flex items-center justify-between">
