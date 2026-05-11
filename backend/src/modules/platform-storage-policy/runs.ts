@@ -28,6 +28,8 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { platformStorageApplyRuns } from '../../db/schema.js';
 import { readClusterState } from './service.js';
+import * as tasks from '../tasks/service.js';
+import { toSafeText } from '@k8s-hosting/api-contracts';
 import type { ApplyPolicyOutcome } from './service.js';
 
 export type RunStatus = 'running' | 'succeeded' | 'partial' | 'failed' | 'capacity_blocked';
@@ -84,6 +86,36 @@ export async function finishRun(
       ...(convergence ? { convergenceJson: convergence as unknown as Record<string, unknown> } : {}),
     })
     .where(eq(platformStorageApplyRuns.id, runId));
+
+  // Mirror the terminal state onto the task-center entry registered in
+  // routes.ts. Done here (rather than at each call site) so every run
+  // closure path — the early-return for failed patches, the
+  // all-converged exit, and the timeout fallthrough — flips the chip
+  // entry consistently. Non-fatal on error; the run row is the source
+  // of truth.
+  //
+  // Mapping:
+  //   succeeded         → task succeeded (progress 100%)
+  //   partial           → task succeeded with note (operator can re-open
+  //                       the modal to see what's still rebuilding)
+  //   failed            → task failed with generic message; per-resource
+  //                       errors live in the run's patch_outcome_json
+  //   capacity_blocked  → task failed with capacity message
+  const taskFinish: {
+    status: 'succeeded' | 'failed';
+    error?: string;
+    text?: ReturnType<typeof toSafeText>;
+  } =
+      status === 'succeeded'
+        ? { status: 'succeeded', text: toSafeText('All resources at desired state.') }
+        : status === 'partial'
+          ? { status: 'succeeded', text: toSafeText('Apply succeeded — some resources still rebuilding in background.') }
+          : status === 'capacity_blocked'
+            ? { status: 'failed', error: 'Insufficient storage capacity — see modal for details.' }
+            : { status: 'failed', error: 'Apply failed — see modal for per-resource errors.' };
+
+  await tasks.finishByRef(db, 'storage.tier-flip', runId, taskFinish)
+    .catch(() => { /* non-fatal; run row is authoritative */ });
 }
 
 export async function updateConvergence(

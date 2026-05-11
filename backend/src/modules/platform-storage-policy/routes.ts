@@ -11,6 +11,8 @@ import { getPolicy, setPolicy, readClusterState, applyPolicy } from './service.j
 import { readClusterCapacity } from './capacity-reconciler.js';
 import { getClusterFailoverHeadroom } from './failover-headroom.js';
 import { startRun, recordPatchOutcome, watchConvergence, type RunStatus } from './runs.js';
+import * as tasks from '../tasks/service.js';
+import { toSafeText } from '@k8s-hosting/api-contracts';
 
 export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -201,6 +203,28 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
     // Insert the run row BEFORE applyPolicy so a route-handler crash
     // mid-patch still leaves an auditable record of the attempt.
     const runId = await startRun(app.db, input.systemTier, actorId);
+
+    // Register a task-center entry the operator's chip can show + click
+    // to re-open the progress modal. Only when we have an actor (the
+    // task-center contract requires user_id for non-system scopes).
+    // Failure to register is non-fatal — the apply continues, just
+    // without the chip entry; the progress modal opened inline by the
+    // operator still works since it polls /runs/:id directly.
+    if (actorId) {
+      await tasks.start(app.db, {
+        kind: 'storage.tier-flip',
+        refId: runId,
+        scope: 'admin',
+        userId: actorId,
+        label: toSafeText(`Apply ${input.systemTier === 'ha' ? 'High Availability' : 'Local'} platform storage`),
+        target: {
+          type: 'modal',
+          modal: 'platform-storage-apply',
+          modalProps: { runId },
+        },
+      }).catch((err) => app.log.warn({ err, runId }, 'task-center registration failed'));
+    }
+
     const startedAtMs = Date.now();
     const outcome = await applyPolicy(k8s, app.db);
     await recordPatchOutcome(app.db, runId, outcome).catch((err) => app.log.warn({ err }, 'recordPatchOutcome failed'));
