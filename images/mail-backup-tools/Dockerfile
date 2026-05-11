@@ -77,6 +77,12 @@ RUN chmod 755 /usr/local/bin/capture-mailbox.sh
 COPY jmap-sync.py /usr/local/bin/jmap-sync.py
 RUN chmod 755 /usr/local/bin/jmap-sync.py
 
+# E2E test seeder — used by scripts/integration-tenant-bundles-jmap-full-e2e.sh
+# to inject N marked messages via Email/import. Same auth + endpoint-rebase
+# pattern as jmap-sync.py. Pure Python stdlib.
+COPY jmap-seed.py /usr/local/bin/jmap-seed.py
+RUN chmod 755 /usr/local/bin/jmap-seed.py
+
 # Default to a no-op so `docker run …` doesn't error; the orchestrator
 # always overrides command/args.
 CMD ["sh", "-c", "echo tenant-backup-tools image ready; sleep 1"]
