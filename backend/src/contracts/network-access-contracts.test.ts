@@ -6,6 +6,12 @@ import {
   ZROK_DEFAULT_CONTROLLER_URL,
   deploymentNetworkAccessInputSchema,
   networkAccessModeSchema,
+  certificateRevocationReasonSchema,
+  certificateStatusSchema,
+  certificateResponseSchema,
+  listCertificatesQuerySchema,
+  revokeCertificateInputSchema,
+  mtlsIssueCertResponseSchema,
 } from '@k8s-hosting/api-contracts';
 
 describe('ingressMtlsConfigSchema', () => {
@@ -143,5 +149,69 @@ describe('deploymentNetworkAccessInputSchema', () => {
 describe('networkAccessModeSchema', () => {
   it('enumerates exactly the three modes', () => {
     expect(networkAccessModeSchema.options).toEqual(['public', 'tunneler', 'zrok']);
+  });
+});
+
+describe('certificate lifecycle schemas (v2)', () => {
+  it('certificateRevocationReasonSchema enumerates RFC 5280 reasons we support', () => {
+    const values = certificateRevocationReasonSchema.options;
+    expect(values).toContain('unspecified');
+    expect(values).toContain('keyCompromise');
+    expect(values).toContain('caCompromise');
+    expect(values).toContain('superseded');
+    expect(values).toContain('cessationOfOperation');
+    expect(values).toContain('privilegeWithdrawn');
+    // certificateHold / removeFromCRL are intentionally excluded —
+    // the platform doesn't support unhold.
+    expect(values).not.toContain('certificateHold');
+    expect(values).not.toContain('removeFromCRL');
+  });
+
+  it('certificateStatusSchema enumerates the three derived states', () => {
+    expect(certificateStatusSchema.options).toEqual(['active', 'revoked', 'expired']);
+  });
+
+  it('certificateResponseSchema requires all identity fields and nullable revocation fields', () => {
+    const parsed = certificateResponseSchema.parse({
+      id: 'cert-1',
+      providerId: 'prov-1',
+      serialHex: '7abc1234567890ab',
+      fingerprintSha256: 'a'.repeat(64),
+      subjectCn: 'alice@example.com',
+      subjectFull: '/CN=alice@example.com',
+      issuedAt: '2026-05-11T12:00:00Z',
+      expiresAt: '2027-05-11T12:00:00Z',
+      revokedAt: null,
+      revocationReason: null,
+      revokedByUserId: null,
+      status: 'active',
+    });
+    expect(parsed.subjectCn).toBe('alice@example.com');
+    expect(parsed.status).toBe('active');
+  });
+
+  it('listCertificatesQuerySchema clamps limit and rejects bad status', () => {
+    const ok = listCertificatesQuerySchema.parse({ status: 'revoked', limit: '50' });
+    expect(ok.limit).toBe(50);
+    expect(() => listCertificatesQuerySchema.parse({ status: 'cosmic-rays' })).toThrow();
+    expect(() => listCertificatesQuerySchema.parse({ limit: 9999 })).toThrow();
+  });
+
+  it('revokeCertificateInputSchema defaults reason to unspecified', () => {
+    const parsed = revokeCertificateInputSchema.parse({});
+    expect(parsed.reason).toBe('unspecified');
+  });
+
+  it('mtlsIssueCertResponseSchema requires the new id + serialHex fields', () => {
+    expect(() => mtlsIssueCertResponseSchema.parse({
+      // Missing id + serialHex (added in v2). Pre-v2 payloads were
+      // valid; this assertion guards against accidental rollback.
+      certPem: 'x',
+      keyPem: 'x',
+      caCertPem: 'x',
+      subject: '/CN=x',
+      expiresAt: '2027-01-01',
+      pkcs12Base64: null,
+    })).toThrow();
   });
 });

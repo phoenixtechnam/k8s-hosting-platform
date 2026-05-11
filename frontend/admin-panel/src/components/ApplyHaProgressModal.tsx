@@ -46,7 +46,13 @@ interface PatchOutcome {
 }
 
 interface Props {
-  readonly runId: string;
+  /**
+   * Run id to poll. `null` means "PATCH is still in flight and the
+   * server hasn't returned a runId yet" — the modal renders a
+   * Submitting… placeholder. Becomes non-null once the parent (or
+   * task-center chip) provides one; polling kicks in then.
+   */
+  readonly runId: string | null;
   readonly onClose: () => void;
 }
 
@@ -58,6 +64,9 @@ export default function ApplyHaProgressModal({ runId, onClose }: Props) {
   const [showDetails, setShowDetails] = useState(false);
 
   useEffect(() => {
+    // No run id yet → nothing to poll. The placeholder renders below.
+    if (!runId) return;
+
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -86,6 +95,11 @@ export default function ApplyHaProgressModal({ runId, onClose }: Props) {
     };
   }, [runId]);
 
+  // While runId is null we're in the "Submitting…" placeholder state:
+  // the PATCH hasn't returned yet so there's no run row to poll. As
+  // soon as the parent passes a runId, the effect above starts polling
+  // and `run` populates with real state on the first tick.
+  const submitting = !runId;
   const status = run?.status ?? 'running';
   const conv = run?.convergence;
   const patchOutcome = run?.patchOutcome as PatchOutcome | null;
@@ -113,12 +127,21 @@ export default function ApplyHaProgressModal({ runId, onClose }: Props) {
             <StatusIcon status={status} />
             <div>
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                Apply {run?.tier === 'ha' ? 'High Availability' : 'Local'} —{' '}
-                <StatusLabel status={status} />
+                {submitting ? (
+                  <>Apply — <span className="text-blue-600 dark:text-blue-400">submitting…</span></>
+                ) : (
+                  <>Apply {run?.tier === 'ha' ? 'High Availability' : 'Local'} — <StatusLabel status={status} /></>
+                )}
               </h2>
               <div className="text-xs text-gray-500 dark:text-gray-400">
-                Elapsed: {elapsedLabel}
-                {run?.startedAt && ` · started ${new Date(run.startedAt).toLocaleTimeString()}`}
+                {submitting
+                  ? 'Patching Longhorn volumes, CNPG clusters, and stateless Deployments…'
+                  : (
+                      <>
+                        Elapsed: {elapsedLabel}
+                        {run?.startedAt && ` · started ${new Date(run.startedAt).toLocaleTimeString()}`}
+                      </>
+                    )}
               </div>
             </div>
           </div>

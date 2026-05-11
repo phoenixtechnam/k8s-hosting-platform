@@ -11,6 +11,10 @@ data:
   cluster-issuer-name: "letsencrypt-prod-http01"
   admin-url: "https://admin.${DOMAIN}"
   client-url: "https://client.${DOMAIN}"
+  # Canonical public URL used to mint CRL distribution URLs in mTLS
+  # provider metadata. Set to the admin host so the CRL endpoint
+  # matches the JWT-scoped API surface.
+  public-url: "https://admin.${DOMAIN}"
   cors-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
   # Per-client sidecar image — pull from GHCR on real clusters.
   file-manager-image: "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"

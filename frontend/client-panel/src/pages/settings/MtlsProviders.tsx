@@ -10,6 +10,7 @@ import {
   useIssueMtlsCert,
 } from '@/hooks/use-mtls-providers';
 import ProvidersTable, { type ProviderRow } from '@/components/settings/ProvidersTable';
+import MtlsCertificatesPanel from '@/components/settings/MtlsCertificatesPanel';
 import type {
   MtlsProviderResponse,
   MtlsProviderInput,
@@ -126,8 +127,9 @@ export default function MtlsProviders() {
             <FileKey size={18} /> Issue User Certs
           </h2>
           <p className="mt-1 mb-3 text-sm text-gray-600 dark:text-gray-400">
-            Mint a fresh client cert from a provider that has a CA key on file. The cert + key are
-            shown ONCE — copy them right away.
+            Mint a fresh client cert from a provider that has a CA key on file. The private key
+            is shown ONCE — copy or download the .p12 right away. The cert itself is saved here
+            for audit and can be revoked at any time below.
           </p>
           <div className="flex flex-wrap gap-2">
             {(providers ?? []).filter((p) => p.canIssue).map((p) => (
@@ -144,6 +146,13 @@ export default function MtlsProviders() {
           </div>
         </section>
       )}
+
+      {/* One issued-certificates panel per signing-capable provider. */}
+      {clientId && (providers ?? [])
+        .filter((p) => p.canIssue)
+        .map((p) => (
+          <MtlsCertificatesPanel key={p.id} clientId={clientId} provider={p} />
+        ))}
 
       {confirmDelete && (
         <DeleteConfirmModal
@@ -578,8 +587,10 @@ function DeleteConfirmModal({ provider, onClose, onConfirm, isPending, error }: 
       <div className="w-full max-w-md rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-xl">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Delete provider?</h2>
         <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-          This will permanently remove <strong>{provider.name}</strong>. Issued user certs will continue to work
-          (they're cryptographic — the platform can't revoke them) but new ones cannot be issued.
+          This will permanently remove <strong>{provider.name}</strong>, every issued
+          certificate row, and the CRL. If you need to invalidate the issued certs first,
+          revoke them in the certificates list below and wait ~60s for NGINX to pick up the
+          updated CRL — then come back and delete the provider.
         </p>
         {provider.consumerCount > 0 && (
           <p className="mt-2 text-sm text-amber-700 dark:text-amber-300">

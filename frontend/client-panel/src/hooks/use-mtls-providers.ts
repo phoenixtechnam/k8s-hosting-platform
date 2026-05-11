@@ -6,6 +6,11 @@ import type {
   MtlsProviderResponse,
   MtlsIssueCertInput,
   MtlsIssueCertResponse,
+  CertificateResponse,
+  CertificateStatus,
+  ListCertificatesResponse,
+  RevokeCertificateInput,
+  CrlMetadataResponse,
 } from '@k8s-hosting/api-contracts';
 
 interface ApiEnvelope<T> {
@@ -13,6 +18,10 @@ interface ApiEnvelope<T> {
 }
 
 const KEY = (cid: string) => ['mtls-providers', cid] as const;
+const CERTS_KEY = (cid: string, pid: string, status?: CertificateStatus | 'all') =>
+  ['mtls-providers', cid, pid, 'certificates', status ?? 'all'] as const;
+const CRL_KEY = (cid: string, pid: string) =>
+  ['mtls-providers', cid, pid, 'crl'] as const;
 
 export function useMtlsProviders(clientId: string | undefined) {
   return useQuery({
@@ -69,6 +78,7 @@ export function useDeleteMtlsProvider(clientId: string) {
 }
 
 export function useIssueMtlsCert(clientId: string, providerId: string) {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: MtlsIssueCertInput) => {
       const res = await apiFetch<ApiEnvelope<MtlsIssueCertResponse>>(
@@ -77,5 +87,60 @@ export function useIssueMtlsCert(clientId: string, providerId: string) {
       );
       return res.data;
     },
+    onSuccess: () => {
+      // New cert exists — refresh both the list and the CRL metadata.
+      qc.invalidateQueries({ queryKey: ['mtls-providers', clientId, providerId, 'certificates'] });
+      qc.invalidateQueries({ queryKey: CRL_KEY(clientId, providerId) });
+    },
+  });
+}
+
+export function useMtlsCertificates(
+  clientId: string | undefined,
+  providerId: string | undefined,
+  status: CertificateStatus | 'all' = 'all',
+) {
+  return useQuery({
+    queryKey: CERTS_KEY(clientId ?? '', providerId ?? '', status),
+    queryFn: async () => {
+      const qs = new URLSearchParams();
+      if (status !== 'all') qs.set('status', status);
+      qs.set('limit', '100');
+      const res = await apiFetch<ApiEnvelope<ListCertificatesResponse>>(
+        `/api/v1/clients/${clientId}/mtls-providers/${providerId}/certificates?${qs.toString()}`,
+      );
+      return res.data;
+    },
+    enabled: Boolean(clientId) && Boolean(providerId),
+  });
+}
+
+export function useRevokeMtlsCertificate(clientId: string, providerId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { certId: string; input: RevokeCertificateInput }) => {
+      const res = await apiFetch<ApiEnvelope<CertificateResponse>>(
+        `/api/v1/clients/${clientId}/mtls-providers/${providerId}/certificates/${vars.certId}/revoke`,
+        { method: 'POST', body: JSON.stringify(vars.input) },
+      );
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mtls-providers', clientId, providerId, 'certificates'] });
+      qc.invalidateQueries({ queryKey: CRL_KEY(clientId, providerId) });
+    },
+  });
+}
+
+export function useMtlsCrlMetadata(clientId: string | undefined, providerId: string | undefined) {
+  return useQuery({
+    queryKey: CRL_KEY(clientId ?? '', providerId ?? ''),
+    queryFn: async () => {
+      const res = await apiFetch<ApiEnvelope<CrlMetadataResponse>>(
+        `/api/v1/clients/${clientId}/mtls-providers/${providerId}/crl`,
+      );
+      return res.data;
+    },
+    enabled: Boolean(clientId) && Boolean(providerId),
   });
 }

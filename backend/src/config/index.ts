@@ -53,6 +53,12 @@ const configSchema = z.object({
   // (admin.<apex> only). Set to `.<apex>` to share the session across
   // subdomains (required for the Stalwart web-admin auth_request gate).
   SESSION_COOKIE_DOMAIN: z.string().optional(),
+  // Canonical public origin for URLs we emit back to clients (e.g. the
+  // CRL distribution point in mTLS provider metadata). Derived from
+  // configuration — NOT request headers — to prevent X-Forwarded-Host
+  // injection into stored/displayed URLs. Example:
+  //   https://admin.staging.phoenix-host.net
+  PUBLIC_URL: z.string().url().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

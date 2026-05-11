@@ -24,6 +24,20 @@ export default function PlatformStoragePolicyCard() {
   const { data, isLoading, error, refetch } = usePlatformStoragePolicy();
   const update = useUpdatePlatformStoragePolicy();
   const [confirming, setConfirming] = useState<'local' | 'ha' | null>(null);
+  // Two separate pieces of state so the modal opens BEFORE the backend
+  // PATCH returns a runId. The synchronous patch phase can take several
+  // seconds (Longhorn + CNPG + Deployments are patched server-side
+  // before the response comes back) — without this split the operator
+  // sees the confirm dialog close but no progress UI for ~5s, which
+  // looks like the click was ignored.
+  //
+  //   showModal  — controls visibility; flips true on Confirm click.
+  //   activeRunId — set only after the mutation resolves; null = "still
+  //                 submitting, no run row yet to poll".
+  //
+  // The modal accepts a nullable runId and renders a Submitting…
+  // placeholder until the id arrives.
+  const [showModal, setShowModal] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   if (isLoading) {
@@ -58,17 +72,31 @@ export default function PlatformStoragePolicyCard() {
 
   const onConfirm = async () => {
     if (!confirming) return;
+    // Open the progress modal IMMEDIATELY so the operator gets visual
+    // feedback the moment they click Confirm. The PATCH below blocks
+    // for the synchronous patch phase (Longhorn + CNPG + Deployments)
+    // for several seconds; without this, the confirm dialog dismisses
+    // and the operator sees an unchanged page until the response lands.
+    setShowModal(true);
+    setActiveRunId(null);
+    setConfirming(null);
     try {
       const resp = await update.mutateAsync({ systemTier: confirming, pinnedByAdmin: true });
-      // Backend returns runId on success — open the progress modal so
-      // the operator sees the post-patch convergence (Longhorn replica
-      // rebuild + CNPG join) live. Without this, the synchronous patch
-      // returns in <5s and the operator has no UI signal that volumes
-      // are still being moved across nodes for ~10 min after.
       const runId = resp?.data?.runId;
-      if (runId) setActiveRunId(runId);
-    } finally {
-      setConfirming(null);
+      if (runId) {
+        // Modal flips from Submitting… placeholder to live polling now
+        // that the run row exists.
+        setActiveRunId(runId);
+      } else {
+        // Defensive: very old backend without runId support — close
+        // the modal so we don't leave the operator stuck on the
+        // placeholder forever.
+        setShowModal(false);
+      }
+    } catch {
+      // Mutation error is surfaced by the `update.isError` block above;
+      // close the modal so the error banner is reachable.
+      setShowModal(false);
     }
   };
 
@@ -251,8 +279,14 @@ export default function PlatformStoragePolicyCard() {
           </div>
         </div>
       )}
-      {activeRunId && (
-        <ApplyHaProgressModal runId={activeRunId} onClose={() => setActiveRunId(null)} />
+      {showModal && (
+        <ApplyHaProgressModal
+          runId={activeRunId}
+          onClose={() => {
+            setShowModal(false);
+            setActiveRunId(null);
+          }}
+        />
       )}
     </div>
   );

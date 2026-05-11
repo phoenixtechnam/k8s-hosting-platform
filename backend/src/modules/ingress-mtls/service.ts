@@ -211,7 +211,7 @@ export async function loadEnabledForRoute(
   db: Database,
   encryptionKey: string,
   routeId: string,
-): Promise<{ config: IngressMtlsConfig; caCertPem: string } | null> {
+): Promise<{ config: IngressMtlsConfig; caCertPem: string; crlPem: string | null } | null> {
   const [row] = await db
     .select()
     .from(ingressMtlsConfigs)
@@ -219,16 +219,24 @@ export async function loadEnabledForRoute(
   if (!row || !row.enabled) return null;
   // Prefer provider-sourced CA (new path).
   if (row.providerId) {
-    const { loadProviderCaCert } = await import('../mtls-providers/service.js');
+    const { loadProviderCaCert, loadProviderCrlForReconciler } =
+      await import('../mtls-providers/service.js');
     const ca = await loadProviderCaCert(db, encryptionKey, row.providerId);
     if (!ca) return null;
-    return { config: row, caCertPem: ca };
+    // CRL is optional — when the provider has no private key (CA cert
+    // only, no signing) we can't generate a CRL. Returning null here
+    // means the reconciler skips the ca.crl Secret key entirely;
+    // NGINX then verifies against the CA without revocation checking.
+    const crlPem = await loadProviderCrlForReconciler(db, encryptionKey, row.providerId);
+    return { config: row, caCertPem: ca, crlPem };
   }
-  // Fall back to legacy inline upload.
+  // Fall back to legacy inline upload. Legacy path has no provider →
+  // no CRL is available.
   if (!row.caCertPemEncrypted) return null;
   return {
     config: row,
     caCertPem: decrypt(row.caCertPemEncrypted, encryptionKey),
+    crlPem: null,
   };
 }
 

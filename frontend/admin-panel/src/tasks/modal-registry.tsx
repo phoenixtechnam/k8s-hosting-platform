@@ -18,6 +18,7 @@ const TransitionProgressModal = lazy(() => import('@/components/TransitionProgre
 const BulkProgressModal = lazy(() => import('@/components/BulkProgressModal'));
 const OperationProgressModal = lazy(() => import('@/components/OperationProgressModal'));
 const ProvisioningProgressModal = lazy(() => import('@/components/ProvisioningProgressModal'));
+const ApplyHaProgressModal = lazy(() => import('@/components/ApplyHaProgressModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
@@ -27,10 +28,11 @@ const ProvisioningProgressModal = lazy(() => import('@/components/ProvisioningPr
 // task row. The backend chooses `target.modal = 'foo'` and supplies
 // the matching `target.modalProps` shape:
 //
-//   transition  → TransitionProgressModal     (client.transition)
-//   bulk        → BulkProgressModal           (client.*.bulk)
-//   operation   → OperationProgressModal      (storage.*)
-//   provisioning→ ProvisioningProgressModal   (client.provision)
+//   transition            → TransitionProgressModal     (client.transition)
+//   bulk                  → BulkProgressModal           (client.*.bulk)
+//   operation             → OperationProgressModal      (storage.*)
+//   provisioning          → ProvisioningProgressModal   (client.provision)
+//   platform-storage-apply→ ApplyHaProgressModal        (storage.tier-flip)
 //
 // Surfaces without a dedicated modal use `target.type = 'route'`
 // instead.
@@ -46,6 +48,9 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   provisioning: {
     Component: ProvisioningProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'platform-storage-apply': {
+    Component: ApplyHaProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
 };
 

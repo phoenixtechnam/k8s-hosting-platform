@@ -1614,6 +1614,14 @@ export const clientMtlsProviders = pgTable('client_mtls_providers', {
   caCertSubject: varchar('ca_cert_subject', { length: 500 }).notNull(),
   caCertExpiresAt: timestamp('ca_cert_expires_at').notNull(),
   canIssue: boolean('can_issue').notNull().default(false),
+  // CRL state (added in 0097). crlNumber is the X.509 CRL Number
+  // extension — monotonically increasing per CRL generation. crlPem
+  // is the cached CRL body, regenerated lazily on first read after a
+  // revocation. crlLastGeneratedAt is the wall-clock for the cache.
+  crlNumber: bigint('crl_number', { mode: 'number' }).notNull().default(0),
+  crlPem: text('crl_pem'),
+  crlLastGeneratedAt: timestamp('crl_last_generated_at'),
+  nextSerialSeq: bigint('next_serial_seq', { mode: 'number' }).notNull().default(1),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
@@ -1622,6 +1630,36 @@ export const clientMtlsProviders = pgTable('client_mtls_providers', {
 
 export type ClientMtlsProvider = typeof clientMtlsProviders.$inferSelect;
 export type NewClientMtlsProvider = typeof clientMtlsProviders.$inferInsert;
+
+export const clientCertificates = pgTable('client_certificates', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  providerId: varchar('provider_id', { length: 36 })
+    .notNull()
+    .references(() => clientMtlsProviders.id, { onDelete: 'cascade' }),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  serialHex: varchar('serial_hex', { length: 64 }).notNull(),
+  certPemEncrypted: text('cert_pem_encrypted').notNull(),
+  certFingerprintSha256: varchar('cert_fingerprint_sha256', { length: 64 }).notNull(),
+  subjectCn: varchar('subject_cn', { length: 255 }).notNull(),
+  subjectFull: varchar('subject_full', { length: 500 }).notNull(),
+  issuedAt: timestamp('issued_at').notNull().defaultNow(),
+  expiresAt: timestamp('expires_at').notNull(),
+  revokedAt: timestamp('revoked_at'),
+  revocationReason: varchar('revocation_reason', { length: 64 }),
+  revokedByUserId: varchar('revoked_by_user_id', { length: 36 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => ({
+  providerSerialUnique: uniqueIndex('client_certificates_provider_serial_unique')
+    .on(table.providerId, table.serialHex),
+  providerIdx: index('client_certificates_provider_idx').on(table.providerId),
+  clientIdx: index('client_certificates_client_idx').on(table.clientId),
+  expiresIdx: index('client_certificates_expires_idx').on(table.expiresAt),
+}));
+
+export type ClientCertificate = typeof clientCertificates.$inferSelect;
+export type NewClientCertificate = typeof clientCertificates.$inferInsert;
 
 export const ingressMtlsConfigs = pgTable('ingress_mtls_configs', {
   id: varchar('id', { length: 36 }).primaryKey(),

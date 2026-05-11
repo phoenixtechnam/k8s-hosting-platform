@@ -118,6 +118,16 @@ spec:
                   name: platform-config
                   key: platform-base-domain
                   optional: true
+            # Canonical public origin used for URLs we emit back to clients
+            # (e.g. CRL distribution point in mTLS provider metadata). Derived
+            # from configuration rather than request headers — prevents
+            # X-Forwarded-Host injection from poisoning stored/displayed URLs.
+            - name: PUBLIC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: public-url
+                  optional: true
             # Platform version — consumed by /api/v1/admin/version-info
             # so the Admin Panel shows the real running version. Sourced
             # from the platform-version ConfigMap (written by CI at

@@ -657,8 +657,18 @@ async function syncMtlsSecretAndBuildAnnotations(
   routeId: string,
 ): Promise<Record<string, string>> {
   const { loadEnabledForRoute } = await import('../ingress-mtls/service.js');
-  const encryptionKey =
-    process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  // OIDC_ENCRYPTION_KEY is required to decrypt the CA cert + key from
+  // the providers table. The legacy fallback to '0'.repeat(64) was a
+  // silent-failure footgun — DB-leak attackers could decrypt every CA
+  // private key. Fail closed: when the key is missing we return no
+  // annotations (mTLS effectively disabled for this route) so the
+  // reconciler keeps making progress on the rest of the Ingress while
+  // operators get a clear log line to act on.
+  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY;
+  if (!encryptionKey || encryptionKey.length < 32) {
+    console.error('[annotation-sync] OIDC_ENCRYPTION_KEY missing — mTLS annotations skipped for route', routeId);
+    return {};
+  }
   const secretName = `route-mtls-${routeId.slice(0, 8)}`;
 
   const loaded = await loadEnabledForRoute(db, encryptionKey, routeId);
@@ -672,7 +682,22 @@ async function syncMtlsSecretAndBuildAnnotations(
     return {};
   }
 
-  const { config, caCertPem } = loaded;
+  const { config, caCertPem, crlPem } = loaded;
+  // ingress-nginx reads two keys from the auth-tls-secret:
+  //   * ca.crt — the trust anchor (required)
+  //   * ca.crl — optional X.509 CRL; when present, NGINX adds
+  //              `ssl_crl` to the server block and rejects any
+  //              client cert whose serial appears in the CRL.
+  //
+  // We only include ca.crl when the provider can sign one (i.e. a CA
+  // private key is on file). The legacy inline-CA path has no key →
+  // crlPem is null → revocation checking is disabled for that route.
+  const data: Record<string, string> = {
+    'ca.crt': Buffer.from(caCertPem).toString('base64'),
+  };
+  if (crlPem) {
+    data['ca.crl'] = Buffer.from(crlPem).toString('base64');
+  }
   const secretBody = {
     apiVersion: 'v1',
     kind: 'Secret',
@@ -686,7 +711,7 @@ async function syncMtlsSecretAndBuildAnnotations(
       },
     },
     type: 'Opaque',
-    data: { 'ca.crt': Buffer.from(caCertPem).toString('base64') },
+    data,
   };
   try {
     // backup-coverage: excluded:reconciler-rebuilds-from-config-tables

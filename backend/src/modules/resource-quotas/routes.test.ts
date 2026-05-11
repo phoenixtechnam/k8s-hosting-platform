@@ -18,6 +18,29 @@ const mockQuota = {
 vi.mock('./service.js', () => ({
   getResourceQuota: vi.fn().mockResolvedValue(mockQuota),
   updateResourceQuota: vi.fn().mockResolvedValue({ ...mockQuota, cpuCoresLimit: '4.00' }),
+  getClientResourceAvailability: vi.fn(),
+}));
+
+// Mock the headroom gate so existing happy-path PATCH tests don't need
+// a live k8s — gate-specific tests live in headroom-gate.test.ts.
+vi.mock('./headroom-gate.js', () => ({
+  validateQuotaFitsHeadroom: vi.fn().mockResolvedValue({
+    allowed: true,
+    reason: null,
+    details: {
+      currentSumCpu: 0, currentSumMemoryGi: 0,
+      projectedSumCpu: 4, projectedSumMemoryGi: 4,
+      headroomCpu: 100, headroomMemoryGi: 100,
+      overByCpu: 0, overByMemoryGi: 0,
+      headroomClamped: false,
+    },
+  }),
+}));
+
+// createK8sClients is invoked when the gate applies — return an empty
+// stub since the gate is mocked anyway.
+vi.mock('../k8s-provisioner/k8s-client.js', () => ({
+  createK8sClients: vi.fn().mockReturnValue({}),
 }));
 
 const { resourceQuotaRoutes } = await import('./routes.js');
@@ -32,7 +55,14 @@ describe('resource-quota routes', () => {
     await app.register(fastifyJwt, { secret: 'test-secret-key-for-testing-only' });
     registerAuth(app);
     app.setErrorHandler(errorHandler);
-    app.decorate('db', {});
+    // Stub db.insert(auditLogs).values(...) — the route emits audit
+    // entries on success/refuse/override. The stub just resolves.
+    app.decorate('db', {
+      insert: () => ({ values: () => Promise.resolve() }),
+    });
+    // KUBECONFIG_PATH is read from app.config; nothing else needs it
+    // since createK8sClients is mocked.
+    app.decorate('config', { KUBECONFIG_PATH: undefined });
     await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
     await app.ready();
 

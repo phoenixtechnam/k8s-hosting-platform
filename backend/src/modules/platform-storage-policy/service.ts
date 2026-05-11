@@ -87,6 +87,52 @@ export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', readyServe
   return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
 }
 
+// Leader-elect operators. These run with a single active leader at a
+// time (lease-coordinated), so more than 2 replicas is purely wasteful
+// — one leader does the work, one warm standby takes over on a leader
+// crash. 2 is the minimum + maximum useful replica count in HA. In
+// local mode (1 server) we drop to 1 since leader-election with a
+// single replica is a no-op anyway.
+//
+// Targeted operators (all imperatively installed by bootstrap.sh — no
+// HelmRelease CRs to patch — so the reconciler uses /scale subresource,
+// same pattern as the stateless tier):
+//   cert-manager:  controller + cainjector + webhook
+//   flux-system:   source-controller, kustomize-controller, helm-controller, notification-controller
+//   kube-system:   sealed-secrets-controller, snapshot-controller
+//   cnpg-system:   cnpg-controller-manager
+//
+// Risk: a bootstrap.sh re-run via `helm upgrade --install` would reset
+// the operator Deployment's replicas to 1; the reconciler picks it up
+// on the next tick (≤5 min). One-replica window during that interval —
+// acceptable for an operator workload (no user-visible blip; leader
+// keeps working).
+const LEADER_ELECT_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> = [
+  { namespace: 'cert-manager', name: 'cert-manager' },
+  { namespace: 'cert-manager', name: 'cert-manager-cainjector' },
+  { namespace: 'cert-manager', name: 'cert-manager-webhook' },
+  { namespace: 'flux-system', name: 'source-controller' },
+  { namespace: 'flux-system', name: 'kustomize-controller' },
+  { namespace: 'flux-system', name: 'helm-controller' },
+  { namespace: 'flux-system', name: 'notification-controller' },
+  { namespace: 'kube-system', name: 'sealed-secrets-controller' },
+  { namespace: 'kube-system', name: 'snapshot-controller' },
+  { namespace: 'cnpg-system', name: 'cnpg-cloudnative-pg' },
+];
+
+// Leader-elect cap is 2 — see the LEADER_ELECT_DEPLOYMENTS comment.
+// Below 2 servers, 1 replica is correct (no quorum possible with 1
+// node anyway).
+const MAX_LEADER_ELECT_REPLICAS = 2;
+
+export function leaderElectReplicasForSystemTier(
+  tier: 'local' | 'ha',
+  readyServerCount: number,
+): number {
+  if (tier === 'local') return 1;
+  return Math.max(1, Math.min(readyServerCount, MAX_LEADER_ELECT_REPLICAS));
+}
+
 // CNPG clusters. Apply HA flips spec.instances 1↔3 — CNPG streams
 // replication from primary, no manual data migration needed.
 //
@@ -462,6 +508,7 @@ export type ValkeyPatchResult = {
 export type ApplyPolicyOutcome = {
   volumes: ApplyPatchResult[];
   deployments: DeploymentPatchResult[];
+  leaderElectDeployments: DeploymentPatchResult[];
   cnpgClusters: CnpgClusterPatchResult[];
   valkey: ValkeyPatchResult | null;
 };
@@ -469,7 +516,9 @@ export type ApplyPolicyOutcome = {
 // Apply the desired tier to:
 //   1) Longhorn volumes (replicas per PVC)
 //   2) Stateless platform Deployments (replicas + topologySpread)
-//   3) CNPG Cluster (instances)
+//   3) Leader-elect operator Deployments (replicas 1↔2)
+//   4) CNPG Cluster (instances)
+//   5) Valkey StatefulSet (replicas + maxmemory)
 // Each step is idempotent and returns its result (whether patched
 // or skipped, with any error). Steps run sequentially — failure
 // in one does not stop the others (so a partial Apply is reported
@@ -485,6 +534,7 @@ export async function applyPolicy(
   return {
     volumes: await patchLonghornVolumes(k8s, state.volumes),
     deployments: await patchStatelessDeployments(k8s, tier, state.readyServerCount),
+    leaderElectDeployments: await patchLeaderElectDeployments(k8s, tier, state.readyServerCount),
     cnpgClusters: await patchCnpgClusters(k8s, tier, state.readyServerCount),
     valkey: await patchValkey(k8s, tier, state.readyServerCount),
   };
@@ -594,14 +644,23 @@ async function readLiveNodeSelectors(
   return out;
 }
 
-async function patchStatelessDeployments(
+// Generic scale-loop helper: reads each Deployment's current replicas,
+// scales via the /scale subresource if it differs from `desired`, and
+// reports per-deployment outcomes. Used by both the stateless tier
+// (admin/client/platform-api/oauth2-proxy/dex + mail) and the
+// leader-elect tier (cert-manager + Flux + sealed-secrets +
+// snapshot-controller + CNPG operator).
+//
+// /scale is HPAs' subresource — it has its own field manager rules so
+// Flux SSA on the parent Deployment .spec.replicas can't fight with us.
+// A normal MERGE_PATCH on .spec.replicas would lose on every reconcile.
+async function patchDeploymentsToReplicaCount(
   k8s: K8sClients,
-  tier: 'local' | 'ha',
-  readyServerCount: number,
+  deployments: ReadonlyArray<{ namespace: string; name: string }>,
+  desired: number,
 ): Promise<DeploymentPatchResult[]> {
-  const desired = deploymentReplicasForSystemTier(tier, readyServerCount);
   const results: DeploymentPatchResult[] = [];
-  for (const d of STATELESS_DEPLOYMENTS) {
+  for (const d of deployments) {
     let previousReplicas = 0;
     try {
       const live = await k8s.apps.readNamespacedDeployment({ namespace: d.namespace, name: d.name });
@@ -614,13 +673,6 @@ async function patchStatelessDeployments(
         });
         continue;
       }
-      // Use the /scale subresource — same path HPAs use. Flux's
-      // server-side apply tracks .spec.replicas as a managed field,
-      // and a normal MERGE_PATCH from us would lose the war on
-      // every reconcile. The /scale subresource has its own field
-      // manager rules and reconcile-friendly semantics: setting
-      // replicas via /scale doesn't conflict with Flux's SSA on
-      // the parent Deployment object.
       await k8s.apps.replaceNamespacedDeploymentScale({
         namespace: d.namespace, name: d.name,
         body: {
@@ -628,10 +680,6 @@ async function patchStatelessDeployments(
           spec: { replicas: desired },
         },
       } as unknown as Parameters<typeof k8s.apps.replaceNamespacedDeploymentScale>[0]);
-      // topologySpread lives in .spec.template.spec.topologySpread-
-      // Constraints — that IS managed by Flux SSA. We don't try to
-      // patch it imperatively (would get reverted). Operators who
-      // want HA topology spread should set it in the manifest.
       results.push({
         namespace: d.namespace, name: d.name,
         previousReplicas, newReplicas: desired,
@@ -647,6 +695,28 @@ async function patchStatelessDeployments(
     }
   }
   return results;
+}
+
+async function patchStatelessDeployments(
+  k8s: K8sClients,
+  tier: 'local' | 'ha',
+  readyServerCount: number,
+): Promise<DeploymentPatchResult[]> {
+  const desired = deploymentReplicasForSystemTier(tier, readyServerCount);
+  // topologySpread lives in .spec.template.spec.topologySpreadConstraints
+  // — that IS managed by Flux SSA. We don't patch it imperatively
+  // (would get reverted). Operators who want HA topology spread set it
+  // in the manifest (DoNotSchedule per the 2026-05-11 convention).
+  return patchDeploymentsToReplicaCount(k8s, STATELESS_DEPLOYMENTS, desired);
+}
+
+async function patchLeaderElectDeployments(
+  k8s: K8sClients,
+  tier: 'local' | 'ha',
+  readyServerCount: number,
+): Promise<DeploymentPatchResult[]> {
+  const desired = leaderElectReplicasForSystemTier(tier, readyServerCount);
+  return patchDeploymentsToReplicaCount(k8s, LEADER_ELECT_DEPLOYMENTS, desired);
 }
 
 /**

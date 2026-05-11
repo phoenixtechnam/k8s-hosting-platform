@@ -287,6 +287,36 @@ describe('replicasForSystemTier — HA scales to readyServerCount, capped at MAX
   });
 });
 
+describe('leaderElectReplicasForSystemTier — operators run 1↔2 (Phase 2, 2026-05-11)', () => {
+  it('local tier always returns 1 — leader-election with 1 replica is a no-op', async () => {
+    const { leaderElectReplicasForSystemTier } = await import('./service.js');
+    expect(leaderElectReplicasForSystemTier('local', 1)).toBe(1);
+    expect(leaderElectReplicasForSystemTier('local', 3)).toBe(1);
+    expect(leaderElectReplicasForSystemTier('local', 10)).toBe(1);
+  });
+
+  it('HA tier with 1 server returns 1 (no warm-standby possible)', async () => {
+    const { leaderElectReplicasForSystemTier } = await import('./service.js');
+    expect(leaderElectReplicasForSystemTier('ha', 1)).toBe(1);
+    expect(leaderElectReplicasForSystemTier('ha', 0)).toBe(1);
+  });
+
+  it('HA tier with 2+ servers returns 2 — one leader + one warm standby', async () => {
+    const { leaderElectReplicasForSystemTier } = await import('./service.js');
+    expect(leaderElectReplicasForSystemTier('ha', 2)).toBe(2);
+    expect(leaderElectReplicasForSystemTier('ha', 3)).toBe(2);
+    expect(leaderElectReplicasForSystemTier('ha', 5)).toBe(2);
+    expect(leaderElectReplicasForSystemTier('ha', 10)).toBe(2);
+  });
+
+  it('cap is strictly 2 — adding a 4th server does not bump operator replicas', async () => {
+    const { leaderElectReplicasForSystemTier } = await import('./service.js');
+    // The whole point of leader-elect operators is one active + one
+    // warm; more replicas waste RAM with no failover-speed benefit.
+    expect(leaderElectReplicasForSystemTier('ha', 4)).toBe(2);
+  });
+});
+
 describe('valkey scaling helpers — HA-only scaling, single-node fallback', () => {
   it('local tier always returns 1 replica with the smallest memory budget', async () => {
     const { valkeyReplicasForSystemTier, valkeyMaxMemoryBytesForSystemTier, formatValkeyMemoryBytes } = await import('./service.js');

@@ -22,6 +22,8 @@ data:
   # NOT what the in-cluster services use for routing.
   admin-url: "http://admin.${DOMAIN}:2010"
   client-url: "http://client.${DOMAIN}:2010"
+  # Canonical public URL for CRL distribution URLs (mTLS provider metadata).
+  public-url: "http://admin.${DOMAIN}:2010"
   support-email: "admin@${DOMAIN}"
   platform-name: "Hosting Platform (local dev)"
   # TLS Secret referenced from Ingress.spec.tls[0].secretName. Dev uses the
