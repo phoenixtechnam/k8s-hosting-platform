@@ -16,7 +16,21 @@ import { eq, and, ne, inArray, desc, sql } from 'drizzle-orm';
 import { catalogEntries, deployments, clients } from '../../db/schema.js';
 import { fileManagerRequest } from '../file-manager/service.js';
 
-const FM_IMAGE = 'file-manager-sidecar:latest';
+// Same FM_IMAGE resolution as file-manager/routes.ts and
+// k8s-provisioner/service.ts — env var first (set from the
+// platform-config ConfigMap → resolves to a registry-qualified
+// path like ghcr.io/.../file-manager-sidecar:<tag>), bare image
+// name only as a last-resort local-dev fallback.
+//
+// History: this used to be a hard-coded `'file-manager-sidecar:latest'`.
+// When deployments/routes.ts → /folder-size hit fileManagerRequest →
+// ensureFileManagerRunning with that bare name, the existing FM
+// Deployment got patched to use the bare image, which containerd
+// resolves as docker.io/library/file-manager-sidecar:latest →
+// ErrImagePull → ImagePullBackOff → the pod stuck → held the RWO
+// PVC → blocked every other deployment in the tenant namespace with
+// Multi-Attach. See 2026-05-11 Normal Test incident.
+const FM_IMAGE = process.env.FILE_MANAGER_IMAGE ?? 'file-manager-sidecar:latest';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // Phase 6: method-aware role guard — read for all client roles,
