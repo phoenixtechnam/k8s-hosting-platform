@@ -55,18 +55,20 @@ import argparse
 import base64
 import email.parser
 import email.policy
+import http.client
 import json
 import os
-import queue
+import random
 import re
+import socket
+import ssl
 import sys
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 JMAP_URN_CORE = "urn:ietf:params:jmap:core"
 JMAP_URN_MAIL = "urn:ietf:params:jmap:mail"
@@ -104,9 +106,25 @@ class JmapError(Exception):
 
 
 class JmapClient:
-    """Thread-safe JMAP client. No mutable connection state after
-    session() returns — every _http() call opens a fresh urllib
-    connection, so multiple worker threads can share one client."""
+    """Thread-safe JMAP client using a per-thread persistent
+    http.client connection (HTTP keep-alive).
+
+    Why keep-alive matters here: each Blob/upload + Email/import is
+    one HTTP round trip. With urllib's default behaviour, every call
+    opens a fresh TCP+TLS connection — 1000 messages = 1000 handshakes
+    plus 1000 TLS sessions. At ~30 ms handshake overhead that alone
+    burns 30 s, and the source-port exhaustion combined with TCP
+    TIME_WAIT often makes Stalwart's listener appear to "stall after
+    100 uploads" (the staging E2E pattern observed earlier).
+
+    Keep-alive: one TCP connection per thread, reused across hundreds
+    of requests. Python's http.client speaks HTTP/1.1 by default which
+    has keep-alive on. On connection error or 5xx, the connection is
+    closed and the next call reopens it.
+
+    Thread safety: each thread gets its OWN connection via thread-local
+    storage. Multiple workers fan out as separate concurrent
+    connections, each one reused tightly within its thread."""
 
     def __init__(self, endpoint: str, basic_auth_user: str, basic_auth_pass: str) -> None:
         if not endpoint.endswith("/.well-known/jmap") and "/api" not in endpoint:
@@ -117,42 +135,115 @@ class JmapClient:
         self._api_url: Optional[str] = None
         self._upload_url: Optional[str] = None
         self._mail_account_id: Optional[str] = None
+        self._tls_context = ssl.create_default_context()
+        # Per-thread connection store. http.client.HTTPConnection is
+        # NOT thread-safe; one connection per thread keeps each
+        # worker's request → response pairing intact.
+        self._tls = threading.local()
+
+    def _get_conn(self, netloc: str, is_https: bool) -> http.client.HTTPConnection:
+        existing = getattr(self._tls, "conn", None)
+        if existing is not None and getattr(self._tls, "netloc", "") == netloc:
+            return existing
+        if existing is not None:
+            try:
+                existing.close()
+            except Exception:
+                pass
+        if is_https:
+            conn: http.client.HTTPConnection = http.client.HTTPSConnection(
+                netloc, timeout=60, context=self._tls_context)
+        else:
+            conn = http.client.HTTPConnection(netloc, timeout=60)
+        # Enable TCP keepalive on the underlying socket once it's
+        # connected (lazy via the first request).
+        self._tls.conn = conn
+        self._tls.netloc = netloc
+        return conn
 
     def _http(self, url: str, *, method: str = "GET", body: Optional[bytes] = None,
               content_type: str = "application/json; charset=utf-8",
               accept: str = "application/json", timeout: int = 60) -> Tuple[int, bytes]:
         # Retry on Stalwart's `jmap:error:limit` HTTP 400 (concurrent-
-        # request cap). Backoff is per-worker jittered exponential —
-        # multiple workers all retrying after a synchronous error
-        # would otherwise dogpile right back into the limit. Jitter
-        # spreads them across a few hundred ms.
+        # request cap) AND on transient connection errors (broken
+        # pipe, connection-reset — these happen when Stalwart restarts
+        # a replica or the keep-alive idle timer fires mid-handshake).
+        # Backoff is per-worker jittered exponential — multiple workers
+        # all retrying after a synchronous error would otherwise
+        # dogpile right back into the limit. Jitter spreads them
+        # across a few hundred ms.
         # Why we don't retry on other HTTP 400s: only `jmap:error:limit`
         # is recoverable by waiting; everything else (bad blob, bad
         # auth, malformed call) is a permanent failure and retrying
         # just delays the inevitable error report.
-        import random
+        u = urlsplit(url)
+        is_https = u.scheme == "https"
+        netloc = u.netloc
+        path = u.path or "/"
+        if u.query:
+            path = f"{path}?{u.query}"
+        headers = {
+            "Authorization": self._auth_header,
+            "Accept": accept,
+            "Connection": "keep-alive",
+        }
+        if body is not None:
+            headers["Content-Type"] = content_type
+            headers["Content-Length"] = str(len(body))
+
         attempts = 0
+        redirects = 0
         while True:
-            req = urllib.request.Request(url, data=body, method=method)
-            req.add_header("Authorization", self._auth_header)
-            req.add_header("Accept", accept)
-            if body is not None:
-                req.add_header("Content-Type", content_type)
+            conn = self._get_conn(netloc, is_https)
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    return resp.status, resp.read()
-            except urllib.error.HTTPError as e:
-                err_body = e.read() if hasattr(e, "read") else b""
-                if (e.code == 400 and b"jmap:error:limit" in err_body
-                        and attempts < 8):
-                    # Exponential backoff with jitter: 100ms, 200ms,
-                    # 400ms, ..., capped at ~2s; jitter ±50%.
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+                status = resp.status
+                location = resp.getheader("Location") or ""
+                data = resp.read()
+                # http.client requires the response to be fully read
+                # before the next request on the same connection.
+
+                # Follow up to 3 redirects (Stalwart returns 307
+                # /.well-known/jmap → /jmap/session). Same connection
+                # if the target is same-origin; reopen otherwise. The
+                # `Connection: close` header we don't send means
+                # Stalwart keeps the socket open across the redirect.
+                if status in (301, 302, 307, 308) and location and redirects < 3:
+                    if location.startswith("/"):
+                        path = location
+                    else:
+                        # Absolute URL — rebase netloc + scheme too.
+                        lu = urlsplit(location)
+                        if lu.netloc and lu.netloc != netloc:
+                            netloc = lu.netloc
+                            is_https = lu.scheme == "https"
+                        path = lu.path + (f"?{lu.query}" if lu.query else "")
+                    redirects += 1
+                    continue
+
+                if status == 400 and b"jmap:error:limit" in data and attempts < 8:
                     base = min(0.1 * (2 ** attempts), 2.0)
                     delay = base * (0.5 + random.random())
                     time.sleep(delay)
                     attempts += 1
                     continue
-                return e.code, err_body
+                return status, data
+            except (http.client.HTTPException, OSError, socket.error) as e:
+                # Connection-level failure: close + retry with fresh
+                # connection. Common cases: BrokenPipeError after the
+                # server closed an idle keep-alive, RemoteDisconnected
+                # after a Stalwart replica rolled.
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._tls.conn = None
+                if attempts < 4:
+                    time.sleep(0.1 * (2 ** attempts) * (0.5 + random.random()))
+                    attempts += 1
+                    continue
+                raise JmapError("CONN_ERROR", f"{type(e).__name__}: {e}")
 
     def session(self) -> None:
         status, body = self._http(self.session_url)
@@ -521,68 +612,106 @@ def run(args: argparse.Namespace) -> int:
                          f"already present; importing {len(kept)}\n")
         files = kept
 
-    # 5. Parallel pipeline: a worker pool reads + uploads blobs; a main
-    #    coroutine collects completed uploads and flushes Email/import
-    #    batches of IMPORT_BATCH entries. Blob/upload is the bottleneck
-    #    so parallelism is on that side; Email/import is cheap (a few
-    #    method calls per batch).
+    # 5. Pipeline strategy: parallel Blob/upload over HTTP keep-alive
+    #    connections + batched Email/import on the main thread.
+    #
+    #    Why this works where the earlier ThreadPoolExecutor + urllib
+    #    attempt didn't:
+    #      - The old urllib path opened a fresh TCP+TLS handshake per
+    #        request. 16 workers × 1000 messages = 16000 handshakes,
+    #        plus source-port exhaustion + TIME_WAIT churn made
+    #        Stalwart appear to "stall after 100 uploads" (cluster
+    #        observation 2026-05-11). With http.client persistent
+    #        connections, each worker reuses ONE TCP connection for
+    #        all its uploads — zero handshake overhead, zero port
+    #        exhaustion.
+    #      - jmap-seed.py uses the same pattern (Blob/upload +
+    #        Email/import batches) and achieves ~17 msg/sec serial.
+    #        Parallel + keep-alive should saturate Stalwart's
+    #        commit pipeline closer to ~100 msg/sec at workers=8.
+    #
+    #    Email/import flushes still happen on the MAIN thread (not
+    #    a worker) so we don't compete with uploads for connection
+    #    capacity. Workers produce (mailbox_id, blob_id, keywords,
+    #    received_at) tuples into a shared `pending` list under a
+    #    lock; once pending >= IMPORT_BATCH, main thread drains and
+    #    flushes.
     pending: List[_PendingImport] = []
     pending_lock = threading.Lock()
     imported = 0
     failed = 0
     skipped = 0
+    completed = 0
+    last_progress = time.time()
+    workers = max(1, int(getattr(args, "workers", 8) or 8))
 
-    def flush_locked() -> None:
+    def _worker(snapshot_mb: str, fpath: str) -> Tuple[Optional[_PendingImport], Optional[str]]:
+        try:
+            p = _read_and_upload(fpath, client, mb_resolution[snapshot_mb])
+            return p, None
+        except (JmapError, OSError) as e:
+            return None, f"{type(e).__name__}: {e}"
+
+    def _maybe_flush() -> None:
         nonlocal imported, failed
         with pending_lock:
+            if len(pending) < IMPORT_BATCH:
+                return
             batch = pending[:IMPORT_BATCH]
             del pending[:IMPORT_BATCH]
-        if batch:
-            c, f = _flush_import(client, batch)
-            imported += c
-            failed += f
-
-    workers = max(1, args.workers)
-
-    def worker(snapshot_mb: str, fpath: str) -> Optional[_PendingImport]:
-        try:
-            return _read_and_upload(fpath, client, mb_resolution[snapshot_mb])
-        except (JmapError, OSError) as e:
-            sys.stderr.write(f"jmap-restore: upload {fpath} failed: {e}\n")
-            return None
+        c, f = _flush_import(client, batch)
+        imported += c
+        failed += f
 
     if workers == 1:
-        for snapshot_mb, fpath in files:
-            p = worker(snapshot_mb, fpath)
+        # Serial path — debugging only. Keep it simple.
+        for idx, (snapshot_mb, fpath) in enumerate(files, start=1):
+            p, err = _worker(snapshot_mb, fpath)
+            if err:
+                sys.stderr.write(f"jmap-restore: upload {fpath} failed: {err}\n")
+                failed += 1
+                continue
             if p is None:
                 skipped += 1
                 continue
             with pending_lock:
                 pending.append(p)
-                ready = len(pending) >= IMPORT_BATCH
-            if ready:
-                flush_locked()
+            _maybe_flush()
+            if time.time() - last_progress >= 5.0:
+                sys.stderr.write(f"jmap-restore: progress {idx}/{len(files)} "
+                                 f"imported={imported} failed={failed} skipped={skipped}\n")
+                last_progress = time.time()
     else:
         with ThreadPoolExecutor(max_workers=workers,
-                                thread_name_prefix="jmap-restore") as pool:
-            futures = [pool.submit(worker, mb, fp) for (mb, fp) in files]
-            for f in as_completed(futures):
-                p = f.result()
-                if p is None:
+                                thread_name_prefix="jmap-rst") as pool:
+            futures = [pool.submit(_worker, mb, fp) for (mb, fp) in files]
+            for fut in as_completed(futures):
+                p, err = fut.result()
+                completed += 1
+                if err:
+                    sys.stderr.write(f"jmap-restore: upload failed: {err}\n")
+                    failed += 1
+                elif p is None:
                     skipped += 1
-                    continue
-                with pending_lock:
-                    pending.append(p)
-                    ready = len(pending) >= IMPORT_BATCH
-                if ready:
-                    flush_locked()
-    # Final flush
+                else:
+                    with pending_lock:
+                        pending.append(p)
+                    _maybe_flush()
+                if time.time() - last_progress >= 5.0:
+                    sys.stderr.write(
+                        f"jmap-restore: progress {completed}/{len(files)} "
+                        f"imported={imported} failed={failed} skipped={skipped}\n")
+                    last_progress = time.time()
+    # Final flush — drain whatever's left below the IMPORT_BATCH threshold.
     while True:
         with pending_lock:
-            remaining = len(pending)
-        if remaining == 0:
-            break
-        flush_locked()
+            if not pending:
+                break
+            batch = pending[:IMPORT_BATCH]
+            del pending[:IMPORT_BATCH]
+        c, f = _flush_import(client, batch)
+        imported += c
+        failed += f
 
     elapsed = time.time() - t_start
     summary = {
@@ -621,14 +750,17 @@ def main() -> int:
                    help="Root of the extracted Maildir tree (contains "
                         "<source-address>/<mailbox>/cur/...)")
     p.add_argument("--workers", type=int,
-                   default=int(os.environ.get("JMAP_RESTORE_WORKERS", "12")),
+                   default=int(os.environ.get("JMAP_RESTORE_WORKERS", "8")),
                    help="Parallel Blob/upload worker pool size (env "
-                        "JMAP_RESTORE_WORKERS, default 12). Stalwart's "
+                        "JMAP_RESTORE_WORKERS, default 8). Each worker holds "
+                        "ONE persistent HTTP keep-alive connection — no "
+                        "per-request handshake cost. Stalwart's "
                         "maxConcurrentUploads + maxConcurrentRequests cap the "
                         "effective parallelism — bootstrap-plan sets both to "
-                        "128. Workers above 32 hit diminishing returns due to "
-                        "Stalwart's per-principal request scheduling. Set to "
-                        "1 to force serial (debugging).")
+                        "128, so 8 workers leaves ample headroom. Workers "
+                        "above 32 hit diminishing returns due to Stalwart's "
+                        "per-principal request scheduling. Set to 1 to force "
+                        "serial (debugging).")
     p.add_argument("--dedup-by-message-id", action="store_true",
                    help="Before each upload, query Email/header[Message-ID] on "
                         "the target and skip if present. Adds one round-trip per "

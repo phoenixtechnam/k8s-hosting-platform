@@ -26,15 +26,18 @@ from __future__ import annotations
 import argparse
 import base64
 import email.utils
+import http.client
 import json
 import os
+import random
 import socket
+import ssl
 import sys
+import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 JMAP_URN_CORE = "urn:ietf:params:jmap:core"
 JMAP_URN_MAIL = "urn:ietf:params:jmap:mail"
@@ -47,10 +50,11 @@ class JmapError(Exception):
 
 
 class JmapClient:
-    """Minimal JMAP client — auth + session + call + upload, copied from
-    jmap-sync.py with the same apiUrl-rebase logic so an in-cluster
-    HTTP session stays on the same transport regardless of what
-    Stalwart's session response claims."""
+    """Minimal JMAP client — same persistent http.client connection
+    pattern as jmap-sync.py / jmap-restore.py. Keep-alive eliminates
+    per-request TCP+TLS handshake cost; per-thread connections via
+    thread-local storage make the client safe to share across
+    concurrent uploads from a future parallel seeder."""
 
     def __init__(self, endpoint: str, basic_auth_user: str, basic_auth_pass: str) -> None:
         if not endpoint.endswith("/.well-known/jmap"):
@@ -61,20 +65,85 @@ class JmapClient:
         self._api_url: Optional[str] = None
         self._upload_url: Optional[str] = None
         self._mail_account_id: Optional[str] = None
+        self._tls_context = ssl.create_default_context()
+        self._tls = threading.local()
+
+    def _get_conn(self, netloc: str, is_https: bool) -> http.client.HTTPConnection:
+        existing = getattr(self._tls, "conn", None)
+        if existing is not None and getattr(self._tls, "netloc", "") == netloc:
+            return existing
+        if existing is not None:
+            try:
+                existing.close()
+            except Exception:
+                pass
+        if is_https:
+            conn: http.client.HTTPConnection = http.client.HTTPSConnection(
+                netloc, timeout=60, context=self._tls_context)
+        else:
+            conn = http.client.HTTPConnection(netloc, timeout=60)
+        self._tls.conn = conn
+        self._tls.netloc = netloc
+        return conn
 
     def _http(self, url: str, *, method: str = "GET", body: Optional[bytes] = None,
               content_type: str = "application/json; charset=utf-8",
               accept: str = "application/json") -> Tuple[int, bytes]:
-        req = urllib.request.Request(url, data=body, method=method)
-        req.add_header("Authorization", self._auth_header)
-        req.add_header("Accept", accept)
+        u = urlsplit(url)
+        is_https = u.scheme == "https"
+        netloc = u.netloc
+        path = u.path or "/"
+        if u.query:
+            path = f"{path}?{u.query}"
+        headers = {
+            "Authorization": self._auth_header,
+            "Accept": accept,
+            "Connection": "keep-alive",
+        }
         if body is not None:
-            req.add_header("Content-Type", content_type)
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return resp.status, resp.read()
-        except urllib.error.HTTPError as e:
-            return e.code, (e.read() if hasattr(e, "read") else b"")
+            headers["Content-Type"] = content_type
+            headers["Content-Length"] = str(len(body))
+
+        attempts = 0
+        redirects = 0
+        while True:
+            conn = self._get_conn(netloc, is_https)
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+                status = resp.status
+                location = resp.getheader("Location") or ""
+                data = resp.read()
+                # Follow up to 3 redirects.
+                if status in (301, 302, 307, 308) and location and redirects < 3:
+                    if location.startswith("/"):
+                        path = location
+                    else:
+                        lu = urlsplit(location)
+                        if lu.netloc and lu.netloc != netloc:
+                            netloc = lu.netloc
+                            is_https = lu.scheme == "https"
+                        path = lu.path + (f"?{lu.query}" if lu.query else "")
+                    redirects += 1
+                    continue
+                if status == 400 and b"jmap:error:limit" in data and attempts < 8:
+                    base = min(0.1 * (2 ** attempts), 2.0)
+                    delay = base * (0.5 + random.random())
+                    time.sleep(delay)
+                    attempts += 1
+                    continue
+                return status, data
+            except (http.client.HTTPException, OSError, socket.error) as e:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._tls.conn = None
+                if attempts < 4:
+                    time.sleep(0.1 * (2 ** attempts) * (0.5 + random.random()))
+                    attempts += 1
+                    continue
+                raise JmapError("CONN_ERROR", f"{type(e).__name__}: {e}")
 
     def session(self) -> None:
         status, body = self._http(self.session_url)
@@ -86,7 +155,6 @@ class JmapClient:
         # Re-root apiUrl + uploadUrl onto session URL's origin to keep
         # all traffic in-cluster (Stalwart returns the public HTTPS
         # URL by default — see jmap-sync.py for context).
-        from urllib.parse import urlsplit, urlunsplit
         our = urlsplit(self.session_url)
         def _reroot(url: str) -> str:
             u = urlsplit(url)
