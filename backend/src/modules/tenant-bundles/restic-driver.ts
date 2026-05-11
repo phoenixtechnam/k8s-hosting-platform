@@ -363,7 +363,15 @@ export class ResticConcurrencySemaphore {
   }
 }
 
-const DEFAULT_CAP = Math.max(1, Number.parseInt(process.env.TENANT_BUNDLES_MAX_CONCURRENT_RESTIC ?? '4', 10) || 4);
+// 2 concurrent restic processes per platform-api pod. Combined with
+// `s3.connections=5 × pack-size=64MiB = 320 MiB pack-buffer envelope`
+// per restic, this caps the per-pod pack-buffer ceiling at 640 MiB —
+// well inside the 2 GiB pod limit alongside restic's ~200 MiB working
+// set plus the ~170 MiB ambient platform-api workload. 3 replicas × 2
+// per-pod = 6 cluster-wide upper bound; the pg-advisory cluster gate
+// (see cluster-concurrency.ts) lands a tighter cluster-wide cap at 4
+// to bound Hetzner S3 request pressure regardless of replica count.
+const DEFAULT_CAP = Math.max(1, Number.parseInt(process.env.TENANT_BUNDLES_MAX_CONCURRENT_RESTIC ?? '2', 10) || 2);
 const DEFAULT_SEM = new ResticConcurrencySemaphore(DEFAULT_CAP);
 
 // ─── Spawn shim (overridable for tests) ─────────────────────────────────────
@@ -471,23 +479,31 @@ function shQuote(s: string): string {
 }
 
 /**
- * Per-target restic options that maximize throughput. Returns a flat
- * `-o key=val …` arg list.
+ * Per-target restic options that maximize throughput while keeping the
+ * per-process memory envelope predictable. Returns a flat `-o key=val …`
+ * arg list.
  *
- * - S3: `s3.connections=10` parallelizes pack uploads/downloads (default 5).
- *   Hetzner Object Storage handles 10 concurrent connections without
- *   throttling at our scale; AWS S3 docs recommend 25-100 for throughput.
- *   Higher gives diminishing returns and grows memory.
+ * - **S3: `s3.connections=5`** (restic's default). Originally 10 in the
+ *   first perf pass, but at our 64 MiB pack-size the worst-case
+ *   in-flight pack buffer is `s3.connections × pack-size` per restic
+ *   process — 5 × 64 = **320 MiB** vs. the old 10 × 64 = 640 MiB. Hetzner
+ *   Object Storage doesn't reward >5 parallel uploads on objects this
+ *   size; the throughput benefit was sub-linear past 4-5 in practice
+ *   and the memory cost (a 1Gi platform-api pod OOMing at 2× concurrent
+ *   captures) was outsized. 5 connections × 2 per-pod concurrent
+ *   restic = **640 MiB pack-buffer ceiling per pod**, comfortable in
+ *   our 2 GiB limit with ambient + restic working set.
  *
  * - SFTP: no restic-side options; the SSH-side cipher + compression
  *   tuning lives in `prepareSftpArgs` (the `sftp.command` value).
+ *   Single SSH channel — concurrency is implicit.
  *
  * - hostpath: nothing to tune.
  */
 function performanceOpts(target: BackupTarget): string[] {
   switch (target.kind) {
     case 's3':
-      return ['-o', 's3.connections=10'];
+      return ['-o', 's3.connections=5'];
     case 'ssh':
     case 'hostpath':
       return [];

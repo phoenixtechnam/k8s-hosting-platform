@@ -30,6 +30,7 @@ import type { BackupStore } from './bundle-store.js';
 import { finishByRef as finishTaskByRef } from '../tasks/service.js';
 import { notifyUser } from '../notifications/service.js';
 import { toSafeText } from '@k8s-hosting/api-contracts';
+import { reapStaleInFlight } from './cluster-concurrency.js';
 
 // Lowered from the legacy 24h to 1h: the restic capture path's
 // 95-percentile is ~5 min at the current 5.4 GiB tenant size, and
@@ -43,6 +44,7 @@ const STUCK_RUNNING_HOURS = Number.parseFloat(
 );
 
 export interface RetentionSweepResult {
+  readonly inFlightReaped: number;
   readonly expiredDeleted: number;
   readonly expiredFailed: number;
   readonly stuckMarkedFailed: number;
@@ -155,7 +157,23 @@ export async function runRetentionSweep(app: FastifyInstance): Promise<Retention
     }
   }
 
-  return { expiredDeleted, expiredFailed, stuckMarkedFailed };
+  // ── 3. Reap stale tenant_bundle_in_flight rows ─────────────────────
+  // Rows older than 10 min (2× the cluster-gate stale threshold) are
+  // orphans from a crashed pod whose heartbeat stopped. We hard-delete
+  // them so the cluster-cap COUNT(*) check stays accurate over the
+  // long run. Rows in the 5-10 min window are not counted toward the
+  // cap by acquire() but kept around for diagnostics.
+  let inFlightReaped = 0;
+  try {
+    inFlightReaped = await reapStaleInFlight(app.db);
+    if (inFlightReaped > 0) {
+      app.log.warn({ count: inFlightReaped }, 'tenant-backup retention: reaped stale tenant_bundle_in_flight rows');
+    }
+  } catch (err) {
+    app.log.warn({ err }, 'tenant-backup retention: in-flight reap failed (non-fatal)');
+  }
+
+  return { expiredDeleted, expiredFailed, stuckMarkedFailed, inFlightReaped };
 }
 
 /**
@@ -168,7 +186,7 @@ export function startRetentionScheduler(app: FastifyInstance, intervalMs = 5 * 6
   const tick = async () => {
     try {
       const r = await runRetentionSweep(app);
-      if (r.expiredDeleted > 0 || r.stuckMarkedFailed > 0 || r.expiredFailed > 0) {
+      if (r.expiredDeleted > 0 || r.stuckMarkedFailed > 0 || r.expiredFailed > 0 || r.inFlightReaped > 0) {
         app.log.info({ ...r }, 'tenant-backup retention: sweep complete');
       }
     } catch (err) {

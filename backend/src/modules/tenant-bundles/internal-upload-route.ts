@@ -41,6 +41,7 @@ import {
   runResticBackup,
   type ResticComponent,
 } from './restic-driver.js';
+import { acquireGlobalSlot, ClusterGateError, type SlotHandle } from './cluster-concurrency.js';
 
 const ALLOWED_COMPONENTS = new Set(['files', 'mailboxes', 'config', 'secrets'] as const);
 const RESTIC_COMPONENTS: ReadonlySet<ResticComponent> = new Set(['files', 'mailboxes']);
@@ -263,15 +264,62 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     // Fastify itself drops the connection mid-stream.
     const abortController = new AbortController();
     const onClientGone = () => abortController.abort();
-    request.raw.on('aborted', onClientGone);
-    request.raw.on('close', () => {
-      // 'close' fires on both successful end + connection abort. We
-      // only treat it as an abort if we have NOT yet handed control
-      // back to the success branch below — runResticBackup() will
-      // have returned and abortController.abort() at that point is a
-      // no-op.
+    // 'close' fires on both successful end + connection abort. Only
+    // treat it as an abort if the body wasn't fully consumed — a
+    // success path runs the success branch BEFORE the close fires.
+    const onClose = () => {
       if (!request.raw.readableEnded) onClientGone();
-    });
+    };
+    request.raw.on('aborted', onClientGone);
+    request.raw.on('close', onClose);
+
+    // Phase 1 piece #12 — cluster-wide concurrency gate (ADR-036
+    // Locked decisions #5). Caps simultaneous restic captures across
+    // all platform-api replicas to `globalMaxInFlight` (default 4).
+    // 0 = disabled. The gate sits BEFORE the per-pod semaphore inside
+    // runResticBackup so a queued capture doesn't tie up a pod slot.
+    //
+    // Initialise `slot` to a noop handle so the finally-release path
+    // is safe regardless of whether the acquire actually happened —
+    // a non-ClusterGateError thrown from acquireGlobalSlot (e.g. a DB
+    // connection error from the wrapping transaction) would otherwise
+    // leave `slot` undefined and turn a real error into a TypeError
+    // when finally runs. Reviewer-flagged latent crash.
+    let slot: SlotHandle = {
+      bundleId,
+      component,
+      acquiredAtMs: Date.now(),
+      release: async () => { /* unacquired-gate noop */ },
+    };
+    try {
+      slot = await acquireGlobalSlot(app.db, {
+        bundleId,
+        component: component as ResticComponent,
+        podName: process.env.HOSTNAME,
+        globalMaxInFlight: settings?.globalMaxInFlight ?? 0,
+        abortSignal: abortController.signal,
+      });
+    } catch (err) {
+      // Always remove the listeners on this error path — the
+      // body-finally below is not reached.
+      request.raw.off('aborted', onClientGone);
+      request.raw.off('close', onClose);
+      if (err instanceof ClusterGateError) {
+        app.log.warn({ err, bundleId, component, code: err.code }, 'tenant-bundles restic-stream: cluster gate refused');
+        if (err.code === 'CLUSTER_GATE_ABORTED') {
+          return reply.code(499).send({ error: { code: 'CLIENT_ABORTED', message: err.message } });
+        }
+        // 503 Service Unavailable + Retry-After: tells the tenant Job's
+        // curl to back off. The Job will fail (no retry in busybox
+        // curl), the orchestrator marks the component failed, and
+        // the operator retries from the bundle list.
+        return reply
+          .code(503)
+          .header('Retry-After', '60')
+          .send({ error: { code: 'CLUSTER_GATE_TIMEOUT', message: err.message } });
+      }
+      throw err;
+    }
 
     let result;
     try {
@@ -304,6 +352,10 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       throw new ApiError('RESTIC_BACKUP_FAILED', msg, 500);
     } finally {
       request.raw.off('aborted', onClientGone);
+      request.raw.off('close', onClose);
+      // Release the cluster slot regardless of success/failure. The
+      // release is idempotent + best-effort (logs warn on DB blip).
+      await slot.release();
     }
 
     return success({

@@ -430,6 +430,55 @@ describe('runResticBackup', () => {
     expect(killCalled).toBe(true);
   });
 
+  it('passes s3.connections=5 (not 10) — bounded pack-buffer envelope', async () => {
+    const calls: Array<{ args: ReadonlyArray<string> }> = [];
+    __setResticSpawnForTest((_bin, args) => {
+      calls.push({ args: [...args] });
+      return {
+        stdout: Readable.from([
+          JSON.stringify({
+            message_type: 'summary',
+            snapshot_id: 'a'.repeat(64),
+            total_bytes_processed: 0,
+            total_files_processed: 0,
+          }) + '\n',
+        ]),
+        stderr: Readable.from([]),
+        stdin: { write: () => true, end: () => undefined, on: () => undefined },
+        on: (ev: string, cb: (code?: number) => void) => {
+          if (ev === 'exit' || ev === 'close') setImmediate(() => cb(0));
+          return undefined;
+        },
+        kill: () => undefined,
+      };
+    });
+
+    await runResticBackup({
+      target: {
+        kind: 's3',
+        s3Endpoint: 'https://fsn1.your-objectstorage.com',
+        s3Bucket: 'k8s-staging',
+        s3AccessKey: 'AK',
+        s3SecretKey: 'SK',
+      },
+      clientId: 'client-abc',
+      component: 'files',
+      passwordHex: FIXTURE_PASSWORD,
+      stdinFilename: 'archive.tar',
+      tags: [],
+      stdin: Readable.from([Buffer.from('x')]),
+    });
+
+    // Find the backup spawn (the init call is filtered out).
+    const c = calls.find((x) => x.args.includes('backup'));
+    expect(c, 'expected a backup spawn').toBeTruthy();
+    if (!c) throw new Error('unreachable');
+    // performanceOpts emits `-o s3.connections=5` for s3 targets.
+    expect(c.args).toContain('s3.connections=5');
+    // Defensive: ensure we did NOT regress to the old over-provisioned value.
+    expect(c.args).not.toContain('s3.connections=10');
+  });
+
   it('rejects an oversized clientId (defence against header-injection-style abuse)', async () => {
     await expect(
       runResticBackup({

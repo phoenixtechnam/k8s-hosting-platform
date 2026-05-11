@@ -140,6 +140,6 @@ describe('runRetentionSweep', () => {
       log: { info: () => {}, warn: () => {}, error: () => {} },
     } as unknown as FastifyInstance;
     const r = await runRetentionSweep(app);
-    expect(r).toEqual({ expiredDeleted: 0, expiredFailed: 0, stuckMarkedFailed: 0 });
+    expect(r).toEqual({ expiredDeleted: 0, expiredFailed: 0, stuckMarkedFailed: 0, inFlightReaped: 0 });
   });
 });

@@ -2329,8 +2329,14 @@ export const tenantBackupV2Settings = pgTable('tenant_backup_v2_settings', {
   id: integer('id').primaryKey().default(1),
   retentionDays: integer('retention_days').notNull().default(30),
   checkIntervalDays: integer('check_interval_days').notNull().default(7),
-  maxConcurrentRestic: integer('max_concurrent_restic').notNull().default(4),
-  globalMaxInFlight: integer('global_max_in_flight').notNull().default(0),
+  // Per-platform-api-pod cap (default 2 after 2026-05-11 OOM fix —
+  // see migration 0096). Each restic process budgets ~320 MiB pack
+  // buffer + ~200 MiB working set = ~520 MiB, so 2 fit in the 2 GiB
+  // pod limit alongside ambient platform-api workload.
+  maxConcurrentRestic: integer('max_concurrent_restic').notNull().default(2),
+  // Cluster-wide cap (default 4) — enforced via tenant_bundle_in_flight
+  // table + advisory-lock-serialised acquire. 0 = unlimited.
+  globalMaxInFlight: integer('global_max_in_flight').notNull().default(4),
   // Phase 1.5 multi-region/DR (migration 0094):
   // Override for the auto-derived (slugified PLATFORM_BASE_DOMAIN)
   // region id. NULL = use the derived value.
@@ -2342,6 +2348,24 @@ export const tenantBackupV2Settings = pgTable('tenant_backup_v2_settings', {
   drRecoveryKeyEncrypted: text('dr_recovery_key_encrypted'),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
+
+// Cluster-wide concurrency gate for restic-stream captures (migration
+// 0096). One row per active (bundle, component) capture. Runtime
+// acquire/release lives in `modules/tenant-bundles/cluster-concurrency.ts`.
+// Row presence + COUNT(*) < global_max_in_flight is the cap check.
+// `refreshed_at` heartbeat (every 60s during capture) lets stale rows
+// from a crashed pod expire after 5 min so they don't block new
+// captures.
+export const tenantBundleInFlight = pgTable('tenant_bundle_in_flight', {
+  bundleId: varchar('bundle_id', { length: 64 }).notNull(),
+  component: varchar('component', { length: 32 }).notNull(),
+  podName: varchar('pod_name', { length: 255 }),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  refreshedAt: timestamp('refreshed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.bundleId, table.component] }),
+  index('tenant_bundle_in_flight_refreshed_idx').on(table.refreshedAt),
+]);
 
 // External read-only repos for cross-region migration / DR. Operator
 // registers a backup_configurations row (S3/SFTP) with read-only IAM
