@@ -272,6 +272,30 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     };
     request.raw.on('aborted', onClientGone);
     request.raw.on('close', onClose);
+    // Phase 1 piece #13 — TCP idle-detection fallback. Force-killed
+    // Job pods (kubectl delete --force --grace-period=0) leave the
+    // TCP connection in ESTABLISHED state on the platform-api side
+    // because the kernel never sees a FIN/RST. Node's IncomingMessage
+    // therefore never emits 'close' or 'aborted', and the route hangs
+    // until the 1h runResticBackup timeout. Validated on staging
+    // 2026-05-11 13:13Z: socket stays ESTABLISHED, slot heartbeats
+    // for the full hour.
+    //
+    // Setting socket.setTimeout(N) makes Node emit 'timeout' after N
+    // ms with no bytes received. We then explicitly fire onClientGone.
+    // 2 min is generous — a healthy 5 GiB capture flows continuously
+    // (no idle window > a few hundred ms); a dead Job pod's socket
+    // never delivers another byte.
+    const idleSocket = request.raw.socket;
+    if (idleSocket) {
+      idleSocket.setKeepAlive(true, 30_000);
+      idleSocket.setTimeout(2 * 60 * 1000, () => {
+        app.log.warn({ bundleId, component }, 'tenant-bundles restic-stream: TCP idle 2m — treating as client abort');
+        onClientGone();
+        // Destroy the socket so the kernel slot is freed too.
+        try { idleSocket.destroy(new Error('upload idle timeout')); } catch { /* ignore */ }
+      });
+    }
 
     // Phase 1 piece #12 — cluster-wide concurrency gate (ADR-036
     // Locked decisions #5). Caps simultaneous restic captures across
@@ -304,6 +328,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       // body-finally below is not reached.
       request.raw.off('aborted', onClientGone);
       request.raw.off('close', onClose);
+      try { request.raw.socket?.setTimeout(0); } catch { /* ignore */ }
       if (err instanceof ClusterGateError) {
         app.log.warn({ err, bundleId, component, code: err.code }, 'tenant-bundles restic-stream: cluster gate refused');
         if (err.code === 'CLUSTER_GATE_ABORTED') {
@@ -353,6 +378,13 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     } finally {
       request.raw.off('aborted', onClientGone);
       request.raw.off('close', onClose);
+      // Clear the idle-socket timeout so Fastify can reuse the
+      // connection for the next request (HTTP/1.1 keep-alive).
+      try {
+        request.raw.socket?.setTimeout(0);
+      } catch {
+        /* socket may already be destroyed */
+      }
       // Release the cluster slot regardless of success/failure. The
       // release is idempotent + best-effort (logs warn on DB blip).
       await slot.release();
