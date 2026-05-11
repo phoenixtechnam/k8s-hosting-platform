@@ -19,10 +19,15 @@ spec:
         app: platform-api
     spec:
       serviceAccountName: platform-api
+      # 2026-05-11: DoNotSchedule for strict one-per-server placement.
+      # In HA mode every server runs a platform-api pod, so node loss =
+      # lose 1 of N; survivors already serve, no rescheduling needed.
+      # Failover headroom (see backend/src/modules/platform-storage-policy/
+      # failover-headroom.ts) prevents this from wedging Pending pods.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
               app: platform-api

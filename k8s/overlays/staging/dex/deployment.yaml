@@ -22,10 +22,16 @@ spec:
       labels:
         app: dex
     spec:
+      # 2026-05-11: DoNotSchedule for strict one-per-server placement.
+      # Dex is dev/staging only per project_dex_deployment_scope; in HA
+      # mode every staging server runs a Dex pod so on node loss the
+      # surviving Dex replicas already serve and no rescheduling is
+      # needed. Headroom math protects against Pending — see
+      # backend/src/modules/platform-storage-policy/failover-headroom.ts.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
               app: dex

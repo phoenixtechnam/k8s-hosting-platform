@@ -35,27 +35,33 @@ export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix
   { namespace: 'mail', pvcPrefix: 'data-stalwart-mail' },    // data-stalwart-mail-0
 ];
 
-// HA tier replicates a system volume to EVERY ready server node so
-// that a 4-server cluster survives 2 simultaneous server failures
-// (vs. a fixed 3-replica scheme that survives only 1, regardless of
-// server count). Capped at MAX_HA_REPLICAS to avoid pathological
-// replication overhead — Longhorn write amplification scales linearly
-// with replica count, and beyond ~5 the throughput hit on a postgres
-// primary outweighs the extra fault tolerance.
-const MAX_HA_REPLICAS = 5;
+// HA tier replicates a system volume to one server up to MAX_HA_REPLICAS.
+// Lowered from 5 to 3 on 2026-05-11: rationale per the user's
+// architectural intent — "in HA mode all servers should replicate all
+// essential services for ease of maintenance, so an operator knows
+// that all server nodes have almost the same state". 3 replicas
+// survive 1 simultaneous server failure with quorum (the 2-of-3
+// majority); going to 4-5 doubles write amplification on the postgres
+// primary for marginal additional fault-tolerance (a 3-of-5 majority
+// is only meaningful for clusters that often run with 2 simultaneous
+// server outages — not our deployment shape). On 4+ server clusters
+// the extra servers become headroom for tenant workloads rather than
+// additional system replicas.
+const MAX_HA_REPLICAS = 3;
 
 export function replicasForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
   if (tier === 'local') return 1;
-  // HA: replicate to every ready server (min 2; 1 would mean local).
-  // Cap so a 10-server cluster doesn't fanout to 10 replicas.
+  // HA: replicate to one server up to MAX_HA_REPLICAS. With the cap at 3,
+  // a 3-server cluster lands one replica per server; a 4+ server cluster
+  // still gets 3 (extra servers contribute capacity, not extra replicas).
   return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
 }
 
-// Stateless platform Deployments that scale 2↔3 with the tier.
-// Adding topologySpreadConstraints on each scale-up so a 3-replica
-// rollout lands one pod per server. List is exhaustive — these are
-// every platform-namespace Deployment whose loss would degrade
-// admin/client panel function.
+// Stateless platform Deployments that scale 1↔min(serverCount,3) with the
+// tier. Adding topologySpreadConstraints on each scale-up so a 3-replica
+// rollout lands one pod per server (DoNotSchedule — see HA_TOPOLOGY_SPREAD).
+// List is exhaustive — these are every platform-namespace Deployment whose
+// loss would degrade admin/client panel function.
 const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> = [
   { namespace: 'platform', name: 'admin-panel' },
   { namespace: 'platform', name: 'client-panel' },
@@ -72,10 +78,10 @@ const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> 
   { namespace: 'mail', name: 'roundcube' },
 ];
 // Single-server (local) installs default to 1 replica per stateless
-// service. HA scales to readyServerCount (capped) so each Deployment
-// has one pod per server — 4 servers = 4 replicas = survives 2
-// simultaneous failures during a rolling update. Same MAX_HA_REPLICAS
-// cap as the storage tier to avoid runaway scale.
+// service. HA scales to min(readyServerCount, MAX_HA_REPLICAS=3) so a
+// 3-server cluster gets 1 pod per server (the "all servers same state"
+// invariant); a 4-5 server cluster still has 3 replicas with the extra
+// servers providing failover headroom for tenant workloads.
 export function deploymentReplicasForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
   if (tier === 'local') return 1;
   return Math.max(2, Math.min(readyServerCount, MAX_HA_REPLICAS));
@@ -165,18 +171,16 @@ export function formatValkeyMemoryBytes(bytes: number): string {
 const SINGLETON_ID = 'singleton';
 const HA_SERVER_THRESHOLD = 3;
 
-// topologySpreadConstraints applied to the stateless Deployments
-// when scaling to HA. ScheduleAnyway (not DoNotSchedule) so a
-// drained node doesn't wedge a pod Pending — small skew during
-// recovery is acceptable.
-const HA_TOPOLOGY_SPREAD = [
-  {
-    maxSkew: 1,
-    topologyKey: 'kubernetes.io/hostname',
-    whenUnsatisfiable: 'ScheduleAnyway',
-    labelSelector: { matchLabels: {} as Record<string, string> }, // filled per-deployment
-  },
-];
+// NOTE: topologySpreadConstraints for the active-active Deployments
+// live in the manifests themselves (e.g. k8s/base/oauth2-proxy/
+// deployment.yaml, k8s/base/platform/{admin,client}-deployment.yaml).
+// We can't patch them imperatively from here without fighting Flux's
+// server-side-apply field manager — see the patchStatelessDeployments
+// comment around line 642 for the full rationale. The convention is
+// DoNotSchedule on every active-active Deployment in HA, enforcing
+// strict one-per-server placement so an operator can rely on every
+// server holding the same system pods (2026-05-11 architectural
+// invariant: "all servers same state for ease of maintenance").
 
 export type LonghornVolume = {
   metadata?: { name?: string; namespace?: string };
@@ -243,8 +247,9 @@ export async function readClusterState(
 ): Promise<{ readyServerCount: number; totalNodeCount: number; recommendedTier: 'local' | 'ha'; volumes: VolumeFact[] }> {
   const policy = await getPolicy(db);
   // desiredReplicas is computed AFTER readyServerCount is known —
-  // HA tier scales to the number of ready servers (so 4 servers = 4
-  // replicas = survives 2 failures, vs the prior fixed 3).
+  // HA tier scales to min(readyServerCount, MAX_HA_REPLICAS=3).
+  // Beyond 3 servers, extras contribute failover headroom for tenant
+  // workloads instead of additional system replicas.
 
   // Count Ready server nodes by label
   // (platform.phoenix-host.net/node-role=server) so workers don't
@@ -371,10 +376,11 @@ export async function readClusterState(
   // that already exists at the CNPG layer. Each CNPG instance's PVC
   // only needs 1 replica (single-node disk-failure tolerance via the
   // CNPG instance failover, not via Longhorn). The CNPG instance
-  // count itself scales with readyServerCount via
-  // cnpgInstancesForSystemTier so total fault tolerance still tracks
-  // server count (4 servers = 4 postgres instances = 2-server-loss
-  // tolerance, with 1× the storage write cost instead of N×).
+  // count itself scales with min(readyServerCount, 3) via
+  // cnpgInstancesForSystemTier so a 3-server cluster gets 3 postgres
+  // instances (1-server-loss tolerance with quorum) and a 4+ server
+  // cluster still gets 3 — the extra servers provide failover headroom
+  // for tenant workloads rather than additional postgres instances.
   const CNPG_DESIRED_REPLICAS = 1;
   for (const c of CNPG_CLUSTERS) {
     const pvcs = await k8s.core.listNamespacedPersistentVolumeClaim({

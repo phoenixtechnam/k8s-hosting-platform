@@ -15,10 +15,16 @@ spec:
       labels:
         app: oauth2-proxy
     spec:
+      # 2026-05-11: DoNotSchedule enforces strict one-per-server placement
+      # so on a 3-server HA cluster every server runs an oauth2-proxy pod.
+      # Operator-visible invariant: "all servers same state for ease of
+      # maintenance". Failover headroom (cluster_capacity − one_server)
+      # is what prevents this hard constraint from wedging Pending pods
+      # — see backend/src/modules/platform-storage-policy/failover-headroom.ts.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
               app: oauth2-proxy

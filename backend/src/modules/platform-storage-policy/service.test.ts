@@ -247,7 +247,7 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
   });
 });
 
-describe('replicasForSystemTier — HA scales to readyServerCount, capped at MAX_HA_REPLICAS', () => {
+describe('replicasForSystemTier — HA scales to readyServerCount, capped at MAX_HA_REPLICAS=3', () => {
   it('local tier always returns 1 regardless of server count', async () => {
     const { replicasForSystemTier } = await import('./service.js');
     expect(replicasForSystemTier('local', 1)).toBe(1);
@@ -255,18 +255,17 @@ describe('replicasForSystemTier — HA scales to readyServerCount, capped at MAX
     expect(replicasForSystemTier('local', 7)).toBe(1);
   });
 
-  it('HA tier scales to readyServerCount when between min(2) and max(5)', async () => {
+  it('HA tier scales to readyServerCount when between min(2) and max(3)', async () => {
     const { replicasForSystemTier } = await import('./service.js');
     expect(replicasForSystemTier('ha', 2)).toBe(2);
     expect(replicasForSystemTier('ha', 3)).toBe(3);
-    expect(replicasForSystemTier('ha', 4)).toBe(4); // ← THIS IS THE NEW BEHAVIOR
-    expect(replicasForSystemTier('ha', 5)).toBe(5);
   });
 
-  it('HA tier caps at MAX_HA_REPLICAS=5 to bound write amplification', async () => {
+  it('HA tier caps at MAX_HA_REPLICAS=3 — extra servers become tenant headroom (2026-05-11)', async () => {
     const { replicasForSystemTier } = await import('./service.js');
-    expect(replicasForSystemTier('ha', 6)).toBe(5);
-    expect(replicasForSystemTier('ha', 10)).toBe(5);
+    expect(replicasForSystemTier('ha', 4)).toBe(3);
+    expect(replicasForSystemTier('ha', 5)).toBe(3);
+    expect(replicasForSystemTier('ha', 10)).toBe(3);
   });
 
   it('HA tier never goes below 2 (1 = local; HA implies multi-replica)', async () => {
@@ -275,14 +274,16 @@ describe('replicasForSystemTier — HA scales to readyServerCount, capped at MAX
     expect(replicasForSystemTier('ha', 1)).toBe(2);
   });
 
-  it('cnpgInstancesForSystemTier + deploymentReplicasForSystemTier follow same shape', async () => {
+  it('cnpgInstancesForSystemTier + deploymentReplicasForSystemTier follow same cap-at-3 shape', async () => {
     const { cnpgInstancesForSystemTier, deploymentReplicasForSystemTier } = await import('./service.js');
     expect(cnpgInstancesForSystemTier('local', 4)).toBe(1);
-    expect(cnpgInstancesForSystemTier('ha', 4)).toBe(4);
-    expect(cnpgInstancesForSystemTier('ha', 7)).toBe(5);
+    expect(cnpgInstancesForSystemTier('ha', 3)).toBe(3);
+    expect(cnpgInstancesForSystemTier('ha', 4)).toBe(3);
+    expect(cnpgInstancesForSystemTier('ha', 7)).toBe(3);
     expect(deploymentReplicasForSystemTier('local', 4)).toBe(1);
-    expect(deploymentReplicasForSystemTier('ha', 4)).toBe(4);
-    expect(deploymentReplicasForSystemTier('ha', 7)).toBe(5);
+    expect(deploymentReplicasForSystemTier('ha', 3)).toBe(3);
+    expect(deploymentReplicasForSystemTier('ha', 4)).toBe(3);
+    expect(deploymentReplicasForSystemTier('ha', 7)).toBe(3);
   });
 });
 
@@ -303,18 +304,18 @@ describe('valkey scaling helpers — HA-only scaling, single-node fallback', () 
     expect(valkeyReplicasForSystemTier('ha', 2)).toBe(1);
   });
 
-  it('HA tier scales replicas + memory with readyServerCount (min 3, max 5)', async () => {
+  it('HA tier scales replicas + memory with readyServerCount (min 3, max 3 — 2026-05-11)', async () => {
     const { valkeyReplicasForSystemTier, valkeyMaxMemoryBytesForSystemTier, formatValkeyMemoryBytes } = await import('./service.js');
     expect(valkeyReplicasForSystemTier('ha', 3)).toBe(3);
-    expect(valkeyReplicasForSystemTier('ha', 4)).toBe(4);
-    expect(valkeyReplicasForSystemTier('ha', 5)).toBe(5);
-    expect(valkeyReplicasForSystemTier('ha', 7)).toBe(5); // capped
+    expect(valkeyReplicasForSystemTier('ha', 4)).toBe(3); // capped at 3
+    expect(valkeyReplicasForSystemTier('ha', 5)).toBe(3); // capped at 3
+    expect(valkeyReplicasForSystemTier('ha', 7)).toBe(3); // capped at 3
 
-    // Memory budget: 32 MiB × replicas → 96/128/160 MiB.
+    // Memory budget: 32 MiB × replicas → 96 MiB cap at 3 replicas.
     expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 3))).toBe('96mb');
-    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 4))).toBe('128mb');
-    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 5))).toBe('160mb');
-    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 10))).toBe('160mb'); // capped
+    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 4))).toBe('96mb'); // capped
+    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 5))).toBe('96mb'); // capped
+    expect(formatValkeyMemoryBytes(valkeyMaxMemoryBytesForSystemTier('ha', 10))).toBe('96mb'); // capped
   });
 });
 
@@ -449,17 +450,18 @@ describe('patchValkey — drift-driven reconcile', () => {
   });
 
   it('transient-flap guard does NOT block scale-up when readyServerCount jumps above current', async () => {
-    // Cluster grew from 3 to 5 servers; live replicas=3 should scale
-    // to 5. Guard should NOT fire (idealReplicas > previousReplicas).
+    // Cluster grew from 2 to 3 servers; live replicas=2 should scale to 3
+    // (and saturate the MAX_HA_REPLICAS=3 cap). Guard must NOT fire
+    // since idealReplicas > previousReplicas.
     const { patchValkey } = await import('./service.js');
-    const tmpl = `maxmemory 96mb\n`;
-    const k8s = makeValkeyMock({ sts: { replicas: 3 }, cm: { tmpl } });
+    const tmpl = `maxmemory 64mb\n`;
+    const k8s = makeValkeyMock({ sts: { replicas: 2 }, cm: { tmpl } });
 
-    const out = await patchValkey(k8s, 'ha', 5);
+    const out = await patchValkey(k8s, 'ha', 5); // 5 servers → caps at 3
 
-    expect(out?.newReplicas).toBe(5);
+    expect(out?.newReplicas).toBe(3);
     expect(out?.replicasPatched).toBe(true);
-    expect(out?.newMaxMemory).toBe('160mb');
+    expect(out?.newMaxMemory).toBe('96mb');
     expect(out?.configPatched).toBe(true);
   });
 

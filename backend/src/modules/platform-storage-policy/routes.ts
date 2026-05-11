@@ -9,6 +9,7 @@ import { auditLogs, notifications, users, platformStorageApplyRuns } from '../..
 import { inArray, eq, and, desc } from 'drizzle-orm';
 import { getPolicy, setPolicy, readClusterState, applyPolicy } from './service.js';
 import { readClusterCapacity } from './capacity-reconciler.js';
+import { getClusterFailoverHeadroom } from './failover-headroom.js';
 import { startRun, recordPatchOutcome, watchConvergence, type RunStatus } from './runs.js';
 
 export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise<void> {
@@ -124,6 +125,29 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
     return success(await readClusterCapacity(k8s));
+  });
+
+  // GET /api/v1/admin/cluster-failover-headroom
+  //
+  // Failover-aware tenant scheduling budget. Computed live as:
+  //   tenant_available = sum(server.allocatable)
+  //                    − sum(system_pod.requests)
+  //                    − max(server.allocatable)         // one-server reserve
+  //
+  // Drives the future provisioning gate that prevents an operator from
+  // over-packing servers to the point where a single-server loss leaves
+  // tenant pods Pending on the survivors. Per the 2026-05-11 architecture
+  // intent — see failover-headroom.ts.
+  app.get('/admin/cluster-failover-headroom', {
+    schema: {
+      tags: ['PlatformStoragePolicy'],
+      summary: 'Failover-aware tenant-scheduling headroom (CPU + memory)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kubeconfigPath);
+    return success(await getClusterFailoverHeadroom(k8s));
   });
 
   // Returns the current policy + observed cluster state
