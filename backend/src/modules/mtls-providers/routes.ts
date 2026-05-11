@@ -21,6 +21,7 @@
  */
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
@@ -44,6 +45,9 @@ import {
   getOrGenerateCrl,
   getCrlMetadata,
 } from './service.js';
+import { ingressMtlsConfigs } from '../../db/schema.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { syncRouteAnnotations } from '../ingress-routes/annotation-sync.js';
 import type { ZodError } from 'zod';
 
 function zodMessage(err: ZodError): string {
@@ -197,6 +201,33 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
       parsed.data.reason,
       actingUserId(request),
     );
+
+    // Trigger annotation-sync for every route that consumes this provider
+    // so the new CRL lands in each route-mtls-* Secret immediately. The
+    // service layer can't do this directly (no K8s client by design), so
+    // the route handler owns the fan-out. Best-effort: errors are logged
+    // but don't fail the revoke API call — the periodic reconciler will
+    // pick up any laggards.
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8s = createK8sClients(kubeconfigPath);
+      const consumers = await app.db
+        .select({ routeId: ingressMtlsConfigs.ingressRouteId })
+        .from(ingressMtlsConfigs)
+        .where(eq(ingressMtlsConfigs.providerId, pid));
+      for (const c of consumers) {
+        try {
+          await syncRouteAnnotations(app.db, k8s, c.routeId, clientId);
+        } catch (err) {
+          app.log.warn({ err, routeId: c.routeId, providerId: pid }, 'mtls-revoke: failed to push CRL to route');
+        }
+      }
+    } catch (err) {
+      // K8s client unavailable (no kubeconfig in tests / local dev) — silently
+      // skip; the next reconcile sweep will catch up.
+      app.log.debug({ err }, 'mtls-revoke: K8s reconcile skipped');
+    }
+
     return success(result);
   });
 
