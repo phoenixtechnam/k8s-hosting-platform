@@ -395,7 +395,45 @@ jobs:
           # files). Dropping [skip ci] lets sync-staging fire and
           # propagate the pin to the staging branch.
           git commit -m "chore(staging): pin platform-version to ${VERSION}"
-          git push origin HEAD:main
+
+          # Retry with rebase on non-fast-forward. Two PRs merged within
+          # the same ~2 min window race against this push: whichever
+          # build-deploy run finishes second sees main has moved and gets
+          # `[rejected] non-fast-forward`. The auto-pin commit only
+          # touches the three negative-path-filtered files, so rebasing
+          # onto fresh origin/main cannot conflict with code commits.
+          # An actual conflict would mean someone hand-edited one of
+          # the three auto-managed files in the same window — that
+          # warrants a human, so we abort and fail loudly rather than
+          # masking it.
+          #
+          # Without this retry, a missed pin permanently strands the
+          # image: subsequent commits run dorny/paths-filter against
+          # their OWN parent, not "last successful pin", so an unrelated
+          # path-touching commit can leave the unpinned image invisible
+          # to all future builds until a manual workflow_dispatch
+          # rebuilds it. See project_sync_staging_skip_ci_gap.md for
+          # the 2026-05-11 incident this fixes.
+          set +e
+          for attempt in 1 2 3; do
+            git push origin HEAD:main
+            push_rc=$?
+            if [[ $push_rc -eq 0 ]]; then
+              echo "push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "push attempt $attempt rejected (rc=$push_rc) — rebasing onto fresh origin/main"
+            git fetch origin main
+            git rebase origin/main
+            rebase_rc=$?
+            if [[ $rebase_rc -ne 0 ]]; then
+              echo "::error::rebase failed (rc=$rebase_rc) — auto-pin file conflicts with a concurrent commit. Manual resolution required."
+              git rebase --abort || true
+              exit 1
+            fi
+          done
+          echo "::error::push failed after 3 attempts with rebase — main is moving faster than we can land the auto-pin. Check for a build-deploy loop or a runaway pusher."
+          exit 1
           # main → staging propagation is owned by sync-staging.yml.
           # That workflow does a real merge (not fast-forward) and fails
           # loudly on conflict, so we don't silently drop infra-only
