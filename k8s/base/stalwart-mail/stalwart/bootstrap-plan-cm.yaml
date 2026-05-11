@@ -61,12 +61,18 @@
 #   - maxUploadCount    1,000,000  (per-account, per uploadTtl=1h)
 #   - uploadQuota       10 GB      (per-account, per uploadTtl=1h)
 #   - maxUploadSize     100 MB     (single attachment cap)
-#   - maxConcurrentUploads 32      (parallel Blob/upload from one client)
-#   - maxConcurrentRequests 32     (parallel JMAP method calls)
+#   - maxConcurrentUploads 128     (parallel Blob/upload from one client)
+#   - maxConcurrentRequests 128    (parallel JMAP method calls per principal)
 #   - maxMethodCalls    256        (Email/import batches up to ~250)
+# The 128 ceiling on maxConcurrent* leaves headroom over our default
+# 16-worker pool: in steady state the workers hold 16 in-flight Blob/
+# upload requests, but TCP-keepalive timing + Email/import bursts can
+# briefly push past 32, which Stalwart returns as HTTP 400
+# `jmap:error:limit`. 128 keeps a 4× margin even at 32-worker pools.
 # Memory cost per concurrent upload is bounded by maxUploadSize plus
-# Stalwart's internal buffer overhead (~1.2x) → 32 × 100 MB × 1.2 ≈
-# 3.8 GB worst-case per replica, well under the 16 GB pod limit.
+# Stalwart's internal buffer overhead (~1.2x) → 128 × 100 MB × 1.2 ≈
+# 15 GB worst-case per replica; for the realistic 5 KB-message case
+# it's <100 MB. Stalwart's Cache.poolSize defaults to a separate cap.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -85,7 +91,7 @@ data:
   bootstrap-plan.json: |
     {"@type":"update","object":"Bootstrap","value":{"serverHostname":"$${STALWART_HOSTNAME}","defaultDomain":"$${STALWART_DOMAIN}","generateDkimKeys":false,"requestTlsCertificate":true}}
     {"@type":"update","object":"SystemSettings","value":{"defaultHostname":"$${STALWART_HOSTNAME}","defaultDomainId":"$${STALWART_DOMAIN_ID}"}}
-    {"@type":"update","object":"Jmap","value":{"maxUploadCount":1000000,"uploadQuota":10737418240,"maxUploadSize":104857600,"maxConcurrentUploads":32,"maxConcurrentRequests":32,"maxMethodCalls":256}}
+    {"@type":"update","object":"Jmap","value":{"maxUploadCount":1000000,"uploadQuota":10737418240,"maxUploadSize":104857600,"maxConcurrentUploads":128,"maxConcurrentRequests":128,"maxMethodCalls":256}}
     {"@type":"update","object":"Account","id":"$${STALWART_ADMIN_ID}","value":{"@type":"User","credentials":{"0":{"@type":"Password","secret":"$${STALWART_ADMIN_PASSWORD}","allowedIps":{},"expiresAt":null}}}}
     {"@type":"create","object":"DkimSignature","value":{"dkim-default":{"@type":"Dkim1Ed25519Sha256","domainId":"$${STALWART_DOMAIN_ID}","selector":"default","canonicalization":"relaxed/relaxed","headers":{"From":true,"To":true,"Date":true,"Subject":true,"Message-ID":true},"privateKey":{"@type":"Text","secret":"$${STALWART_DKIM_PRIVATE_KEY_PEM}"},"report":false,"stage":"active","thirdParty":null,"thirdPartyHash":null,"auid":null,"expire":null,"memberTenantId":null,"nextTransitionAt":null}}}
     {"@type":"create","object":"AcmeProvider","value":{"letsencrypt":{"directory":"https://acme-v02.api.letsencrypt.org/directory","challengeType":"Http01","contact":{"hostmaster@$${STALWART_DOMAIN}":true}}}}

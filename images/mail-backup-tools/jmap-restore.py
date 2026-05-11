@@ -121,16 +121,38 @@ class JmapClient:
     def _http(self, url: str, *, method: str = "GET", body: Optional[bytes] = None,
               content_type: str = "application/json; charset=utf-8",
               accept: str = "application/json", timeout: int = 60) -> Tuple[int, bytes]:
-        req = urllib.request.Request(url, data=body, method=method)
-        req.add_header("Authorization", self._auth_header)
-        req.add_header("Accept", accept)
-        if body is not None:
-            req.add_header("Content-Type", content_type)
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.status, resp.read()
-        except urllib.error.HTTPError as e:
-            return e.code, (e.read() if hasattr(e, "read") else b"")
+        # Retry on Stalwart's `jmap:error:limit` HTTP 400 (concurrent-
+        # request cap). Backoff is per-worker jittered exponential —
+        # multiple workers all retrying after a synchronous error
+        # would otherwise dogpile right back into the limit. Jitter
+        # spreads them across a few hundred ms.
+        # Why we don't retry on other HTTP 400s: only `jmap:error:limit`
+        # is recoverable by waiting; everything else (bad blob, bad
+        # auth, malformed call) is a permanent failure and retrying
+        # just delays the inevitable error report.
+        import random
+        attempts = 0
+        while True:
+            req = urllib.request.Request(url, data=body, method=method)
+            req.add_header("Authorization", self._auth_header)
+            req.add_header("Accept", accept)
+            if body is not None:
+                req.add_header("Content-Type", content_type)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return resp.status, resp.read()
+            except urllib.error.HTTPError as e:
+                err_body = e.read() if hasattr(e, "read") else b""
+                if (e.code == 400 and b"jmap:error:limit" in err_body
+                        and attempts < 8):
+                    # Exponential backoff with jitter: 100ms, 200ms,
+                    # 400ms, ..., capped at ~2s; jitter ±50%.
+                    base = min(0.1 * (2 ** attempts), 2.0)
+                    delay = base * (0.5 + random.random())
+                    time.sleep(delay)
+                    attempts += 1
+                    continue
+                return e.code, err_body
 
     def session(self) -> None:
         status, body = self._http(self.session_url)
@@ -599,11 +621,14 @@ def main() -> int:
                    help="Root of the extracted Maildir tree (contains "
                         "<source-address>/<mailbox>/cur/...)")
     p.add_argument("--workers", type=int,
-                   default=int(os.environ.get("JMAP_RESTORE_WORKERS", "16")),
+                   default=int(os.environ.get("JMAP_RESTORE_WORKERS", "12")),
                    help="Parallel Blob/upload worker pool size (env "
-                        "JMAP_RESTORE_WORKERS, default 16). Stalwart's "
-                        "maxConcurrentUploads caps the effective parallelism — "
-                        "bootstrap-plan sets it to 32. Set to 1 for serial.")
+                        "JMAP_RESTORE_WORKERS, default 12). Stalwart's "
+                        "maxConcurrentUploads + maxConcurrentRequests cap the "
+                        "effective parallelism — bootstrap-plan sets both to "
+                        "128. Workers above 32 hit diminishing returns due to "
+                        "Stalwart's per-principal request scheduling. Set to "
+                        "1 to force serial (debugging).")
     p.add_argument("--dedup-by-message-id", action="store_true",
                    help="Before each upload, query Email/header[Message-ID] on "
                         "the target and skip if present. Adds one round-trip per "
