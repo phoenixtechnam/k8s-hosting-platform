@@ -323,7 +323,7 @@ describe('deployCatalogEntry: component type → k8s resource mapping', () => {
     expect(initCmd).toContain('mkdir -p /data/applications/wordpress/my-wp/database');
   });
 
-  it('single-volume app with local_path "." mounts PVC root (no subPath)', async () => {
+  it('single-volume app with local_path "." mounts the storagePath subPath', async () => {
     const { k8s, calls } = makeK8sMock();
     await deployCatalogEntry(k8s, baseInput({
       components: [makeComponent('deployment', { name: 'app', image: 'nginx-php:1', ports: [{ port: 80, protocol: 'TCP' }] })],
@@ -332,18 +332,21 @@ describe('deployCatalogEntry: component type → k8s resource mapping', () => {
     }));
     const body = calls.createDeployment.mock.calls[0][0].body;
     const mount = body.spec.template.spec.containers[0].volumeMounts[0];
-    // No subPath — entire PVC mounted at container_path
-    expect(mount.subPath).toBeUndefined();
+    // local_path "." → subPath = storagePath (no extra key suffix). The
+    // deployment's data sits under /<type>/<code>/<name>/ predictably, same
+    // pattern as multi-volume apps just without the per-volume sub-key.
+    expect(mount.subPath).toBe('runtimes/nginx-php/my-site');
     expect(mount.mountPath).toBe('/var/www/html');
-    // init-dirs chmods the PVC root so non-root runtime users (www-data,
-    // postgres, etc.) can write to it on first boot.
+    // init-dirs mkdirs the storagePath subdir + chmods 777 so the non-root
+    // runtime user (www-data, postgres, etc.) can write on first boot.
     const initCmd = body.spec.template.spec.initContainers[0].command[2];
-    expect(initCmd).toBe('chmod 777 /data');
+    expect(initCmd).toBe('mkdir -p /data/runtimes/nginx-php/my-site && chmod 777 /data/runtimes/nginx-php/my-site');
   });
 
-  it('local_path "." with null local_path also mounts PVC root', async () => {
+  it('local_path null behaves the same as "." (storagePath subPath)', async () => {
     const { k8s, calls } = makeK8sMock();
-    // null local_path treated the same as "." — mount root, no subPath
+    // null local_path is treated identically to "." — both signal "the
+    // whole deployment dir, no per-volume sub-key".
     await deployCatalogEntry(k8s, baseInput({
       components: [makeComponent('deployment', { name: 'db', image: 'postgresql:16', ports: [{ port: 5432, protocol: 'TCP' }] })],
       volumes: [{ container_path: '/var/lib/postgresql/data', local_path: undefined }],
@@ -351,7 +354,7 @@ describe('deployCatalogEntry: component type → k8s resource mapping', () => {
     }));
     const body = calls.createDeployment.mock.calls[0][0].body;
     const mount = body.spec.template.spec.containers[0].volumeMounts[0];
-    expect(mount.subPath).toBeUndefined();
+    expect(mount.subPath).toBe('databases/postgresql/mydb');
   });
 
   it('invalid multi-segment local_path throws at deploy time (defence-in-depth)', async () => {

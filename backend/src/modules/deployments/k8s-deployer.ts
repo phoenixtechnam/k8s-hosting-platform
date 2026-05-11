@@ -263,39 +263,58 @@ function buildVolumeMountSpec(
 } | null {
   if (volumes.length === 0) return null;
 
+  // Mount semantics — `local_path` controls the layout under the shared PVC:
+  //   - `"."` (or null): the deployment's data dir is the storagePath itself.
+  //     subPath = storagePath (e.g. `runtime/nginx-php/my-site`).
+  //   - `"<segment>"`: sub-directory under storagePath.
+  //     subPath = `${storagePath}/${segment}` (e.g.
+  //     `application/wordpress/my-site/content`).
+  //
+  // Both cases land under storagePath. This keeps every deployment's data
+  // discoverable at a predictable path for backup/restore tools, and lets
+  // the per-deployment cleanup safely `rm -rf` just its subtree.
+  //
+  // (Older builds left `local_path: "."` mounts at the PVC root with no
+  // subPath. Deployments created before this fix have their data at the
+  // PVC root; they keep working but the new layout only applies to fresh
+  // deploys. A redeploy would not migrate data — operators wanting the
+  // new layout must export → recreate.)
   const mounts = volumes.map(v => {
     const key = volumeKey(v);
     if (key === null) {
-      // PVC-root mount — no subPath
-      return { name: 'client-storage', mountPath: v.container_path };
+      // PVC-root sentinel ('.' or null) → mount storagePath, no extra key.
+      // storagePath is guaranteed non-empty in normal deploys (service.ts
+      // sets it to `${type}/${code}/${name}` at create time); the empty
+      // string fallback exists only for the legacy test path that didn't
+      // pass storagePath.
+      if (!storagePath) {
+        return { name: 'client-storage', mountPath: v.container_path };
+      }
+      return { name: 'client-storage', mountPath: v.container_path, subPath: storagePath };
     }
     const subPath = storagePath ? `${storagePath}/${key}` : key;
     return { name: 'client-storage', mountPath: v.container_path, subPath };
   });
 
-  // init-dirs needs to ensure every mount target is writable by the
-  // application container's runtime user. Two cases:
-  //   - sub-path mount: mkdir the subdir + chmod 777 (existing behaviour)
-  //   - PVC-root mount: chmod 777 the PVC root itself
-  // Without this the runtime fails: serversideup/php runs as www-data
-  // (UID 33), postgres as UID 999, etc. The PVC is provisioned root:root
-  // 0755 by local-path/Longhorn, so non-root users can't write.
+  // Every mount needs its target directory to exist + be writable by the
+  // application's runtime user. The PVC is provisioned root:root 0755 by
+  // local-path/Longhorn, and most images run as non-root (postgres=999,
+  // bitnami=1001, serversideup/php=33, etc.). The init-dirs container
+  // pre-creates each subPath with chmod 777 so any image's runtime user
+  // can write on first boot.
   //
-  // 0777 is acceptable here because each tenant has its own PVC — there's
-  // nothing for other tenants to read. fsGroup at the pod level would be
-  // tidier but doesn't cover every image's UID/GID convention (bitnami
-  // uses 1001, postgres uses 999, alpine images vary).
-  const subPathMounts = mounts.filter(m => m.subPath !== undefined);
-  const hasRootMount = mounts.some(m => m.subPath === undefined);
+  // 0777 is acceptable because each tenant gets its own PVC — there's
+  // nothing across-tenant to leak. fsGroup at pod level was considered
+  // but rejected: no single GID fits all images, and fsGroup recursively
+  // chmods on every pod start which is slow on large PVCs.
   const mkdirParts: string[] = [];
-  if (hasRootMount) {
-    // PVC root is mounted directly into the container. Make it world-
-    // writable so the non-root runtime user can write to its docroot/data
-    // dir on first boot.
-    mkdirParts.push('chmod 777 /data');
-  }
-  for (const m of subPathMounts) {
-    mkdirParts.push(`mkdir -p /data/${m.subPath} && chmod 777 /data/${m.subPath}`);
+  for (const m of mounts) {
+    if (m.subPath !== undefined) {
+      mkdirParts.push(`mkdir -p /data/${m.subPath} && chmod 777 /data/${m.subPath}`);
+    } else {
+      // Legacy / test path: no storagePath set, mount is the whole PVC.
+      mkdirParts.push('chmod 777 /data');
+    }
   }
   const mkdirCmd = mkdirParts.length > 0 ? mkdirParts.join(' && ') : 'true';
 
