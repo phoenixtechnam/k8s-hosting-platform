@@ -598,9 +598,20 @@ function DeleteConfirmModal({ provider, onClose, onConfirm, isPending, error }: 
           updated CRL — then come back and delete the provider.
         </p>
         {provider.consumerCount > 0 && (
-          <p className="mt-2 text-sm text-amber-700 dark:text-amber-300">
-            In use by {provider.consumerCount} ingress(es) — detach them first.
-          </p>
+          <div
+            className="mt-3 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-900 dark:text-amber-200"
+            data-testid="mtls-provider-consumers"
+          >
+            <strong>
+              In use by {provider.consumerCount} ingress route{provider.consumerCount === 1 ? '' : 's'}
+            </strong>
+            {' '}— detach mTLS on each before deleting:
+            <ul className="mt-1.5 list-disc list-inside space-y-0.5 font-mono text-xs">
+              {provider.consumers.map((c) => (
+                <li key={c.routeId}>{c.hostname}</li>
+              ))}
+            </ul>
+          </div>
         )}
         {error != null && (
           <div className="mt-3 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">

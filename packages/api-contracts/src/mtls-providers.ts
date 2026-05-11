@@ -61,6 +61,18 @@ export const mtlsProviderUpdateSchema = z.object({
 });
 export type MtlsProviderUpdate = z.infer<typeof mtlsProviderUpdateSchema>;
 
+/**
+ * One row per ingress route that references this provider via the
+ * `ingress_mtls_configs` table. Surfaced so the client panel can list
+ * the linked hostnames in the provider-delete modal — the operator
+ * needs to know which routes to detach before delete will succeed.
+ */
+export const mtlsProviderConsumerSchema = z.object({
+  routeId: z.string(),
+  hostname: z.string(),
+});
+export type MtlsProviderConsumer = z.infer<typeof mtlsProviderConsumerSchema>;
+
 export const mtlsProviderResponseSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -72,6 +84,12 @@ export const mtlsProviderResponseSchema = z.object({
   canIssue: z.boolean(),
   /** Number of ingress_mtls_configs referencing this provider. */
   consumerCount: z.number().int().nonnegative(),
+  /**
+   * Detail of each consumer — hostname + route id. Kept inline in the
+   * list response because providers are 1–3 per client and consumers
+   * are 1–5 per provider in practice. Saves an extra fetch on delete.
+   */
+  consumers: z.array(mtlsProviderConsumerSchema).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

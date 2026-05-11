@@ -13,11 +13,12 @@
  */
 
 import { randomUUID, createHash, X509Certificate } from 'node:crypto';
-import { eq, and, sql, desc, lt, isNotNull, isNull } from 'drizzle-orm';
+import { eq, and, sql, desc, lt, isNotNull, isNull, inArray } from 'drizzle-orm';
 import {
   clientCertificates,
   clientMtlsProviders,
   ingressMtlsConfigs,
+  ingressRoutes,
 } from '../../db/schema.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import { ApiError } from '../../shared/errors.js';
@@ -127,6 +128,30 @@ export async function listProviders(
     })
     .from(clientMtlsProviders)
     .where(eq(clientMtlsProviders.clientId, clientId));
+
+  // Bulk-fetch consumers in one query so the per-provider mapping is
+  // O(N) instead of an N+1 SELECT per provider.
+  const providerIds = rows.map((r) => r.id);
+  const consumers = providerIds.length > 0
+    ? await db
+      .select({
+        providerId: ingressMtlsConfigs.providerId,
+        routeId: ingressRoutes.id,
+        hostname: ingressRoutes.hostname,
+      })
+      .from(ingressMtlsConfigs)
+      .innerJoin(ingressRoutes, eq(ingressRoutes.id, ingressMtlsConfigs.ingressRouteId))
+      .where(inArray(ingressMtlsConfigs.providerId, providerIds))
+    : [];
+
+  const byProvider = new Map<string, Array<{ routeId: string; hostname: string }>>();
+  for (const c of consumers) {
+    if (!c.providerId) continue;
+    const arr = byProvider.get(c.providerId) ?? [];
+    arr.push({ routeId: c.routeId, hostname: c.hostname });
+    byProvider.set(c.providerId, arr);
+  }
+
   return rows.map((r) => ({
     id: r.id,
     name: r.name,
@@ -135,6 +160,7 @@ export async function listProviders(
     caCertExpiresAt: r.caCertExpiresAt.toISOString(),
     canIssue: r.canIssue,
     consumerCount: r.consumerCount,
+    consumers: byProvider.get(r.id) ?? [],
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   }));
