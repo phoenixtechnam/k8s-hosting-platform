@@ -68,9 +68,12 @@ export async function listNodes(db: Database): Promise<ClusterNode[]> {
 export async function listNodesEnriched(
   db: Database,
   k8s: K8sClients | null,
-): Promise<Array<ClusterNode & { cordoned: boolean; drained: boolean }>> {
+): Promise<Array<ClusterNode & { cordoned: boolean; drained: boolean; existsInKubernetes: boolean }>> {
   const rows = await listNodes(db);
-  if (!k8s) return rows.map((r) => ({ ...r, cordoned: false, drained: false }));
+  // No K8s client → we can't tell orphan from healthy, so don't lie.
+  // `existsInKubernetes: true` preserves the previous UI (no orphan pill,
+  // normal Drain/Delete). Orphan detection requires a live cluster read.
+  if (!k8s) return rows.map((r) => ({ ...r, cordoned: false, drained: false, existsInKubernetes: true }));
 
   // Each call is wrapped in a try/catch — ANY of the three methods may
   // be missing in tests (mock that only stubs a subset) or fail in
@@ -96,9 +99,16 @@ export async function listNodesEnriched(
   ]);
 
   const cordonedByName = new Map<string, boolean>();
+  // Track which DB-known nodes the live cluster confirmed. If the
+  // listNode() call itself failed (safeCall fell back to empty items),
+  // we treat every DB row as still-in-k8s — otherwise a transient API
+  // hiccup would flip the whole fleet to "orphaned" in the UI.
+  const k8sListSucceeded = (nodesResp.items?.length ?? 0) > 0;
+  const observedNodeNames = new Set<string>();
   for (const n of nodesResp.items ?? []) {
     if (n.metadata?.name) {
       cordonedByName.set(n.metadata.name, n.spec?.unschedulable === true);
+      observedNodeNames.add(n.metadata.name);
     }
   }
 
@@ -131,7 +141,12 @@ export async function listNodesEnriched(
     const drained = cordoned
       && (tenantPodsByNode.get(r.name) ?? 0) === 0
       && (replicasByNode.get(r.name) ?? 0) === 0;
-    return { ...r, cordoned, drained };
+    // Orphan = DB row whose name didn't appear in `listNode()`. We
+    // only mark orphans when the cluster list actually returned data;
+    // a failed/empty listNode() leaves every row as `true` so a
+    // transient API blip doesn't trigger a bulk-orphan UI flip.
+    const existsInKubernetes = !k8sListSucceeded || observedNodeNames.has(r.name);
+    return { ...r, cordoned, drained, existsInKubernetes };
   });
 }
 
