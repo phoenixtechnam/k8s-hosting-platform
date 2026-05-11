@@ -427,8 +427,6 @@ export async function runBundle(
           k8s: deps.k8s,
           clientId: input.clientId,
           backupId: bundleId,
-          store: deps.store,
-          handle,
           platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
         });
@@ -438,6 +436,20 @@ export async function runBundle(
           mailboxCount: mailboxesResult.mailboxCount,
           addresses: [...mailboxesResult.addresses],
         };
+        // Persist Email/changes state AFTER the restic snapshot is
+        // acked (ADR-036 — at-least-once: dedup makes re-pull harmless).
+        // Best-effort: a row-write failure here doesn't fail the
+        // bundle (snapshot is already on the off-site target).
+        if (mailboxesResult.newStates.length > 0) {
+          try {
+            const { persistJmapStates } = await import('./components/mailboxes-state.js');
+            await persistJmapStates(deps.db, input.clientId, mailboxesResult.newStates);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            // eslint-disable-next-line no-console
+            console.warn(`[tenant-bundles] tenant_jmap_state persist failed for ${input.clientId}: ${msg}`);
+          }
+        }
       } catch (err) {
         const msg = (err as Error).message ?? 'mailboxes capture failed';
         errors.push(`mailboxes: ${msg}`);

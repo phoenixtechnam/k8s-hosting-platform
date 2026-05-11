@@ -55,11 +55,22 @@ RUN apt-get update \
 COPY restore-mailbox.py /usr/local/bin/restore-mailbox.py
 RUN chmod 755 /usr/local/bin/restore-mailbox.py
 
-# Capture helper — wraps mbsync + Option F streaming upload.
+# Legacy capture helper — wraps mbsync + Option F streaming upload.
 # Argv: capture-mailbox.sh <addr> <upload_url>
-# Will be replaced by jmap-sync.py in Phase 2.
+# Superseded by jmap-sync.py in Phase 2 (ADR-036) but kept in the
+# image while the orchestrator switches over so a rollback to the
+# previous mailboxes.ts code path still works without a fresh image
+# build. Removed in the cleanup PR after Phase 2 lands.
 COPY capture-mailbox.sh /usr/local/bin/capture-mailbox.sh
 RUN chmod 755 /usr/local/bin/capture-mailbox.sh
+
+# Phase 2 (ADR-036): JMAP-driven Maildir capture. Replaces the
+# mbsync flow above. Pure Python stdlib — no extra packages.
+# Argv: jmap-sync.py --endpoint <url> --account-address <addr>
+#       --master-user <fq> --auth-pass-env <ENV> --output-dir <dir>
+#       [--state-in <file>] [--state-out <file>]
+COPY jmap-sync.py /usr/local/bin/jmap-sync.py
+RUN chmod 755 /usr/local/bin/jmap-sync.py
 
 # Default to a no-op so `docker run …` doesn't error; the orchestrator
 # always overrides command/args.
