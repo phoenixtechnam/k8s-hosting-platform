@@ -57,6 +57,10 @@ export const clusterNodeSchema = z.object({
    *  PVC replicas left on it. UI shows a purple "Drained" tag and the
    *  Delete button to remove the node from the cluster. */
   drained: z.boolean(),
+  /** False when the inventory row has no matching k8s node (orphan).
+   *  Defaults true so older API responses keep the previous behaviour
+   *  (no orphan pill, normal Drain/Delete UI). */
+  existsInKubernetes: z.boolean().default(true),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
