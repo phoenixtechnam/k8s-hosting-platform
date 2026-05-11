@@ -452,14 +452,9 @@ function RevokeModal({
 }) {
   const revokeMut = useRevokeMtlsCertificate(clientId, providerId);
   const [reason, setReason] = useState<CertificateRevocationReason>('unspecified');
-  const [confirmText, setConfirmText] = useState('');
-
-  const confirmRequired = `revoke ${cert.subjectCn}`;
-  const canConfirm = confirmText.trim().toLowerCase() === confirmRequired.toLowerCase();
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!canConfirm) return;
     await revokeMut.mutateAsync({ certId: cert.id, input: { reason } });
     onClose();
   }
@@ -473,8 +468,7 @@ function RevokeModal({
         <div className="mt-3 space-y-2 text-sm text-gray-700 dark:text-gray-300">
           <p>
             Revoking immediately invalidates the cert across every ingress route that uses this
-            provider. Within ~60s, NGINX will start rejecting requests presenting this cert with
-            <code className="font-mono text-xs"> 495 SSL Certificate Error</code>.
+            provider. Within ~10s, NGINX will start rejecting requests presenting this cert.
           </p>
           <p className="text-xs">
             <span className="text-gray-500 dark:text-gray-400">Subject:</span>{' '}
@@ -509,23 +503,6 @@ function RevokeModal({
             </p>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1" htmlFor="revoke-confirm">
-              Type <code className="font-mono text-[11px] bg-gray-100 dark:bg-gray-900 rounded px-1">{confirmRequired}</code> to confirm
-            </label>
-            <input
-              id="revoke-confirm"
-              type="text"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 font-mono"
-              data-testid="mtls-revoke-confirm-input"
-              autoComplete="off"
-              autoCapitalize="off"
-              spellCheck={false}
-            />
-          </div>
-
           {revokeMut.error != null && (
             <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
               {revokeMut.error instanceof Error ? revokeMut.error.message : String(revokeMut.error)}
@@ -542,7 +519,7 @@ function RevokeModal({
             </button>
             <button
               type="submit"
-              disabled={!canConfirm || revokeMut.isPending}
+              disabled={revokeMut.isPending}
               className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
               data-testid="mtls-revoke-submit"
             >
@@ -571,13 +548,9 @@ function UnrevokeModal({
   onClose: () => void;
 }) {
   const unrevokeMut = useUnrevokeMtlsCertificate(clientId, providerId);
-  const [confirmText, setConfirmText] = useState('');
-  const confirmRequired = `reactivate ${cert.subjectCn}`;
-  const canConfirm = confirmText.trim().toLowerCase() === confirmRequired.toLowerCase();
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!canConfirm) return;
     await unrevokeMut.mutateAsync(cert.id);
     onClose();
   }
@@ -614,23 +587,6 @@ function UnrevokeModal({
         </div>
 
         <form onSubmit={onSubmit} className="mt-4 space-y-3">
-          <div>
-            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1" htmlFor="unrevoke-confirm">
-              Type <code className="font-mono text-[11px] bg-gray-100 dark:bg-gray-900 rounded px-1">{confirmRequired}</code> to confirm
-            </label>
-            <input
-              id="unrevoke-confirm"
-              type="text"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 font-mono"
-              data-testid="mtls-unrevoke-confirm-input"
-              autoComplete="off"
-              autoCapitalize="off"
-              spellCheck={false}
-            />
-          </div>
-
           {unrevokeMut.error != null && (
             <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
               {unrevokeMut.error instanceof Error ? unrevokeMut.error.message : String(unrevokeMut.error)}
@@ -647,7 +603,7 @@ function UnrevokeModal({
             </button>
             <button
               type="submit"
-              disabled={!canConfirm || unrevokeMut.isPending}
+              disabled={unrevokeMut.isPending}
               className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
               data-testid="mtls-unrevoke-submit"
             >
@@ -675,9 +631,6 @@ function DeleteCertModal({
   onClose: () => void;
 }) {
   const deleteMut = useDeleteMtlsCertificate(clientId, providerId);
-  const [confirmText, setConfirmText] = useState('');
-  const confirmRequired = `delete ${cert.subjectCn}`;
-  const canConfirm = confirmText.trim().toLowerCase() === confirmRequired.toLowerCase();
   // A revoked cert's serial is on the CRL. Deletion removes it from the
   // CRL on next regeneration, so a still-extant cert+key pair in the wild
   // could regain access. The active-cert case is plain "stop tracking it"
@@ -686,7 +639,6 @@ function DeleteCertModal({
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!canConfirm) return;
     await deleteMut.mutateAsync(cert.id);
     onClose();
   }
@@ -724,23 +676,6 @@ function DeleteCertModal({
         </div>
 
         <form onSubmit={onSubmit} className="mt-4 space-y-3">
-          <div>
-            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1" htmlFor="delete-confirm">
-              Type <code className="font-mono text-[11px] bg-gray-100 dark:bg-gray-900 rounded px-1">{confirmRequired}</code> to confirm
-            </label>
-            <input
-              id="delete-confirm"
-              type="text"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 font-mono"
-              data-testid="mtls-delete-confirm-input"
-              autoComplete="off"
-              autoCapitalize="off"
-              spellCheck={false}
-            />
-          </div>
-
           {deleteMut.error != null && (
             <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
               {deleteMut.error instanceof Error ? deleteMut.error.message : String(deleteMut.error)}
@@ -757,7 +692,7 @@ function DeleteCertModal({
             </button>
             <button
               type="submit"
-              disabled={!canConfirm || deleteMut.isPending}
+              disabled={deleteMut.isPending}
               className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
               data-testid="mtls-delete-submit"
             >
