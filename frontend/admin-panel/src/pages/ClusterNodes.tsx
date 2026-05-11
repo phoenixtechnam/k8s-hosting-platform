@@ -285,6 +285,18 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
     });
   };
 
+  // Orphans have no live k8s node — drain/edit would hit NODE_NOT_FOUND
+  // on the K8s readNode() call. Skip straight to the inventory cleanup,
+  // which the backend already handles idempotently (404 from k8s is
+  // treated as "already gone" and only the DB row is removed).
+  const handleRemoveOrphan = () => {
+    if (!confirm(`Remove orphan node "${node.name}" from the platform inventory? This DB row has no matching Kubernetes node — only the row will be deleted.`)) return;
+    setDeleteError(null);
+    deleteNodeMutation.mutate(undefined, {
+      onError: (err) => setDeleteError(err instanceof Error ? err.message : 'Remove failed'),
+    });
+  };
+
   // The header row toggles expansion on click. The action buttons in the
   // header stop click propagation so the row click doesn't both open the
   // edit/drain/delete dialog AND toggle the card expansion. Keyboard
@@ -389,6 +401,15 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
                   Drained
                 </span>
               )}
+              {!node.existsInKubernetes && (
+                <span
+                  className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-800 dark:bg-rose-900/40 dark:text-rose-300"
+                  title="This inventory row has no matching Kubernetes node — the node was removed from k3s out-of-band. Use 'Remove orphan' to clean up the row."
+                  data-testid={`node-orphan-tag-${node.name}`}
+                >
+                  Orphaned
+                </span>
+              )}
               <IngressModePill mode={node.ingressMode} />
               <ReadyPill ready={ready} />
               {subsystemBad && (
@@ -430,33 +451,48 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
           >
             {stale.label}
           </span>
-          <button
-            type="button"
-            onClick={() => setEditOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
-            data-testid={`edit-node-${node.name}-button`}
-          >
-            <Edit size={14} /> Edit
-          </button>
-          <button
-            type="button"
-            onClick={() => setDrainOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200 dark:hover:bg-amber-900/50"
-            data-testid={`drain-node-${node.name}-open-button`}
-            title="Cordon, drain, and (after drained) delete this node"
-          >
-            <AlertTriangle size={14} /> Drain Node
-          </button>
-          {node.drained && (
+          {node.existsInKubernetes ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setEditOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                data-testid={`edit-node-${node.name}-button`}
+              >
+                <Edit size={14} /> Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => setDrainOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200 dark:hover:bg-amber-900/50"
+                data-testid={`drain-node-${node.name}-open-button`}
+                title="Cordon, drain, and (after drained) delete this node"
+              >
+                <AlertTriangle size={14} /> Drain Node
+              </button>
+              {node.drained && (
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={deleteNodeMutation.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200 dark:hover:bg-red-900/50"
+                  data-testid={`delete-node-${node.name}-button`}
+                  title="Remove the drained node from the cluster (kubectl delete node + DB row)"
+                >
+                  <Trash2 size={14} /> {deleteNodeMutation.isPending ? 'Deleting…' : 'Delete'}
+                </button>
+              )}
+            </>
+          ) : (
             <button
               type="button"
-              onClick={handleDelete}
+              onClick={handleRemoveOrphan}
               disabled={deleteNodeMutation.isPending}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200 dark:hover:bg-red-900/50"
-              data-testid={`delete-node-${node.name}-button`}
-              title="Remove the drained node from the cluster (kubectl delete node + DB row)"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-sm text-rose-800 hover:bg-rose-100 disabled:opacity-50 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-200 dark:hover:bg-rose-900/50"
+              data-testid={`remove-orphan-node-${node.name}-button`}
+              title="The Kubernetes node is gone; only the inventory row remains. Click to delete the row."
             >
-              <Trash2 size={14} /> {deleteNodeMutation.isPending ? 'Deleting…' : 'Delete'}
+              <Trash2 size={14} /> {deleteNodeMutation.isPending ? 'Removing…' : 'Remove orphan'}
             </button>
           )}
         </div>

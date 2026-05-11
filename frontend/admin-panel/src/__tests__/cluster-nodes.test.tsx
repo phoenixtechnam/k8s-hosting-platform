@@ -10,9 +10,10 @@ import ClusterNodes from '../pages/ClusterNodes';
 // at the page level, useDeleteNode + useNodeStorage inside the card.
 const mockNodes = vi.fn();
 const mockSubsystem = vi.fn();
+const mockDeleteMutate = vi.fn();
 vi.mock('@/hooks/use-cluster-nodes', () => ({
   useClusterNodes: () => mockNodes(),
-  useDeleteNode: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteNode: () => ({ mutate: mockDeleteMutate, isPending: false }),
   useUpdateClusterNode: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
 }));
 vi.mock('@/hooks/use-cluster-health', () => ({
@@ -45,6 +46,7 @@ function makeNode(overrides: Partial<ClusterNodeResponse> = {}): ClusterNodeResp
     taints: [],
     notes: null,
     lastSeenAt: new Date().toISOString(),
+    existsInKubernetes: true,
     ...overrides,
   } as unknown as ClusterNodeResponse;
 }
@@ -169,5 +171,64 @@ describe('ClusterNodes — health bar + collapsible node cards', () => {
     fireEvent.click(screen.getByTestId('edit-node-staging1-button'));
     // The edit modal opens — card expansion is unchanged.
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+describe('ClusterNodes — orphan node removal', () => {
+  // Confirms the bugfix: a DB-known node that has been deleted out-of-band
+  // from k8s (so listNodesEnriched flips existsInKubernetes to false)
+  // must be removable directly from the admin UI without going through
+  // the Drain modal — which would fail on the k8s readNode 404.
+  it('shows an Orphaned pill and a Remove orphan button when existsInKubernetes is false', () => {
+    mockNodes.mockReturnValue({
+      data: { data: [makeNode({ name: 'orphan-3', existsInKubernetes: false })] },
+      isLoading: false,
+      error: null,
+    });
+    mockSubsystem.mockReturnValue({ data: { data: { nodes: [] } } });
+
+    renderPage();
+
+    expect(screen.getByTestId('node-orphan-tag-orphan-3')).toBeDefined();
+    expect(screen.getByTestId('remove-orphan-node-orphan-3-button')).toBeDefined();
+    // The drain/edit buttons must be hidden — both would hit
+    // NODE_NOT_FOUND on the k8s readNode() pre-check.
+    expect(screen.queryByTestId('edit-node-orphan-3-button')).toBeNull();
+    expect(screen.queryByTestId('drain-node-orphan-3-open-button')).toBeNull();
+  });
+
+  it('Remove orphan button calls the delete mutation (confirm dialog auto-accepted)', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mockDeleteMutate.mockClear();
+    mockNodes.mockReturnValue({
+      data: { data: [makeNode({ name: 'orphan-3', existsInKubernetes: false })] },
+      isLoading: false,
+      error: null,
+    });
+    mockSubsystem.mockReturnValue({ data: { data: { nodes: [] } } });
+
+    renderPage();
+    fireEvent.click(screen.getByTestId('remove-orphan-node-orphan-3-button'));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(mockDeleteMutate).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
+  });
+
+  it('confirm=cancel aborts the Remove orphan flow without calling delete', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    mockDeleteMutate.mockClear();
+    mockNodes.mockReturnValue({
+      data: { data: [makeNode({ name: 'orphan-3', existsInKubernetes: false })] },
+      isLoading: false,
+      error: null,
+    });
+    mockSubsystem.mockReturnValue({ data: { data: { nodes: [] } } });
+
+    renderPage();
+    fireEvent.click(screen.getByTestId('remove-orphan-node-orphan-3-button'));
+
+    expect(mockDeleteMutate).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
   });
 });

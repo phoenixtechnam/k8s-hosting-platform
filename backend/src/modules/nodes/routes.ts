@@ -130,7 +130,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     // no way to confirm the cordon flip from the PATCH itself.
     const allEnriched = await listNodesEnriched(app.db, k8s);
     const enriched = allEnriched.find((n) => n.name === updated.name) ?? {
-      ...updated, cordoned: false, drained: false,
+      ...updated, cordoned: false, drained: false, existsInKubernetes: true,
     };
     return success(enriched);
   });

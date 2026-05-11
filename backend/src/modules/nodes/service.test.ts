@@ -1,10 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { buildDrainImpact } from './service.js';
+import { buildDrainImpact, listNodesEnriched } from './service.js';
 
 // Schema mock so the dynamic import inside service.ts doesn't blow up.
+// `clusterNodes` is used by listNodes() (static import); the rest are
+// dynamically imported inside buildDrainImpact.
 vi.mock('../../db/schema.js', () => ({
+  clusterNodes: {
+    name: 'cluster_nodes.name',
+    role: 'cluster_nodes.role',
+  },
   clients: {
     id: 'clients.id',
     companyName: 'clients.companyName',
@@ -300,5 +306,87 @@ describe('buildDrainImpact', () => {
     // No pinned tenant clients on the node — system-namespace
     // workloads are filtered out before aggregation.
     expect(impact.pinnedClients).toHaveLength(0);
+  });
+});
+
+interface MockNodeRow {
+  name: string;
+  role?: 'server' | 'worker';
+}
+function makeListNodesDb(rows: MockNodeRow[]): Database {
+  // Drizzle chain: db.select().from(clusterNodes).orderBy(desc(role), name)
+  return {
+    select: () => ({
+      from: () => ({
+        orderBy: () => Promise.resolve(rows.map((r) => ({
+          name: r.name,
+          role: r.role ?? 'worker',
+        }))),
+      }),
+    }),
+  } as unknown as Database;
+}
+
+function makeK8sListNodes(observedNames: string[] | 'fail'): K8sClients {
+  const listNodeImpl = observedNames === 'fail'
+    ? vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'))
+    : vi.fn().mockResolvedValue({
+      items: observedNames.map((name) => ({ metadata: { name }, spec: { unschedulable: false } })),
+    });
+  return {
+    core: {
+      listNode: listNodeImpl,
+      listPodForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+    },
+    custom: {
+      listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: [] }),
+    },
+  } as unknown as K8sClients;
+}
+
+describe('listNodesEnriched — orphan detection', () => {
+  it('marks DB rows missing from kubectl get nodes as orphaned (existsInKubernetes=false)', async () => {
+    // Real-world repro: an operator ran `kubectl delete node staging-3`
+    // out-of-band, but the platform DB still has the row because the
+    // 60s reconciler only upserts — it never deletes stale rows. The
+    // UI must surface this so the operator can remove the orphan.
+    const db = makeListNodesDb([
+      { name: 'staging-1' },
+      { name: 'staging-2' },
+      { name: 'orphan-3' }, // gone from k8s
+    ]);
+    const k8s = makeK8sListNodes(['staging-1', 'staging-2']);
+
+    const enriched = await listNodesEnriched(db, k8s);
+
+    const byName = new Map(enriched.map((n) => [n.name, n]));
+    expect(byName.get('staging-1')?.existsInKubernetes).toBe(true);
+    expect(byName.get('staging-2')?.existsInKubernetes).toBe(true);
+    expect(byName.get('orphan-3')?.existsInKubernetes).toBe(false);
+  });
+
+  it('treats every row as live when no K8s client is supplied (test/cold-start mode)', async () => {
+    const db = makeListNodesDb([{ name: 'staging-1' }]);
+    const enriched = await listNodesEnriched(db, null);
+    expect(enriched[0].existsInKubernetes).toBe(true);
+  });
+
+  it('does not flip every row to orphaned on a transient listNode() failure', async () => {
+    // safeCall() swallows the error and returns { items: [] }. If we
+    // naively set existsInKubernetes = observedNames.has(name), a 30s
+    // API blip would paint the entire fleet as orphaned and tempt the
+    // operator to delete healthy rows.
+    const db = makeListNodesDb([
+      { name: 'staging-1' },
+      { name: 'staging-2' },
+    ]);
+    const k8s = makeK8sListNodes('fail');
+
+    const enriched = await listNodesEnriched(db, k8s);
+
+    expect(enriched).toHaveLength(2);
+    for (const n of enriched) {
+      expect(n.existsInKubernetes).toBe(true);
+    }
   });
 });
