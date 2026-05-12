@@ -693,14 +693,14 @@ function buildPodSecurityContext(
   const ctx: Record<string, unknown> = {
     seccompProfile: { type: 'RuntimeDefault' },
   };
-  // runAsNonRoot at the Pod level is the strongest guarantee. We
-  // tie suppression strictly to the service's OWN declared uid/gid
-  // — an `allowRoot` deployment does NOT blanket-permit root for
-  // every service. Each service that wants root has to declare
-  // `runAsUser: 0` (or runAsGroup: 0) explicitly, which the validator
-  // gates separately on the admin-only allowRoot flag.
-  const wantsRoot = service.runAsUser === 0 || service.runAsGroup === 0;
-  if (!wantsRoot) {
+  // Only set runAsNonRoot:true when the spec explicitly declares a non-zero
+  // UID.  If no runAsUser is declared we cannot know the image's default USER
+  // — many stock images (nginx, redis, …) run as root without declaring it.
+  // PSS baseline on the namespace is the real enforcement layer; we should
+  // not over-restrict at the pod-spec level.
+  const hasExplicitNonRootUid =
+    service.runAsUser !== undefined && service.runAsUser > 0;
+  if (hasExplicitNonRootUid) {
     ctx.runAsNonRoot = true;
   }
   if (service.runAsUser !== undefined) ctx.runAsUser = service.runAsUser;

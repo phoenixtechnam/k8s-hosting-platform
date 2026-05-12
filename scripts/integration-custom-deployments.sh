@@ -100,7 +100,7 @@ api_status() {
 
 remote_kubectl() {
   if [[ -n "$SSH_HOST" ]]; then
-    ssh -i "$SSH_KEY" $SSH_OPTS "$SSH_HOST" "$KUBECTL $*"
+    ssh -i "$SSH_KEY" $SSH_OPTS "$SSH_HOST" "$KUBECTL $(printf '%q ' "$@")"
   else
     $KUBECTL "$@"
   fi
@@ -146,7 +146,7 @@ fi
 info "Using client $CLIENT_ID"
 
 # Resolve the tenant namespace once.
-TENANT_NS=$(api GET "/admin/clients/$CLIENT_ID" | python3 -c "
+TENANT_NS=$(api GET "/clients/$CLIENT_ID" | python3 -c "
 import json,sys; print(json.load(sys.stdin)['data']['kubernetesNamespace'])
 " 2>/dev/null)
 [[ -z "$TENANT_NS" ]] && { echo "FATAL: client has no kubernetesNamespace" >&2; exit 2; }

@@ -68,7 +68,7 @@ api() {
 
 remote_kubectl() {
   if [[ -n "$SSH_HOST" ]]; then
-    ssh -i "$SSH_KEY" $SSH_OPTS "$SSH_HOST" "$KUBECTL $*"
+    ssh -i "$SSH_KEY" $SSH_OPTS "$SSH_HOST" "$KUBECTL $(printf '%q ' "$@")"
   else
     $KUBECTL "$@"
   fi
@@ -267,7 +267,7 @@ fi
 if [[ -z "$CLIENT_ID" ]]; then
   fail "No active client found — cannot verify PSS labels (is there at least one active client?)"
 else
-  TENANT_NS=$(api GET "/admin/clients/$CLIENT_ID" | python3 -c "
+  TENANT_NS=$(api GET "/clients/$CLIENT_ID" | python3 -c "
 import json,sys; print(json.load(sys.stdin)['data']['kubernetesNamespace'])
 " 2>/dev/null || true)
   if [[ -z "$TENANT_NS" ]]; then
