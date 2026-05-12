@@ -152,7 +152,7 @@ spec:
             # Credentials come from stalwart-snapshot-restic-repo Secret (optional).
             # If the Secret is absent or RESTIC_REPOSITORY is empty, exits 0.
             - name: upload
-              image: ghcr.io/phoenixtechnam/mail-backup-tools:latest
+              image: ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
               imagePullPolicy: IfNotPresent
               command: ["/usr/local/bin/snapshot-upload.sh"]
               envFrom:
