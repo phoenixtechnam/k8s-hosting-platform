@@ -1,15 +1,18 @@
 #!/bin/sh
-# snapshot-upload.sh — restic backup sidecar for the stalwart-snapshot CronJob.
+# snapshot-upload.sh — restic backup for the stalwart-snapshot CronJob.
 #
-# Waits for /snapshot/done (written by the stalwart export container), then
-# runs `restic backup /snapshot/snap/` to upload the snapshot directory to
-# the configured restic repository.
+# Backs up the raw RocksDB data directory directly via restic.
+# This avoids the need to open RocksDB (which would conflict with the live
+# Stalwart process holding the LOCK file). restic reads the immutable SST
+# files and WAL at the filesystem level; RocksDB's WAL replay on restore
+# handles any partial-write state, matching crash-recovery semantics.
+#
+# The PVC is mounted ReadOnly — safe because restic only reads source files.
 #
 # If RESTIC_REPOSITORY is empty or not set (Secret missing / not configured),
 # exits 0 with an informational log — upload is optional.
 #
-# After a successful backup, reports stats to the platform API so the
-# snapshot-status card can display total repo size.
+# After a successful backup, reports stats to the platform API.
 #
 # Env vars (from stalwart-snapshot-restic-repo Secret — all optional):
 #   RESTIC_REPOSITORY   e.g. s3:https://s3.hetzner.com/bucket/mail-snapshots
@@ -18,29 +21,13 @@
 #   AWS_SECRET_ACCESS_KEY S3 secret key
 #
 # Env vars (from pod spec):
-#   PLATFORM_API_URL    internal platform API URL (default: http://platform-api.platform.svc.cluster.local:3000)
+#   PLATFORM_API_URL    internal platform API URL
 #   PLATFORM_API_TOKEN  SA token for platform API internal endpoints (optional)
 
 set -e
 
-SNAP_DIR=/snapshot/snap
-DONE_FILE=/snapshot/done
+DATA_DIR=/var/lib/stalwart/data
 PLATFORM_API_URL="${PLATFORM_API_URL:-http://platform-api.platform.svc.cluster.local:3000}"
-
-# ── Wait for export to complete ──────────────────────────────────────────────
-
-echo "=== snapshot-upload: waiting for /snapshot/done ==="
-WAIT_MAX=300   # 5 minutes max
-WAITED=0
-while [ ! -f "$DONE_FILE" ]; do
-  if [ "$WAITED" -ge "$WAIT_MAX" ]; then
-    echo "ERROR: timed out waiting for $DONE_FILE after ${WAIT_MAX}s" >&2
-    exit 1
-  fi
-  sleep 2
-  WAITED=$((WAITED + 2))
-done
-echo "=== snapshot-upload: export complete (waited ${WAITED}s) ==="
 
 # ── Check if upload is configured ───────────────────────────────────────────
 
@@ -50,8 +37,8 @@ if [ -z "${RESTIC_REPOSITORY:-}" ]; then
   exit 0
 fi
 
-if [ ! -d "$SNAP_DIR" ]; then
-  echo "ERROR: snapshot directory $SNAP_DIR not found" >&2
+if [ ! -d "$DATA_DIR" ]; then
+  echo "ERROR: data directory $DATA_DIR not found" >&2
   exit 1
 fi
 
@@ -65,12 +52,13 @@ fi
 
 # ── Run restic backup ────────────────────────────────────────────────────────
 
-echo "=== snapshot-upload: backing up $SNAP_DIR ==="
+echo "=== snapshot-upload: backing up $DATA_DIR ==="
 restic backup \
   --tag "stalwart-snapshot" \
   --tag "auto" \
   --hostname "stalwart-mail" \
-  "$SNAP_DIR"
+  --exclude "LOCK" \
+  "$DATA_DIR"
 
 echo "=== snapshot-upload: backup complete — running restic forget/prune ==="
 # Keep last 48 snapshots (covers ~4 days at 2-min schedule).

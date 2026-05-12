@@ -69,12 +69,13 @@ const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> 
   { namespace: 'platform', name: 'oauth2-proxy' },
   { namespace: 'platform', name: 'dex' },
   // Cut 3 (2026-05-04): mail data-plane services follow the same
-  // HA scaling policy as the platform stateless tier. Stalwart 0.16
-  // is a Deployment (not StatefulSet — state lives in mail-pg CNPG)
-  // so it fits the stateless replicas list. Roundcube is similarly
-  // stateless (sessions persisted in Postgres since Phase 3.A.5,
-  // emptyDir for the install dir).
-  { namespace: 'mail', name: 'stalwart-mail' },
+  // HA scaling policy as the platform stateless tier.
+  // NOTE: stalwart-mail was removed from this list when the DataStore
+  // was migrated from CNPG-Postgres to RocksDB on local-path PVC
+  // (stalwart-rocksdb-ha branch, 2026-05-12). RocksDB is node-pinned
+  // (ReadWriteOnce), so stalwart-mail is permanently 1 replica — DR is
+  // handled via rsync migration + auto-failover, not multi-replica HA.
+  // Roundcube is stateless (sessions in system-db Postgres).
   { namespace: 'mail', name: 'roundcube' },
 ];
 // Single-server (local) installs default to 1 replica per stateless
@@ -148,7 +149,8 @@ export function leaderElectReplicasForSystemTier(
 // pattern (or transient-then-rename), so this list stays version-stable.
 const CNPG_CLUSTERS: ReadonlyArray<{ namespace: string; name: string }> = [
   { namespace: 'platform', name: 'system-db' },
-  { namespace: 'mail', name: 'mail-db' },
+  // mail-db removed 2026-05-12: Stalwart DataStore migrated from CNPG-Postgres
+  // to RocksDB on local-path PVC. No PostgreSQL cluster in the mail namespace.
 ];
 // CNPG instance count tracks the same readyServerCount-aware policy
 // so postgres replication fans out across every server in HA mode

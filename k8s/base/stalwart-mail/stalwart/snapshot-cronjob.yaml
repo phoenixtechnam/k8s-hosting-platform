@@ -1,50 +1,35 @@
-# Stalwart state-export CronJob — runs `stalwart -e` every 2 minutes.
+# Stalwart RocksDB backup CronJob — uses restic to back up the raw data directory.
 #
-# WHY a CronJob rather than a sidecar:
-#   The snapshot writes a DIRECTORY of per-subspace files (one file per
-#   subspace, e.g. subspace_o, subspace_x, ...). Running this as a
-#   separate Job avoids tying the export I/O budget to the live Stalwart
-#   pod and makes failures visible as Job status rather than sidecar
-#   restarts.
+# WHY direct restic rather than `stalwart -e`:
+#   `stalwart -e` opens the RocksDB database, which:
+#   (a) requires write access (RocksDB writes LOG.old on open even read-only), and
+#   (b) would conflict with the LOCK file held by the live Stalwart process.
+#   Restic reads the SST files + WAL at the filesystem level — no DB open needed.
+#   RocksDB's WAL replay on restore handles partial-write state, identical to
+#   crash recovery, so this produces a consistent backup.
 #
 # UPLOAD FLOW:
-#   1. `snapshot` container: runs `stalwart -e /snapshot/snap` (a
-#      directory), then writes /snapshot/done as a signal.
-#   2. `upload` sidecar: waits for /snapshot/done, then runs
-#      `restic backup /snapshot/snap/` to the configured repo.
-#      The restic repo config + credentials come from the
-#      stalwart-snapshot-restic-repo Secret (created by the platform
-#      when a BackupStore is configured for mail snapshots).
-#      If the Secret does not exist or RESTIC_REPOSITORY is empty, the
-#      sidecar exits 0 with a log message — upload is optional.
+#   Single container runs snapshot-upload.sh which:
+#   1. Exits 0 if RESTIC_REPOSITORY is not configured (upload is optional).
+#   2. Runs `restic backup /var/lib/stalwart/data` with `--exclude LOCK`.
+#   3. Runs `restic forget --keep-last 48 --prune` to limit repo growth.
+#   4. Reports totalSnapshotSizeBytes + snapshotCount to the platform API.
 #
-# RocksDB PVC MOUNT:
-#   `stalwart -e` reads the RocksDB DataStore directly from disk.
-#   The stalwart-rocksdb-data PVC is mounted ReadOnly in the snapshot
-#   container so no data is written during export. Because the PVC is
-#   local-path (node-local), the Job MUST land on the same node as the
-#   Stalwart Deployment pod — enforced via inter-pod affinity below.
+# RESTORE FLOW:
+#   The restore-state initContainer in deployment.yaml checks for the
+#   CURRENT sentinel file. When absent and the restic Secret is present,
+#   it runs `restic restore latest --target /var/lib/stalwart/data`.
 #
 # NODE AFFINITY:
 #   preferredDuringScheduling inter-pod affinity on
-#   app.kubernetes.io/component=stalwart selects the node running the
-#   Stalwart pod. requiredDuringScheduling is not used here because it
-#   would block the Job if Stalwart is down for maintenance; preferred
-#   is sufficient since local-path PVCs are naturally node-local (the
-#   PVC will simply fail to mount on a wrong node, which surfaces a
-#   clear error rather than silently reading stale data).
-#
-# RESTORE:
-#   On pod reschedule to a node without existing DataStore state, the
-#   restore-state initContainer in deployment.yaml checks for the
-#   `/var/lib/stalwart/data/CURRENT` sentinel file. When absent and
-#   stalwart-snapshot-restic-repo is configured, it restores the latest
-#   snapshot from restic.
+#   app.kubernetes.io/component=stalwart places this Job on the same node
+#   as the Stalwart pod. The local-path PVC (stalwart-rocksdb-data) is
+#   node-local, so the Job must land on the correct node to mount it.
+#   preferred (not required) so the Job is not blocked when Stalwart is down.
 #
 # FLUX postBuild NOTE:
-#   All $$ in inline shell are Flux-postBuild-escaped ($$VAR → $VAR
-#   after Flux render). Do NOT change to single $ — Flux would try to
-#   substitute them against platform-cluster-config and fail.
+#   All $$ in inline shell are Flux-postBuild-escaped ($$VAR → $VAR after
+#   Flux render). Do NOT change to single $ — Flux would substitute them.
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -55,8 +40,6 @@ metadata:
     app.kubernetes.io/component: stalwart-snapshot
   annotations:
     # backup-coverage: excluded:cluster-infrastructure
-    # This Job reads/writes Stalwart DataStore snapshots; it IS the
-    # backup mechanism, not a target for platform tenant-bundle backup.
     ttlSecondsAfterFinished: "3600"
 spec:
   schedule: "*/2 * * * *"
@@ -75,10 +58,7 @@ spec:
           restartPolicy: Never
           serviceAccountName: default
           securityContext:
-            runAsNonRoot: false  # stalwart binary runs as root (binds port 25)
-          # Inter-pod affinity: schedule this Job on the same node as
-          # the running Stalwart pod. The local-path PVC (stalwart-rocksdb-data)
-          # is only accessible from the node it was created on.
+            runAsNonRoot: false
           affinity:
             podAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
@@ -91,40 +71,6 @@ spec:
                     namespaces:
                       - mail
           containers:
-            - name: snapshot
-              image: docker.io/stalwartlabs/stalwart:v0.16.3
-              imagePullPolicy: IfNotPresent
-              command: ["/bin/sh", "-c"]
-              args:
-                - |
-                  set -e
-                  SNAP_PATH=/snapshot/snap
-                  echo "=== Starting Stalwart export ==="
-                  /usr/local/bin/stalwart -c /etc/stalwart/config.json -e "$$SNAP_PATH"
-                  # stalwart -e writes a DIRECTORY; use du -sb for accurate byte count.
-                  SNAP_SIZE=$$(du -sb "$$SNAP_PATH" 2>/dev/null | cut -f1 || echo 0)
-                  echo "SNAPSHOT_DONE size=$$SNAP_SIZE path=$$SNAP_PATH"
-                  # Signal the upload sidecar that the export is complete.
-                  touch /snapshot/done
-              volumeMounts:
-                - name: config
-                  mountPath: /etc/stalwart
-                  readOnly: true
-                - name: stalwart-data
-                  mountPath: /var/lib/stalwart/data
-                  readOnly: true
-                - name: snapshot-out
-                  mountPath: /snapshot
-              resources:
-                requests:
-                  cpu: 100m
-                  memory: 256Mi
-                limits:
-                  cpu: 500m
-                  memory: 2Gi
-            # Upload sidecar: waits for /snapshot/done, then runs restic backup.
-            # Credentials come from stalwart-snapshot-restic-repo Secret (optional).
-            # If the Secret is absent or RESTIC_REPOSITORY is empty, exits 0.
             - name: upload
               image: ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
               imagePullPolicy: Always
@@ -143,22 +89,17 @@ spec:
                       key: token
                       optional: true
               volumeMounts:
-                - name: snapshot-out
-                  mountPath: /snapshot
+                - name: stalwart-data
+                  mountPath: /var/lib/stalwart/data
+                  readOnly: true
               resources:
                 requests:
-                  cpu: 50m
-                  memory: 128Mi
+                  cpu: 100m
+                  memory: 256Mi
                 limits:
                   cpu: 500m
-                  memory: 512Mi
+                  memory: 1Gi
           volumes:
-            - name: config
-              configMap:
-                name: stalwart-config
             - name: stalwart-data
               persistentVolumeClaim:
                 claimName: stalwart-rocksdb-data
-            - name: snapshot-out
-              emptyDir:
-                sizeLimit: 2Gi
