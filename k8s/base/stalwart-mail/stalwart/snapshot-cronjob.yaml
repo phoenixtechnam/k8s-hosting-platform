@@ -153,7 +153,7 @@ spec:
             # If the Secret is absent or RESTIC_REPOSITORY is empty, exits 0.
             - name: upload
               image: ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
-              imagePullPolicy: IfNotPresent
+              imagePullPolicy: Always
               command: ["/usr/local/bin/snapshot-upload.sh"]
               envFrom:
                 - secretRef:
