@@ -1066,12 +1066,21 @@ else:
 scenario_cap_add_sysctl() {
   scenario_start "T16 — cap_add: [NET_BIND_SERVICE] + sysctl rendered in Pod spec"
   local name="p2e-cap-$STAMP"
+  local yaml_content
+  yaml_content=$(cat <<'YAML'
+services:
+  web:
+    image: nginx:1.27
+    cap_add:
+      - NET_BIND_SERVICE
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "80"
+    ports:
+      - "80"
+YAML
+)
   local body
-  body=$(printf '{
-  "mode": "compose",
-  "name": "%s",
-  "compose_yaml": "services:\n  web:\n    image: nginx:1.27\n    cap_add:\n      - NET_BIND_SERVICE\n    sysctls:\n      net.ipv4.ip_unprivileged_port_start: \\"80\\"\n    ports:\n      - \\"80\\"\n"
-}' "$name")
+  body=$(python3 -c "import json,sys; print(json.dumps({'mode':'compose','name':'$name','compose_yaml':sys.stdin.read()}))" <<< "$yaml_content")
 
   # Validate first
   local vresp
@@ -1128,14 +1137,32 @@ scenario_cap_add_sysctl() {
 scenario_cfgsec_mounts() {
   scenario_start "T17 — per-service configs/secrets rendered as k8s volumes"
   local name="p2e-cfg-$STAMP"
+  # Uses an inline config (nginx-conf) and an environment-backed secret (api-key).
+  local yaml_content
+  yaml_content=$(cat <<'YAML'
+services:
+  web:
+    image: nginx:1.27
+    ports:
+      - "80"
+    configs:
+      - source: nginx-conf
+        target: /etc/nginx/conf.d/default.conf
+    secrets:
+      - source: api-key
+        target: /run/secrets/api-key
+configs:
+  nginx-conf:
+    content: |
+      server { listen 80; location / { return 200 'ok'; } }
+secrets:
+  api-key:
+    environment: PLATFORM_DUMMY_SECRET
+volumes: {}
+YAML
+)
   local body
-  # Uses an inline config and an environment-backed secret (env var is optional;
-  # backend encodes it as a Secret with a placeholder value if not present).
-  body=$(printf '{
-  "mode": "compose",
-  "name": "%s",
-  "compose_yaml": "services:\n  web:\n    image: nginx:1.27\n    ports:\n      - '"'"'80'"'"'\n    configs:\n      - source: nginx-conf\n        target: /etc/nginx/conf.d/default.conf\n    secrets:\n      - source: api-key\n        target: /run/secrets/api-key\nconfigs:\n  nginx-conf:\n    content: |\n      server { listen 80; location / { return 200 '"'"'ok'"'"'; } }\nsecrets:\n  api-key:\n    environment: PLATFORM_DUMMY_SECRET\nvolumes: {}\n"
-}' "$name")
+  body=$(python3 -c "import json,sys; print(json.dumps({'mode':'compose','name':'$name','compose_yaml':sys.stdin.read()}))" <<< "$yaml_content")
 
   local vresp
   vresp=$(api POST "/clients/$CLIENT_ID/custom-deployments/validate" "$body")
