@@ -72,15 +72,31 @@ export default function EmailManagement() {
 
       <StalwartAdminPanel />
 
-      <MailStorageCard />
+      {/* ─── Storage section ─────────────────────────────────────── */}
+      <div className="space-y-4">
+        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
+          Storage
+        </h2>
+        <MailStorageCard />
+        <StalwartBlobStoreCard />
+      </div>
 
-      <StalwartBlobStoreCard />
+      {/* ─── Node Placement section ───────────────────────────────── */}
+      <div className="space-y-4">
+        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
+          Node Placement
+        </h2>
+        <MailNodeSelectorCard />
+      </div>
 
-      <MailNodeSelectorCard />
-
-      <MailSnapshotHealthCard />
-
-      <CnpgBackupHealthCard clusterFilter="mail-pg" />
+      {/* ─── Backup & Snapshots section ───────────────────────────── */}
+      <div className="space-y-4">
+        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
+          Backup &amp; Snapshots
+        </h2>
+        <MailSnapshotHealthCard />
+        <CnpgBackupHealthCard clusterFilter="mail-pg" />
+      </div>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end harness for Stalwart mail server HA + CIFS BlobStore features.
+# End-to-end harness for Stalwart mail server HA + CIFS BlobStore + restic snapshot features.
 #
 # Drives the full admin-API surface for:
 #   - BlobStore singleton read + switch
@@ -7,16 +7,25 @@
 #   - Manual snapshot trigger + Job poll
 #   - CIFS validation guards
 #   - CronJob infrastructure existence check
+#   - Snapshot schedule read + update
+#   - Snapshot backup target read
+#   - Snapshot status shape (totalSnapshotSizeBytes field)
+#   - CronJob restic sidecar + snap-directory path validation
 #
 # Scenarios:
-#   1. blob-store-read         — GET /admin/mail/blob-store → 200 + valid shape
-#   2. node-selector-read      — GET /admin/mail/node-selector → 200 + valid shape
-#   3. node-selector-preferred — PATCH preferred mode → 200 + assert mode; cleanup to 'any'
-#   4. node-selector-invalid   — PATCH required + nonexistent node → 4xx MAIL_NODE_NOT_FOUND
-#   5. snapshot-trigger        — POST trigger → Job created; poll to succeeded/warn-on-fail
-#   6. cifs-reject-localhost   — PATCH CIFS with host=localhost → 4xx
-#   7. blobstore-switch-default — PATCH Default → Job; poll; re-read asserts Default
-#   8. snapshot-cronjob-exists  — kubectl assert CronJob schedule + concurrencyPolicy
+#   1.  blob-store-read             — GET /admin/mail/blob-store → 200 + valid shape
+#   2.  node-selector-read          — GET /admin/mail/node-selector → 200 + valid shape
+#   3.  node-selector-preferred     — PATCH preferred mode → 200 + assert mode; cleanup to 'any'
+#   4.  node-selector-invalid       — PATCH required + nonexistent node → 4xx MAIL_NODE_NOT_FOUND
+#   5.  snapshot-trigger            — POST trigger → Job created; poll to succeeded/warn-on-fail
+#   6.  cifs-reject-localhost       — PATCH CIFS with host=localhost → 4xx
+#   7.  blobstore-switch-default    — PATCH Default → Job; poll; re-read asserts Default
+#   8.  snapshot-cronjob-exists     — kubectl assert CronJob schedule + concurrencyPolicy
+#   9.  snapshot-schedule-read      — GET /admin/mail/snapshot-schedule → 200 + valid cron expr
+#   10. snapshot-schedule-update    — PATCH schedule → 200 + updated; restore original
+#   11. snapshot-backup-target-read — GET /admin/mail/snapshot-backup-target → 200 + valid shape
+#   12. snapshot-status-shape       — GET /admin/mail/snapshot-status includes totalSnapshotSizeBytes
+#   13. cronjob-restic-sidecar      — kubectl assert upload sidecar + snap dir path
 #
 # Each scenario writes a one-line PASS/FAIL result.  Script exits 0 only
 # when every scenario passes.
@@ -618,6 +627,288 @@ scenario_8_cronjob_exists() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SCENARIO 9: snapshot-schedule-read
+# GET /admin/mail/snapshot-schedule → 200 + scheduleExpression is a non-empty string
+# ─────────────────────────────────────────────────────────────────────────────
+
+scenario_9_snapshot_schedule_read() {
+  run "9. snapshot-schedule-read — GET /admin/mail/snapshot-schedule → valid cron expression"
+
+  local resp
+  resp=$(api GET "/admin/mail/snapshot-schedule")
+  local http_code
+  http_code=$(api_status GET "/admin/mail/snapshot-schedule")
+
+  if [[ "$http_code" == "200" ]]; then
+    ok "GET /admin/mail/snapshot-schedule returned 200"
+  else
+    fail "GET /admin/mail/snapshot-schedule returned $http_code (resp: $(echo "$resp" | head -c 300))"
+    return
+  fi
+
+  local schedule_expr
+  schedule_expr=$(jq -r '.data.scheduleExpression // empty' <<<"$resp")
+
+  if [[ -n "$schedule_expr" ]]; then
+    ok "data.scheduleExpression = '$schedule_expr'"
+  else
+    fail "data.scheduleExpression is missing or empty"
+  fi
+
+  # A basic cron expression has 5 space-separated parts
+  local part_count
+  part_count=$(echo "$schedule_expr" | awk '{print NF}')
+  if [[ "$part_count" == "5" ]]; then
+    ok "scheduleExpression has 5 parts (valid 5-part cron)"
+  else
+    warn "scheduleExpression has $part_count parts (expected 5 — may be non-standard)"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCENARIO 10: snapshot-schedule-update
+# PATCH { scheduleExpression: "0 */6 * * *" } → 200 + updated value
+# Then restore the original schedule.
+# ─────────────────────────────────────────────────────────────────────────────
+
+scenario_10_snapshot_schedule_update() {
+  run "10. snapshot-schedule-update — PATCH schedule → 200; restore original"
+
+  # Read current schedule first so we can restore it.
+  local original_resp original_schedule
+  original_resp=$(api GET "/admin/mail/snapshot-schedule")
+  original_schedule=$(jq -r '.data.scheduleExpression // "*/2 * * * *"' <<<"$original_resp")
+
+  local new_schedule='0 */6 * * *'
+  local patch_body
+  patch_body=$(jq -nc --arg s "$new_schedule" '{"scheduleExpression": $s}')
+
+  local resp
+  resp=$(api PATCH "/admin/mail/snapshot-schedule" "$patch_body")
+  local http_code
+  http_code=$(api_status PATCH "/admin/mail/snapshot-schedule" "$patch_body")
+
+  if [[ "$http_code" == "200" ]]; then
+    ok "PATCH /admin/mail/snapshot-schedule returned 200"
+  else
+    fail "PATCH /admin/mail/snapshot-schedule returned $http_code (resp: $(echo "$resp" | head -c 300))"
+    return
+  fi
+
+  local returned_schedule
+  returned_schedule=$(jq -r '.data.scheduleExpression // empty' <<<"$resp")
+
+  if [[ "$returned_schedule" == "$new_schedule" ]]; then
+    ok "data.scheduleExpression = '$returned_schedule' (matches sent value)"
+  else
+    fail "data.scheduleExpression = '$returned_schedule' (expected '$new_schedule')"
+  fi
+
+  # Restore original
+  if [[ "${SKIP_CLEANUP:-0}" != "1" ]]; then
+    local restore_body restore_code
+    restore_body=$(jq -nc --arg s "$original_schedule" '{"scheduleExpression": $s}')
+    restore_code=$(api_status PATCH "/admin/mail/snapshot-schedule" "$restore_body")
+    if [[ "$restore_code" == "200" ]]; then
+      ok "Schedule restored to '$original_schedule'"
+    else
+      warn "Failed to restore schedule (HTTP $restore_code)"
+    fi
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCENARIO 11: snapshot-backup-target-read
+# GET /admin/mail/snapshot-backup-target → 200 + shape has all required fields
+# ─────────────────────────────────────────────────────────────────────────────
+
+scenario_11_snapshot_backup_target_read() {
+  run "11. snapshot-backup-target-read — GET /admin/mail/snapshot-backup-target → valid shape"
+
+  local resp
+  resp=$(api GET "/admin/mail/snapshot-backup-target")
+  local http_code
+  http_code=$(api_status GET "/admin/mail/snapshot-backup-target")
+
+  if [[ "$http_code" == "200" ]]; then
+    ok "GET /admin/mail/snapshot-backup-target returned 200"
+  else
+    fail "GET /admin/mail/snapshot-backup-target returned $http_code (resp: $(echo "$resp" | head -c 300))"
+    return
+  fi
+
+  # backupStoreId may be null (no target configured) — but the key must be present.
+  local has_backup_store_id has_backup_store_name has_storage_type
+  has_backup_store_id=$(jq 'if .data | has("backupStoreId") then "yes" else "no" end' <<<"$resp")
+  has_backup_store_name=$(jq 'if .data | has("backupStoreName") then "yes" else "no" end' <<<"$resp")
+  has_storage_type=$(jq 'if .data | has("storageType") then "yes" else "no" end' <<<"$resp")
+
+  if [[ "$has_backup_store_id" == '"yes"' ]]; then
+    local store_id
+    store_id=$(jq -r '.data.backupStoreId // "null"' <<<"$resp")
+    ok "data.backupStoreId present (value: $store_id)"
+  else
+    fail "data.backupStoreId key is missing from response"
+  fi
+
+  if [[ "$has_backup_store_name" == '"yes"' ]]; then
+    local store_name
+    store_name=$(jq -r '.data.backupStoreName // "null"' <<<"$resp")
+    ok "data.backupStoreName present (value: $store_name)"
+  else
+    fail "data.backupStoreName key is missing from response"
+  fi
+
+  if [[ "$has_storage_type" == '"yes"' ]]; then
+    local storage_type
+    storage_type=$(jq -r '.data.storageType // "null"' <<<"$resp")
+    ok "data.storageType present (value: $storage_type)"
+  else
+    fail "data.storageType key is missing from response"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCENARIO 12: snapshot-status-shape
+# GET /admin/mail/snapshot-status → 200 + totalSnapshotSizeBytes key present
+# ─────────────────────────────────────────────────────────────────────────────
+
+scenario_12_snapshot_status_shape() {
+  run "12. snapshot-status-shape — GET /admin/mail/snapshot-status includes totalSnapshotSizeBytes"
+
+  local resp
+  resp=$(api GET "/admin/mail/snapshot-status")
+  local http_code
+  http_code=$(api_status GET "/admin/mail/snapshot-status")
+
+  if [[ "$http_code" == "200" ]]; then
+    ok "GET /admin/mail/snapshot-status returned 200"
+  else
+    fail "GET /admin/mail/snapshot-status returned $http_code (resp: $(echo "$resp" | head -c 300))"
+    return
+  fi
+
+  # totalSnapshotSizeBytes may be null before any restic upload — key must exist.
+  local has_total has_backup_store
+  has_total=$(jq 'if .data | has("totalSnapshotSizeBytes") then "yes" else "no" end' <<<"$resp")
+  has_backup_store=$(jq 'if .data | has("backupStoreId") then "yes" else "no" end' <<<"$resp")
+
+  if [[ "$has_total" == '"yes"' ]]; then
+    local total_bytes
+    total_bytes=$(jq -r '.data.totalSnapshotSizeBytes // "null"' <<<"$resp")
+    ok "data.totalSnapshotSizeBytes present (value: $total_bytes)"
+  else
+    fail "data.totalSnapshotSizeBytes key is missing from snapshot-status response"
+  fi
+
+  if [[ "$has_backup_store" == '"yes"' ]]; then
+    local store_id
+    store_id=$(jq -r '.data.backupStoreId // "null"' <<<"$resp")
+    ok "data.backupStoreId present (value: $store_id)"
+  else
+    fail "data.backupStoreId key is missing from snapshot-status response"
+  fi
+
+  # Spot-check other required fields are still present.
+  local enabled schedule_expr
+  enabled=$(jq -r '.data.enabled // empty' <<<"$resp")
+  schedule_expr=$(jq -r '.data.scheduleExpression // empty' <<<"$resp")
+
+  if [[ -n "$enabled" ]]; then
+    ok "data.enabled = $enabled"
+  else
+    fail "data.enabled is missing"
+  fi
+  if [[ -n "$schedule_expr" ]]; then
+    ok "data.scheduleExpression = '$schedule_expr'"
+  else
+    fail "data.scheduleExpression is missing"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCENARIO 13: cronjob-restic-sidecar
+# kubectl assert:
+#   - initContainers OR containers named 'upload' (restic sidecar) is present
+#   - SNAP_PATH env var on the stalwart container = '/snapshot/snap' (no .lz4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+scenario_13_cronjob_restic_sidecar() {
+  run "13. cronjob-restic-sidecar — kubectl assert upload sidecar + snap dir path"
+
+  local cj_json
+  if ! cj_json=$(kube get cronjob stalwart-snapshot -n mail -o json 2>/dev/null); then
+    fail "CronJob stalwart-snapshot not found in namespace mail"
+    warn "Deploy k8s/base/stalwart-mail/stalwart/snapshot-cronjob.yaml to fix"
+    return
+  fi
+
+  # The upload sidecar must appear as a container named 'upload'.
+  local upload_container_count
+  upload_container_count=$(echo "$cj_json" | jq '[
+    .spec.jobTemplate.spec.template.spec.containers[]?,
+    .spec.jobTemplate.spec.template.spec.initContainers[]?
+  ] | map(select(.name == "upload")) | length')
+
+  if [[ "$upload_container_count" -ge 1 ]]; then
+    ok "Container 'upload' (restic sidecar) found in CronJob pod template"
+  else
+    fail "No container named 'upload' found in stalwart-snapshot CronJob (restic sidecar missing)"
+  fi
+
+  # The snapshot container must use /snapshot/snap (directory), not /snapshot/snap.lz4 (file).
+  # We look for SNAP_PATH env var on the 'snapshot' container.
+  local snap_path
+  snap_path=$(echo "$cj_json" | jq -r '
+    .spec.jobTemplate.spec.template.spec.containers[]
+    | select(.name == "snapshot")
+    | .env[]?
+    | select(.name == "SNAP_PATH")
+    | .value // empty
+  ' 2>/dev/null || echo "")
+
+  if [[ -z "$snap_path" ]]; then
+    # SNAP_PATH may be hardcoded in the shell command rather than an env var.
+    # Fall back to grepping the command string.
+    local cmd_string
+    cmd_string=$(echo "$cj_json" | jq -r '
+      .spec.jobTemplate.spec.template.spec.containers[]
+      | select(.name == "snapshot")
+      | (.command // []) + (.args // [])
+      | join(" ")
+    ' 2>/dev/null || echo "")
+
+    if echo "$cmd_string" | grep -q 'snap\.lz4'; then
+      fail "snapshot container still references snap.lz4 in command/args (should be /snapshot/snap dir)"
+    elif echo "$cmd_string" | grep -q '/snapshot/snap'; then
+      ok "snapshot container uses /snapshot/snap (directory, not .lz4 file)"
+    else
+      warn "Could not determine SNAP_PATH from container spec — inspect manually"
+    fi
+  elif [[ "$snap_path" == *".lz4"* ]]; then
+    fail "SNAP_PATH = '$snap_path' still references .lz4 (should be /snapshot/snap directory)"
+  else
+    ok "SNAP_PATH = '$snap_path' (directory path, not .lz4 file)"
+  fi
+
+  # The upload sidecar should have envFrom referencing stalwart-snapshot-restic-repo.
+  local restic_secret_ref
+  restic_secret_ref=$(echo "$cj_json" | jq -r '
+    .spec.jobTemplate.spec.template.spec.containers[]
+    | select(.name == "upload")
+    | .envFrom[]?
+    | select(.secretRef.name == "stalwart-snapshot-restic-repo")
+    | .secretRef.name
+  ' 2>/dev/null || echo "")
+
+  if [[ "$restic_secret_ref" == "stalwart-snapshot-restic-repo" ]]; then
+    ok "upload sidecar has envFrom.secretRef = stalwart-snapshot-restic-repo"
+  else
+    warn "upload sidecar envFrom.secretRef stalwart-snapshot-restic-repo not found (may be absent until a backup target is set)"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -636,6 +927,11 @@ scenario_5_snapshot_trigger
 scenario_6_cifs_reject_localhost
 scenario_7_blobstore_switch_default
 scenario_8_cronjob_exists
+scenario_9_snapshot_schedule_read
+scenario_10_snapshot_schedule_update
+scenario_11_snapshot_backup_target_read
+scenario_12_snapshot_status_shape
+scenario_13_cronjob_restic_sidecar
 
 printf '\n%b━━━ Summary ━━━%b\n' "$CYAN" "$RESET"
 printf '  passed: %b%d%b\n' "$GREEN" "$passed" "$RESET"

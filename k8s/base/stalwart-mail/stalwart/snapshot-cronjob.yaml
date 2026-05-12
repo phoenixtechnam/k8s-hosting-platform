@@ -1,20 +1,23 @@
 # Stalwart state-export CronJob — runs `stalwart -e` every 2 minutes.
 #
 # WHY a CronJob rather than a sidecar:
-#   The snapshot writes an LZ4-compressed binary (~6× compression) of the
-#   full Stalwart DataStore. On RocksDB-backed installs the export is
-#   ~41s for 22 MB; on PG-backed installs it reads from the DB. Running
-#   this as a separate Job avoids tying the export I/O budget to the
-#   live Stalwart pod and makes failures visible as Job status rather
-#   than sidecar restarts.
+#   The snapshot writes a DIRECTORY of per-subspace files (one file per
+#   subspace, e.g. subspace_o, subspace_x, ...). On PG-backed installs
+#   the export scans all 19 subspaces over the network — ~40s overhead.
+#   Running this as a separate Job avoids tying the export I/O budget
+#   to the live Stalwart pod and makes failures visible as Job status
+#   rather than sidecar restarts.
 #
 # UPLOAD FLOW:
-#   The snapshot container writes the LZ4 binary to /snapshot/snap.lz4
-#   (an emptyDir shared with the upload sidecar). When the export is
-#   complete (SNAPSHOT_DONE line in stdout), the upload sidecar uploads
-#   the file to the platform's active BackupStore via the platform-api
-#   upload endpoint. Platform-api handles the S3/SFTP routing; the
-#   sidecar only needs the platform API JWT and the endpoint URL.
+#   1. `snapshot` container: runs `stalwart -e /snapshot/snap` (a
+#      directory), then writes /snapshot/done as a signal.
+#   2. `upload` sidecar: waits for /snapshot/done, then runs
+#      `restic backup /snapshot/snap/` to the configured repo.
+#      The restic repo config + credentials come from the
+#      stalwart-snapshot-restic-repo Secret (created by the platform
+#      when a BackupStore is configured for mail snapshots).
+#      If the Secret does not exist or RESTIC_REPOSITORY is empty, the
+#      sidecar exits 0 with a log message — upload is optional.
 #
 # RESTORE:
 #   On pod reschedule to a node without existing DataStore state, the
@@ -109,11 +112,14 @@ spec:
               args:
                 - |
                   set -e
-                  SNAP_PATH=/snapshot/snap.lz4
+                  SNAP_PATH=/snapshot/snap
                   echo "=== Starting Stalwart export ==="
                   /usr/local/bin/stalwart -c /etc/stalwart/config.json -e "$$SNAP_PATH"
-                  SNAP_SIZE=$$(wc -c < "$$SNAP_PATH" || echo 0)
+                  # stalwart -e writes a DIRECTORY; use du -sb for accurate byte count.
+                  SNAP_SIZE=$$(du -sb "$$SNAP_PATH" 2>/dev/null | cut -f1 || echo 0)
                   echo "SNAPSHOT_DONE size=$$SNAP_SIZE path=$$SNAP_PATH"
+                  # Signal the upload sidecar that the export is complete.
+                  touch /snapshot/done
               env:
                 - name: STALWART_PG_HOST
                   value: "mail-db-rw.mail.svc.cluster.local"
@@ -142,6 +148,36 @@ spec:
                 limits:
                   cpu: 500m
                   memory: 2Gi
+            # Upload sidecar: waits for /snapshot/done, then runs restic backup.
+            # Credentials come from stalwart-snapshot-restic-repo Secret (optional).
+            # If the Secret is absent or RESTIC_REPOSITORY is empty, exits 0.
+            - name: upload
+              image: ghcr.io/phoenixtechnam/mail-backup-tools:latest
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/snapshot-upload.sh"]
+              envFrom:
+                - secretRef:
+                    name: stalwart-snapshot-restic-repo
+                    optional: true
+              env:
+                - name: PLATFORM_API_URL
+                  value: "http://platform-api.platform.svc.cluster.local:3000"
+                - name: PLATFORM_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-api-sa-token
+                      key: token
+                      optional: true
+              volumeMounts:
+                - name: snapshot-out
+                  mountPath: /snapshot
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
           volumes:
             - name: config-tmpl
               configMap:

@@ -70,7 +70,8 @@ export default function StalwartBlobStoreCard() {
 
   const current = store.data.data;
   const draftDiffers = draft.type !== current.type
-    || (draft.type === 'S3' && draft.s3?.bucket !== current.s3?.bucket);
+    || (draft.type === 'S3' && draft.s3?.bucket !== current.s3?.bucket)
+    || (draft.type === 'CIFS' && (draft.cifs?.host !== current.cifs?.host || draft.cifs?.share !== current.cifs?.share));
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5 space-y-4">
@@ -101,6 +102,9 @@ export default function StalwartBlobStoreCard() {
           {current.type === 'FileSystem' && current.fileSystem?.path
             ? ` — ${current.fileSystem.path}`
             : null}
+          {current.type === 'CIFS' && current.cifs?.host
+            ? ` — //${current.cifs.host}/${current.cifs.share}${current.cifs.path ?? ''}`
+            : null}
         </div>
       </div>
 
@@ -110,8 +114,8 @@ export default function StalwartBlobStoreCard() {
         </div>
 
         <RadioOption
-          label="Default — store blobs in mail-pg (PG)"
-          description="Single-tenant default. Works without external infra. Blows up on disk at scale (>~5 GiB)."
+          label="Default (mail-pg / PostgreSQL)"
+          description="Single-tenant default. Works without external infra. Blobs stored in the mail-pg database — blows up on disk at scale (>~5 GiB)."
           value="Default"
           checked={draft.type === 'Default'}
           onChange={() => setDraft({ type: 'Default' })}
@@ -133,6 +137,24 @@ export default function StalwartBlobStoreCard() {
           onChange={() => setDraft({ type: 'FileSystem', fileSystem: { path: '/var/lib/stalwart/blobs', depth: 2 } })}
           testId="blob-store-radio-filesystem"
         />
+        <RadioOption
+          label="CIFS — SMB/CIFS network share"
+          description="Blobs on a CIFS/SMB network share (e.g. Hetzner Storage Box). Stalwart pins to the node where the share is mounted. Requires node-selector mode: required."
+          value="CIFS"
+          checked={draft.type === 'CIFS'}
+          onChange={() => setDraft({
+            type: 'CIFS',
+            cifs: { host: '', share: '', path: '/stalwart/blobs', depth: 2, username: '', password: '' },
+          })}
+          testId="blob-store-radio-cifs"
+        />
+
+        {draft.type === 'CIFS' ? (
+          <div className="ml-7 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+            CIFS requires Stalwart to be pinned to the node where the share is mounted.
+            Set <strong>Node Placement → mode: required</strong> on the same node after applying.
+          </div>
+        ) : null}
 
         {draft.type === 'S3' ? (
           <S3FormFields draft={draft} onChange={(s3) => setDraft({ type: 'S3', s3 })} />
@@ -141,6 +163,12 @@ export default function StalwartBlobStoreCard() {
           <FileSystemFormFields
             draft={draft}
             onChange={(fileSystem) => setDraft({ type: 'FileSystem', fileSystem })}
+          />
+        ) : null}
+        {draft.type === 'CIFS' ? (
+          <CIFSFormFields
+            draft={draft}
+            onChange={(cifs) => setDraft({ type: 'CIFS', cifs })}
           />
         ) : null}
 
@@ -263,14 +291,29 @@ interface DraftFs {
   path: string;
   depth: number;
 }
+interface DraftCifs {
+  host: string;
+  share: string;
+  path: string;
+  depth: number;
+  username: string;
+  password: string;
+}
 type DraftSelection =
   | { type: 'Default' }
   | { type: 'S3'; s3: DraftS3 }
-  | { type: 'FileSystem'; fileSystem: DraftFs };
+  | { type: 'FileSystem'; fileSystem: DraftFs }
+  | { type: 'CIFS'; cifs: DraftCifs };
 
 function isDraftComplete(draft: DraftSelection): boolean {
   if (draft.type === 'Default') return true;
   if (draft.type === 'FileSystem') return draft.fileSystem.path.length > 0;
+  if (draft.type === 'CIFS') {
+    return draft.cifs.host.length > 0
+      && draft.cifs.share.length > 0
+      && draft.cifs.username.length > 0
+      && draft.cifs.password.length > 0;
+  }
   // S3 — all fields required except endpoint
   return draft.s3.bucket.length > 0
     && draft.s3.region.length > 0
@@ -284,6 +327,19 @@ function draftToRequest(draft: DraftSelection) {
     return {
       type: 'FileSystem' as const,
       fileSystem: { path: draft.fileSystem.path, depth: draft.fileSystem.depth },
+    };
+  }
+  if (draft.type === 'CIFS') {
+    return {
+      type: 'CIFS' as const,
+      cifs: {
+        host: draft.cifs.host,
+        share: draft.cifs.share,
+        path: draft.cifs.path || '/stalwart/blobs',
+        depth: draft.cifs.depth,
+        username: draft.cifs.username,
+        password: draft.cifs.password,
+      },
     };
   }
   const s3 = {
@@ -399,6 +455,90 @@ function FileSystemFormFields({ draft, onChange }: FsFormProps) {
   );
 }
 
+interface CifsFormProps {
+  readonly draft: { type: 'CIFS'; cifs: DraftCifs };
+  readonly onChange: (cifs: DraftCifs) => void;
+}
+function CIFSFormFields({ draft, onChange }: CifsFormProps) {
+  const [showPassword, setShowPassword] = useState(false);
+  return (
+    <div className="ml-7 grid grid-cols-2 gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">
+      <Field label="CIFS host *" testId="blob-store-cifs-host">
+        <input
+          type="text" required
+          value={draft.cifs.host}
+          onChange={(e) => onChange({ ...draft.cifs, host: e.target.value })}
+          placeholder="fileserver.example.com"
+          data-testid="blob-store-cifs-host"
+          className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100"
+        />
+      </Field>
+      <Field label="Share name *" testId="blob-store-cifs-share">
+        <input
+          type="text" required
+          value={draft.cifs.share}
+          onChange={(e) => onChange({ ...draft.cifs, share: e.target.value })}
+          placeholder="mail-blobs"
+          data-testid="blob-store-cifs-share"
+          className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100"
+        />
+      </Field>
+      <Field label="Path in share" testId="blob-store-cifs-path">
+        <input
+          type="text"
+          value={draft.cifs.path}
+          onChange={(e) => onChange({ ...draft.cifs, path: e.target.value })}
+          placeholder="/stalwart/blobs"
+          data-testid="blob-store-cifs-path"
+          className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100"
+        />
+      </Field>
+      <Field label="Directory depth" testId="blob-store-cifs-depth">
+        <input
+          type="number" min={0} max={8}
+          value={draft.cifs.depth}
+          onChange={(e) => onChange({ ...draft.cifs, depth: Number.parseInt(e.target.value, 10) || 0 })}
+          data-testid="blob-store-cifs-depth"
+          className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100"
+        />
+      </Field>
+      <Field label="Username *" testId="blob-store-cifs-username">
+        <input
+          type="text" required autoComplete="off"
+          value={draft.cifs.username}
+          onChange={(e) => onChange({ ...draft.cifs, username: e.target.value })}
+          data-testid="blob-store-cifs-username"
+          className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100"
+        />
+      </Field>
+      <Field label="Password * (stored in Secret)" testId="blob-store-cifs-password">
+        <div className="flex gap-2">
+          <input
+            type={showPassword ? 'text' : 'password'} required autoComplete="off"
+            value={draft.cifs.password}
+            onChange={(e) => onChange({ ...draft.cifs, password: e.target.value })}
+            data-testid="blob-store-cifs-password"
+            className="flex-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100"
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword((v) => !v)}
+            data-testid="blob-store-cifs-password-toggle"
+            className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-200"
+          >
+            {showPassword ? 'Hide' : 'Show'}
+          </button>
+        </div>
+      </Field>
+      <p className="col-span-2 text-xs text-gray-500 dark:text-gray-400">
+        Credentials land in the <code>stalwart-cifs-blobstore-creds</code> Secret in the{' '}
+        <code>mail</code> namespace. Stalwart is configured with FileSystem BlobStore pointing
+        at the CIFS hostPath mount.
+      </p>
+    </div>
+  );
+}
+
 interface FieldProps {
   readonly label: string;
   readonly testId: string;
@@ -475,6 +615,13 @@ function BlobStoreConfirmModal({
                 <li className="text-red-700 dark:text-red-300">
                   <strong>FileSystem is INCOMPATIBLE with multi-replica HA.</strong>{' '}
                   Apply HA will fail until you switch back.
+                </li>
+              ) : null}
+              {toType === 'CIFS' ? (
+                <li className="text-amber-700 dark:text-amber-300">
+                  <strong>CIFS requires node pinning.</strong>{' '}
+                  Set Node Placement → mode: required on the CIFS-mount node after applying,
+                  otherwise Stalwart may land on a node without the share.
                 </li>
               ) : null}
               {toType === 'S3' ? (

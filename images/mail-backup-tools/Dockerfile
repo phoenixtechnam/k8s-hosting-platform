@@ -91,6 +91,11 @@ RUN chmod 755 /usr/local/bin/jmap-seed.py
 COPY jmap-restore.py /usr/local/bin/jmap-restore.py
 RUN chmod 755 /usr/local/bin/jmap-restore.py
 
+# Phase 2.5 (ADR-036): restic upload sidecar for stalwart-snapshot CronJob.
+# Waits for /snapshot/done, runs restic backup, reports stats to platform-api.
+COPY snapshot-upload.sh /usr/local/bin/snapshot-upload.sh
+RUN chmod 755 /usr/local/bin/snapshot-upload.sh
+
 # Default to a no-op so `docker run …` doesn't error; the orchestrator
 # always overrides command/args.
 CMD ["sh", "-c", "echo tenant-backup-tools image ready; sleep 1"]

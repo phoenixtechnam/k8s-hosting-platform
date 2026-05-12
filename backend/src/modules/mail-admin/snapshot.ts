@@ -19,7 +19,10 @@
  * GET  /admin/mail/snapshot/jobs/:name
  */
 
+import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
+import { systemSettings } from '../../db/schema.js';
+import type { Database } from '../../db/index.js';
 import {
   type MailSnapshotStatusResponse,
   type MailSnapshotTriggerResponse,
@@ -37,8 +40,11 @@ const SNAPSHOT_JOB_MANUAL_PREFIX = 'stalwart-snapshot-manual-';
 /** A snapshot is considered stale if its age exceeds this threshold. */
 const SNAPSHOT_STALE_THRESHOLD_SECONDS = 300; // 5 minutes
 
+const SETTINGS_ID = 'system';
+
 export interface SnapshotOptions {
   readonly kubeconfigPath: string | undefined;
+  readonly db?: Database;
 }
 
 interface K8sClientsBundle {
@@ -188,15 +194,36 @@ export async function getMailSnapshotStatus(
       secondsSinceLastSnapshot < SNAPSHOT_STALE_THRESHOLD_SECONDS)
   );
 
+  // Read persisted stats + backup store from system_settings (best-effort).
+  let backupStoreId: string | null = null;
+  let totalSnapshotSizeBytes: number | null = null;
+  let resticSnapshotCount: number | null = null;
+  if (opts.db) {
+    try {
+      const [row] = await opts.db.select({
+        backupStoreId: systemSettings.mailSnapshotBackupStoreId,
+        lastRunStats: systemSettings.mailSnapshotLastRunStats,
+      }).from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
+      backupStoreId = row?.backupStoreId ?? null;
+      if (row?.lastRunStats) {
+        totalSnapshotSizeBytes = row.lastRunStats.totalSnapshotSizeBytes ?? null;
+        resticSnapshotCount = row.lastRunStats.snapshotCount ?? null;
+      }
+    } catch {
+      // Non-fatal — fall back to nulls.
+    }
+  }
+
   return mailSnapshotStatusResponseSchema.parse({
     enabled,
     scheduleExpression,
     lastSnapshotAt: lastSnapshotAt ?? null,
-    lastSnapshotSizeBytes: null, // not available from Job metadata (would need pod log parsing)
-    snapshotCount,
+    lastSnapshotSizeBytes: null, // not available from Job metadata
+    totalSnapshotSizeBytes,
+    snapshotCount: resticSnapshotCount ?? snapshotCount,
     secondsSinceLastSnapshot,
     healthy,
-    backupStoreId: null, // Phase 2: wired when active BackupStore integration is complete
+    backupStoreId,
   });
 }
 

@@ -2000,6 +2000,19 @@ export const systemSettings = pgTable('system_settings', {
   // 0069: when true, domain verification failure notifications are also
   // dispatched via email (in addition to in-app). Default false.
   notifyDnsFailuresViaEmail: boolean('notify_dns_failures_via_email').notNull().default(false),
+  // 0100: mail snapshot settings.
+  // mailSnapshotSchedule: cron override for the stalwart-snapshot CronJob
+  //   (null = use CronJob's own spec.schedule).
+  // mailSnapshotBackupStoreId: FK to backup_configurations.id (no CASCADE).
+  // mailSnapshotLastRunStats: JSON written by the upload sidecar after each
+  //   successful restic run: { totalSnapshotSizeBytes, snapshotCount, runAt }.
+  mailSnapshotSchedule: varchar('mail_snapshot_schedule', { length: 100 }),
+  mailSnapshotBackupStoreId: varchar('mail_snapshot_backup_store_id', { length: 36 }),
+  mailSnapshotLastRunStats: jsonb('mail_snapshot_last_run_stats').$type<{
+    totalSnapshotSizeBytes: number;
+    snapshotCount: number;
+    runAt: string;
+  } | null>(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

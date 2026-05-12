@@ -36,9 +36,18 @@ import { getBlobStore, updateBlobStore, getBlobStoreJobStatus } from './blob-sto
 import { getMailNodeSelector, updateMailNodeSelector } from './node-selector.js';
 import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
 import {
+  getMailSnapshotSchedule,
+  updateMailSnapshotSchedule,
+  getMailSnapshotBackupTarget,
+  updateMailSnapshotBackupTarget,
+  recordMailSnapshotLastRun,
+} from './snapshot-settings.js';
+import {
   mailPvcResizeRequestSchema,
   blobStoreUpdateRequestSchema,
   mailNodeSelectorUpdateSchema,
+  mailSnapshotScheduleUpdateSchema,
+  mailSnapshotBackupTargetUpdateSchema,
 } from '@k8s-hosting/api-contracts';
 
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
@@ -501,6 +510,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       try {
         const result = await getMailSnapshotStatus({
           kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+          db: app.db,
         });
         return success(result);
       } catch (err) {
@@ -569,6 +579,149 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           503,
         );
       }
+    },
+  );
+
+  // ─── Snapshot schedule ────────────────────────────────────────────
+  app.get(
+    '/admin/mail/snapshot-schedule',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const cfg = app.config as Record<string, unknown>;
+      try {
+        const result = await getMailSnapshotSchedule(app.db, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: snapshot schedule read failed');
+        throw new ApiError(
+          'SNAPSHOT_SCHEDULE_READ_FAILED',
+          'Could not read snapshot schedule — see server logs',
+          503,
+        );
+      }
+    },
+  );
+
+  app.patch(
+    '/admin/mail/snapshot-schedule',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = mailSnapshotScheduleUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      app.log.warn({ userId, scheduleExpression: parsed.data.scheduleExpression }, 'mail-admin: snapshot schedule update requested');
+      try {
+        const result = await updateMailSnapshotSchedule(parsed.data, app.db, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        app.log.warn({ userId, scheduleExpression: parsed.data.scheduleExpression }, 'mail-admin: snapshot schedule updated');
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: snapshot schedule update failed');
+        throw new ApiError(
+          'SNAPSHOT_SCHEDULE_UPDATE_FAILED',
+          'Snapshot schedule update failed — see server logs',
+          500,
+        );
+      }
+    },
+  );
+
+  // ─── Snapshot backup target ───────────────────────────────────────
+  app.get(
+    '/admin/mail/snapshot-backup-target',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      try {
+        const result = await getMailSnapshotBackupTarget(app.db);
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: snapshot backup target read failed');
+        throw new ApiError(
+          'SNAPSHOT_BACKUP_TARGET_READ_FAILED',
+          'Could not read snapshot backup target — see server logs',
+          503,
+        );
+      }
+    },
+  );
+
+  app.patch(
+    '/admin/mail/snapshot-backup-target',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = mailSnapshotBackupTargetUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      const encryptionKey = (cfg.ENCRYPTION_KEY as string | undefined) ?? '';
+      if (!encryptionKey && parsed.data.backupStoreId) {
+        throw new ApiError(
+          'ENCRYPTION_KEY_MISSING',
+          'ENCRYPTION_KEY env var is not set — cannot decrypt backup store credentials',
+          500,
+        );
+      }
+      app.log.warn({ userId, backupStoreId: parsed.data.backupStoreId }, 'mail-admin: snapshot backup target update requested');
+      try {
+        const result = await updateMailSnapshotBackupTarget(parsed.data, app.db, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        }, encryptionKey);
+        app.log.warn({ userId, backupStoreId: parsed.data.backupStoreId }, 'mail-admin: snapshot backup target updated');
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: snapshot backup target update failed');
+        throw new ApiError(
+          'SNAPSHOT_BACKUP_TARGET_UPDATE_FAILED',
+          'Snapshot backup target update failed — see server logs',
+          500,
+        );
+      }
+    },
+  );
+
+  // ─── Internal: snapshot last-run stats (called by upload sidecar) ─
+  // Secured by service-account token — not gated by the user RBAC
+  // middleware but by checking the Authorization header against the
+  // platform SA token in the environment.
+  app.post(
+    '/internal/mail/snapshot-last-run',
+    async (req: { body: unknown; headers: Record<string, string | string[] | undefined> }) => {
+      const expectedToken = process.env.PLATFORM_INTERNAL_TOKEN;
+      if (expectedToken) {
+        const auth = req.headers['authorization'] ?? '';
+        const token = Array.isArray(auth) ? auth[0] : auth;
+        if (!token.startsWith('Bearer ') || token.slice(7) !== expectedToken) {
+          throw new ApiError('UNAUTHORIZED', 'Invalid internal token', 401);
+        }
+      }
+      const body = req.body as { totalSnapshotSizeBytes?: unknown; snapshotCount?: unknown };
+      const totalSnapshotSizeBytes = Number(body.totalSnapshotSizeBytes ?? 0);
+      const snapshotCount = Number(body.snapshotCount ?? 0);
+      if (!Number.isFinite(totalSnapshotSizeBytes) || !Number.isFinite(snapshotCount)) {
+        throw new ApiError('VALIDATION_ERROR', 'totalSnapshotSizeBytes and snapshotCount must be numbers', 400);
+      }
+      await recordMailSnapshotLastRun(app.db, { totalSnapshotSizeBytes, snapshotCount });
+      return success({ recorded: true });
     },
   );
 }

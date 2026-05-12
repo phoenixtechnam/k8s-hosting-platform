@@ -6,12 +6,24 @@ import {
   Check,
   X,
   Play,
+  Pencil,
+  Save,
+  Database,
 } from 'lucide-react';
 import {
   useMailSnapshotStatus,
   useTriggerMailSnapshot,
   useMailSnapshotJobStatus,
 } from '@/hooks/use-mail-snapshot';
+import {
+  useMailSnapshotSchedule,
+  useUpdateMailSnapshotSchedule,
+} from '@/hooks/use-mail-snapshot-schedule';
+import {
+  useMailSnapshotBackupTarget,
+  useBackupConfigs,
+  useUpdateMailSnapshotBackupTarget,
+} from '@/hooks/use-mail-snapshot-backup-target';
 import type { MailSnapshotJobStatusResponse } from '@k8s-hosting/api-contracts';
 
 /**
@@ -35,6 +47,15 @@ export default function MailSnapshotHealthCard() {
   const trigger = useTriggerMailSnapshot();
   const [pendingJobName, setPendingJobName] = useState<string | null>(null);
   const job = useMailSnapshotJobStatus(pendingJobName);
+
+  const scheduleQuery = useMailSnapshotSchedule();
+  const scheduleUpdate = useUpdateMailSnapshotSchedule();
+  const [editingSchedule, setEditingSchedule] = useState(false);
+  const [scheduleDraft, setScheduleDraft] = useState('');
+
+  const backupTargetQuery = useMailSnapshotBackupTarget();
+  const backupTargetUpdate = useUpdateMailSnapshotBackupTarget();
+  const backupConfigsQuery = useBackupConfigs();
 
   if (status.isLoading) {
     return (
@@ -103,49 +124,141 @@ export default function MailSnapshotHealthCard() {
       </div>
 
       {/* ── detail grid ── */}
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 grid grid-cols-2 gap-3 text-sm">
-        <KvRow
-          label="Schedule"
-          value={data.enabled ? data.scheduleExpression || '(unknown)' : 'Disabled'}
-          testId="mail-snapshot-schedule"
-        />
-        <KvRow
-          label="Stored snapshots"
-          value={String(data.snapshotCount)}
-          testId="mail-snapshot-count"
-        />
-        <KvRow
-          label="Last snapshot"
-          value={
-            data.lastSnapshotAt
-              ? new Date(data.lastSnapshotAt).toLocaleString()
-              : 'Never'
-          }
-          testId="mail-snapshot-last-at"
-        />
-        <KvRow
-          label="Last snapshot size"
-          value={
-            data.lastSnapshotSizeBytes != null
-              ? formatBytes(data.lastSnapshotSizeBytes)
-              : '—'
-          }
-          testId="mail-snapshot-last-size"
-        />
-        <KvRow
-          label="Backup store ID"
-          value={data.backupStoreId ?? '(none configured)'}
-          testId="mail-snapshot-store-id"
-        />
-        <KvRow
-          label="Age"
-          value={
-            data.secondsSinceLastSnapshot != null
-              ? `${formatAge(data.secondsSinceLastSnapshot)} ago`
-              : '—'
-          }
-          testId="mail-snapshot-age"
-        />
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-3 text-sm">
+        <div className="grid grid-cols-2 gap-3">
+          {/* Schedule — inline editor */}
+          <div className="space-y-0.5">
+            <div className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 flex items-center gap-1">
+              Schedule
+              {!editingSchedule && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScheduleDraft(scheduleQuery.data?.data.scheduleExpression ?? data.scheduleExpression ?? '*/2 * * * *');
+                    setEditingSchedule(true);
+                  }}
+                  aria-label="Edit schedule"
+                  className="rounded p-0.5 text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
+                  data-testid="mail-snapshot-schedule-edit"
+                >
+                  <Pencil size={11} />
+                </button>
+              )}
+            </div>
+            {editingSchedule ? (
+              <div className="flex gap-1 items-center">
+                <input
+                  type="text"
+                  value={scheduleDraft}
+                  onChange={(e) => setScheduleDraft(e.target.value)}
+                  data-testid="mail-snapshot-schedule-input"
+                  className="flex-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-xs font-mono text-gray-900 dark:text-gray-100"
+                />
+                <button
+                  type="button"
+                  disabled={scheduleUpdate.isPending}
+                  onClick={async () => {
+                    await scheduleUpdate.mutateAsync({ scheduleExpression: scheduleDraft });
+                    setEditingSchedule(false);
+                  }}
+                  data-testid="mail-snapshot-schedule-save"
+                  className="rounded border border-brand-500 bg-brand-500 p-1 text-white disabled:opacity-50"
+                >
+                  {scheduleUpdate.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingSchedule(false)}
+                  className="rounded border border-gray-300 dark:border-gray-600 p-1 text-gray-500"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ) : (
+              <div data-testid="mail-snapshot-schedule" className="font-mono text-sm text-gray-900 dark:text-gray-100">
+                {data.enabled ? (scheduleQuery.data?.data.scheduleExpression ?? data.scheduleExpression ?? '(unknown)') : 'Disabled'}
+              </div>
+            )}
+          </div>
+
+          <KvRow
+            label="Stored snapshots"
+            value={String(data.snapshotCount)}
+            testId="mail-snapshot-count"
+          />
+          <KvRow
+            label="Last snapshot"
+            value={
+              data.lastSnapshotAt
+                ? new Date(data.lastSnapshotAt).toLocaleString()
+                : 'Never'
+            }
+            testId="mail-snapshot-last-at"
+          />
+          <KvRow
+            label="Age"
+            value={
+              data.secondsSinceLastSnapshot != null
+                ? `${formatAge(data.secondsSinceLastSnapshot)} ago`
+                : '—'
+            }
+            testId="mail-snapshot-age"
+          />
+          <KvRow
+            label="Total repo size"
+            value={
+              data.totalSnapshotSizeBytes != null
+                ? formatBytes(data.totalSnapshotSizeBytes)
+                : '—'
+            }
+            testId="mail-snapshot-total-size"
+          />
+          <KvRow
+            label="Last export size"
+            value={
+              data.lastSnapshotSizeBytes != null
+                ? formatBytes(data.lastSnapshotSizeBytes)
+                : '—'
+            }
+            testId="mail-snapshot-last-size"
+          />
+        </div>
+
+        {/* Backup target — dropdown selector */}
+        <div className="pt-1 border-t border-gray-200 dark:border-gray-700 space-y-1">
+          <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            <Database size={11} /> Backup target (restic repo)
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={backupTargetQuery.data?.data.backupStoreId ?? ''}
+              onChange={async (e) => {
+                const val = e.target.value;
+                await backupTargetUpdate.mutateAsync({ backupStoreId: val || null });
+              }}
+              disabled={backupTargetUpdate.isPending || backupConfigsQuery.isLoading}
+              data-testid="mail-snapshot-backup-target-select"
+              className="flex-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+            >
+              <option value="">(none — local CronJob only)</option>
+              {(backupConfigsQuery.data?.data ?? []).map((cfg) => (
+                <option key={cfg.id} value={cfg.id}>
+                  {cfg.name} ({cfg.storageType})
+                </option>
+              ))}
+            </select>
+            {backupTargetUpdate.isPending && <Loader2 size={14} className="animate-spin text-gray-400" />}
+          </div>
+          {backupTargetQuery.data?.data.backupStoreId ? (
+            <p className="text-xs text-green-700 dark:text-green-400">
+              Uploads to <strong>{backupTargetQuery.data.data.backupStoreName ?? backupTargetQuery.data.data.backupStoreId}</strong> via restic — deduplication enabled.
+            </p>
+          ) : (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              No offsite backup configured — snapshots exist only as local k8s Jobs.
+            </p>
+          )}
+        </div>
       </div>
 
       {/* ── job status panel (while/after trigger) ── */}
