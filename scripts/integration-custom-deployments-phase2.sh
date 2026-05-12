@@ -1122,15 +1122,19 @@ YAML
     fail "T16: capabilities.add not as expected; got: '$caps'"
   fi
 
-  local sysctl_name sysctl_val
-  sysctl_name=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
-    -o jsonpath='{.items[0].spec.securityContext.sysctls[0].name}' 2>/dev/null || true)
-  sysctl_val=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
-    -o jsonpath='{.items[0].spec.securityContext.sysctls[0].value}' 2>/dev/null || true)
-  if [[ "$sysctl_name" == "net.ipv4.ip_unprivileged_port_start" && "$sysctl_val" == "80" ]]; then
+  # jsonpath {.sysctls[0].name} returns empty on some kubectl builds; use python JSON
+  local sysctl_ok
+  sysctl_ok=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
+    -o json 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+sysctls=d['items'][0]['spec']['securityContext'].get('sysctls',[])
+print('ok' if any(s.get('name')=='net.ipv4.ip_unprivileged_port_start' and str(s.get('value'))=='80' for s in sysctls) else 'fail')
+" 2>/dev/null || echo "fail")
+  if [[ "$sysctl_ok" == "ok" ]]; then
     pass "T16: sysctl net.ipv4.ip_unprivileged_port_start=80 in Pod spec"
   else
-    fail "T16: sysctl not as expected; name='$sysctl_name' val='$sysctl_val'"
+    fail "T16: sysctl not as expected"
   fi
 }
 
@@ -1197,22 +1201,21 @@ print(len([i for i in d.get('issues',[]) if i.get('severity')=='error']))
   fi
   pass "T17: pod $name Running"
 
-  local cm_vol
-  cm_vol=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
-    -o jsonpath='{.items[0].spec.volumes[*].configMap.name}' 2>/dev/null || true)
-  if echo "$cm_vol" | grep -q "cdcm-"; then
+  # .spec.volumes[*].name returns the pod volume names (cdcm-* / cdsec-*);
+  # .configMap.name / .secret.secretName returns the resource names (cd-*) which differ
+  local all_vol_names
+  all_vol_names=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
+    -o jsonpath='{.items[0].spec.volumes[*].name}' 2>/dev/null || true)
+  if echo "$all_vol_names" | grep -q "cdcm-"; then
     pass "T17: ConfigMap volume (cdcm-*) mounted in pod"
   else
-    fail "T17: no cdcm- ConfigMap volume found; volumes: $cm_vol"
+    fail "T17: no cdcm- ConfigMap volume found; volumes: $all_vol_names"
   fi
 
-  local sec_vol
-  sec_vol=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
-    -o jsonpath='{.items[0].spec.volumes[*].secret.secretName}' 2>/dev/null || true)
-  if echo "$sec_vol" | grep -q "cdsec-"; then
+  if echo "$all_vol_names" | grep -q "cdsec-"; then
     pass "T17: Secret volume (cdsec-*) mounted in pod"
   else
-    fail "T17: no cdsec- Secret volume found; secret volumes: $sec_vol"
+    fail "T17: no cdsec- Secret volume found; volumes: $all_vol_names"
   fi
 }
 
