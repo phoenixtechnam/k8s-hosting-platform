@@ -81,15 +81,14 @@ export async function deployCustomDeployment(
   k8s: K8sClients,
   input: DeployCustomInput,
 ): Promise<void> {
-  // Phase 1: simple mode guarantees exactly one service. The compose
-  // parser (PR-3) constructs multi-service specs.
+  // Multi-service supported (PR-3). The validator enforces the
+  // 10-service cap and depends_on integrity; the deployer just
+  // renders k8s primitives per service.
   const serviceEntries = Object.entries(input.spec.services);
-  if (serviceEntries.length !== 1) {
-    throw new Error(
-      `custom k8s-deployer: simple-mode requires exactly one service, got ${serviceEntries.length}`,
-    );
+  if (serviceEntries.length === 0) {
+    throw new Error('custom k8s-deployer: spec has no services');
   }
-  const [serviceName, service] = serviceEntries[0];
+  const serviceCount = serviceEntries.length;
 
   // 1. ConfigMaps + Secrets first — Pod refs may reference them.
   for (const cm of input.spec.configMaps) {
@@ -99,14 +98,32 @@ export async function deployCustomDeployment(
     await applySecret(k8s, input, s);
   }
 
-  // 2. Deployment.
-  await applyDeployment(k8s, input, serviceName, service);
-
-  // 3. Services (one per `exposeAsService: true` port).
-  for (const port of service.ports) {
-    if (!port.exposeAsService) continue;
-    await applyService(k8s, input, serviceName, port);
+  // 2. For each service: render Deployment + Services. Apply in a
+  // stable order (insertion order from spec.services) so a redeploy
+  // doesn't churn the cluster needlessly.
+  for (const [serviceName, service] of serviceEntries) {
+    await applyDeployment(k8s, input, serviceName, service, serviceCount);
+    for (const port of service.ports) {
+      if (!port.exposeAsService) continue;
+      await applyService(k8s, input, serviceName, port, serviceCount);
+    }
   }
+}
+
+/**
+ * Deterministic k8s resource name for a service within a stack.
+ * - Single service: just the deployment name (backwards-compat with
+ *   PR-2 simple-mode deployments).
+ * - Multi service: `{deploymentName}-{serviceName}`.
+ * Matches the catalog deployer's `k8sResourceName` convention.
+ */
+export function serviceResourceName(
+  deploymentName: string,
+  serviceName: string,
+  serviceCount: number,
+): string {
+  if (serviceCount <= 1) return deploymentName;
+  return `${deploymentName}-${serviceName}`;
 }
 
 // ─── ConfigMap / Secret renderers ───────────────────────────────────────────
@@ -179,25 +196,41 @@ async function applyDeployment(
   input: DeployCustomInput,
   serviceName: string,
   service: CustomDeploymentService,
+  serviceCount: number,
 ): Promise<void> {
-  const name = input.deploymentName;
+  const name = serviceResourceName(input.deploymentName, serviceName, serviceCount);
   const labels = {
-    app: input.deploymentName,
+    app: name,
+    // Stack-level label so all Pods of all services in this
+    // deployment share a discriminator — used by image-audit's
+    // pod-listing label selector and by the delete-by-label sweep.
     'platform.phoenix-host.net/deployment-id': input.deploymentId,
     'platform.phoenix-host.net/owner': 'custom-deployments',
+    'platform.phoenix-host.net/stack-service': serviceName,
   };
-  const selectorLabels = { app: input.deploymentName };
+  const selectorLabels = { app: name };
 
   const container = buildContainer(serviceName, service, input);
-  const podVolumes = buildPodVolumes(input.spec, input);
-  const initDirs = buildInitDirsContainer(input);
+  const podVolumes = buildPodVolumes(input.spec, input, service);
+  const initDirs = buildInitDirsContainer(input, service);
+  const dependsOnInits = buildDependsOnInitContainers(input, service, serviceCount);
+
+  // Init containers run in declared order. depends_on waiters MUST
+  // complete before init-dirs (cheap, network-bound) — the order
+  // doesn't actually matter for correctness, but waiters first
+  // means a deploy that's blocked on a missing dep surfaces the
+  // wait quickly in `kubectl describe pod` rather than after the
+  // mkdir step.
+  const initContainers: Record<string, unknown>[] = [];
+  initContainers.push(...dependsOnInits);
+  if (initDirs) initContainers.push(initDirs);
 
   const podSpec: Record<string, unknown> = {
     containers: [container],
     priorityClassName: TENANT_DEFAULT_PRIORITY_CLASS,
     securityContext: buildPodSecurityContext(service, input.spec),
     restartPolicy: service.restartPolicy === 'Never' ? 'Never' : 'Always',
-    ...(initDirs ? { initContainers: [initDirs] } : {}),
+    ...(initContainers.length > 0 ? { initContainers } : {}),
     ...(podVolumes.length > 0 ? { volumes: podVolumes } : {}),
     ...(input.hasPullCredential
       ? { imagePullSecrets: [{ name: k8sPullSecretName(input.deploymentId) }] }
@@ -249,14 +282,23 @@ async function applyDeployment(
       body,
     } as unknown as Parameters<typeof k8s.apps.createNamespacedDeployment>[0]);
   } catch (err) {
-    if (!isK8s409(err)) throw err;
+    // k8s SDK error messages have been observed to echo the request
+    // payload (e.g. the tenant's `env:` block, which can carry inline
+    // credentials). Scrub via wrapK8sDeployerError before the error
+    // can land in `deployments.last_error` and become visible to
+    // admins via the admin panel.
+    if (!isK8s409(err)) throw wrapK8sDeployerError(err, 'Deployment', name, 'create');
     // Patch the existing Deployment in place. Strategic-merge replaces
     // the `template` block as a unit so changes to image / env / etc.
     // propagate cleanly.
-    await k8s.apps.patchNamespacedDeployment(
-      { name, namespace: input.namespace, body } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
-      STRATEGIC_MERGE_PATCH,
-    );
+    try {
+      await k8s.apps.patchNamespacedDeployment(
+        { name, namespace: input.namespace, body } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+        STRATEGIC_MERGE_PATCH,
+      );
+    } catch (patchErr) {
+      throw wrapK8sDeployerError(patchErr, 'Deployment', name, 'patch');
+    }
   }
 }
 
@@ -289,6 +331,11 @@ function buildContainer(
   const k8sCommand = service.entrypoint && service.entrypoint.length > 0 ? service.entrypoint : undefined;
   const k8sArgs = service.command && service.command.length > 0 ? service.command : undefined;
 
+  // Liveness + readiness probes derived from the same healthcheck —
+  // compose only models one. Using the same shape for both is the
+  // standard k8s pattern when the user didn't differentiate.
+  const probe = service.healthCheck ? renderProbe(service.healthCheck) : undefined;
+
   return {
     name: serviceName,
     image: service.image,
@@ -307,7 +354,46 @@ function buildContainer(
     },
     securityContext: buildContainerSecurityContext(service, input.spec),
     ...(service.workingDir ? { workingDir: service.workingDir } : {}),
+    ...(probe ? { livenessProbe: probe, readinessProbe: probe } : {}),
   };
+}
+
+/**
+ * Convert a CustomDeploymentHealthCheck to a k8s Probe spec.
+ *
+ * The three healthCheck variants map directly:
+ *   - httpGet  → probe.httpGet { path, port, scheme, httpHeaders }
+ *   - tcpSocket → probe.tcpSocket { port }
+ *   - exec     → probe.exec { command }
+ *
+ * Timing fields use the same names + units as k8s. successThreshold
+ * is forced to 1 for liveness probes (k8s requires it) but the
+ * schema already defaults to 1.
+ */
+function renderProbe(hc: CustomDeploymentService['healthCheck']): Record<string, unknown> | undefined {
+  if (!hc) return undefined;
+  const timing = {
+    initialDelaySeconds: hc.initialDelaySeconds,
+    periodSeconds: hc.periodSeconds,
+    timeoutSeconds: hc.timeoutSeconds,
+    failureThreshold: hc.failureThreshold,
+    successThreshold: hc.successThreshold,
+  };
+  if (hc.type === 'httpGet') {
+    return {
+      httpGet: {
+        path: hc.path,
+        port: hc.port,
+        scheme: hc.scheme ?? 'HTTP',
+        ...(hc.httpHeaders ? { httpHeaders: hc.httpHeaders } : {}),
+      },
+      ...timing,
+    };
+  }
+  if (hc.type === 'tcpSocket') {
+    return { tcpSocket: { port: hc.port }, ...timing };
+  }
+  return { exec: { command: hc.command }, ...timing };
 }
 
 function buildContainerEnv(
@@ -374,45 +460,56 @@ function buildVolumeMounts(
   return mounts;
 }
 
+/**
+ * Pod-level volumes for ONE service. Multi-service stacks share the
+ * top-level `spec.volumes` declarations but each service may only
+ * use a subset; we add only what THIS service references so unused
+ * volumes don't get dragged into every Pod.
+ */
 function buildPodVolumes(
-  spec: CustomDeploymentSpec,
+  _spec: CustomDeploymentSpec,
   input: DeployCustomInput,
+  service: CustomDeploymentService,
 ): Array<Record<string, unknown>> {
   const volumes: Array<Record<string, unknown>> = [];
 
-  // 1. Tenant PVC (only when at least one named volume exists).
-  const usedNamedVolumes = Object.values(spec.services)
-    .flatMap((svc) => svc.volumeMounts.map((vm) => vm.name));
-  const hasNamedVolumes = usedNamedVolumes.length > 0;
-  if (hasNamedVolumes) {
+  // 1. Tenant PVC — included if THIS service mounts at least one
+  //    named volume (no point attaching the PVC for a stateless web
+  //    container that mounts nothing).
+  if (service.volumeMounts.length > 0) {
     volumes.push({
       name: CLIENT_PVC_VOLUME_NAME,
       persistentVolumeClaim: { claimName: `${input.namespace}-storage` },
     });
   }
 
-  // 2. Tmpfs emptyDirs.
+  // 2. Tmpfs emptyDirs — per-service (not pod-wide).
   const tmpfsSeen = new Set<string>();
-  for (const svc of Object.values(spec.services)) {
-    for (const t of svc.tmpfs) {
-      const name = tmpfsVolumeName(t.path);
-      if (tmpfsSeen.has(name)) continue;
-      tmpfsSeen.add(name);
-      volumes.push({
-        name,
-        emptyDir: { medium: 'Memory', sizeLimit: `${t.sizeMi}Mi` },
-      });
-    }
+  for (const t of service.tmpfs) {
+    const name = tmpfsVolumeName(t.path);
+    if (tmpfsSeen.has(name)) continue;
+    tmpfsSeen.add(name);
+    volumes.push({
+      name,
+      emptyDir: { medium: 'Memory', sizeLimit: `${t.sizeMi}Mi` },
+    });
   }
 
   return volumes;
 }
 
-function buildInitDirsContainer(input: DeployCustomInput): Record<string, unknown> | null {
-  // Pre-create each named volume's subPath on the PVC. Mirrors the
-  // catalog deployer pattern (chmod 777 so any image's runtime user
-  // can write on first boot).
-  const namedVolumes = Object.keys(input.spec.volumes);
+/**
+ * init-dirs initContainer for ONE service. Only pre-creates the
+ * subPath directories THIS service mounts — a stack with two
+ * services sharing a `data` volume gets the directory created twice
+ * (idempotent: `mkdir -p` followed by `chmod 777`), which is cheap.
+ */
+function buildInitDirsContainer(
+  input: DeployCustomInput,
+  service: CustomDeploymentService,
+): Record<string, unknown> | null {
+  // Volumes THIS service mounts — pre-create their subPath roots.
+  const namedVolumes = [...new Set(service.volumeMounts.map((vm) => vm.name))];
   if (namedVolumes.length === 0) return null;
 
   const mkdirParts = namedVolumes.map((volName) => {
@@ -431,6 +528,109 @@ function buildInitDirsContainer(input: DeployCustomInput): Record<string, unknow
   };
 }
 
+/**
+ * Render one initContainer per `service.dependsOn` entry. Each
+ * waits for the dependency's first `exposeAsService` port to accept
+ * a TCP connection (poll loop with 1s sleep, wrapped in a 60s
+ * timeout — failing fast catches a stuck dependency rather than
+ * pinning the Pod in Init forever).
+ *
+ * Dependencies that declare no exposed Service ports are skipped
+ * with a log line (the busybox `echo` is the operator-visible
+ * signal that the wait was no-op).
+ */
+function buildDependsOnInitContainers(
+  input: DeployCustomInput,
+  service: CustomDeploymentService,
+  serviceCount: number,
+): Array<Record<string, unknown>> {
+  if (service.dependsOn.length === 0) return [];
+
+  const out: Array<Record<string, unknown>> = [];
+  // Collision-safe init-container names. The slug() function
+  // truncates at 47 chars to leave room for the `wait-` prefix
+  // (5 chars) + a numeric suffix (-NN, up to 3 chars) inside the
+  // 63-char DNS-label limit. If two dependency names truncate to
+  // the same slug we append `-2`, `-3`, … to dedupe.
+  const usedNames = new Set<string>();
+  for (const depName of service.dependsOn) {
+    const dep = input.spec.services[depName];
+    if (!dep) {
+      // Validator already rejects this; defensive skip in the deployer.
+      continue;
+    }
+    const firstPort = dep.ports.find((p) => p.exposeAsService);
+    if (!firstPort) {
+      // No Service exposed → no wait target. Emit a no-op init that
+      // logs an explanation, so the operator can see in `kubectl
+      // describe pod` that depends_on=<dep> was acknowledged but
+      // couldn't be waited on.
+      out.push({
+        name: uniqueInitName(usedNames, depName),
+        image: INIT_DIRS_IMAGE,
+        command: ['sh', '-c', `echo "depends_on '${depName}' has no exposed service port; skipping wait"`],
+        resources: {
+          requests: { cpu: '5m', memory: '8Mi' },
+          limits: { cpu: '20m', memory: '16Mi' },
+        },
+      });
+      continue;
+    }
+    // Resolve the dependency's k8s Service DNS name.
+    const depDeploymentName = serviceResourceName(input.deploymentName, depName, serviceCount);
+    const depServiceName = `${depDeploymentName}-${firstPort.name}`;
+    // 60s outer timeout. nc -z polls the port; sleep 1 between
+    // attempts so we don't pin a CPU. -w 2 on nc caps each probe
+    // at 2s in case the dependency's Pod is mid-startup and the
+    // DNS resolves but the connection hangs.
+    const waitCmd = `timeout 60 sh -c 'until nc -z -w 2 ${depServiceName} ${firstPort.containerPort}; do sleep 1; done'`;
+    out.push({
+      name: uniqueInitName(usedNames, depName),
+      image: INIT_DIRS_IMAGE,
+      command: ['sh', '-c', waitCmd],
+      resources: {
+        requests: { cpu: '5m', memory: '8Mi' },
+        limits: { cpu: '20m', memory: '16Mi' },
+      },
+    });
+  }
+  return out;
+}
+
+/**
+ * Generate a unique init-container name from a dependency name.
+ * Strategy: `wait-{slug}`; if that slug is already taken (two deps
+ * truncate to the same string), append `-2`, `-3`, … until free.
+ * Records the chosen name in `usedNames` so future calls see it.
+ */
+function uniqueInitName(usedNames: Set<string>, depName: string): string {
+  const base = `wait-${slug(depName)}`;
+  if (!usedNames.has(base)) {
+    usedNames.add(base);
+    return base;
+  }
+  for (let i = 2; i < 100; i++) {
+    const candidate = `${base}-${i}`;
+    if (!usedNames.has(candidate)) {
+      usedNames.add(candidate);
+      return candidate;
+    }
+  }
+  // Extreme edge case (validator caps depends_on at ~10 entries):
+  // fall through to a uuid suffix.
+  const fallback = `${base}-${Math.random().toString(36).slice(2, 6)}`;
+  usedNames.add(fallback);
+  return fallback;
+}
+
+/** Shorten + sanitise a service name for use in initContainer names
+ *  (which must obey RFC 1123 label rules and stay ≤ 63 chars total).
+ *  Cap at 47 chars: 5 (`wait-`) + 47 (slug) + 4 (-NN dedupe suffix)
+ *  = 56 < 63. Keeps headroom for the dedupe counter. */
+function slug(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 47);
+}
+
 // ─── Service renderer ───────────────────────────────────────────────────────
 
 async function applyService(
@@ -438,19 +638,25 @@ async function applyService(
   input: DeployCustomInput,
   serviceName: string,
   port: CustomDeploymentService['ports'][number],
+  serviceCount: number,
 ): Promise<void> {
-  const name = `${input.deploymentName}-${port.name}`;
+  const owningDeploymentName = serviceResourceName(input.deploymentName, serviceName, serviceCount);
+  const name = `${owningDeploymentName}-${port.name}`;
   const labels = {
-    app: input.deploymentName,
+    app: owningDeploymentName,
     'platform.phoenix-host.net/deployment-id': input.deploymentId,
     'platform.phoenix-host.net/owner': 'custom-deployments',
+    'platform.phoenix-host.net/stack-service': serviceName,
     ...(port.ingressEligible ? { 'platform.phoenix-host.net/ingress-eligible': 'true' } : {}),
   };
   const body = {
     metadata: { name, namespace: input.namespace, labels },
     spec: {
       type: 'ClusterIP',
-      selector: { app: input.deploymentName },
+      // Selector targets ONLY this service's Pods (multi-service
+      // stacks have one Deployment per service, each with a unique
+      // `app=` label).
+      selector: { app: owningDeploymentName },
       ports: [{
         port: port.containerPort,
         targetPort: port.containerPort,
@@ -462,15 +668,19 @@ async function applyService(
   try {
     await k8s.core.createNamespacedService({ namespace: input.namespace, body });
   } catch (err) {
-    if (!isK8s409(err)) throw err;
+    if (!isK8s409(err)) throw wrapK8sDeployerError(err, 'Service', name, 'create');
     // For Services, immutable fields (clusterIP, selector under some
     // conditions) make strategic-merge brittle. We do a narrow patch
     // of `spec.ports` only — that's the field tenants change most
     // when iterating. Selector + clusterIP stay stable.
-    await k8s.core.patchNamespacedService(
-      { name, namespace: input.namespace, body: { spec: { ports: body.spec.ports } } } as unknown as Parameters<typeof k8s.core.patchNamespacedService>[0],
-      STRATEGIC_MERGE_PATCH,
-    );
+    try {
+      await k8s.core.patchNamespacedService(
+        { name, namespace: input.namespace, body: { spec: { ports: body.spec.ports } } } as unknown as Parameters<typeof k8s.core.patchNamespacedService>[0],
+        STRATEGIC_MERGE_PATCH,
+      );
+    } catch (patchErr) {
+      throw wrapK8sDeployerError(patchErr, 'Service', name, 'patch');
+    }
   }
 }
 
@@ -579,20 +789,15 @@ export async function deleteCustomDeployment(
   k8s: K8sClients,
   namespace: string,
   deploymentId: string,
-  deploymentName: string,
+  _deploymentName: string,
 ): Promise<void> {
   const selector = `platform.phoenix-host.net/deployment-id=${deploymentId}`;
 
-  // Deployment by name (faster than label-listing).
-  try {
-    await k8s.apps.deleteNamespacedDeployment({ name: deploymentName, namespace });
-  } catch (err) {
-    if (!isK8s404(err)) throw err;
-  }
-
-  // Services / ConfigMaps / Secrets by label. Listing returns
-  // exactly the per-deployment cohort because the deployer stamps
-  // the owner label on every resource it creates.
+  // Multi-service stacks (PR-3) have one Deployment per service —
+  // listing by the deployment-id label covers them all in a single
+  // pass. The legacy by-name shortcut from PR-2 has been removed
+  // because it only matched the single-service case.
+  await deleteByLabel(k8s, namespace, selector, 'deployment');
   await deleteByLabel(k8s, namespace, selector, 'service');
   await deleteByLabel(k8s, namespace, selector, 'configmap');
   await deleteByLabel(k8s, namespace, selector, 'secret');
@@ -602,9 +807,17 @@ async function deleteByLabel(
   k8s: K8sClients,
   namespace: string,
   labelSelector: string,
-  kind: 'service' | 'configmap' | 'secret',
+  kind: 'deployment' | 'service' | 'configmap' | 'secret',
 ): Promise<void> {
   switch (kind) {
+    case 'deployment': {
+      const list = await k8s.apps.listNamespacedDeployment({ namespace, labelSelector } as Parameters<typeof k8s.apps.listNamespacedDeployment>[0]) as unknown as { items: Array<{ metadata?: { name?: string } }> };
+      for (const item of list.items ?? []) {
+        const n = item.metadata?.name;
+        if (n) await k8s.apps.deleteNamespacedDeployment({ name: n, namespace }).catch(swallow404);
+      }
+      return;
+    }
     case 'service': {
       const list = await k8s.core.listNamespacedService({ namespace, labelSelector } as Parameters<typeof k8s.core.listNamespacedService>[0]) as unknown as { items: Array<{ metadata?: { name?: string } }> };
       for (const item of list.items ?? []) {

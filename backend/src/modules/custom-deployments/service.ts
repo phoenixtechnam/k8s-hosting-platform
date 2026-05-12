@@ -38,9 +38,11 @@ import {
   type CustomDeploymentSpec,
   type CustomDeploymentIssue,
   type CreateCustomDeploymentSimpleInput,
+  type CreateCustomDeploymentComposeInput,
   type UpdateCustomDeploymentInput,
 } from './schema.js';
 import { CUSTOM_SPEC_VERSION } from './schema.js';
+import { parseCompose } from './compose-parser.js';
 
 type CallerRole = ValidatorContext['callerRole'];
 
@@ -191,6 +193,146 @@ export async function createSimpleDeployment(
   return getCustomDeployment(db, clientId, id);
 }
 
+// ─── Compose create / validate ──────────────────────────────────────────────
+
+/**
+ * Validate a compose-form spec without persisting or deploying it.
+ * Used by the editor's preview step. Returns parser issues + the
+ * normalized spec (when parse succeeded) so the editor can render
+ * the "Issues" pane and the "Rendered" tab side by side.
+ */
+export async function validateComposeSpec(
+  db: Database,
+  input: { composeYaml: string; envFiles?: Record<string, string>; name?: string },
+  ctx: CallerCtx,
+): Promise<{ ok: boolean; issues: readonly CustomDeploymentIssue[]; spec: CustomDeploymentSpec | null }> {
+  const settings = await getSettings(db);
+  // Same gate as createComposeDeployment — operators disabling
+  // compose to contain blast radius should see the preview path
+  // also reject, not silently keep echoing the parser surface.
+  if (!settings.customDeploymentsAllowCompose) {
+    throw new ApiError(
+      'COMPOSE_DEPLOYMENTS_DISABLED',
+      'Compose-mode deployments are administratively disabled on this platform.',
+      403,
+    );
+  }
+  const parsed = parseCompose({ composeYaml: input.composeYaml, envFiles: input.envFiles });
+  if (!parsed.spec) {
+    return { ok: false, issues: parsed.issues, spec: null };
+  }
+  const semantic = validateCustomSpec(parsed.spec, {
+    callerRole: ctx.role,
+    warnUnpinnedTags: settings.customDeploymentsWarnUnpinnedTags,
+    singleServiceOnly: false,
+    deploymentName: input.name,
+  });
+  // Merge parser issues + validator issues for the editor's pane.
+  const allIssues = [...parsed.issues, ...semantic.issues];
+  return { ok: semantic.ok, issues: allIssues, spec: parsed.spec };
+}
+
+/**
+ * Persist + apply a compose-form deployment. Mirrors
+ * `createSimpleDeployment` but with the compose parser feeding the
+ * normalized spec, and multi-service stacks allowed.
+ */
+export async function createComposeDeployment(
+  db: Database,
+  k8s: K8sClients,
+  clientId: string,
+  input: CreateCustomDeploymentComposeInput,
+  ctx: CallerCtx,
+): Promise<CustomDeploymentRow> {
+  const settings = await getSettings(db);
+  if (!settings.customDeploymentsEnabled) {
+    throw new ApiError(
+      'CUSTOM_DEPLOYMENTS_DISABLED',
+      'Custom deployments are administratively disabled on this platform.',
+      403,
+    );
+  }
+  if (!settings.customDeploymentsAllowCompose) {
+    throw new ApiError(
+      'COMPOSE_DEPLOYMENTS_DISABLED',
+      'Compose-mode deployments are administratively disabled on this platform.',
+      403,
+    );
+  }
+
+  const namespace = await loadClientNamespace(db, clientId);
+
+  // Phase 1: parse → validate → reject if errors.
+  const parsed = parseCompose({ composeYaml: input.compose_yaml, envFiles: input.env_files });
+  if (!parsed.spec) {
+    throw new ApiError(
+      'CUSTOM_DEPLOYMENT_INVALID',
+      firstErrorIssue(parsed.issues),
+      422,
+      { issues: parsed.issues },
+    );
+  }
+  const validation = validateCustomSpec(parsed.spec, {
+    callerRole: ctx.role,
+    warnUnpinnedTags: settings.customDeploymentsWarnUnpinnedTags,
+    singleServiceOnly: false,
+    deploymentName: input.name,
+  });
+  if (!validation.ok) {
+    throw new ApiError(
+      'CUSTOM_DEPLOYMENT_INVALID',
+      firstErrorIssue([...parsed.issues, ...validation.issues]),
+      422,
+      { issues: [...parsed.issues, ...validation.issues] },
+    );
+  }
+
+  // Uniqueness — per the existing deployments_client_name_unique constraint.
+  const existing = await db.select().from(deployments)
+    .where(and(eq(deployments.clientId, clientId), eq(deployments.name, input.name)));
+  if (existing.length > 0) {
+    throw new ApiError(
+      'DEPLOYMENT_NAME_IN_USE',
+      `A deployment named '${input.name}' already exists in this client.`,
+      409,
+      { name: input.name },
+    );
+  }
+
+  // For multi-service, the row-level resource fields summarise the
+  // stack as the SUM of all services. Used for UI display + future
+  // plan-quota math. The customSpec carries per-service values.
+  const totals = sumResources(parsed.spec);
+
+  // Attach PAT id from the input (compose body never carries
+  // cleartext credentials — those go through the PAT routes).
+  // ParseResult.spec is `readonly`, so we copy with the field set
+  // rather than reassigning.
+  const finalSpec: CustomDeploymentSpec = input.pull_credential_id
+    ? { ...parsed.spec, pullCredentialId: input.pull_credential_id }
+    : parsed.spec;
+
+  const id = randomUUID();
+  const storagePath = `custom/${input.name}`;
+  await db.insert(deployments).values({
+    id,
+    clientId,
+    catalogEntryId: null,
+    source: 'custom',
+    customSpec: finalSpec as unknown as Record<string, unknown>,
+    name: input.name,
+    replicaCount: 1,
+    cpuRequest: totals.cpuRequest,
+    memoryRequest: totals.memoryRequest,
+    configuration: null,
+    storagePath,
+    status: 'deploying',
+  });
+
+  await deployToCluster(db, k8s, id, namespace, input.name, storagePath, finalSpec);
+  return getCustomDeployment(db, clientId, id);
+}
+
 // ─── Update ──────────────────────────────────────────────────────────────────
 
 /**
@@ -212,37 +354,48 @@ export async function updateCustomDeployment(
   const current = await getCustomDeployment(db, clientId, id);
   let nextSpec = current.customSpec;
   let needsRedeploy = false;
+  const isCompose = current.customSpec.sourceMode === 'compose';
 
-  // The simple-mode update surface (per PR-2) lets the tenant:
-  //   - rotate the image tag (one-click "Update available" flow)
-  //   - replace the env block
-  //   - tweak resources
-  //   - attach / detach an image-pull credential
-  //   - request an explicit `restart` (forces a redeploy with the
-  //     current spec — used by the UI restart button)
+  // The PATCH surface in PR-3 supports two flavours:
+  //   - Simple-mode (single service): image / env / resources land on
+  //     the lone service. Tag-upgrade and env tweaks go through here.
+  //   - Compose-mode (multi-service): per-service mutation is NOT
+  //     exposed in PR-3 (the UpdateCustomDeploymentInput schema has
+  //     no service selector). Compose stacks accept ONLY `restart`
+  //     and `pull_credential_id` patches in this PR; image/env/
+  //     resources patches return NOT_SUPPORTED_FOR_COMPOSE so the
+  //     operator knows to drop into the YAML editor (PR-4) for a
+  //     per-service change.
   const serviceName = Object.keys(current.customSpec.services)[0];
-  if (!serviceName) {
+  if (!serviceName || !nextSpec.services[serviceName]) {
     throw new ApiError(
       'CUSTOM_DEPLOYMENT_CORRUPT',
       'Custom deployment has no services in spec.',
       500,
     );
   }
-  // Force-read the service to surface a clear error if it's missing
-  // — without this the patch chain below would silently no-op.
-  if (!nextSpec.services[serviceName]) {
-    throw new ApiError('CUSTOM_DEPLOYMENT_CORRUPT', 'Spec service entry is missing.', 500);
-  }
+
+  const composeReject = (field: string): never => {
+    throw new ApiError(
+      'NOT_SUPPORTED_FOR_COMPOSE',
+      `Patching '${field}' on a compose-mode deployment is not supported in this release; edit the compose YAML and recreate, or wait for the per-service patch surface in the next release.`,
+      400,
+      { field },
+    );
+  };
 
   if (patch.image !== undefined) {
+    if (isCompose) composeReject('image');
     nextSpec = withServiceMutation(nextSpec, serviceName, (s) => ({ ...s, image: patch.image! }));
     needsRedeploy = true;
   }
   if (patch.env !== undefined) {
+    if (isCompose) composeReject('env');
     nextSpec = withServiceMutation(nextSpec, serviceName, (s) => ({ ...s, env: patch.env! }));
     needsRedeploy = true;
   }
   if (patch.resources !== undefined) {
+    if (isCompose) composeReject('resources');
     nextSpec = withServiceMutation(nextSpec, serviceName, (s) => ({ ...s, resources: { ...s.resources, ...patch.resources! } }));
     needsRedeploy = true;
   }
@@ -264,11 +417,15 @@ export async function updateCustomDeployment(
   // for a flag the client didn't touch. The update schema does NOT
   // expose `allowRoot` (admin-only post-create knob), so there's no
   // path for a client to escalate via this elevation.
+  //
+  // `singleServiceOnly` mirrors the source mode — compose stacks
+  // get the multi-service validator path so the existing N-service
+  // spec doesn't trip COMPOSE_NOT_SUPPORTED_YET.
   const settings = await getSettings(db);
   const validation = validateCustomSpec(nextSpec, {
     callerRole: 'admin',
     warnUnpinnedTags: settings.customDeploymentsWarnUnpinnedTags,
-    singleServiceOnly: true,
+    singleServiceOnly: !isCompose,
     deploymentName: current.name,
   });
   if (!validation.ok) {
@@ -280,13 +437,22 @@ export async function updateCustomDeployment(
     );
   }
 
-  // Touch only the fields that changed.
+  // Row-level totals: compose stacks sum across services, simple
+  // mode uses the (only) service's own values directly. Keeps the
+  // row's cpu/memory request aligned with the actual cluster
+  // footprint so plan-quota math stays honest.
   const updatedService = nextSpec.services[serviceName];
+  const totals = isCompose
+    ? sumResources(nextSpec)
+    : {
+      cpuRequest: updatedService.resources.cpuRequest,
+      memoryRequest: updatedService.resources.memoryRequest,
+    };
   await db.update(deployments)
     .set({
       customSpec: nextSpec as unknown as Record<string, unknown>,
-      cpuRequest: updatedService.resources.cpuRequest,
-      memoryRequest: updatedService.resources.memoryRequest,
+      cpuRequest: totals.cpuRequest,
+      memoryRequest: totals.memoryRequest,
       status: 'deploying',
       statusMessage: null,
       lastError: null,
@@ -537,6 +703,46 @@ function withServiceMutation(
 function firstErrorIssue(issues: readonly CustomDeploymentIssue[]): string {
   const err = issues.find((i) => i.severity === 'error');
   return err ? `${err.code}: ${err.message}` : 'Validation failed';
+}
+
+/**
+ * Sum the per-service `cpuRequest` + `memoryRequest` to produce a
+ * row-level "stack total" stored on `deployments.cpu_request` and
+ * `deployments.memory_request`. Used for UI display and future
+ * plan-quota math. The per-service values stay in `customSpec` and
+ * drive what the deployer puts into each container.
+ */
+function sumResources(spec: CustomDeploymentSpec): { cpuRequest: string; memoryRequest: string } {
+  let cpuMillis = 0;
+  let memMi = 0;
+  for (const svc of Object.values(spec.services)) {
+    cpuMillis += parseCpuMillis(svc.resources.cpuRequest);
+    memMi += parseMemMi(svc.resources.memoryRequest);
+  }
+  return {
+    cpuRequest: `${cpuMillis || 100}m`,
+    memoryRequest: `${memMi || 128}Mi`,
+  };
+}
+
+function parseCpuMillis(qty: string): number {
+  const m = /^([0-9]+(?:\.[0-9]+)?)(m)?$/.exec(qty);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  return m[2] === 'm' ? Math.round(n) : Math.round(n * 1000);
+}
+
+function parseMemMi(qty: string): number {
+  const m = /^([0-9]+(?:\.[0-9]+)?)(Ki|Mi|Gi|Ti|k|M|G|T)?$/.exec(qty);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  const unit = m[2] ?? '';
+  const factor: Record<string, number> = {
+    '': 1 / (1024 * 1024),
+    k: 1000 / (1024 * 1024), M: 1_000_000 / (1024 * 1024), G: 1_000_000_000 / (1024 * 1024),
+    Ki: 1 / 1024, Mi: 1, Gi: 1024, Ti: 1024 * 1024,
+  };
+  return Math.max(1, Math.round(n * (factor[unit] ?? 1)));
 }
 
 function toRow(row: typeof deployments.$inferSelect): CustomDeploymentRow {

@@ -93,28 +93,35 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
         rendered: [],
       });
     }
-    if (parsed.data.mode === 'compose') {
-      return success({
-        ok: false,
-        issues: [{
-          severity: 'error' as const,
-          code: 'COMPOSE_NOT_SUPPORTED_YET',
-          path: 'mode',
-          message: 'Compose mode is not supported in this release; use the simple form.',
-        }],
-        spec: null,
-        rendered: [],
+    const result = parsed.data.mode === 'compose'
+      ? await service.validateComposeSpec(
+        app.db,
+        {
+          composeYaml: parsed.data.compose_yaml,
+          envFiles: parsed.data.env_files,
+          name: parsed.data.name,
+        },
+        { role: roleOf(request) },
+      )
+      : await service.validateSimpleSpec(app.db, parsed.data, {
+        role: roleOf(request),
       });
-    }
-    const result = await service.validateSimpleSpec(app.db, parsed.data, {
-      role: roleOf(request),
-    });
     return success({
       ok: result.ok,
       issues: result.issues,
       spec: result.ok ? result.spec : null,
       rendered: [],
     });
+  });
+
+  // ─── Compose JSON Schema (served to monaco-yaml in the editor) ──────────
+  // Public-ish — the schema is the contract of accepted compose
+  // fields, not sensitive. We still keep it behind the auth hook
+  // because the contract evolves with platform version and we don't
+  // want unauthenticated discovery of the parser surface.
+  app.get('/custom-deployments/compose-schema', async () => {
+    const { getComposeJsonSchema } = await import('./compose-schema-export.js');
+    return success(getComposeJsonSchema());
   });
 
   // ─── Create ──────────────────────────────────────────────────────────────
@@ -131,21 +138,22 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
         { field: firstError.path.join('.') },
       );
     }
-    if (parsed.data.mode === 'compose') {
-      throw new ApiError(
-        'COMPOSE_NOT_SUPPORTED_YET',
-        'Compose mode is not supported in this release; submit one service via the simple form.',
-        405,
-      );
-    }
     const k8s = requireK8s();
-    const row = await service.createSimpleDeployment(
-      app.db,
-      k8s,
-      clientId,
-      parsed.data,
-      { role: roleOf(request) },
-    );
+    const row = parsed.data.mode === 'compose'
+      ? await service.createComposeDeployment(
+        app.db,
+        k8s,
+        clientId,
+        parsed.data,
+        { role: roleOf(request) },
+      )
+      : await service.createSimpleDeployment(
+        app.db,
+        k8s,
+        clientId,
+        parsed.data,
+        { role: roleOf(request) },
+      );
     reply.status(201).send(success(row));
   });
 

@@ -250,21 +250,54 @@ export function validateCustomSpec(
     }
   }
 
-  // ─── 4a. Deployment-name length cap when k8s Services will be created ───
-  // The Service name is `{deploymentName}-{portName}` and k8s rejects
-  // names > 63 chars. With a 15-char max port name, deploymentName
-  // must be ≤ 47.
+  // ─── 4a. k8s resource name length caps ───
+  // Single-service: Deployment = {deploymentName},                Service = {deploymentName}-{portName}
+  // Multi-service:  Deployment = {deploymentName}-{serviceName},  Service = {deploymentName}-{serviceName}-{portName}
+  //
+  // k8s rejects names > 63 chars (RFC 1123 DNS label). Port names
+  // are 15 chars max via PORT_NAME_RE. Single-service therefore
+  // caps deploymentName at 63 - 1 - 15 = 47 when ports are exposed.
+  // Multi-service must additionally accommodate the longest
+  // service-name segment in the middle.
   if (ctx.deploymentName !== undefined) {
     const willCreateServices = Object.values(spec.services)
       .some((svc) => svc.ports.some((p) => p.exposeAsService));
-    if (willCreateServices && ctx.deploymentName.length > MAX_DEPLOYMENT_NAME_WITH_SERVICES) {
-      issues.push({
-        severity: 'error',
-        code: 'DEPLOYMENT_NAME_TOO_LONG_FOR_SERVICE',
-        path: 'name',
-        message: `Deployment name is ${ctx.deploymentName.length} chars; k8s Service names (${ctx.deploymentName}-<port>) would exceed the 63-char DNS label limit. Use a name ≤ ${MAX_DEPLOYMENT_NAME_WITH_SERVICES} chars.`,
-        hint: 'Shorten the deployment name, or set `exposeAsService: false` on the ports.',
-      });
+    if (willCreateServices) {
+      if (ctx.singleServiceOnly) {
+        if (ctx.deploymentName.length > MAX_DEPLOYMENT_NAME_WITH_SERVICES) {
+          issues.push({
+            severity: 'error',
+            code: 'DEPLOYMENT_NAME_TOO_LONG_FOR_SERVICE',
+            path: 'name',
+            message: `Deployment name is ${ctx.deploymentName.length} chars; k8s Service names (${ctx.deploymentName}-<port>) would exceed the 63-char DNS label limit. Use a name ≤ ${MAX_DEPLOYMENT_NAME_WITH_SERVICES} chars.`,
+            hint: 'Shorten the deployment name, or set `exposeAsService: false` on the ports.',
+          });
+        }
+      } else {
+        // Multi-service: worst-case Service name is
+        // {dep}-{svc}-{port} = dep + svc + port + 2 separators.
+        // With port ≤ 15, the budget for (dep + svc) is 63 - 1 - 15 - 1 = 46.
+        // Iterate per-service so the editor surfaces EVERY offender
+        // (not just one) — gives the operator a complete list of
+        // names to shorten in a single pass.
+        const remainingForService = 63 - 1 - 15 - 1 - ctx.deploymentName.length;
+        for (const [svcName, svc] of Object.entries(spec.services)) {
+          const svcExposesPorts = svc.ports.some((p) => p.exposeAsService);
+          if (!svcExposesPorts) continue;
+          const worstServiceResourceLen = ctx.deploymentName.length + 1 + svcName.length + 1 + 15;
+          if (worstServiceResourceLen > 63) {
+            issues.push({
+              severity: 'error',
+              code: 'MULTI_SERVICE_NAME_TOO_LONG',
+              path: `services.${svcName}`,
+              message: `Deployment name '${ctx.deploymentName}' (${ctx.deploymentName.length} chars) combined with service '${svcName}' (${svcName.length} chars) produces a k8s Service name > 63 chars (DNS label limit).`,
+              hint: remainingForService > 0
+                ? `Either shorten the deployment name or keep each service name ≤ ${remainingForService} chars.`
+                : 'The deployment name is too long for multi-service stacks; pick a shorter deployment name.',
+            });
+          }
+        }
+      }
     }
   }
 
