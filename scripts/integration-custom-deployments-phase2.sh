@@ -1106,7 +1106,7 @@ YAML
   pass "T16: created $dep_id"
 
   # Single-service compose: serviceResourceName returns deploymentName (no -web suffix)
-  if ! wait_pod_running "$TENANT_NS" "$name" 120; then
+  if ! wait_pod_running "$TENANT_NS" "app=$name" 120; then
     fail "T16: pod $name did not reach Running"
     remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" -o wide 2>/dev/null || true
     return
@@ -1191,7 +1191,7 @@ print(len([i for i in d.get('issues',[]) if i.get('severity')=='error']))
   pass "T17: created $dep_id"
 
   # Single-service compose: serviceResourceName returns deploymentName (no -web suffix)
-  if ! wait_pod_running "$TENANT_NS" "$name" 120; then
+  if ! wait_pod_running "$TENANT_NS" "app=$name" 120; then
     fail "T17: pod $name did not reach Running"
     return
   fi
@@ -1268,7 +1268,7 @@ print(len(bad))
   CREATED_IDS+=("$dep_id")
   pass "T18: created $dep_id"
 
-  if ! wait_pod_running "$TENANT_NS" "$name" 120; then
+  if ! wait_pod_running "$TENANT_NS" "app=$name" 120; then
     fail "T18: pod $name did not reach Running"
     return
   fi
