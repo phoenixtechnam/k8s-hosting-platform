@@ -194,6 +194,15 @@ function makeFixtureDb(): Database {
       account   VARCHAR(255) NOT NULL,
       client_id VARCHAR(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE
     );
+    CREATE TABLE client_certificates (
+      id                        VARCHAR(36)  PRIMARY KEY,
+      provider_id               VARCHAR(36)  NOT NULL REFERENCES client_mtls_providers(id) ON DELETE CASCADE,
+      client_id                 VARCHAR(36)  NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      serial_hex                VARCHAR(64)  NOT NULL,
+      cert_pem_encrypted        TEXT         NOT NULL,
+      cert_fingerprint_sha256   VARCHAR(64)  NOT NULL,
+      subject_cn                VARCHAR(255) NOT NULL
+    );
   `);
   // Seed the fixture client + one row per dump table — one belonging
   // to the fixture client (assertion target), one to a different
@@ -261,6 +270,9 @@ function makeFixtureDb(): Database {
     INSERT INTO client_zrok_accounts(id, account, client_id) VALUES
       ('czrok-fix',   'fixture-zrok', '${FIXTURE_CLIENT_ID}'),
       ('czrok-other', 'other-zrok',   '${FIXTURE_OTHER_CLIENT_ID}');
+    INSERT INTO client_certificates(id, provider_id, client_id, serial_hex, cert_pem_encrypted, cert_fingerprint_sha256, subject_cn) VALUES
+      ('cc-fix',   'cmtls-fix',   '${FIXTURE_CLIENT_ID}',        'deadbeef01', 'PEM-ENCRYPTED-FIX',   'aabbcc01', 'fixture-user'),
+      ('cc-other', 'cmtls-other', '${FIXTURE_OTHER_CLIENT_ID}',  'deadbeef02', 'PEM-ENCRYPTED-OTHER', 'aabbcc02', 'other-user');
   `);
 
   return pgMemDatabase(mem);
