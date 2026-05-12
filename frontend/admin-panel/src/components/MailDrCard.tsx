@@ -116,10 +116,6 @@ export default function MailDrCard() {
   const selectedNodes = [d.primaryNode, d.secondaryNode, d.tertiaryNode].filter(Boolean) as string[];
   const hasDuplicates = new Set(selectedNodes).size < selectedNodes.length;
 
-  function nodeOptions(exclude: (string | null)[]) {
-    return candidates.filter(c => !exclude.some(e => e && e !== c.hostname && false) || true);
-  }
-
   async function handleSave() {
     if (hasDuplicates) return;
     try {
