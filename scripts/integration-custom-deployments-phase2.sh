@@ -1105,15 +1105,16 @@ YAML
   CREATED_IDS+=("$dep_id")
   pass "T16: created $dep_id"
 
-  if ! wait_pod_running "$TENANT_NS" "$name-web" 120; then
-    fail "T16: pod $name-web did not reach Running"
-    remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" -o wide 2>/dev/null || true
+  # Single-service compose: serviceResourceName returns deploymentName (no -web suffix)
+  if ! wait_pod_running "$TENANT_NS" "$name" 120; then
+    fail "T16: pod $name did not reach Running"
+    remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" -o wide 2>/dev/null || true
     return
   fi
-  pass "T16: pod $name-web Running"
+  pass "T16: pod $name Running"
 
   local caps
-  caps=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+  caps=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
     -o jsonpath='{.items[0].spec.containers[0].securityContext.capabilities.add[0]}' 2>/dev/null || true)
   if [[ "$caps" == "NET_BIND_SERVICE" ]]; then
     pass "T16: capabilities.add=[NET_BIND_SERVICE] in Pod spec"
@@ -1122,9 +1123,9 @@ YAML
   fi
 
   local sysctl_name sysctl_val
-  sysctl_name=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+  sysctl_name=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
     -o jsonpath='{.items[0].spec.securityContext.sysctls[0].name}' 2>/dev/null || true)
-  sysctl_val=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+  sysctl_val=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
     -o jsonpath='{.items[0].spec.securityContext.sysctls[0].value}' 2>/dev/null || true)
   if [[ "$sysctl_name" == "net.ipv4.ip_unprivileged_port_start" && "$sysctl_val" == "80" ]]; then
     pass "T16: sysctl net.ipv4.ip_unprivileged_port_start=80 in Pod spec"
@@ -1137,7 +1138,8 @@ YAML
 scenario_cfgsec_mounts() {
   scenario_start "T17 — per-service configs/secrets rendered as k8s volumes"
   local name="p2e-cfg-$STAMP"
-  # Uses an inline config (nginx-conf) and an environment-backed secret (api-key).
+  # Uses an inline config (nginx-conf) and an inline-content secret (api-key).
+  # `environment:` backed secrets are not supported — platform requires content: or file:.
   local yaml_content
   yaml_content=$(cat <<'YAML'
 services:
@@ -1157,7 +1159,7 @@ configs:
       server { listen 80; location / { return 200 'ok'; } }
 secrets:
   api-key:
-    environment: PLATFORM_DUMMY_SECRET
+    content: "dummy-api-key-for-e2e-testing"
 volumes: {}
 YAML
 )
@@ -1188,14 +1190,15 @@ print(len([i for i in d.get('issues',[]) if i.get('severity')=='error']))
   CREATED_IDS+=("$dep_id")
   pass "T17: created $dep_id"
 
-  if ! wait_pod_running "$TENANT_NS" "$name-web" 120; then
-    fail "T17: pod $name-web did not reach Running"
+  # Single-service compose: serviceResourceName returns deploymentName (no -web suffix)
+  if ! wait_pod_running "$TENANT_NS" "$name" 120; then
+    fail "T17: pod $name did not reach Running"
     return
   fi
-  pass "T17: pod $name-web Running"
+  pass "T17: pod $name Running"
 
   local cm_vol
-  cm_vol=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+  cm_vol=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
     -o jsonpath='{.items[0].spec.volumes[*].configMap.name}' 2>/dev/null || true)
   if echo "$cm_vol" | grep -q "cdcm-"; then
     pass "T17: ConfigMap volume (cdcm-*) mounted in pod"
@@ -1204,7 +1207,7 @@ print(len([i for i in d.get('issues',[]) if i.get('severity')=='error']))
   fi
 
   local sec_vol
-  sec_vol=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+  sec_vol=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name" \
     -o jsonpath='{.items[0].spec.volumes[*].secret.secretName}' 2>/dev/null || true)
   if echo "$sec_vol" | grep -q "cdsec-"; then
     pass "T17: Secret volume (cdsec-*) mounted in pod"
