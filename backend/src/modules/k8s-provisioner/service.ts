@@ -746,9 +746,9 @@ export async function runProvisionNamespace(
   if (!plan) throw new Error(`Plan ${client.planId} not found`);
 
   const namespace = client.kubernetesNamespace;
-  const cpuLimit = options?.overrides?.cpu_limit ?? String(parseFloat(plan.cpuLimit));
-  const memoryLimit = options?.overrides?.memory_limit ?? String(parseFloat(plan.memoryLimit));
-  const storageLimit = options?.overrides?.storage_limit ?? String(parseFloat(plan.storageLimit));
+  const cpuLimit = options?.overrides?.cpu_limit ?? String(parseFloat(String(client.cpuLimitOverride ?? plan.cpuLimit)));
+  const memoryLimit = options?.overrides?.memory_limit ?? String(parseFloat(String(client.memoryLimitOverride ?? plan.memoryLimit)));
+  const storageLimit = options?.overrides?.storage_limit ?? String(parseFloat(String(client.storageLimitOverride ?? plan.storageLimit)));
   // Unified tenant SC. PVC.spec.storageClassName is immutable on a
   // bound PVC, so splitting tier semantics across two SCs forced a
   // snapshot+restore migration to change tier. We now use ONE SC and

@@ -37,6 +37,9 @@ export async function reconcileAllClientQuotas(
       id: clients.id,
       namespace: clients.kubernetesNamespace,
       planId: clients.planId,
+      cpuLimitOverride: clients.cpuLimitOverride,
+      memoryLimitOverride: clients.memoryLimitOverride,
+      storageLimitOverride: clients.storageLimitOverride,
       cpuLimit: hostingPlans.cpuLimit,
       memoryLimit: hostingPlans.memoryLimit,
       storageLimit: hostingPlans.storageLimit,
@@ -49,16 +52,19 @@ export async function reconcileAllClientQuotas(
   const errors: Array<{ clientId: string; error: string }> = [];
 
   for (const c of rows) {
-    if (!c.namespace || !c.cpuLimit || !c.memoryLimit || !c.storageLimit) {
+    const effectiveCpu = c.cpuLimitOverride ?? c.cpuLimit;
+    const effectiveMemory = c.memoryLimitOverride ?? c.memoryLimit;
+    const effectiveStorage = c.storageLimitOverride ?? c.storageLimit;
+    if (!c.namespace || !effectiveCpu || !effectiveMemory || !effectiveStorage) {
       skipped++;
       continue;
     }
     try {
       // eslint-disable-next-line no-await-in-loop
       await applyResourceQuota(k8s, c.namespace, {
-        cpu: String(c.cpuLimit),
-        memory: String(c.memoryLimit),
-        storage: String(c.storageLimit),
+        cpu: String(effectiveCpu),
+        memory: String(effectiveMemory),
+        storage: String(effectiveStorage),
       });
       reconciled++;
     } catch (err) {
