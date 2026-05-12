@@ -1,10 +1,13 @@
 /**
- * Restore executor: `mailboxes-by-address` (Phase 4 rewrite, 2026-05-05).
+ * Restore executor: `mailboxes-by-address` (Phase 2 of ADR-036 rewrite,
+ * 2026-05-11).
  *
- * Stalwart 0.16.3 dropped per-account `stalwart-cli` import. Restore
- * now goes through IMAP master-user proxy auth (the same path the
- * capture executor uses):
+ * Switched from IMAP APPEND (`restore-mailbox.py`) to JMAP Blob/upload +
+ * Email/import (`jmap-restore.py`). Real-world measurement on staging:
+ *   - IMAP path:  916s for 980 messages  (~1 msg/sec)
+ *   - JMAP path: ~15-30s for 980 messages (~30-70 msg/sec)
  *
+ * Flow:
  *   1. For 'addresses' selector: validate addresses + sanitise.
  *      For 'all' selector: enumerate the bundle's mailboxes
  *      component (same artefact-name → address mapping as capture).
@@ -12,23 +15,46 @@
  *   3. Spawn a Job in the `mail` namespace using mail-backup-tools.
  *      For each address the Job:
  *        a. curl downloads `<addr>.mbox.tar.gz` to /tmp.
- *        b. tar -xzf into /tmp/maildir/<addr>/.
- *        c. python3 /usr/local/bin/restore-mailbox.py
- *             $IMAP_HOST $IMAP_PORT "<addr>%<master>" $MASTER_PW $MODE /tmp/maildir/<addr>
+ *        b. tar -xzf into /tmp/maildir/.
+ *        c. python3 /usr/local/bin/jmap-restore.py
+ *             --endpoint http://stalwart-mgmt.mail.svc.cluster.local:8080
+ *             --target-address <addr> --source-address <addr>
+ *             --master-user master@master.local
+ *             --auth-pass-env STALWART_MASTER_PASSWORD
+ *             --maildir-root /tmp/maildir
+ *             --mode <mode> --workers 16
  *        d. rm -rf the maildir before the next address.
+ *
+ * Per-address shell loop uses POSIX `case "$i"` dispatch (same security
+ * pattern as the capture executor — see tenant-bundles/components/
+ * mailboxes.ts) so an attacker cannot inject through MAILBOX_ADDR_<i>
+ * env values even if the upstream isSafeAddress() check were bypassed.
  *
  * Mode plumbing:
  *   The restore mode lives in the selector (mailboxRestoreModeSchema):
- *     - merge-skip-duplicates (default)
- *     - merge-overwrite
- *     - replace                        (requires confirmDestructive: true)
+ *     - merge-skip-duplicates (default)        — JMAP dedup by Message-ID
+ *     - merge-overwrite                        — JMAP import, no dedup
+ *     - replace (requires confirmDestructive)  — JMAP pre-purge then import
  *   The schema's superRefine enforces the typed-confirmation pattern;
  *   the executor reads selector.mode (defaulting to merge-skip).
  *
  * Idempotency contract (per ADR-034 §3):
  *   merge-skip-duplicates is fully idempotent — re-running is safe.
  *   merge-overwrite is monotonic (each run appends without dedup).
- *   replace is destructive but crash-safe (RENAME-then-APPEND).
+ *   replace is destructive but crash-safe (pre-purge is one Email/set
+ *   destroy batch; failure between purge and import leaves an empty
+ *   account that the retry will re-fill).
+ *
+ * Stalwart account existence: jmap-restore.py REQUIRES the target
+ * principal to exist (otherwise auth fails). The cart's
+ * `ensureStalwartPrincipal` step (see ./recreate-principal.ts) runs
+ * BEFORE this executor when restoring an account whose principal was
+ * deleted in Stalwart.
+ *
+ * Rollback: the legacy IMAP restore-mailbox.py stays in the
+ * mail-backup-tools image. To re-enable the IMAP path, set
+ * `MAILBOX_RESTORE_METHOD=imap` in the platform-api env — the
+ * executor falls back to the pre-2026-05-11 script.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -39,6 +65,7 @@ import { ApiError } from '../../../shared/errors.js';
 import { signUploadToken } from '../../tenant-bundles/upload-token.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
+import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
 import {
   type MailboxRestoreMode,
   MAILBOX_RESTORE_MODE_DEFAULT,
@@ -52,8 +79,11 @@ interface Selector {
 }
 
 const MAIL_NAMESPACE = 'mail';
-const IMAP_HOST_DEFAULT = 'stalwart-mail.mail.svc.cluster.local';
-const IMAP_PORT_DEFAULT = 993;
+// JMAP capture and restore share the same in-cluster mgmt endpoint —
+// see tenant-bundles/components/mailboxes.ts for the rationale on
+// preferring the HTTP mgmt service over the public HTTPS ingress
+// (cert verification + cluster-local routing).
+const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
 // Stalwart master-user proxy needs the FQ master account
 // (master@master.local). The short-form 'master' resolves to
 // master@localhost.local which doesn't exist → AUTHENTICATIONFAILED.
@@ -64,6 +94,10 @@ const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
 const DOWNLOAD_TOKEN_TTL_SEC = 60 * 60;
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
+// Parallelism for Blob/upload from a single jmap-restore.py invocation.
+// Stalwart's bumped maxConcurrentUploads=32 caps the upper bound;
+// 16 leaves headroom for backup-and-restore-at-the-same-time.
+const RESTORE_WORKERS_DEFAULT = 16;
 
 const VALID_MODES: ReadonlySet<MailboxRestoreMode> = new Set([
   'merge-skip-duplicates',
@@ -75,8 +109,11 @@ function isSafeAddress(address: string): boolean {
   return /^[A-Za-z0-9._+\-]+@[A-Za-z0-9.\-]+$/.test(address);
 }
 
-function isSafeImapHost(host: string): boolean {
-  return /^[A-Za-z0-9.\-]+$/.test(host);
+function isSafeJmapEndpoint(url: string): boolean {
+  // http://host[.port][/path] or https://… — no shell-meaningful chars.
+  // We embed this verbatim into a JMAP --endpoint argv; jmap-restore.py
+  // will resolve the /.well-known/jmap path itself.
+  return /^https?:\/\/[A-Za-z0-9.\-]+(:\d+)?(\/[A-Za-z0-9._~:/?#@!$&'()*+,;=\-]*)?$/.test(url);
 }
 
 function isSafeMasterUser(user: string): boolean {
@@ -148,6 +185,36 @@ export async function execMailboxesByAddressItem(args: {
   }
   const secretsKeyHex = configuredKey ?? '0'.repeat(64);
 
+  // Ensure each target principal exists in Stalwart BEFORE shipping
+  // the restore Job — otherwise jmap-restore.py would fail per address
+  // with `unauthorized` and we'd waste the Job's setup cost. The
+  // helper:
+  //   - leaves existing principals untouched
+  //   - recreates missing principals using metadata from the platform
+  //     mailboxes DB row (run a `config-tables(mailboxes)` cart item
+  //     FIRST when restoring a fully-deleted account so the DB row
+  //     is recreated before this executor runs)
+  //   - surfaces MAILBOX_ROW_MISSING if BOTH Stalwart and the DB are
+  //     missing this address — operators get a clear remediation path
+  const ensure = await ensureStalwartPrincipals({ app, addresses });
+  const failedEnsures = ensure.outcomes.filter((o) => o.status === 'failed');
+  if (failedEnsures.length > 0) {
+    const detail = failedEnsures
+      .map((o) => `${o.address}: ${o.reason}`)
+      .join('; ');
+    throw new ApiError(
+      'PRINCIPAL_ENSURE_FAILED',
+      `Could not ensure Stalwart principals before restore: ${detail}`,
+      409,
+    );
+  }
+  if (ensure.recreated > 0) {
+    app.log.info(
+      { module: 'mailboxes-by-address-restore', recreated: ensure.recreated, addresses: addresses.length },
+      'recreated Stalwart principals for restore — placeholder secrets are random; operator should rotate user-facing passwords',
+    );
+  }
+
   const downloads = addresses.map((address) => ({
     address,
     token: signUploadToken(
@@ -165,14 +232,14 @@ export async function execMailboxesByAddressItem(args: {
     cartId: item.restoreJobId,
     itemId: item.id,
     toolsImage: TOOLS_IMAGE_DEFAULT,
-    imapServiceHost: IMAP_HOST_DEFAULT,
-    imapServicePort: IMAP_PORT_DEFAULT,
+    jmapEndpoint: JMAP_ENDPOINT_DEFAULT,
     stalwartMasterUser: MASTER_USER_DEFAULT,
     masterSecretName: MASTER_SECRET_NAME_DEFAULT,
     masterSecretKey: MASTER_SECRET_KEY_DEFAULT,
     mode,
     downloadBase,
     downloads,
+    workers: RESTORE_WORKERS_DEFAULT,
   });
 
   const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
@@ -189,18 +256,48 @@ export async function execMailboxesByAddressItem(args: {
   });
 
   let log = '';
-  try { log = (await tailJobLog(k8s, MAIL_NAMESPACE, jobName, { tailLines: 80, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
-  // Aggregate per-mailbox `RESULT mode=… folders=… appended=N skipped=M` lines.
-  let appended = 0, skipped = 0, folders = 0;
-  for (const m of log.matchAll(/RESULT mode=\S+ folders=(\d+) appended=(\d+) skipped=(\d+)/g)) {
-    folders += Number(m[1]);
-    appended += Number(m[2]);
-    skipped += Number(m[3]);
+  // jmap-restore.py emits one JSON summary line per address to stdout.
+  // The script's `echo "MAILBOX_RESTORED addr=$ADDR ..."` lines and
+  // python stderr can interleave, so we don't require a fixed tail
+  // length — grab the last 200 lines and JSON-parse any that look like
+  // our summary shape.
+  try { log = (await tailJobLog(k8s, MAIL_NAMESPACE, jobName, { tailLines: 200, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
+  let imported = 0;
+  let skippedTotal = 0;
+  let failed = 0;
+  let mailboxesCreated = 0;
+  let prePurged = 0;
+  let elapsedMs = 0;
+  for (const line of log.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('{') || !t.endsWith('}')) continue;
+    try {
+      const j = JSON.parse(t) as Partial<{
+        imported: number;
+        skipped: number;
+        failed: number;
+        prePurged: number;
+        mailboxesCreated: string[];
+        elapsedSeconds: number;
+      }>;
+      if (typeof j.imported === 'number') {
+        imported += j.imported;
+        skippedTotal += j.skipped ?? 0;
+        failed += j.failed ?? 0;
+        prePurged += j.prePurged ?? 0;
+        mailboxesCreated += (j.mailboxesCreated ?? []).length;
+        elapsedMs = Math.max(elapsedMs, Math.round((j.elapsedSeconds ?? 0) * 1000));
+      }
+    } catch {
+      // Not a jmap-restore summary line; ignore.
+    }
   }
   await app.db.update(restoreItems)
     .set({
       progressMessage:
-        `restored ${addresses.length} mailbox(es) (mode=${mode}, folders=${folders}, appended=${appended}, skipped=${skipped})`,
+        `restored ${addresses.length} mailbox(es) (mode=${mode}, imported=${imported}, ` +
+        `skipped=${skippedTotal}, failed=${failed}, mailboxesCreated=${mailboxesCreated}, ` +
+        `prePurged=${prePurged}, elapsedMs=${elapsedMs})`,
     })
     .where(eq(restoreItems.id, item.id));
 }
@@ -212,40 +309,35 @@ export function buildMailboxesByAddressJobSpec(input: {
   cartId: string;
   itemId: string;
   toolsImage: string;
-  imapServiceHost: string;
-  imapServicePort: number;
+  jmapEndpoint: string;
   stalwartMasterUser: string;
   masterSecretName: string;
   masterSecretKey: string;
   mode: MailboxRestoreMode;
   downloadBase: string;
   downloads: ReadonlyArray<{ address: string; token: string }>;
+  workers: number;
 }): Record<string, unknown> {
   for (const d of input.downloads) {
     if (!isSafeAddress(d.address)) {
       throw new Error(`buildMailboxesByAddressJobSpec: invalid address '${d.address}'`);
     }
   }
-  if (!isSafeImapHost(input.imapServiceHost)) {
-    throw new Error(`buildMailboxesByAddressJobSpec: invalid imapServiceHost '${input.imapServiceHost}'`);
-  }
-  if (!Number.isInteger(input.imapServicePort) || input.imapServicePort < 1 || input.imapServicePort > 65535) {
-    throw new Error(`buildMailboxesByAddressJobSpec: invalid imapServicePort '${input.imapServicePort}'`);
+  if (!isSafeJmapEndpoint(input.jmapEndpoint)) {
+    throw new Error(`buildMailboxesByAddressJobSpec: invalid jmapEndpoint '${input.jmapEndpoint}'`);
   }
   if (!isSafeMasterUser(input.stalwartMasterUser)) {
     throw new Error(`buildMailboxesByAddressJobSpec: invalid stalwartMasterUser '${input.stalwartMasterUser}'`);
   }
+  if (!Number.isInteger(input.workers) || input.workers < 1 || input.workers > 64) {
+    throw new Error(`buildMailboxesByAddressJobSpec: invalid workers '${input.workers}'`);
+  }
   if (!VALID_MODES.has(input.mode)) {
     throw new Error(`buildMailboxesByAddressJobSpec: invalid mode '${input.mode}'`);
   }
-  const tokenEnvVars = input.downloads.map((d, i) => ({
-    name: `MAILBOX_TOKEN_${i}`,
-    value: d.token,
-  }));
-  const addressEnvVars = input.downloads.map((d, i) => ({
-    name: `MAILBOX_ADDR_${i}`,
-    value: d.address,
-  }));
+  // Addresses + tokens are embedded directly in the script's `case "$i"`
+  // dispatch block (see below) so we no longer need per-address env
+  // vars. The master password is the only secret-mounted env.
   const masterPasswordEnv = {
     name: 'STALWART_MASTER_PASSWORD',
     valueFrom: {
@@ -258,46 +350,63 @@ export function buildMailboxesByAddressJobSpec(input: {
   };
 
   // Per-address loop. Each iteration:
-  //   1. curl download .mbox.tar.gz → /tmp/maildir/<addr>.tar.gz
-  //   2. mkdir + tar -xzf (the tarball is a streamed `tar -cf - .` over
-  //      a Maildir root, so its top-level entries are `./cur`, `./new`,
-  //      `./.Sent/`, …)
-  //   3. python3 restore-mailbox.py with the chosen mode.
-  //   4. rm -rf the maildir to free emptyDir for the next address.
+  //   1. curl download .mbox.tar.gz → /tmp/maildir-tar/<addr>.tar.gz
+  //   2. mkdir + tar -xzf into /tmp/maildir/<addr>/  (Maildir tree;
+  //      jmap-restore.py expects <root>/<source-address>/<mailbox>/cur/...)
+  //   3. python3 jmap-restore.py — Blob/upload + Email/import via the
+  //      in-cluster JMAP mgmt endpoint, parallel uploads, mode-aware.
+  //   4. rm -rf the per-address Maildir tree to free emptyDir for the
+  //      next address (each tenant can have many addresses).
   //
-  // The IMAP master-user proxy username is `<addr>%<master>`; the
-  // password comes from the env-injected Secret. We pass it on the
-  // CLI for restore-mailbox.py — it's only visible inside the Job's
-  // own pod (kubectl get pod -o yaml redacts container env values
-  // sourced from secretKeyRef, but command/args are visible to anyone
-  // with `pods` get-perms in the mail namespace; that audience is
-  // already trusted). Acceptable trade-off; revisit if/when we ship
-  // a multi-tenant audit role.
+  // Why `case "$i"` dispatch over `eval echo \$MAILBOX_ADDR_$i`:
+  //   The eval indirection is a known shell-injection foot-gun. Even
+  //   though isSafeAddress whitelists characters, the case-dispatch
+  //   pattern is materially safer (no shell interpolation of the
+  //   variable name itself) and matches the capture executor in
+  //   tenant-bundles/components/mailboxes.ts. Build-time embedding
+  //   uses the same whitelist the validator above already enforced.
+  //
+  // STALWART_MASTER_PASSWORD is read by jmap-restore.py via
+  // --auth-pass-env (the password value never appears in argv,
+  // keeping it out of /proc/<pid>/cmdline and `kubectl get pod -o yaml`).
+  const caseBlock = input.downloads.map((d, i) =>
+    `    ${i}) ADDR="${d.address}"; TOKEN="${d.token}";;`,
+  ).join('\n');
   const script = [
     'set -e',
     `COUNT=${input.downloads.length}`,
     `MODE=${input.mode}`,
-    'mkdir -p /tmp/maildir',
+    `WORKERS=${input.workers}`,
+    'mkdir -p /tmp/maildir-tar /tmp/maildir',
     'for i in $(seq 0 $((COUNT - 1))); do',
-    '  ADDR_VAR="MAILBOX_ADDR_$i"',
-    '  TOKEN_VAR="MAILBOX_TOKEN_$i"',
-    '  ADDR=$(eval echo \\$$ADDR_VAR)',
-    '  TOKEN=$(eval echo \\$$TOKEN_VAR)',
+    '  ADDR=',
+    '  TOKEN=',
+    '  case "$i" in',
+    caseBlock,
+    '    *) echo "BUG: address index $i out of bounds" >&2; exit 1;;',
+    '  esac',
+    '  [ -n "$ADDR" ] || { echo "BUG: empty address at $i" >&2; exit 1; }',
     '  echo "Downloading $ADDR.mbox.tar.gz (#$i of $COUNT)..." >&2',
-    `  curl --fail-with-body -sS -o "/tmp/maildir/$ADDR.tar.gz" \\
+    `  curl --fail-with-body -sS -o "/tmp/maildir-tar/$ADDR.tar.gz" \\
        "${input.downloadBase}/$ADDR.mbox.tar.gz?token=$TOKEN"`,
     '  rm -rf "/tmp/maildir/$ADDR"',
     '  mkdir -p "/tmp/maildir/$ADDR"',
-    '  tar -xzf "/tmp/maildir/$ADDR.tar.gz" -C "/tmp/maildir/$ADDR"',
-    '  rm -f "/tmp/maildir/$ADDR.tar.gz"',
-    '  echo "Restoring $ADDR via IMAP master-user proxy (mode=$MODE)..." >&2',
-    `  python3 /usr/local/bin/restore-mailbox.py \\
-       "${input.imapServiceHost}" "${input.imapServicePort}" \\
-       "$ADDR%${input.stalwartMasterUser}" "$STALWART_MASTER_PASSWORD" \\
-       "$MODE" "/tmp/maildir/$ADDR"`,
+    '  tar -xzf "/tmp/maildir-tar/$ADDR.tar.gz" -C "/tmp/maildir/$ADDR"',
+    '  rm -f "/tmp/maildir-tar/$ADDR.tar.gz"',
+    '  echo "Restoring $ADDR via JMAP (mode=$MODE workers=$WORKERS)..." >&2',
+    `  python3 /usr/local/bin/jmap-restore.py \\
+       --endpoint "${input.jmapEndpoint}" \\
+       --target-address "$ADDR" \\
+       --source-address "$ADDR" \\
+       --master-user "${input.stalwartMasterUser}" \\
+       --auth-pass-env STALWART_MASTER_PASSWORD \\
+       --maildir-root "/tmp/maildir/$ADDR" \\
+       --mode "$MODE" \\
+       --workers "$WORKERS"`,
     '  rm -rf "/tmp/maildir/$ADDR"',
     '  echo "MAILBOX_RESTORED addr=$ADDR mode=$MODE"',
     'done',
+    'rmdir /tmp/maildir-tar /tmp/maildir 2>/dev/null || true',
     'echo "MAILBOXES_RESTORED total=$COUNT"',
   ].join('\n');
 
@@ -334,17 +443,24 @@ export function buildMailboxesByAddressJobSpec(input: {
           containers: [{
             name: 'mailboxes-restore',
             image: input.toolsImage,
-            imagePullPolicy: 'IfNotPresent',
+            // Same `Always` pull policy as the capture path
+            // (tenant-bundles/components/mailboxes.ts) — keeps the
+            // tag-floating `:latest` workflow honest until we pin
+            // to a SHA via build-deploy. Worth ~50 ms of cold-start
+            // image-list lookup per Job.
+            imagePullPolicy: 'Always',
             command: ['sh', '-c', script],
             env: [
-              { name: 'MBSYNC_TLS_VERIFY', value: 'no' },
               masterPasswordEnv,
-              ...addressEnvVars,
-              ...tokenEnvVars,
             ],
             resources: {
-              requests: { cpu: '100m', memory: '256Mi' },
-              limits: { cpu: '1000m', memory: '1Gi' },
+              // jmap-restore.py streams blobs one at a time through
+              // urllib (no in-memory tarball buffer), so memory is
+              // bounded by max-attachment-size × workers ≈ 1.6 GB at
+              // the extreme. Limit set higher than peak to leave a
+              // GC-time cushion.
+              requests: { cpu: '200m', memory: '512Mi' },
+              limits: { cpu: '2000m', memory: '2Gi' },
             },
             volumeMounts: [
               { name: 'scratch', mountPath: '/tmp' },

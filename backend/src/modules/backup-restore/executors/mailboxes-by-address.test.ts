@@ -9,8 +9,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
     cartId: 'rstr-1',
     itemId: 'item-1',
     toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
-    imapServiceHost: 'stalwart-mail.mail.svc.cluster.local',
-    imapServicePort: 993,
+    jmapEndpoint: 'http://stalwart-mgmt.mail.svc.cluster.local:8080',
     stalwartMasterUser: 'master@master.local',
     masterSecretName: 'roundcube-secrets',
     masterSecretKey: 'STALWART_MASTER_PASSWORD',
@@ -20,6 +19,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
       { address: 'a@example.com', token: '1.deadbeef' },
       { address: 'b@example.com', token: '2.cafebabe' },
     ],
+    workers: 16,
   };
 
   it('runs in the mail namespace', () => {
@@ -45,18 +45,36 @@ describe('buildMailboxesByAddressJobSpec', () => {
     })).toThrow(/invalid address/);
   });
 
-  it('passes per-mailbox tokens via env vars (not embedded in script body)', () => {
+  it('rejects unsafe jmapEndpoint', () => {
+    expect(() => buildMailboxesByAddressJobSpec({
+      ...baseInput,
+      jmapEndpoint: 'http://example.com$(curl evil)',
+    })).toThrow(/invalid jmapEndpoint/);
+    expect(() => buildMailboxesByAddressJobSpec({
+      ...baseInput,
+      jmapEndpoint: 'ftp://example.com',
+    })).toThrow(/invalid jmapEndpoint/);
+  });
+
+  it('rejects out-of-range worker counts', () => {
+    expect(() => buildMailboxesByAddressJobSpec({ ...baseInput, workers: 0 }))
+      .toThrow(/invalid workers/);
+    expect(() => buildMailboxesByAddressJobSpec({ ...baseInput, workers: 65 }))
+      .toThrow(/invalid workers/);
+  });
+
+  it('embeds tokens in the script via POSIX case dispatch (no MAILBOX_TOKEN_* env)', () => {
     const spec = buildMailboxesByAddressJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value?: string }>; command: string[] }> } } };
     };
     const env = spec.spec.template.spec.containers[0]!.env;
-    expect(env.find((e) => e.name === 'MAILBOX_TOKEN_0')?.value).toBe('1.deadbeef');
-    expect(env.find((e) => e.name === 'MAILBOX_TOKEN_1')?.value).toBe('2.cafebabe');
-    expect(env.find((e) => e.name === 'MAILBOX_ADDR_0')?.value).toBe('a@example.com');
-    // Tokens are NOT in the rendered script body.
+    // No more per-address env vars — values are baked into the case statement.
+    expect(env.find((e) => e.name?.startsWith('MAILBOX_TOKEN_'))).toBeUndefined();
+    expect(env.find((e) => e.name?.startsWith('MAILBOX_ADDR_'))).toBeUndefined();
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
-    expect(cmd).not.toContain('1.deadbeef');
-    expect(cmd).not.toContain('2.cafebabe');
+    // case "$i" dispatch contains the literal address + token.
+    expect(cmd).toContain('0) ADDR="a@example.com"; TOKEN="1.deadbeef"');
+    expect(cmd).toContain('1) ADDR="b@example.com"; TOKEN="2.cafebabe"');
   });
 
   it('mounts STALWART_MASTER_PASSWORD from the roundcube-secrets Secret (master-user proxy auth)', () => {
@@ -68,7 +86,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
     expect(adminEnv?.valueFrom?.secretKeyRef?.key).toBe('STALWART_MASTER_PASSWORD');
   });
 
-  it('script invokes curl (download), tar (extract), and restore-mailbox.py per address', () => {
+  it('script invokes curl (download), tar (extract), and jmap-restore.py per address', () => {
     const spec = buildMailboxesByAddressJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ command: string[]; image: string }> } } };
     };
@@ -76,13 +94,16 @@ describe('buildMailboxesByAddressJobSpec', () => {
     expect(spec.spec.template.spec.containers[0]!.image).toMatch(/mail-backup-tools/);
     expect(cmd).toContain('curl --fail-with-body');
     expect(cmd).toContain('tar -xzf');
-    expect(cmd).toContain('/usr/local/bin/restore-mailbox.py');
+    expect(cmd).toContain('/usr/local/bin/jmap-restore.py');
+    // No longer using stalwart-cli or restore-mailbox.py (IMAP path).
     expect(cmd).not.toContain('stalwart-cli');
-    // Authenticates via IMAP master-user proxy.
-    expect(cmd).toContain('%master');
+    expect(cmd).not.toContain('restore-mailbox.py');
+    // jmap-restore.py authenticates via master-user proxy.
+    expect(cmd).toContain('--master-user "master@master.local"');
+    expect(cmd).toContain('--auth-pass-env STALWART_MASTER_PASSWORD');
   });
 
-  it('embeds the chosen mode in the script', () => {
+  it('embeds the chosen mode and worker count in the script', () => {
     const spec1 = buildMailboxesByAddressJobSpec({ ...baseInput, mode: 'merge-skip-duplicates' }) as {
       spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
     };
@@ -97,5 +118,10 @@ describe('buildMailboxesByAddressJobSpec', () => {
       spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
     };
     expect(spec3.spec.template.spec.containers[0]!.command.join(' ')).toContain('MODE=replace');
+
+    const spec4 = buildMailboxesByAddressJobSpec({ ...baseInput, workers: 24 }) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    expect(spec4.spec.template.spec.containers[0]!.command.join(' ')).toContain('WORKERS=24');
   });
 });

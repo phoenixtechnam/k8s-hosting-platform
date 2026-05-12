@@ -7,30 +7,33 @@ import { z } from 'zod';
  * Stalwart 0.16's actual schema variants (per `cli describe BlobStore`):
  * Default / Sharded / S3 / Azure / FileSystem / FoundationDb / PostgreSql / MySql.
  *
- * The platform UI exposes the three variants operators care about:
+ * The platform UI exposes four variants operators care about:
  *   - Default — blobs in the configured DataStore (mail-pg PG by default;
  *     blows up on disk at scale but works without external infra).
- *   - S3 — blobs in an external S3 bucket (required for HA stateless
- *     since each replica's emptyDir would split blobs otherwise).
+ *   - S3 — blobs in an external S3-compatible bucket.
  *   - FileSystem — blobs on the Pod's local disk (INCOMPATIBLE with
  *     multi-replica Stalwart — each replica sees only its own blobs).
+ *   - CIFS — blobs on a CIFS/SMB network share (kernel CIFS mount).
+ *     Stalwart sees this as FileSystem; the platform layer manages
+ *     the CIFS credentials + systemd mount on the pinned node. Compatible
+ *     with single-replica Stalwart pinned to that node via nodeAffinity.
+ *     Requires a companion node-selector setting (mode: required).
  *
- * Switching is online (Stalwart applies the change in-flight via the
- * cli) but DOES NOT migrate existing blobs. Old blobs stay in the
- * previous store; new mail lands in the new store. Operators needing
- * to move existing blobs run an external migrator —
+ * Switching is online but DOES NOT migrate existing blobs. Old blobs
+ * stay in the previous store; new mail lands in the new store.
+ * Operators needing to move existing blobs run an external migrator —
  * docs/03-mail/STALWART_BLOB_STORE_MIGRATION.md covers it.
  */
-export const blobStoreType = z.enum(['Default', 'S3', 'FileSystem']);
+export const blobStoreType = z.enum(['Default', 'S3', 'FileSystem', 'CIFS']);
 export type BlobStoreType = z.infer<typeof blobStoreType>;
 
 /**
  * GET /admin/mail/blob-store response.
  *
- * S3 access keys are NEVER serialized in the response — only the
- * non-secret bucket/region/endpoint are exposed so the UI can show
- * "current = S3 in <bucket>/<region>" without leaking. Operators
- * needing to read keys do `kubectl get secret stalwart-blob-credentials`.
+ * S3 access keys and CIFS credentials are NEVER serialized in the
+ * response — only the non-secret connection details are exposed.
+ * Operators needing credentials do `kubectl get secret stalwart-blob-credentials`
+ * or `kubectl get secret stalwart-cifs-blobstore-creds`.
  */
 export const blobStoreResponseSchema = z.object({
   id: z.string().min(1),
@@ -48,6 +51,15 @@ export const blobStoreResponseSchema = z.object({
       depth: z.number().int().min(0).optional(),
     })
     .optional(),
+  /** Present only when type === 'CIFS'. Credentials are never serialised. */
+  cifs: z
+    .object({
+      host: z.string().min(1),
+      share: z.string().min(1),
+      path: z.string().min(1),
+      depth: z.number().int().min(0).max(8).optional(),
+    })
+    .optional(),
   lastUpdatedAt: z.string().datetime().nullable(),
 });
 export type BlobStoreResponse = z.infer<typeof blobStoreResponseSchema>;
@@ -55,14 +67,9 @@ export type BlobStoreResponse = z.infer<typeof blobStoreResponseSchema>;
 /**
  * PATCH /admin/mail/blob-store request — discriminated on `type`.
  *
- * For `S3`, the operator provides bucket + region + endpoint + access
- * keys. The backend writes the access keys to a Secret
- * `stalwart-blob-credentials` (mail ns) and references them via
- * `envFrom` on the cli-update Job — they NEVER appear in argv.
- *
- * For `Disk`, no extra config (uses the Pod's emptyDir).
- *
- * For `PG`, no extra config (uses mail-pg).
+ * For `S3`, access keys flow through a Secret + envFrom, never argv.
+ * For `CIFS`, credentials flow through a Secret; Stalwart is configured
+ *   with FileSystem BlobStore pointing at the CIFS hostPath mount.
  */
 export const blobStoreUpdateRequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('Default') }),
@@ -83,6 +90,23 @@ export const blobStoreUpdateRequestSchema = z.discriminatedUnion('type', [
       endpoint: z.string().url().optional(),
       accessKey: z.string().min(1).max(256),
       secretKey: z.string().min(1).max(512),
+    }),
+  }),
+  z.object({
+    type: z.literal('CIFS'),
+    cifs: z.object({
+      /** CIFS server hostname or IP, e.g. "fileserver.example.com" */
+      host: z.string().min(1).max(253),
+      /** SMB share name, e.g. "mail-blobs" */
+      share: z.string().min(1).max(80),
+      /** Directory within the share for blob root, e.g. "/stalwart/blobs" */
+      path: z.string().min(1).max(4096).default('/stalwart/blobs'),
+      /** Stalwart blob-key directory depth (0–8). */
+      depth: z.number().int().min(0).max(8).default(2),
+      /** CIFS username. Never logged or returned in responses. */
+      username: z.string().min(1).max(256),
+      /** CIFS password. Write-only — never returned in responses. */
+      password: z.string().min(1).max(512),
     }),
   }),
 ]);

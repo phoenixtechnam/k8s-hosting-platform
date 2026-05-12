@@ -33,9 +33,12 @@ import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
 import { getMailPvcStorage, resizeMailPvc } from './mail-pvc.js';
 import { getBlobStore, updateBlobStore, getBlobStoreJobStatus } from './blob-store.js';
+import { getMailNodeSelector, updateMailNodeSelector } from './node-selector.js';
+import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
 import {
   mailPvcResizeRequestSchema,
   blobStoreUpdateRequestSchema,
+  mailNodeSelectorUpdateSchema,
 } from '@k8s-hosting/api-contracts';
 
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
@@ -419,4 +422,153 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       );
     }
   });
+
+  // ─── Stalwart node selector ───────────────────────────────────────
+  // GET reads the current nodeAffinity from the Stalwart Deployment
+  // plus the live pod's scheduled node.
+  // PATCH sets the nodeAffinity (any / preferred / required) on the
+  // Deployment; validates the target node exists before patching.
+  app.get(
+    '/admin/mail/node-selector',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const cfg = app.config as Record<string, unknown>;
+      try {
+        const result = await getMailNodeSelector({
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: node-selector read failed');
+        throw new ApiError(
+          'MAIL_NODE_SELECTOR_READ_FAILED',
+          'Could not read Stalwart node selector — see server logs',
+          503,
+        );
+      }
+    },
+  );
+
+  app.patch(
+    '/admin/mail/node-selector',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = mailNodeSelectorUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i) => `${String(i.path.join('.'))}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      app.log.warn(
+        { userId, mode: parsed.data.mode, nodeName: parsed.data.nodeName },
+        'mail-admin: node-selector update requested',
+      );
+      try {
+        const result = await updateMailNodeSelector(parsed.data, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        app.log.warn(
+          { userId, mode: parsed.data.mode, nodeName: parsed.data.nodeName },
+          'mail-admin: node-selector updated',
+        );
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: node-selector update failed');
+        throw new ApiError(
+          'MAIL_NODE_SELECTOR_PATCH_FAILED',
+          'Stalwart node selector update failed — see server logs',
+          500,
+        );
+      }
+    },
+  );
+
+  // ─── Stalwart DataStore snapshot ─────────────────────────────────
+  // GET  /admin/mail/snapshot-status     — CronJob state + last snapshot time
+  // POST /admin/mail/snapshot/trigger    — spawn a one-shot manual snapshot Job
+  // GET  /admin/mail/snapshot/jobs/:name — poll Job status + pod log tail
+  app.get(
+    '/admin/mail/snapshot-status',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const cfg = app.config as Record<string, unknown>;
+      try {
+        const result = await getMailSnapshotStatus({
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: snapshot status read failed');
+        throw new ApiError(
+          'SNAPSHOT_STATUS_READ_FAILED',
+          'Could not read Stalwart snapshot status — see server logs',
+          503,
+        );
+      }
+    },
+  );
+
+  app.post(
+    '/admin/mail/snapshot/trigger',
+    { preHandler: requireRole('super_admin') },
+    async (req: { user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      app.log.warn({ userId }, 'mail-admin: manual snapshot trigger requested');
+      try {
+        const result = await triggerMailSnapshot({
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        app.log.warn({ userId, jobName: result.jobName }, 'mail-admin: manual snapshot Job created');
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: snapshot trigger failed');
+        throw new ApiError(
+          'SNAPSHOT_TRIGGER_FAILED',
+          'Could not trigger Stalwart snapshot — see server logs',
+          500,
+        );
+      }
+    },
+  );
+
+  app.get(
+    '/admin/mail/snapshot/jobs/:name',
+    { preHandler: requireRole('super_admin') },
+    async (req: { params: unknown }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const params = req.params as { name?: string };
+      const name = params.name ?? '';
+      // Whitelist on shape — guards against fetching arbitrary Jobs via this route.
+      if (!/^stalwart-snapshot-[a-z0-9-]+$/.test(name)) {
+        throw new ApiError(
+          'SNAPSHOT_JOB_INVALID_NAME',
+          'job name must match the stalwart-snapshot-<id> shape',
+          400,
+        );
+      }
+      try {
+        const result = await getMailSnapshotJobStatus(name, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err, name }, 'mail-admin: snapshot job status failed');
+        throw new ApiError(
+          'SNAPSHOT_JOB_STATUS_FAILED',
+          'Could not read snapshot Job status — see server logs',
+          503,
+        );
+      }
+    },
+  );
 }

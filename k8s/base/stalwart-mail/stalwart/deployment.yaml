@@ -168,6 +168,51 @@ spec:
               readOnly: true
             - name: config-rendered
               mountPath: /etc/stalwart
+        # restore-state: download + import the latest Stalwart DataStore
+        # snapshot when the RocksDB data directory is empty AND the pod
+        # annotation `mail.platform/allow-restore: "true"` is present.
+        #
+        # WHY this is a skeleton (no-op today):
+        #   Full S3/SFTP download logic requires platform-api to write the
+        #   snapshot URL + auth token into a Pod annotation or a ConfigMap
+        #   at snapshot time. That integration is Phase 2 (requires active
+        #   BackupStore wiring in the snapshot reconciler). Until then,
+        #   this container always exits 0 — it never blocks Stalwart startup.
+        #
+        # ACTIVATION path (Phase 2):
+        #   1. snapshot-cronjob uploads snap.lz4 to the active BackupStore
+        #   2. platform-api writes `mail.platform/latest-snapshot-url` +
+        #      `mail.platform/allow-restore: "true"` to the Stalwart Pod
+        #      annotation (via Deployment annotation or pod-template patch).
+        #   3. This initContainer reads the annotation, downloads snap.lz4,
+        #      runs `stalwart -c /etc/stalwart/config.json -i /snapshot/snap.lz4`,
+        #      and exits 0 on success.
+        #
+        # EXIT POLICY: ALWAYS exit 0. A restore failure must not prevent
+        # Stalwart from starting in degraded mode — the operator can
+        # trigger a manual restore via platform-api after investigating.
+        - name: restore-state
+          image: docker.io/busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              DATA_SENTINEL=/var/lib/stalwart/data/CURRENT
+              if [ -f "$$DATA_SENTINEL" ]; then
+                echo "restore-state: DataStore sentinel exists — skipping restore"
+                exit 0
+              fi
+              echo "restore-state: DataStore is empty"
+              # Phase 2 will check for `mail.platform/allow-restore: "true"`
+              # annotation and download + import the latest snapshot here.
+              # Until then, log and exit cleanly so Stalwart starts fresh.
+              echo "restore-state: no restore configured (Phase 2 pending) — exiting 0"
+              exit 0
+          volumeMounts:
+            - name: config-rendered
+              mountPath: /etc/stalwart
+              readOnly: true
       containers:
         - name: stalwart
           image: docker.io/stalwartlabs/stalwart:v0.16.3

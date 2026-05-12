@@ -40,16 +40,20 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
+import random
 import re
 import socket
+import ssl
 import sys
+import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 # JMAP method-call namespace
 JMAP_URN_CORE = "urn:ietf:params:jmap:core"
@@ -112,6 +116,11 @@ class JmapError(Exception):
 
 
 class JmapClient:
+    """Thread-safe JMAP client. Each worker thread keeps its own
+    persistent HTTP keep-alive connection so 1000 Blob/get calls
+    cost ~1 TCP handshake per worker (not per call). See
+    jmap-restore.py for the full rationale."""
+
     def __init__(self, endpoint: str, basic_auth_user: str, basic_auth_pass: str) -> None:
         # Endpoint may be the session URL or the host root; both work
         # because the session response carries the apiUrl.
@@ -123,19 +132,86 @@ class JmapClient:
         self._api_url: Optional[str] = None
         self._download_url: Optional[str] = None
         self._mail_account_id: Optional[str] = None
+        self._tls_context = ssl.create_default_context()
+        self._tls = threading.local()
+
+    def _get_conn(self, netloc: str, is_https: bool) -> http.client.HTTPConnection:
+        existing = getattr(self._tls, "conn", None)
+        if existing is not None and getattr(self._tls, "netloc", "") == netloc:
+            return existing
+        if existing is not None:
+            try:
+                existing.close()
+            except Exception:
+                pass
+        if is_https:
+            conn: http.client.HTTPConnection = http.client.HTTPSConnection(
+                netloc, timeout=60, context=self._tls_context)
+        else:
+            conn = http.client.HTTPConnection(netloc, timeout=60)
+        self._tls.conn = conn
+        self._tls.netloc = netloc
+        return conn
 
     def _http(self, url: str, *, method: str = "GET", body: Optional[bytes] = None,
               accept: str = "application/json") -> Tuple[int, bytes, str]:
-        req = urllib.request.Request(url, data=body, method=method)
-        req.add_header("Authorization", self._auth_header)
-        req.add_header("Accept", accept)
+        u = urlsplit(url)
+        is_https = u.scheme == "https"
+        netloc = u.netloc
+        path = u.path or "/"
+        if u.query:
+            path = f"{path}?{u.query}"
+        headers = {
+            "Authorization": self._auth_header,
+            "Accept": accept,
+            "Connection": "keep-alive",
+        }
         if body is not None:
-            req.add_header("Content-Type", "application/json; charset=utf-8")
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return resp.status, resp.read(), resp.headers.get("Content-Type", "")
-        except urllib.error.HTTPError as e:
-            return e.code, e.read() if hasattr(e, "read") else b"", e.headers.get("Content-Type", "") if hasattr(e, "headers") else ""
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            headers["Content-Length"] = str(len(body))
+
+        attempts = 0
+        redirects = 0
+        while True:
+            conn = self._get_conn(netloc, is_https)
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+                status = resp.status
+                location = resp.getheader("Location") or ""
+                data = resp.read()
+                ctype = resp.getheader("Content-Type", "") or ""
+                # Follow up to 3 redirects (Stalwart returns 307
+                # /.well-known/jmap → /jmap/session).
+                if status in (301, 302, 307, 308) and location and redirects < 3:
+                    if location.startswith("/"):
+                        path = location
+                    else:
+                        lu = urlsplit(location)
+                        if lu.netloc and lu.netloc != netloc:
+                            netloc = lu.netloc
+                            is_https = lu.scheme == "https"
+                        path = lu.path + (f"?{lu.query}" if lu.query else "")
+                    redirects += 1
+                    continue
+                if status == 400 and b"jmap:error:limit" in data and attempts < 8:
+                    base = min(0.1 * (2 ** attempts), 2.0)
+                    delay = base * (0.5 + random.random())
+                    time.sleep(delay)
+                    attempts += 1
+                    continue
+                return status, data, ctype
+            except (http.client.HTTPException, OSError, socket.error) as e:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._tls.conn = None
+                if attempts < 4:
+                    time.sleep(0.1 * (2 ** attempts) * (0.5 + random.random()))
+                    attempts += 1
+                    continue
+                raise JmapError("CONN_ERROR", f"{type(e).__name__}: {e}")
 
     def session(self, account_address: str) -> None:
         status, body, _ = self._http(self.session_url)
@@ -420,23 +496,54 @@ def run(args: argparse.Namespace) -> int:
 
     fetched = 0
     skipped = 0
-    for msg in messages:
-        try:
-            blob_id = msg.get("blobId")
-            if not blob_id:
-                sys.stderr.write(f"jmap-sync: message {msg.get('id')!r} has no blobId; skipping\n")
+    # Parallel Blob/get pipeline. JmapClient methods are stateless beyond
+    # the constant auth header + URL templates set during session() — and
+    # urllib.request opens a fresh connection per call — so the same
+    # client instance is safe to share across worker threads.
+    # `workers=1` falls back to the serial path (useful for debugging or
+    # if Stalwart's maxConcurrentRequests is < 4).
+    write_lock = threading.Lock()  # _write_message hits the filesystem;
+                                    # `os.makedirs(exist_ok=True)` is
+                                    # technically race-safe but rename
+                                    # over the same name isn't.
+
+    def _fetch_one(msg: Dict[str, Any]) -> Optional[str]:
+        blob_id = msg.get("blobId")
+        if not blob_id:
+            sys.stderr.write(f"jmap-sync: message {msg.get('id')!r} has no blobId; skipping\n")
+            return None
+        blob = client.download_blob(
+            blob_id,
+            blob_type="message/rfc822",
+            filename=msg.get("id", "msg"),
+        )
+        with write_lock:
+            return _write_message(args.output_dir, args.account_address, msg, mailbox_names, blob)
+
+    workers = max(1, args.workers)
+    if workers == 1 or len(messages) <= 1:
+        for msg in messages:
+            try:
+                if _fetch_one(msg):
+                    fetched += 1
+                else:
+                    skipped += 1
+            except (JmapError, OSError) as e:
+                sys.stderr.write(f"jmap-sync: message {msg.get('id')!r} fetch failed: {e}\n")
                 skipped += 1
-                continue
-            blob = client.download_blob(
-                blob_id,
-                blob_type="message/rfc822",
-                filename=msg.get("id", "msg"),
-            )
-            _write_message(args.output_dir, args.account_address, msg, mailbox_names, blob)
-            fetched += 1
-        except (JmapError, OSError) as e:
-            sys.stderr.write(f"jmap-sync: message {msg.get('id')!r} fetch failed: {e}\n")
-            skipped += 1
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="jmap-fetch") as pool:
+            futures = {pool.submit(_fetch_one, m): m for m in messages}
+            for f in as_completed(futures):
+                m = futures[f]
+                try:
+                    if f.result():
+                        fetched += 1
+                    else:
+                        skipped += 1
+                except (JmapError, OSError) as e:
+                    sys.stderr.write(f"jmap-sync: message {m.get('id')!r} fetch failed: {e}\n")
+                    skipped += 1
 
     # Write new state
     if args.state_out:
@@ -468,6 +575,12 @@ def main() -> int:
     p.add_argument("--output-dir", required=True, help="Root of the Maildir output tree")
     p.add_argument("--state-in", help="Path to read prior JMAP state from (JSON {state: ...})")
     p.add_argument("--state-out", help="Path to write new JMAP state to (JSON {state: ...})")
+    p.add_argument("--workers", type=int,
+                   default=int(os.environ.get("JMAP_DOWNLOAD_WORKERS", "8")),
+                   help="Parallel Blob/get worker pool size (env JMAP_DOWNLOAD_WORKERS, default 8). "
+                        "Stalwart's maxConcurrentRequests caps the effective parallelism — "
+                        "Stalwart defaults to 4 and our bootstrap-plan bumps it to 32. "
+                        "Set to 1 to force serial downloads (debugging).")
     args = p.parse_args()
     return run(args)
 

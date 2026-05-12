@@ -83,6 +83,14 @@ RUN chmod 755 /usr/local/bin/jmap-sync.py
 COPY jmap-seed.py /usr/local/bin/jmap-seed.py
 RUN chmod 755 /usr/local/bin/jmap-seed.py
 
+# JMAP-based mailbox restore (Phase 2 of ADR-036). Replaces the
+# IMAP-APPEND restore-mailbox.py with a Blob/upload + Email/import
+# pipeline that's 50-100x faster on real mailboxes. The legacy
+# restore-mailbox.py stays in the image for a rollback window;
+# orchestrator selects which path via the IMAP/JMAP restore-method flag.
+COPY jmap-restore.py /usr/local/bin/jmap-restore.py
+RUN chmod 755 /usr/local/bin/jmap-restore.py
+
 # Default to a no-op so `docker run …` doesn't error; the orchestrator
 # always overrides command/args.
 CMD ["sh", "-c", "echo tenant-backup-tools image ready; sleep 1"]

@@ -85,3 +85,5 @@ export * from './system-wal-archive.js';
 export * from './task-center.js';
 export * from './custom-deployments.js';
 export * from './compose.js';
+export * from './mail-node-selector.js';
+export * from './mail-snapshot.js';

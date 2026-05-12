@@ -3,11 +3,12 @@
  *
  * The cli describes BlobStore as a singleton (id `singleton`) with
  * variants Default / S3 / FileSystem / Azure / Sharded / FoundationDb /
- * PostgreSql / MySql. The platform UI exposes the three the operator
- * can act on without external infra setup we don't ship: Default
- * (current PG-via-DataStore), S3 (external bucket; required for HA
- * stateless), FileSystem (per-replica disk; INCOMPATIBLE with multi-
- * replica).
+ * PostgreSql / MySql. The platform UI exposes four variants operators
+ * care about: Default (current PG-via-DataStore), S3 (external bucket;
+ * required for HA stateless), FileSystem (per-replica disk; INCOMPATIBLE
+ * with multi-replica), and CIFS (network share via kernel CIFS mount;
+ * Stalwart sees it as FileSystem at /mnt/blobstore; platform manages
+ * credentials and hostPath Deployment patch).
  *
  * Read path: spawn a short-lived `stalwart-cli get BlobStore` Pod and
  * parse the JSON output. Direct JMAP would be faster but BlobStore is
@@ -18,7 +19,9 @@
  * BlobStore --field type=...`. For S3, write the access keys to a
  * `stalwart-blob-credentials` Secret first; the Job mounts via
  * `envFrom` and the cli reads `$S3_ACCESS_KEY` / `$S3_SECRET_KEY`
- * from env — keys NEVER appear in argv.
+ * from env — keys NEVER appear in argv. For CIFS, write connection
+ * details to `stalwart-cifs-blobstore-creds` Secret and patch the
+ * Stalwart Deployment to mount the hostPath before spawning the Job.
  *
  * Self-verification: after the cli update, the Job re-runs `cli get
  * BlobStore` and asserts the requested type matches; non-match exits
@@ -39,18 +42,25 @@ import {
   blobStoreJobStatusResponseSchema,
 } from '@k8s-hosting/api-contracts';
 import {
-  STALWART_CLI_VERSION,
   STALWART_CLI_SHA256,
   STALWART_CLI_DOWNLOAD_URL,
 } from './blob-store-cli-version.js';
 
 const MAIL_NAMESPACE = 'mail';
 const SECRET_NAME = 'stalwart-blob-credentials';
+const CIFS_SECRET_NAME = 'stalwart-cifs-blobstore-creds';
+const STALWART_DEPLOYMENT_NAME = 'stalwart-mail';
 const STALWART_MGMT_URL = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
 const ADMIN_SECRET_NAME = 'stalwart-admin-creds';
 const JOB_NAME_PREFIX = 'stalwart-blob-store-update-';
 const JOB_LABEL_KEY = 'app.kubernetes.io/component';
 const JOB_LABEL_VALUE = 'stalwart-blob-store-update';
+
+// CIFS hostPath mount constants — must match the systemd mount provisioned
+// by bootstrap.sh (//host/share → /mnt/stalwart-cifs-blobstore).
+const CIFS_HOST_PATH = '/mnt/stalwart-cifs-blobstore';
+const CIFS_MOUNT_PATH = '/mnt/blobstore';
+const CIFS_VOLUME_NAME = 'cifs-blobstore';
 
 export interface BlobStoreOptions {
   readonly kubeconfigPath: string | undefined;
@@ -59,6 +69,12 @@ export interface BlobStoreOptions {
 /**
  * Read the live BlobStore via a short-lived `stalwart-cli get` Pod.
  * Cli output is JSON (one line: `{"@type":"Default","id":"singleton"}`).
+ *
+ * CIFS detection: if Stalwart reports FileSystem AND the Secret
+ * `stalwart-cifs-blobstore-creds` exists with key CIFS_HOST, the
+ * returned type is overridden to 'CIFS' and the `cifs` field is
+ * populated from the Secret metadata keys. Credentials (CIFS_USERNAME,
+ * CIFS_PASSWORD) are NEVER included in the response.
  */
 export async function getBlobStore(opts: BlobStoreOptions): Promise<BlobStoreResponse> {
   const { core, batch } = await loadK8sClients(opts.kubeconfigPath);
@@ -88,6 +104,21 @@ export async function getBlobStore(opts: BlobStoreOptions): Promise<BlobStoreRes
     const rawType = String(json['@type'] ?? '');
     const type = (['Default', 'S3', 'FileSystem'] as const).find((t) => t === rawType) ?? 'Default';
 
+    // CIFS detection: if Stalwart reports FileSystem, check whether the
+    // CIFS credentials Secret exists. If it does (with CIFS_HOST key),
+    // the operator previously set up a CIFS mount — override the type.
+    if (type === 'FileSystem') {
+      const cifsDetected = await readCifsSecret(core);
+      if (cifsDetected !== null) {
+        return blobStoreResponseSchema.parse({
+          id: String(json.id ?? 'singleton'),
+          type: 'CIFS',
+          cifs: cifsDetected,
+          lastUpdatedAt: null,
+        });
+      }
+    }
+
     return blobStoreResponseSchema.parse({
       id: String(json.id ?? 'singleton'),
       type,
@@ -115,32 +146,48 @@ export async function getBlobStore(opts: BlobStoreOptions): Promise<BlobStoreRes
 /**
  * Switch the BlobStore backend by spawning a one-shot Job that runs
  * `stalwart-cli update BlobStore --field type=...`. For S3, also
- * write/patch the Secret holding the access keys.
+ * write/patch the Secret holding the access keys. For CIFS, write
+ * credentials to a dedicated Secret and patch the Stalwart Deployment
+ * to mount the CIFS hostPath before spawning the Job.
  *
  * Returns immediately with the Job name. UI polls
  * GET /admin/mail/blob-store/jobs/:name for status.
  *
  * Secret-handling invariants:
  *   - S3 access keys flow through the Secret + envFrom, NEVER argv
+ *   - CIFS password flows through the Secret + envFrom, NEVER argv
  *   - The Secret patch happens BEFORE Job creation (Job references it
  *     via envFrom; missing Secret would leave the Pod stuck in
  *     CreateContainerConfigError)
- *   - On Job-creation failure, the Secret patch is NOT rolled back
- *     (operator-driven retry is the correct flow; auto-rollback would
- *     just create a different inconsistency)
+ *   - The Deployment patch (CIFS hostPath) happens BEFORE Job creation
+ *     so the Stalwart pod is ready to use the mount before the cli
+ *     updates the BlobStore pointer
+ *   - On Job-creation failure, the Secret patch and Deployment patch
+ *     are NOT rolled back (operator-driven retry is the correct flow;
+ *     auto-rollback would just create a different inconsistency)
  */
 export async function updateBlobStore(
   request: BlobStoreUpdateRequest,
   opts: BlobStoreOptions,
 ): Promise<BlobStoreUpdateResponse> {
-  const { core, batch } = await loadK8sClients(opts.kubeconfigPath);
+  const { core, batch, apps } = await loadK8sClients(opts.kubeconfigPath);
 
-  // Step 1: write S3 credentials to the Secret if applicable.
+  // Step 1: write credentials / prepare infrastructure if applicable.
   if (request.type === 'S3') {
     await ensureBlobCredentialsSecret(core, {
       accessKey: request.s3.accessKey,
       secretKey: request.s3.secretKey,
     });
+  } else if (request.type === 'CIFS') {
+    // Validate host before touching any infrastructure.
+    validateCifsHost(request.cifs.host);
+
+    // Write CIFS credentials + metadata to Secret.
+    await ensureCifsCredentialsSecret(core, request.cifs);
+
+    // Patch the Stalwart Deployment to add the CIFS hostPath mount.
+    // This is idempotent — existing volumes/mounts are deduped.
+    await patchStalwartDeploymentVolumes(apps);
   }
 
   // Step 2: render + create the Job. Name carries a timestamp + short
@@ -262,6 +309,7 @@ function jobStatusFromConditions(job: JobShape): BlobStoreJobStatusResponse['sta
 interface K8sClientsBundle {
   core: import('@kubernetes/client-node').CoreV1Api;
   batch: import('@kubernetes/client-node').BatchV1Api;
+  apps: import('@kubernetes/client-node').AppsV1Api;
 }
 
 async function loadK8sClients(kubeconfigPath: string | undefined): Promise<K8sClientsBundle> {
@@ -272,6 +320,7 @@ async function loadK8sClients(kubeconfigPath: string | undefined): Promise<K8sCl
   return {
     core: kc.makeApiClient(k8s.CoreV1Api),
     batch: kc.makeApiClient(k8s.BatchV1Api),
+    apps: kc.makeApiClient(k8s.AppsV1Api),
   };
 }
 
@@ -287,6 +336,90 @@ function extractRegion(raw: unknown): string | undefined {
     if (typeof v === 'string') return v;
   }
   return undefined;
+}
+
+/**
+ * Reject obvious dangerous hosts: localhost, loopback (127.x), and the
+ * cloud metadata endpoint (169.254.x.x). RFC-1918 addresses are
+ * intentionally NOT blocked because operators may use internal DC
+ * networks (e.g. Hetzner Storage Box via private network).
+ *
+ * SECURITY: this guard prevents SSRF via the CIFS host field reaching
+ * metadata endpoints or loopback services. It does not protect against
+ * all possible SSRF vectors — network-level controls (NetworkPolicies,
+ * nftables) are the primary defence.
+ */
+export function validateCifsHost(host: string): void {
+  const h = host.trim().toLowerCase();
+
+  if (h === 'localhost') {
+    throw new ApiError('CIFS_HOST_INVALID', 'CIFS host must not be localhost', 400);
+  }
+
+  // Reject loopback range: 127.0.0.0/8
+  if (/^127\./.test(h)) {
+    throw new ApiError('CIFS_HOST_INVALID', 'CIFS host must not be a loopback address', 400);
+  }
+
+  // Reject link-local range: 169.254.0.0/16 (includes cloud metadata endpoint)
+  if (/^169\.254\./.test(h)) {
+    throw new ApiError('CIFS_HOST_INVALID', 'CIFS host must not be in the link-local range (169.254.x.x)', 400);
+  }
+
+  // Reject IPv6 loopback, link-local, and all-zeros
+  const bare = h.replace(/^\[|]$/g, '');
+  if (bare === '::1' || bare === '0.0.0.0') {
+    throw new ApiError('CIFS_HOST_INVALID', 'CIFS host must not be a loopback or any-address', 400);
+  }
+  if (/^fe80:/i.test(bare)) {
+    throw new ApiError('CIFS_HOST_INVALID', 'CIFS host must not be a link-local IPv6 address', 400);
+  }
+}
+
+/**
+ * Attempt to read the CIFS credentials Secret and return the non-sensitive
+ * connection details (host, share, path, depth) if the Secret exists with
+ * CIFS_HOST key. Returns null on any failure (404, permission error, missing
+ * CIFS_HOST key) — callers treat null as "not a CIFS store".
+ *
+ * SECURITY: CIFS_USERNAME and CIFS_PASSWORD are present in the Secret but
+ * NEVER returned here — they are write-only from the API perspective.
+ */
+async function readCifsSecret(
+  core: import('@kubernetes/client-node').CoreV1Api,
+): Promise<{ host: string; share: string; path: string; depth?: number } | null> {
+  try {
+    const secret = await core.readNamespacedSecret({
+      namespace: MAIL_NAMESPACE,
+      name: CIFS_SECRET_NAME,
+    }) as { data?: Record<string, string> };
+
+    const data = secret.data ?? {};
+    const host = data['CIFS_HOST'];
+    if (!host) return null;
+
+    const decodeB64 = (v: string | undefined): string | undefined =>
+      v ? Buffer.from(v, 'base64').toString('utf8') : undefined;
+
+    const hostStr = decodeB64(host);
+    const shareStr = decodeB64(data['CIFS_SHARE']);
+    const pathStr = decodeB64(data['CIFS_PATH']);
+    const depthRaw = decodeB64(data['CIFS_DEPTH']);
+
+    if (!hostStr || !shareStr || !pathStr) return null;
+
+    const depth = depthRaw ? parseInt(depthRaw, 10) : undefined;
+
+    return {
+      host: hostStr,
+      share: shareStr,
+      path: pathStr,
+      depth: depth !== undefined && !isNaN(depth) ? depth : undefined,
+    };
+  } catch {
+    // 404, permission denied, or any other error → treat as non-CIFS
+    return null;
+  }
 }
 
 /**
@@ -349,6 +482,173 @@ async function ensureBlobCredentialsSecret(
 }
 
 /**
+ * Create or patch the CIFS credentials + metadata Secret.
+ *
+ * Keys stored:
+ *   - CIFS_HOST, CIFS_SHARE, CIFS_PATH, CIFS_DEPTH — non-sensitive
+ *     connection metadata; base64-encoded for Secret API consistency;
+ *     read back by getBlobStore() to identify a CIFS store.
+ *   - CIFS_USERNAME, CIFS_PASSWORD — sensitive credentials; write-only
+ *     from the API perspective (never returned in responses).
+ *
+ * SECURITY: CIFS_PASSWORD is base64-encoded here but must NEVER appear
+ * in log messages, CLI args, audit records, or API responses. Tests
+ * assert the function never throws strings containing the password.
+ */
+async function ensureCifsCredentialsSecret(
+  core: import('@kubernetes/client-node').CoreV1Api,
+  cifs: { host: string; share: string; path: string; depth: number; username: string; password: string },
+): Promise<void> {
+  const data: Record<string, string> = {
+    CIFS_HOST: Buffer.from(cifs.host, 'utf8').toString('base64'),
+    CIFS_SHARE: Buffer.from(cifs.share, 'utf8').toString('base64'),
+    CIFS_PATH: Buffer.from(cifs.path, 'utf8').toString('base64'),
+    CIFS_DEPTH: Buffer.from(String(cifs.depth), 'utf8').toString('base64'),
+    CIFS_USERNAME: Buffer.from(cifs.username, 'utf8').toString('base64'),
+    CIFS_PASSWORD: Buffer.from(cifs.password, 'utf8').toString('base64'),
+  };
+
+  let exists = false;
+  try {
+    await core.readNamespacedSecret({ namespace: MAIL_NAMESPACE, name: CIFS_SECRET_NAME });
+    exists = true;
+  } catch (err) {
+    const code = (err as { statusCode?: number; code?: number }).statusCode
+      ?? (err as { code?: number }).code;
+    if (code !== 404) throw err;
+  }
+
+  if (!exists) {
+    await core.createNamespacedSecret({
+      namespace: MAIL_NAMESPACE,
+      body: {
+        metadata: { name: CIFS_SECRET_NAME, namespace: MAIL_NAMESPACE },
+        type: 'Opaque',
+        data,
+      },
+    } as unknown as Parameters<typeof core.createNamespacedSecret>[0]);
+  } else {
+    const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
+    await core.patchNamespacedSecret(
+      {
+        namespace: MAIL_NAMESPACE,
+        name: CIFS_SECRET_NAME,
+        body: { data } as unknown as object,
+      },
+      MERGE_PATCH,
+    );
+  }
+}
+
+/**
+ * Patch the Stalwart Deployment to add the CIFS hostPath volume + volumeMount.
+ * Uses strategic merge patch so existing volumes/mounts are preserved.
+ * Idempotent: if the volume/mount is already present (same name), no-op.
+ *
+ * Volume added:
+ *   { name: 'cifs-blobstore', hostPath: { path: '/mnt/stalwart-cifs-blobstore', type: 'DirectoryOrCreate' } }
+ *
+ * VolumeMount added to containers[0]:
+ *   { name: 'cifs-blobstore', mountPath: '/mnt/blobstore' }
+ *
+ * SECURITY NOTE: hostPath volumes have elevated privilege implications.
+ * This is intentional — CIFS mounts provisioned by bootstrap.sh land at
+ * the fixed path /mnt/stalwart-cifs-blobstore and are read/writable only
+ * by root. The Stalwart container runs as root (binds port 25) so the
+ * hostPath is accessible. Operators must ensure only the target CIFS share
+ * is mounted at that path on the pinned node.
+ */
+async function patchStalwartDeploymentVolumes(
+  apps: import('@kubernetes/client-node').AppsV1Api,
+): Promise<void> {
+  type DeploymentShape = {
+    spec?: {
+      template?: {
+        spec?: {
+          volumes?: { name: string }[];
+          containers?: { name: string; volumeMounts?: { name: string }[] }[];
+        };
+      };
+    };
+  };
+
+  const deployment = await apps.readNamespacedDeployment({
+    namespace: MAIL_NAMESPACE,
+    name: STALWART_DEPLOYMENT_NAME,
+  }).catch((err) => {
+    throw new ApiError(
+      'STALWART_DEPLOYMENT_NOT_FOUND',
+      `failed to read Stalwart Deployment: ${(err as Error).message ?? String(err)}`,
+      500,
+    );
+  }) as DeploymentShape;
+
+  const existingVolumes = deployment.spec?.template?.spec?.volumes ?? [];
+  const mainContainerMounts = deployment.spec?.template?.spec?.containers?.[0]?.volumeMounts ?? [];
+
+  const volumeExists = existingVolumes.some((v) => v.name === CIFS_VOLUME_NAME);
+  const mountExists = mainContainerMounts.some((m) => m.name === CIFS_VOLUME_NAME);
+
+  // Both already present — fully idempotent, nothing to do.
+  if (volumeExists && mountExists) return;
+
+  // Build the strategic merge patch. Strategic merge patch merges lists
+  // by the `name` key for pod specs, so adding an entry with a new name
+  // appends it without clobbering existing entries.
+  const templateSpec: Record<string, unknown> = {};
+
+  if (!volumeExists) {
+    templateSpec['volumes'] = [
+      {
+        name: CIFS_VOLUME_NAME,
+        hostPath: {
+          path: CIFS_HOST_PATH,
+          type: 'DirectoryOrCreate',
+        },
+      },
+    ];
+  }
+
+  if (!mountExists) {
+    templateSpec['containers'] = [
+      {
+        name: 'stalwart',
+        volumeMounts: [
+          {
+            name: CIFS_VOLUME_NAME,
+            mountPath: CIFS_MOUNT_PATH,
+          },
+        ],
+      },
+    ];
+  }
+
+  const patch = {
+    spec: {
+      template: {
+        spec: templateSpec,
+      },
+    },
+  };
+
+  const { STRATEGIC_MERGE_PATCH } = await import('../../shared/k8s-patch.js');
+  await apps.patchNamespacedDeployment(
+    {
+      namespace: MAIL_NAMESPACE,
+      name: STALWART_DEPLOYMENT_NAME,
+      body: patch as unknown as object,
+    },
+    STRATEGIC_MERGE_PATCH,
+  ).catch((err) => {
+    throw new ApiError(
+      'STALWART_DEPLOYMENT_PATCH_FAILED',
+      `failed to patch Stalwart Deployment with CIFS volume: ${(err as Error).message ?? String(err)}`,
+      500,
+    );
+  });
+}
+
+/**
  * Render the read Pod manifest. `stalwart-cli get BlobStore` is a
  * read-only call so a Pod (not a Job) is sufficient — fewer K8s
  * objects to clean up.
@@ -388,7 +688,8 @@ function renderReadPodManifest(podName: string): unknown {
  * Render the update Job manifest. Cli args are constructed from the
  * request payload — for S3, the access keys flow via env (Secret
  * mounted via envFrom) and the cli reads `$S3_ACCESS_KEY`/`$S3_SECRET_KEY`
- * from the shell expansion at run time.
+ * from the shell expansion at run time. For CIFS, no credentials are
+ * passed to the cli (it operates on the already-mounted filesystem).
  *
  * Self-verify after the update: re-run `cli get BlobStore` and exit
  * non-zero if the type doesn't match. K8s marks the Job Failed.
@@ -440,6 +741,8 @@ function renderUpdateJobManifest(jobName: string, request: BlobStoreUpdateReques
  * Build the cli commands that run inside the Pod. For S3, the access
  * keys NEVER appear here — they're injected via envFrom and the cli
  * reads `$S3_ACCESS_KEY` / `$S3_SECRET_KEY` at shell-expansion time.
+ * For CIFS, the cli is told to use FileSystem at the mount path;
+ * no CIFS credentials appear in the cli invocation.
  *
  * This function is exported (via re-export below) so a unit test can
  * grep for plaintext secrets in the rendered argv.
@@ -456,7 +759,17 @@ export function buildCliCommands(request: BlobStoreUpdateRequest): string[] {
     cmds.push(
       `"$CLI" update BlobStore --field '@type=FileSystem' --field 'path=${path}' --field 'depth=${request.fileSystem.depth}'`,
     );
-  } else {
+  } else if (request.type === 'CIFS') {
+    // CIFS maps to FileSystem for Stalwart; the blob root is the
+    // sub-path within the mounted CIFS share at /mnt/blobstore.
+    // Strip any leading slash from request.cifs.path before appending
+    // so the result is always /mnt/blobstore/<path> (never /mnt/blobstore//path).
+    const relativePath = request.cifs.path.replace(/^\/+/, '');
+    const mountedPath = `${CIFS_MOUNT_PATH}/${relativePath}`.replace(/'/g, "'\\''");
+    cmds.push(
+      `"$CLI" update BlobStore --field '@type=FileSystem' --field 'path=${mountedPath}' --field 'depth=${request.cifs.depth}'`,
+    );
+  } else if (request.type === 'S3') {
     // S3 — credentials NEVER inlined; reference shell-env values.
     const bucket = request.s3.bucket.replace(/'/g, "'\\''");
     const region = request.s3.region.replace(/'/g, "'\\''");
@@ -472,6 +785,9 @@ export function buildCliCommands(request: BlobStoreUpdateRequest): string[] {
       fields.push(`--field 'endpoint=${ep}'`);
     }
     cmds.push(`"$CLI" update BlobStore ${fields.join(' ')}`);
+  } else {
+    const _exhaustive: never = request;
+    throw new Error(`Unhandled BlobStoreUpdateRequest type: ${String((_exhaustive as { type: string }).type)}`);
   }
 
   cmds.push('echo === AFTER ===');
@@ -484,7 +800,11 @@ export function buildCliCommands(request: BlobStoreUpdateRequest): string[] {
   // this grep — without it the cli emits human-readable text
   // ("Type: Filesystem") and the regex returns empty, marking
   // genuinely-successful flips as failed.
-  cmds.push(`expected="${request.type}"`);
+  //
+  // CIFS uses FileSystem as the Stalwart-level type — the self-verify
+  // checks for "FileSystem" accordingly.
+  const expectedType = request.type === 'CIFS' ? 'FileSystem' : request.type;
+  cmds.push(`expected="${expectedType}"`);
   // Plain single-quoted string so JS doesn't interfere with the embedded
   // shell command substitution. `$CLI` must reach the shell verbatim —
   // an earlier version used a backtick template with `\\$CLI`, which

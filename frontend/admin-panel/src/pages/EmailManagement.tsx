@@ -17,7 +17,9 @@ import MailServerSettings from '@/components/MailServerSettings';
 import MailSslStatusCard from '@/components/MailSslStatusCard';
 import MailStorageCard from '@/components/MailStorageCard';
 import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
+import { MailNodeSelectorCard } from '@/components/MailNodeSelectorCard';
 import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
+import MailSnapshotHealthCard from '@/components/MailSnapshotHealthCard';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -73,6 +75,10 @@ export default function EmailManagement() {
       <MailStorageCard />
 
       <StalwartBlobStoreCard />
+
+      <MailNodeSelectorCard />
+
+      <MailSnapshotHealthCard />
 
       <CnpgBackupHealthCard clusterFilter="mail-pg" />
     </div>

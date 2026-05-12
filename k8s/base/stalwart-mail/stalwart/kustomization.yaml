@@ -15,6 +15,7 @@ resources:
   - networkpolicy.yaml
   - bootstrap-plan-cm.yaml
   - bootstrap-job.yaml
+  - snapshot-cronjob.yaml
 
 labels:
   - pairs:
