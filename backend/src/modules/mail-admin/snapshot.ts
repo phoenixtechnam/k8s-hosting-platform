@@ -155,15 +155,20 @@ export async function getMailSnapshotStatus(
     return conds.some((c) => c.type === 'Complete' && c.status === 'True');
   });
 
-  // Sort descending by completionTime to find the most recent
+  // Sort descending by completionTime to find the most recent.
+  // The k8s client returns completionTime as a Date object at runtime
+  // despite the interface typing it as string — use getTime() for comparison.
   successfulJobs.sort((a, b) => {
-    const ta = a.status?.completionTime ?? '';
-    const tb = b.status?.completionTime ?? '';
-    return tb.localeCompare(ta);
+    const ta = a.status?.completionTime ? new Date(a.status.completionTime).getTime() : 0;
+    const tb = b.status?.completionTime ? new Date(b.status.completionTime).getTime() : 0;
+    return tb - ta;
   });
 
   const lastJob = successfulJobs[0] ?? null;
-  const lastSnapshotAt = lastJob?.status?.completionTime ?? null;
+  const rawCompletionTime = lastJob?.status?.completionTime ?? null;
+  const lastSnapshotAt = rawCompletionTime
+    ? new Date(rawCompletionTime).toISOString()
+    : null;
 
   // ── 4. Compute seconds since last snapshot ────────────────────────
   let secondsSinceLastSnapshot: number | null = null;
@@ -284,8 +289,10 @@ export async function getMailSnapshotJobStatus(
   }) as JobShape;
 
   const status = jobStatusFromConditions(job);
-  const startedAt = job.status?.startTime ?? null;
-  const completedAt = job.status?.completionTime ?? null;
+  const rawStartTime = job.status?.startTime ?? null;
+  const rawCompletionTime = job.status?.completionTime ?? null;
+  const startedAt = rawStartTime ? new Date(rawStartTime).toISOString() : null;
+  const completedAt = rawCompletionTime ? new Date(rawCompletionTime).toISOString() : null;
   const failureReason =
     (job.status?.conditions ?? []).find((c) => c.type === 'Failed')?.message ?? null;
 
@@ -318,8 +325,8 @@ export async function getMailSnapshotJobStatus(
   return mailSnapshotJobStatusResponseSchema.parse({
     jobName,
     status,
-    startedAt: typeof startedAt === 'string' ? startedAt : null,
-    completedAt: typeof completedAt === 'string' ? completedAt : null,
+    startedAt,
+    completedAt,
     podLogTail,
     failureReason,
   });

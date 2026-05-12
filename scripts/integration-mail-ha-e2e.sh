@@ -209,8 +209,6 @@ scenario_1_blob_store_read() {
       ;;
   esac
 
-  # Stash for use in later scenarios
-  INITIAL_BLOB_TYPE="$type"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -624,7 +622,6 @@ scenario_8_cronjob_exists() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # State carried between scenarios
-INITIAL_BLOB_TYPE=""
 CURRENT_NODE=""
 INITIAL_NODE_MODE=""
 INITIAL_NODE_NAME=""

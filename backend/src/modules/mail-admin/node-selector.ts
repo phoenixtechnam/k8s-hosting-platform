@@ -64,7 +64,9 @@ interface DeploymentShape {
   spec?: {
     template?: {
       spec?: {
-        nodeAffinity?: NodeAffinityShape;
+        affinity?: {
+          nodeAffinity?: NodeAffinityShape;
+        };
       };
     };
   };
@@ -225,7 +227,7 @@ export async function getMailNodeSelector(
   }
 
   const nodeAffinity =
-    deployment.spec?.template?.spec?.nodeAffinity ?? null;
+    deployment.spec?.template?.spec?.affinity?.nodeAffinity ?? null;
   const { mode, nodeName } = parseNodeAffinity(nodeAffinity);
 
   // Read the live pod's scheduled node — best-effort, falls back to null.
@@ -292,7 +294,9 @@ export async function updateMailNodeSelector(
           spec: {
             template: {
               spec: {
-                nodeAffinity,
+                affinity: {
+                  nodeAffinity,
+                },
               },
             },
           },
