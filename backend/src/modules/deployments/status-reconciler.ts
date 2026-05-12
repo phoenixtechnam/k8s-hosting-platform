@@ -11,6 +11,7 @@ import { getDeploymentStatus } from './k8s-deployer.js';
 import type { DeployComponentInput } from './k8s-deployer.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
+import { reconcileCustomRow, applyReconcileOutcome } from '../custom-deployments/reconcile.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -144,9 +145,24 @@ export async function reconcileDeploymentStatuses(
     const namespace = namespaceMap.get(deployment.clientId);
     if (!namespace) continue;
 
-    // Skip custom deployments — they're reconciled by their own path
-    // in PR-2. Until then they hold a `pending`/`deploying` row that
-    // does nothing.
+    // Custom deployments take a dedicated reconcile path that reads
+    // a single Deployment object (no catalog component model) and
+    // populates the image-audit table.
+    if (deployment.source === 'custom') {
+      checked++;
+      try {
+        const outcome = await reconcileCustomRow(db, k8s, deployment, namespace);
+        const wasChanged = await applyReconcileOutcome(db, deployment.id, deployment, outcome);
+        if (wasChanged) updated++;
+      } catch (err) {
+        errors.push(`${deployment.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      continue;
+    }
+
+    // Defensive: a `catalog`-source row with a NULL catalog_entry_id
+    // should never exist (the XOR constraint rejects it at INSERT
+    // time), but if one ever slips through we skip rather than NPE.
     if (deployment.catalogEntryId === null) continue;
     const entry = entryMap.get(deployment.catalogEntryId);
     if (!entry) continue;

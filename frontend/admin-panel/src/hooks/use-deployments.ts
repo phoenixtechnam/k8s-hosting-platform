@@ -6,7 +6,13 @@ export interface Deployment {
   readonly id: string;
   readonly clientId: string;
   readonly name: string;
-  readonly catalogEntryId: string;
+  // Nullable: custom deployments (ADR-036, source='custom') carry no
+  // catalog entry. The XOR constraint at the DB layer keeps `source`
+  // and this field consistent.
+  readonly catalogEntryId: string | null;
+  /** ADR-036 source discriminator. Defaults to 'catalog' on older
+   *  rows that pre-date PR-1's migration. */
+  readonly source?: 'catalog' | 'custom';
   readonly type: 'application' | 'runtime' | 'database' | 'service' | 'static';
   readonly status: string;
   /** Persistent error message when status='failed' (e.g. volume faulted, image pull error). */
