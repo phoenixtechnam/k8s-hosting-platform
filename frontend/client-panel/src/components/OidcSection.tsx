@@ -8,7 +8,6 @@ import {
   useDeleteIngressAuth,
   useTestIngressAuth,
   useOidcProviders,
-  useCreateOidcProvider,
 } from '@/hooks/use-ingress-auth';
 import type {
   ClaimRule,
@@ -75,7 +74,6 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
   const remove = useDeleteIngressAuth(clientId, routeId);
   const test = useTestIngressAuth(clientId, routeId);
   const { data: providers } = useOidcProviders(clientId);
-  const createProvider = useCreateOidcProvider(clientId);
 
   const [isOpen, setIsOpen] = useState(true);
   const [providerMode, setProviderMode] = useState<'existing' | 'new'>('new');
