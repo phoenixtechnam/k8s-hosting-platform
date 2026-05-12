@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
   CheckCircle, Network, Pencil, Check, RefreshCw, Lock,
-  ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck,
+  ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck, ChevronDown,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -264,31 +264,37 @@ export default function DomainDetail() {
               </div>
             )}
 
-            <div className="mt-5 flex justify-end gap-2">
-              {(verifyDomain.isSuccess || verifyDomain.isError) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    verifyDomain.reset();
-                    verifyDomain.mutate(domainId!);
-                  }}
-                  disabled={verifyDomain.isPending}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-50"
-                  data-testid="verify-modal-retry"
-                >
-                  <CheckCircle size={14} />
-                  Verify Now
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => { setShowVerifyModal(false); verifyDomain.reset(); }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
-                data-testid="verify-modal-close-btn"
-              >
-                Close
-              </button>
-            </div>
+            {(() => {
+              const isVerified = verifyDomain.isSuccess && verifyDomain.data?.data?.verified === true;
+              const isFailed = (verifyDomain.isSuccess && !verifyDomain.data?.data?.verified) || verifyDomain.isError;
+              return (
+                <div className="mt-5 flex justify-end gap-2">
+                  {isFailed && (
+                    <button
+                      type="button"
+                      onClick={() => { verifyDomain.reset(); verifyDomain.mutate(domainId!); }}
+                      disabled={verifyDomain.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-50"
+                      data-testid="verify-modal-retry"
+                    >
+                      <CheckCircle size={14} />
+                      Verify Again
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { setShowVerifyModal(false); verifyDomain.reset(); }}
+                    className={isVerified
+                      ? 'inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700'
+                      : 'inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                    }
+                    data-testid="verify-modal-close-btn"
+                  >
+                    Close
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -625,6 +631,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
 
   const [subdomain, setSubdomain] = useState('');
   const [subdomainError, setSubdomainError] = useState<string | null>(null);
+  const [showAddRoute, setShowAddRoute] = useState(false);
   // Round-4 Phase A: confirm-before-delete pattern for ingress routes.
   // Previously a single click deleted the route immediately, which
   // could drop live traffic. Now clicking the trash icon arms a
@@ -685,7 +692,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
     // Send path only if non-empty; backend defaults to "/"
     const path = pathValue || undefined;
     createRoute.mutate({ hostname, path }, {
-      onSuccess: () => { setSubdomain(''); setSubdomainError(null); },
+      onSuccess: () => { setSubdomain(''); setSubdomainError(null); setShowAddRoute(false); },
     });
   };
 
@@ -712,7 +719,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
     <div className="space-y-6" data-testid="routing-tab">
       <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
         {isCname ? (
-          <p>Add a route for your domain and assign it to a deployed workload. Point your DNS to the CNAME target shown below.</p>
+          <p>Create an ingress route for your domain and assign it to workload.</p>
         ) : dnsMode === 'primary' ? (
           <p>Create Ingress Routes to expose your apps to a domain name (FQDN) and allow public traffic flow.</p>
         ) : (
@@ -726,8 +733,21 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
           <span className="text-sm text-gray-500">Loading routes...</span>
         </div>
       ) : routes.length === 0 ? (
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
-          No routes configured yet. Add a hostname below to start routing traffic to your workloads.
+        <div className="space-y-3">
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+            No routes configured yet.
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowAddRoute(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              data-testid="add-route-button"
+            >
+              <Plus size={14} />
+              Add Ingress Route
+            </button>
+          </div>
         </div>
       ) : (() => {
         const showPathColumn = routes.some((r) => {
@@ -735,191 +755,223 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
           return rPath && rPath !== '/';
         });
         return (
-        <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-          <table className="w-full text-sm" data-testid="routes-table">
-            <thead>
-              <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                <th className="px-4 py-3">Hostname</th>
-                {showPathColumn && <th className="px-4 py-3">Path Prefix</th>}
-                {dnsMode !== 'primary' && <th className="px-4 py-3">CNAME Target</th>}
-                <th className="px-4 py-3">Deployment</th>
-                <th className="px-4 py-3">TLS</th>
-                <th className="px-4 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {routes.map((route) => (
-                <tr
-                  key={route.id}
-                  className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
-                  onClick={() => navigate(`/domains/${domainId}/routes/${route.id}`)}
-                  data-testid={`route-row-${route.id}`}
-                >
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-blue-600 dark:text-blue-400">{route.hostname}</span>
-                      {route.isApex ? (
-                        <span className="inline-flex rounded bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">apex</span>
-                      ) : null}
-                    </div>
-                  </td>
-                  {showPathColumn && (
-                    <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
-                      {((route as Record<string, unknown>).path as string) || '/'}
-                    </td>
-                  )}
-                  {dnsMode !== 'primary' && (
-                    <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
-                      {/* Show the plain ingress base domain as the customer-facing CNAME target.
-                          The slug-prefixed route.ingressCname is still used internally by the
-                          K8s ingress reconciler — only the display label changes here. */}
-                      {ingressBaseDomain || route.ingressCname}
-                    </td>
-                  )}
-                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={(() => {
-                          if (!route.deploymentId) return '';
-                          const isCustom = ingressableCustom.some(cd => cd.id === route.deploymentId);
-                          return isCustom && route.servicePort ? `${route.deploymentId}:${route.servicePort}` : route.deploymentId;
-                        })()}
-                        onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
-                        disabled={assigningRouteId === route.id}
-                        className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none disabled:opacity-50"
-                      >
-                        <option value="">Not assigned</option>
-                        {deployments.map((d) => (
-                          <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
-                        ))}
-                        {ingressableCustom.map((cd) => {
-                          const services = Object.values(cd.customSpec?.services ?? {});
-                          const allPorts = services.flatMap(svc =>
-                            (svc.ports ?? []).filter(p => p.ingressEligible && p.exposeAsService),
-                          );
-                          if (allPorts.length === 1) {
-                            return (
-                              <option key={cd.id} value={cd.id}>{cd.name} (custom, :{allPorts[0].containerPort})</option>
-                            );
-                          }
-                          return allPorts.map(p => (
-                            <option key={`${cd.id}:${p.containerPort}`} value={`${cd.id}:${p.containerPort}`}>
-                              {cd.name} (custom, :{p.containerPort}{p.name ? ` – ${p.name}` : ''})
-                            </option>
-                          ));
-                        })}
-                      </select>
-                      {assigningRouteId === route.id && <Loader2 size={14} className="animate-spin text-blue-500" />}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={clsx(
-                        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
-                        route.tlsMode === 'auto' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' :
-                        route.tlsMode === 'custom' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' :
-                        'bg-gray-100 dark:bg-gray-700 text-gray-500',
-                      )}
-                      data-testid={`route-tls-badge-${route.id}`}
+          <>
+            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm" data-testid="routes-table">
+                <thead>
+                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="px-4 py-3">Hostname</th>
+                    {showPathColumn && <th className="px-4 py-3">Path Prefix</th>}
+                    {dnsMode !== 'primary' && <th className="px-4 py-3">CNAME Target</th>}
+                    <th className="px-4 py-3">Deployment</th>
+                    <th className="px-4 py-3">TLS</th>
+                    <th className="px-4 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {routes.map((route) => (
+                    <tr
+                      key={route.id}
+                      className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
+                      onClick={() => navigate(`/domains/${domainId}/routes/${route.id}`)}
+                      data-testid={`route-row-${route.id}`}
                     >
-                      {route.tlsMode !== 'none' && <Lock size={10} />}
-                      {route.tlsMode === 'auto' ? 'Auto (TLS)' : route.tlsMode === 'custom' ? 'Custom' : 'None'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                    {deleteRouteConfirmId === route.id ? (
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            deleteRoute.mutate(route.id, {
-                              onSuccess: () => setDeleteRouteConfirmId(null),
-                            });
-                          }}
-                          disabled={deleteRoute.isPending}
-                          className="rounded-md bg-red-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
-                          data-testid={`route-delete-confirm-${route.id}`}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-blue-600 dark:text-blue-400">{route.hostname}</span>
+                          {route.isApex ? (
+                            <span className="inline-flex rounded bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">apex</span>
+                          ) : null}
+                        </div>
+                      </td>
+                      {showPathColumn && (
+                        <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
+                          {((route as Record<string, unknown>).path as string) || '/'}
+                        </td>
+                      )}
+                      {dnsMode !== 'primary' && (
+                        <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
+                          {/* Show the plain ingress base domain as the customer-facing CNAME target.
+                              The slug-prefixed route.ingressCname is still used internally by the
+                              K8s ingress reconciler — only the display label changes here. */}
+                          {ingressBaseDomain || route.ingressCname}
+                        </td>
+                      )}
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={(() => {
+                              if (!route.deploymentId) return '';
+                              const isCustom = ingressableCustom.some(cd => cd.id === route.deploymentId);
+                              return isCustom && route.servicePort ? `${route.deploymentId}:${route.servicePort}` : route.deploymentId;
+                            })()}
+                            onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
+                            disabled={assigningRouteId === route.id}
+                            className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none disabled:opacity-50"
+                          >
+                            <option value="">Not assigned</option>
+                            {deployments.map((d) => (
+                              <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
+                            ))}
+                            {ingressableCustom.map((cd) => {
+                              const services = Object.values(cd.customSpec?.services ?? {});
+                              const allPorts = services.flatMap(svc =>
+                                (svc.ports ?? []).filter(p => p.ingressEligible && p.exposeAsService),
+                              );
+                              if (allPorts.length === 1) {
+                                return (
+                                  <option key={cd.id} value={cd.id}>{cd.name} (custom, :{allPorts[0].containerPort})</option>
+                                );
+                              }
+                              return allPorts.map(p => (
+                                <option key={`${cd.id}:${p.containerPort}`} value={`${cd.id}:${p.containerPort}`}>
+                                  {cd.name} (custom, :{p.containerPort}{p.name ? ` – ${p.name}` : ''})
+                                </option>
+                              ));
+                            })}
+                          </select>
+                          {assigningRouteId === route.id && <Loader2 size={14} className="animate-spin text-blue-500" />}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={clsx(
+                            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+                            route.tlsMode === 'auto' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' :
+                            route.tlsMode === 'custom' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' :
+                            'bg-gray-100 dark:bg-gray-700 text-gray-500',
+                          )}
+                          data-testid={`route-tls-badge-${route.id}`}
                         >
-                          Confirm
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDeleteRouteConfirmId(null)}
-                          className="rounded-md border border-gray-200 dark:border-gray-600 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
-                          data-testid={`route-delete-cancel-${route.id}`}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setDeleteRouteConfirmId(route.id)}
-                        className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
-                        data-testid={`route-delete-${route.id}`}
-                        aria-label="Delete route"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                          {route.tlsMode !== 'none' && <Lock size={10} />}
+                          {route.tlsMode === 'auto' ? 'Auto (TLS)' : route.tlsMode === 'custom' ? 'Custom' : 'None'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        {deleteRouteConfirmId === route.id ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                deleteRoute.mutate(route.id, {
+                                  onSuccess: () => setDeleteRouteConfirmId(null),
+                                });
+                              }}
+                              disabled={deleteRoute.isPending}
+                              className="rounded-md bg-red-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                              data-testid={`route-delete-confirm-${route.id}`}
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeleteRouteConfirmId(null)}
+                              className="rounded-md border border-gray-200 dark:border-gray-600 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                              data-testid={`route-delete-cancel-${route.id}`}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setDeleteRouteConfirmId(route.id)}
+                            className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
+                            data-testid={`route-delete-${route.id}`}
+                            aria-label="Delete route"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowAddRoute(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                data-testid="add-route-button"
+              >
+                <Plus size={14} />
+                Add Ingress Route
+              </button>
+            </div>
+          </>
         );
       })()}
 
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="add-route-section">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">Add Ingress Route</h3>
-        <form onSubmit={handleAddRoute} className="space-y-4" data-testid="add-route-form">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Hostname</label>
-              <div className="flex items-center gap-1">
-                <input
-                  type="text"
-                  value={subdomain}
-                  onChange={(e) => handleSubdomainChange(e.target.value)}
-                  placeholder="(root)"
-                  className={clsx(INPUT_CLASS, 'flex-1', subdomainError && 'border-red-400 dark:border-red-600 focus:border-red-500 focus:ring-red-500')}
-                  data-testid="new-subdomain-input"
-                />
-                <span className="text-sm font-mono text-gray-400 dark:text-gray-500 shrink-0">.{domainName}</span>
+      {showAddRoute && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-testid="add-route-modal">
+          <div className="w-full max-w-xl rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Add Ingress Route</h3>
+              <button
+                type="button"
+                onClick={() => { setShowAddRoute(false); setSubdomain(''); setSubdomainError(null); createRoute.reset(); }}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleAddRoute} className="space-y-4" data-testid="add-route-form">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Hostname</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="text"
+                      value={subdomain}
+                      onChange={(e) => handleSubdomainChange(e.target.value)}
+                      placeholder="(root)"
+                      className={clsx(INPUT_CLASS, 'flex-1', subdomainError && 'border-red-400 dark:border-red-600 focus:border-red-500 focus:ring-red-500')}
+                      data-testid="new-subdomain-input"
+                    />
+                    <span className="text-sm font-mono text-gray-400 dark:text-gray-500 shrink-0">.{domainName}</span>
+                  </div>
+                  {subdomainError && (
+                    <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="subdomain-error">{subdomainError}</p>
+                  )}
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Enter subdomain (e.g., &apos;my-app&apos;) or leave empty to use the root domain. DNS records will be created automatically.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Path Prefix</label>
+                  <input type="text" name="path" placeholder="(all traffic)" className={INPUT_CLASS} data-testid="new-route-path-input" />
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    URL path for this route, e.g. &quot;/api/&quot; or leave empty to route all requests.
+                  </p>
+                </div>
               </div>
-              {subdomainError && (
-                <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="subdomain-error">{subdomainError}</p>
+              {createRoute.error && (
+                <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
+                  <AlertCircle size={16} />
+                  <span>{createRoute.error instanceof Error ? createRoute.error.message : 'Failed to create route'}</span>
+                </div>
               )}
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Enter subdomain (e.g., &apos;my-app&apos;) or leave empty to use the root domain. DNS records will be created automatically.
-              </p>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Path Prefix</label>
-              <input type="text" name="path" placeholder="(all traffic)" className={INPUT_CLASS} data-testid="new-route-path-input" />
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                URL path for this route, e.g. &quot;/api/&quot; or leave empty to route all requests.
-              </p>
-            </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setShowAddRoute(false); setSubdomain(''); setSubdomainError(null); createRoute.reset(); }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!!subdomainError || createRoute.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {createRoute.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                  Create Route
+                </button>
+              </div>
+            </form>
           </div>
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={!!subdomainError || createRoute.isPending}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              {createRoute.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-              Create Route
-            </button>
-          </div>
-        </form>
-      </div>
-
-      {createRoute.error && (
-        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
-          <AlertCircle size={16} />
-          <span>{createRoute.error instanceof Error ? createRoute.error.message : 'Failed to create route'}</span>
         </div>
       )}
     </div>

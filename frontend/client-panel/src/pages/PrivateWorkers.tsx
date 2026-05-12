@@ -1,7 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import {
   AlertCircle,
-  BookOpen,
   Cable,
   Loader2,
   Plus,
@@ -272,7 +271,7 @@ function EmptyState({ canManage, onCreate }: EmptyStateProps) {
             aria-hidden="true"
             className="mt-2 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500"
           />
-          <span>Expose a service from your home GPU/NAS</span>
+          <span>Expose a service from a private network or home server</span>
         </li>
         <li className="flex items-start gap-2">
           <span
@@ -291,8 +290,8 @@ function EmptyState({ canManage, onCreate }: EmptyStateProps) {
           </span>
         </li>
       </ul>
-      <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
-        {canManage && (
+      {canManage && (
+        <div className="mt-6 flex justify-center">
           <button
             type="button"
             onClick={onCreate}
@@ -301,17 +300,8 @@ function EmptyState({ canManage, onCreate }: EmptyStateProps) {
           >
             <Plus size={14} /> Create your first private worker
           </button>
-        )}
-        <a
-          href="/docs/private-workers"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-600 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
-          data-testid="pw-read-the-docs"
-        >
-          <BookOpen size={14} /> Read the docs
-        </a>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

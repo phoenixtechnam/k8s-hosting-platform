@@ -189,7 +189,11 @@ export default function SubUsers() {
               </tr></thead>
               <tbody>
                 {users.map((u) => (
-                  <tr key={u.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
+                  <tr
+                    key={u.id}
+                    className={`border-b border-gray-100 dark:border-gray-700 last:border-0${canManage ? ' cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50' : ''}`}
+                    onClick={() => { if (canManage && deleteConfirmId !== u.id && disableConfirmId !== u.id) setEditingUser(u); }}
+                  >
                     <td className="px-6 py-4 font-medium text-gray-900 dark:text-gray-100">{u.fullName}</td>
                     <td className="px-6 py-4 text-gray-600 dark:text-gray-400">{u.email}</td>
                     <td className="px-6 py-4">
@@ -202,7 +206,7 @@ export default function SubUsers() {
                     <td className="px-6 py-4"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${u.status === 'active' ? 'bg-green-50 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-50 text-gray-600 dark:bg-gray-700 dark:text-gray-400'}`}>{u.status}</span></td>
                     <td className="hidden px-6 py-4 text-gray-500 dark:text-gray-400 sm:table-cell">{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : 'Never'}</td>
                     {canManage && (
-                      <td className="px-6 py-4">
+                      <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
                         {deleteConfirmId === u.id ? (
                           <div className="inline-flex gap-1" data-testid={`delete-confirm-${u.id}`}>
                             <button type="button" onClick={() => handleDelete(u.id)} disabled={deleteUser.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`delete-confirm-yes-${u.id}`}>Confirm</button>

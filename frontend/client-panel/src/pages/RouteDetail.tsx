@@ -352,6 +352,11 @@ function SecurityTab({ clientId, routeId, route }: {
   const [ipSaving, setIpSaving] = useState(false);
   const [rateSaving, setRateSaving] = useState(false);
 
+  /* ── Collapsible section state ── */
+  const [wafOpen, setWafOpen] = useState(true);
+  const [ipOpen, setIpOpen] = useState(true);
+  const [rateOpen, setRateOpen] = useState(true);
+
   const handleSaveWaf = async (e: FormEvent) => {
     e.preventDefault();
     setWafSaveError(null);
@@ -412,14 +417,27 @@ function SecurityTab({ clientId, routeId, route }: {
       </p>
 
       {/* ── WAF Card ── */}
-      <form
-        onSubmit={handleSaveWaf}
-        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4"
-        data-testid="waf-form"
-      >
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100" data-testid="waf-section">
-          WAF (Web Application Firewall)
-        </h3>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setWafOpen(!wafOpen)}
+          className="flex w-full items-center justify-between px-5 py-4 text-left"
+          data-testid="waf-section"
+        >
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">WAF (Web Application Firewall)</h3>
+          <div className="flex items-center gap-2">
+            <span className={clsx('inline-flex rounded-full px-2 py-0.5 text-xs font-medium', wafEnabled ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400')}>
+              {wafEnabled ? 'Enabled' : 'Disabled'}
+            </span>
+            {wafOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+          </div>
+        </button>
+        {wafOpen && (
+        <form
+          onSubmit={handleSaveWaf}
+          className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-4"
+          data-testid="waf-form"
+        >
 
         <div>
           <label className="flex items-center justify-between">
@@ -550,17 +568,34 @@ function SecurityTab({ clientId, routeId, route }: {
             </div>
           )}
         </div>
-      </form>
+        </form>
+        )}
+      </div>
 
       {/* ── IP Allowlist Card ── */}
-      <form
-        onSubmit={handleSaveIp}
-        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3"
-        data-testid="ip-allowlist-form"
-      >
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100" data-testid="ip-allowlist-section">
-          IP Allowlist
-        </h3>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setIpOpen(!ipOpen)}
+          className="flex w-full items-center justify-between px-5 py-4 text-left"
+          data-testid="ip-allowlist-section"
+        >
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">IP Allowlist</h3>
+          <div className="flex items-center gap-2">
+            {ipAllowlist.trim() && (
+              <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                Configured
+              </span>
+            )}
+            {ipOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+          </div>
+        </button>
+        {ipOpen && (
+        <form
+          onSubmit={handleSaveIp}
+          className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-3"
+          data-testid="ip-allowlist-form"
+        >
         <div>
           <input
             type="text"
@@ -593,17 +628,34 @@ function SecurityTab({ clientId, routeId, route }: {
             Save
           </button>
         </div>
-      </form>
+        </form>
+        )}
+      </div>
 
       {/* ── Rate Limiting Card ── */}
-      <form
-        onSubmit={handleSaveRate}
-        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3"
-        data-testid="rate-limiting-form"
-      >
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100" data-testid="rate-limiting-section">
-          Rate Limiting
-        </h3>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setRateOpen(!rateOpen)}
+          className="flex w-full items-center justify-between px-5 py-4 text-left"
+          data-testid="rate-limiting-section"
+        >
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Rate Limiting</h3>
+          <div className="flex items-center gap-2">
+            {(rateLimitRps || rateLimitConnections || rateLimitBurst) && (
+              <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                Active
+              </span>
+            )}
+            {rateOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+          </div>
+        </button>
+        {rateOpen && (
+        <form
+          onSubmit={handleSaveRate}
+          className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-3"
+          data-testid="rate-limiting-form"
+        >
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div>
             <label htmlFor="rate-limit-rps" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -676,7 +728,9 @@ function SecurityTab({ clientId, routeId, route }: {
             Save
           </button>
         </div>
-      </form>
+        </form>
+        )}
+      </div>
     </div>
   );
 }
@@ -711,6 +765,7 @@ function ProtectedDirsSection({ clientId, routeId }: {
   const createDir = useCreateProtectedDir(clientId, routeId);
   const deleteDir = useDeleteProtectedDir(clientId, routeId);
 
+  const [sectionOpen, setSectionOpen] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newPath, setNewPath] = useState('');
   const [newRealm, setNewRealm] = useState('Restricted');
@@ -743,31 +798,45 @@ function ProtectedDirsSection({ clientId, routeId }: {
 
   return (
     <div
-      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4"
+      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden"
       data-testid="protected-dirs-section"
     >
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-            <FolderLock size={16} />
-            Password-Protected Directories
-          </h3>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+      <button
+        type="button"
+        onClick={() => setSectionOpen(!sectionOpen)}
+        className="flex w-full items-center justify-between px-5 py-4 text-left"
+      >
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+          <FolderLock size={16} />
+          Password-Protected Directories
+        </h3>
+        <div className="flex items-center gap-2">
+          {dirs.length > 0 && (
+            <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+              {dirs.length} director{dirs.length === 1 ? 'y' : 'ies'}
+            </span>
+          )}
+          {sectionOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+        </div>
+      </button>
+      {sectionOpen && (
+      <div className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
             Protect specific URL paths with HTTP Basic Auth. Each directory has its own
             users and realm. Protection is enforced at the NGINX Ingress level — works
             with any backend application.
           </p>
+          <button
+            type="button"
+            onClick={() => setShowAddForm(!showAddForm)}
+            className="shrink-0 inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600"
+            data-testid="add-protected-dir-button"
+          >
+            {showAddForm ? <X size={12} /> : <Plus size={12} />}
+            {showAddForm ? 'Cancel' : 'Add Protected Directory'}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600"
-          data-testid="add-protected-dir-button"
-        >
-          {showAddForm ? <X size={12} /> : <Plus size={12} />}
-          {showAddForm ? 'Cancel' : 'Add Protected Directory'}
-        </button>
-      </div>
 
       {showAddForm && (
         <div
@@ -882,6 +951,8 @@ function ProtectedDirsSection({ clientId, routeId }: {
             </div>
           ))}
         </div>
+      )}
+      </div>
       )}
     </div>
   );
@@ -1234,6 +1305,10 @@ function AdvancedTab({ clientId, routeId, route }: {
   const [headersSaveError, setHeadersSaveError] = useState<string | null>(null);
   const markHeadersDirty = () => setHeadersDirty(true);
 
+  /* ── Collapsible section state ── */
+  const [errorPagesOpen, setErrorPagesOpen] = useState(true);
+  const [responseHeadersOpen, setResponseHeadersOpen] = useState(true);
+
   const handleAddHeader = () => {
     if (headers.length >= 50) return;
     setHeaders([...headers, { name: '', value: '' }]);
@@ -1306,14 +1381,27 @@ function AdvancedTab({ clientId, routeId, route }: {
       </p>
 
       {/* ── Custom Error Pages Card ── */}
-      <form
-        onSubmit={handleSaveErrors}
-        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3"
-        data-testid="error-pages-form"
-      >
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100" data-testid="custom-error-pages-section">
-          Custom Error Pages
-        </h3>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setErrorPagesOpen(!errorPagesOpen)}
+          className="flex w-full items-center justify-between px-5 py-4 text-left"
+          data-testid="custom-error-pages-section"
+        >
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Custom Error Pages</h3>
+          <div className="flex items-center gap-2">
+            {customErrorCodes.trim() && (
+              <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">Configured</span>
+            )}
+            {errorPagesOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+          </div>
+        </button>
+        {errorPagesOpen && (
+        <form
+          onSubmit={handleSaveErrors}
+          className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-3"
+          data-testid="error-pages-form"
+        >
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor="error-codes" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -1372,18 +1460,33 @@ function AdvancedTab({ clientId, routeId, route }: {
             Save
           </button>
         </div>
-      </form>
+        </form>
+        )}
+      </div>
 
       {/* ── Response Headers Card ── */}
-      <form
-        onSubmit={handleSaveHeaders}
-        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3"
-        data-testid="response-headers-form"
-      >
-        <div className="flex items-center justify-between" data-testid="proxy-headers-section">
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            Response Headers
-          </h3>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setResponseHeadersOpen(!responseHeadersOpen)}
+          className="flex w-full items-center justify-between px-5 py-4 text-left"
+          data-testid="proxy-headers-section"
+        >
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Response Headers</h3>
+          <div className="flex items-center gap-2">
+            {headers.length > 0 && (
+              <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">{headers.length} header{headers.length !== 1 ? 's' : ''}</span>
+            )}
+            {responseHeadersOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+          </div>
+        </button>
+        {responseHeadersOpen && (
+        <form
+          onSubmit={handleSaveHeaders}
+          className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-3"
+          data-testid="response-headers-form"
+        >
+        <div className="flex justify-end">
           <button
             type="button"
             onClick={handleAddHeader}
@@ -1466,7 +1569,9 @@ function AdvancedTab({ clientId, routeId, route }: {
             Save
           </button>
         </div>
-      </form>
+        </form>
+        )}
+      </div>
     </div>
   );
 }

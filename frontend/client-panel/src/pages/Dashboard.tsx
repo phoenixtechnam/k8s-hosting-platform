@@ -57,11 +57,11 @@ export default function Dashboard() {
     : `${mailboxUsage.current}/${mailboxUsage.limit}`;
 
   const stats = [
-    { label: 'Domains', value: domainCount, icon: Globe, color: 'bg-blue-50 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400' },
-    { label: 'Applications', value: deploymentCount, icon: AppWindow, color: 'bg-green-50 text-green-600 dark:bg-green-900/40 dark:text-green-400' },
-    { label: 'Backups', value: backupCount, icon: Archive, color: 'bg-amber-50 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400' },
-    { label: 'Deployments', value: deploymentCount, icon: Server, color: 'bg-purple-50 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400' },
-    { label: 'Email accounts', value: mailboxStat, icon: Mail, color: 'bg-rose-50 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400' },
+    { label: 'Domains', value: domainCount, icon: Globe, color: 'bg-blue-50 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400', to: '/domains' },
+    { label: 'Applications', value: deploymentCount, icon: AppWindow, color: 'bg-green-50 text-green-600 dark:bg-green-900/40 dark:text-green-400', to: '/applications' },
+    { label: 'Backups', value: backupCount, icon: Archive, color: 'bg-amber-50 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400', to: '/backups' },
+    { label: 'Deployments', value: deploymentCount, icon: Server, color: 'bg-purple-50 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400', to: '/applications' },
+    { label: 'Email accounts', value: mailboxStat, icon: Mail, color: 'bg-rose-50 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400', to: '/email' },
   ];
 
   // Catalog map for deployment -> catalog entry name lookup
@@ -136,10 +136,11 @@ export default function Dashboard() {
       )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5" data-testid="quick-stats">
-        {stats.map(({ label, value, icon: Icon, color }) => (
-          <div
+        {stats.map(({ label, value, icon: Icon, color, to }) => (
+          <Link
             key={label}
-            className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
+            to={to}
+            className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all"
           >
             <div className="flex items-center gap-3">
               <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${color}`}>
@@ -150,7 +151,7 @@ export default function Dashboard() {
                 <p className="text-xl font-semibold text-gray-900 dark:text-gray-100" data-testid={`stat-${label.toLowerCase()}`}>{value}</p>
               </div>
             </div>
-          </div>
+          </Link>
         ))}
       </div>
 
