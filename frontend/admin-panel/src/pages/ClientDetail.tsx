@@ -1,4 +1,4 @@
-import { Fragment, useState, type FormEvent } from 'react';
+import { Fragment, useMemo, useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { config } from '@/lib/runtime-config';
 import { ArrowLeft, Edit, Pause, Play, Square, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
@@ -1258,17 +1258,42 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
   const deleteDeployment = useDeleteDeployment(clientId);
   const updateDeployment = useUpdateDeployment(clientId);
 
-  const items = (data?.data ?? []) as readonly Deployment[];
+  // ADR-036 source filter. Defaults to 'all'; admins can drill into
+  // catalog-only or custom-only to scope bulk action mistakes.
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'catalog' | 'custom'>('all');
+  const rawItems = (data?.data ?? []) as readonly Deployment[];
+  const items = useMemo(
+    () => rawItems.filter((d) => sourceFilter === 'all'
+      ? true
+      : (d.source ?? 'catalog') === sourceFilter),
+    [rawItems, sourceFilter],
+  );
   const search = useTableSearch(items, ['name', 'type', 'status', 'currentNodeName'] as ReadonlyArray<keyof Deployment>);
   const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(search.filteredData, 'name');
 
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load deployments." />;
-  if (items.length === 0) return <TabEmpty resource="deployments" />;
+  if (rawItems.length === 0) return <TabEmpty resource="deployments" />;
 
   return (
     <div>
-      <div className="mb-3 flex items-center justify-end">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 p-0.5 text-xs dark:border-gray-700 dark:bg-gray-800" data-testid="deployments-source-filter">
+          {(['all', 'catalog', 'custom'] as const).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setSourceFilter(k)}
+              className={
+                sourceFilter === k
+                  ? 'rounded bg-white px-2 py-1 font-medium text-gray-900 shadow-sm dark:bg-gray-900 dark:text-gray-100'
+                  : 'rounded px-2 py-1 text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+              }
+            >
+              {k === 'all' ? 'All' : k === 'catalog' ? 'Catalog' : 'Custom'}
+            </button>
+          ))}
+        </div>
         <input
           type="search"
           value={search.query}
@@ -1318,7 +1343,14 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
           return (
             <Fragment key={d.id}>
               <tr className="border-b border-gray-50 dark:border-gray-700">
-                <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.name}</td>
+                <td className="py-2 font-medium text-gray-900 dark:text-gray-100">
+                  {d.name}
+                  {d.source === 'custom' && (
+                    <span className="ml-1.5 rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300" title="Custom container/compose deployment (ADR-036)">
+                      custom
+                    </span>
+                  )}
+                </td>
                 <td className="py-2 text-gray-600 dark:text-gray-400">{d.type}</td>
                 <td className="py-2 font-mono text-gray-700 dark:text-gray-300">{d.currentNodeName ?? <span className="text-gray-400">—</span>}</td>
                 <td className="py-2 text-gray-600 dark:text-gray-400">{d.replicaCount}</td>
