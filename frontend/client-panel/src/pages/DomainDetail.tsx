@@ -631,7 +631,6 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   // "Confirm" state and a second click performs the delete.
   const [deleteRouteConfirmId, setDeleteRouteConfirmId] = useState<string | null>(null);
   const [assigningRouteId, setAssigningRouteId] = useState<string | null>(null);
-  const [assigningPort, setAssigningPort] = useState<Record<string, number | null>>({});
 
   const routes = routesData?.data ?? [];
   const allDeployments = deploymentsData?.data ?? [];
