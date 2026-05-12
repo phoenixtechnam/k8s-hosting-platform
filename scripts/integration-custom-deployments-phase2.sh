@@ -632,6 +632,8 @@ scenario_validate_ep() {
   scenario_start "T11 — /validate endpoint: valid + invalid compose"
 
   # Happy path: valid 2-service compose.
+  # The /validate endpoint uses createCustomDeploymentSchema — must include
+  # mode:'compose' (discriminator) and name (required by compose branch).
   local valid_yaml
   valid_yaml="services:
   web:
@@ -646,7 +648,7 @@ scenario_validate_ep() {
   local body http resp ok
   body=$(COMPOSE_YAML="$valid_yaml" python3 -c "
 import json, os
-print(json.dumps({'compose_yaml':os.environ['COMPOSE_YAML']}))
+print(json.dumps({'mode':'compose','name':'p2-val-probe-$STAMP','compose_yaml':os.environ['COMPOSE_YAML']}))
 ")
   resp=$(api POST "/clients/$CLIENT_ID/custom-deployments/validate" "$body")
   ok=$(echo "$resp" | python3 -c "
@@ -671,7 +673,7 @@ print(d.get('ok','?'))
 "
   body=$(COMPOSE_YAML="$bad_yaml" python3 -c "
 import json, os
-print(json.dumps({'compose_yaml':os.environ['COMPOSE_YAML']}))
+print(json.dumps({'mode':'compose','name':'p2-val-bad-$STAMP','compose_yaml':os.environ['COMPOSE_YAML']}))
 ")
   resp=$(api POST "/clients/$CLIENT_ID/custom-deployments/validate" "$body")
   ok=$(echo "$resp" | python3 -c "
@@ -679,19 +681,28 @@ import json,sys
 d=json.load(sys.stdin).get('data',{})
 print(d.get('ok','?'))
 " 2>/dev/null || echo "?")
-  local issue_count
+  local issue_count error_issue_count
   issue_count=$(echo "$resp" | python3 -c "
 import json,sys
 d=json.load(sys.stdin).get('data',{})
 issues=d.get('issues',[])
 print(len(issues))
 " 2>/dev/null || echo "0")
+  error_issue_count=$(echo "$resp" | python3 -c "
+import json,sys
+d=json.load(sys.stdin).get('data',{})
+issues=d.get('issues',[])
+print(sum(1 for i in issues if i.get('severity')=='error'))
+" 2>/dev/null || echo "0")
   http=$(api_status POST "/clients/$CLIENT_ID/custom-deployments/validate" "$body")
 
-  if [[ "$http" == "200" && "$ok" == "False" && "$issue_count" -gt "0" ]]; then
-    pass "T11: privileged compose → 200 {ok:false, issues:[$issue_count]} ✓"
+  # The parser strips unsupported fields (privileged:true → COMPOSE_FIELD_REJECTED)
+  # and still generates a valid spec → ok=true. The test verifies the issue is
+  # surfaced (error severity), not that ok=false (which only happens on parse failure).
+  if [[ "$http" == "200" && "$error_issue_count" -gt "0" ]]; then
+    pass "T11: privileged compose → 200 with $error_issue_count error issue(s) ✓"
   else
-    fail "T11: expected 200/{ok:false,issues:[…]}, got HTTP=$http ok=$ok issues=$issue_count"
+    fail "T11: expected 200 with ≥1 error-severity issue, got HTTP=$http issues=$issue_count (errors=$error_issue_count)"
   fi
 }
 
@@ -768,16 +779,31 @@ print(d.get('lastError',''))
 scenario_backup_rt() {
   scenario_start "T13 — customSpec MARKER env var appears in config bundle"
 
+  # Discover the first active backup config (required for POST /admin/tenant-bundles).
+  local backup_cfg_id
+  backup_cfg_id=$(api GET "/admin/backup-configs" | python3 -c "
+import json,sys
+for c in json.load(sys.stdin).get('data',[]):
+  if c.get('active'):
+    print(c['id']); break
+" 2>/dev/null || true)
+  if [[ -z "$backup_cfg_id" ]]; then
+    skip "T13: no active backup configuration found (SKIP-EXPECTED on fresh installs without S3/SSH)"
+    return
+  fi
+  info "T13: using backup config $backup_cfg_id"
+
   local name="p2-bkp-$STAMP"
   local marker="BKP_MARKER_${STAMP}"
   local body id
+  # Simple-mode API uses 'env' (not 'environment' — that's compose-only).
   body=$(python3 -c "
 import json
 print(json.dumps({
   'mode': 'simple',
   'name': '$name',
   'image': 'nginx:1.27-alpine',
-  'environment': [{'name': '$marker', 'value': 'present'}],
+  'env': [{'name': '$marker', 'value': 'present'}],
 }))
 ")
   id=$(create_deployment "$body")
@@ -788,37 +814,49 @@ print(json.dumps({
   CREATED_IDS+=("$id")
   pass "T13: deployment created with env $marker"
 
-  # Trigger a config-only bundle.
+  # Trigger a config-only bundle. Route: POST /admin/tenant-bundles
+  # (not /clients/<id>/tenant-bundles — that path does not exist).
+  # components is an object with boolean flags, not an array.
   local bundle_resp
-  bundle_resp=$(api POST "/clients/$CLIENT_ID/tenant-bundles" \
-    '{"components":["config"]}')
-  local bundle_id
+  bundle_resp=$(api POST "/admin/tenant-bundles" \
+    "{\"clientId\":\"$CLIENT_ID\",\"targetConfigId\":\"$backup_cfg_id\",\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":false}}")
+  # Response has bundleId (sync response) or id (async). Accept either.
+  local bundle_id bundle_status_inline
   bundle_id=$(echo "$bundle_resp" | python3 -c "
 import json,sys
-try: print(json.load(sys.stdin)['data']['id'])
-except Exception: pass
+d=json.load(sys.stdin).get('data',{})
+print(d.get('bundleId') or d.get('id') or '')
+" 2>/dev/null || true)
+  bundle_status_inline=$(echo "$bundle_resp" | python3 -c "
+import json,sys
+d=json.load(sys.stdin).get('data',{})
+print(d.get('status',''))
 " 2>/dev/null || true)
   if [[ -z "$bundle_id" ]]; then
-    fail "T13: POST /tenant-bundles failed (resp: $bundle_resp)"
+    fail "T13: POST /admin/tenant-bundles failed (resp: $bundle_resp)"
     return
   fi
   pass "T13: bundle created id=$bundle_id"
 
-  # Poll until succeeded (or 5 min timeout).
-  local end=$((SECONDS + 300))
-  local bundle_status=""
-  while ((SECONDS < end)); do
-    bundle_status=$(api GET "/clients/$CLIENT_ID/tenant-bundles/$bundle_id" | python3 -c "
+  # If the sync response already says completed, skip polling.
+  local bundle_status="$bundle_status_inline"
+  if [[ "$bundle_status" != "completed" && "$bundle_status" != "succeeded" ]]; then
+    # Poll until succeeded (or 5 min timeout).
+    # Route: GET /admin/tenant-bundles/:id
+    local end=$((SECONDS + 300))
+    while ((SECONDS < end)); do
+      bundle_status=$(api GET "/admin/tenant-bundles/$bundle_id" | python3 -c "
 import json,sys
 d=json.load(sys.stdin).get('data',{})
 print(d.get('status','?'))
 " 2>/dev/null || echo "?")
-    if [[ "$bundle_status" == "succeeded" ]]; then break; fi
-    if [[ "$bundle_status" == "failed" ]]; then break; fi
-    sleep 10
-  done
+      if [[ "$bundle_status" == "completed" || "$bundle_status" == "succeeded" ]]; then break; fi
+      if [[ "$bundle_status" == "failed" ]]; then break; fi
+      sleep 10
+    done
+  fi
 
-  if [[ "$bundle_status" != "succeeded" ]]; then
+  if [[ "$bundle_status" != "completed" && "$bundle_status" != "succeeded" ]]; then
     if [[ "$bundle_status" == "failed" ]]; then
       fail "T13: bundle status=failed (bundle subsystem issue, not a custom-deployments bug)"
     else
@@ -826,35 +864,55 @@ print(d.get('status','?'))
     fi
     return
   fi
-  pass "T13: bundle succeeded"
+  pass "T13: bundle $bundle_status"
 
   # Download and grep for the marker.
+  # Route: POST /admin/tenant-bundles/:id/export-token {format:'tar'}
+  # Returns {downloadUrl: '/api/v1/...'} — relative path, prepend ADMIN_HOST.
   local download_url
-  download_url=$(api GET "/clients/$CLIENT_ID/tenant-bundles/$bundle_id/download" | python3 -c "
+  download_url=$(api POST "/admin/tenant-bundles/$bundle_id/export-token" '{"format":"tar"}' | python3 -c "
 import json,sys
 d=json.load(sys.stdin).get('data',{})
-print(d.get('url',''))
+print(d.get('downloadUrl','') or d.get('url',''))
 " 2>/dev/null || true)
   if [[ -z "$download_url" ]]; then
-    fail "T13: no download URL in bundle response"
+    fail "T13: no download URL in export-token response"
     return
+  fi
+  # Prepend host if the URL is a relative path.
+  if [[ "$download_url" == /api/* ]]; then
+    download_url="${ADMIN_HOST}${download_url}"
   fi
 
   local tmpdir
   tmpdir=$(mktemp -d)
   CLEANUP_TMPDIRS+=("$tmpdir")
-  curl -skL "$download_url" -o "$tmpdir/bundle.tar.gz" 2>/dev/null || {
+  curl -skL "$download_url" -o "$tmpdir/bundle.tar" 2>/dev/null || {
     fail "T13: download failed"
     rm -rf "$tmpdir"
     return
   }
-  tar xzf "$tmpdir/bundle.tar.gz" -C "$tmpdir" 2>/dev/null || {
+  # The bundle is a plain tar (not gzipped). Inner component files are .gz.
+  tar xf "$tmpdir/bundle.tar" -C "$tmpdir" 2>/dev/null || {
     fail "T13: tar extract failed"
     rm -rf "$tmpdir"
     return
   }
 
-  if grep -rq "$marker" "$tmpdir/" 2>/dev/null; then
+  # Use zcat|grep to search inside .gz component files.
+  local found=0
+  while IFS= read -r -d '' gz; do
+    if zcat "$gz" 2>/dev/null | grep -q "$marker"; then
+      found=1
+      break
+    fi
+  done < <(find "$tmpdir" -name "*.gz" -print0 2>/dev/null)
+  # Also grep plain files.
+  if [[ "$found" == "0" ]]; then
+    grep -rq "$marker" "$tmpdir/" 2>/dev/null && found=1
+  fi
+
+  if [[ "$found" == "1" ]]; then
     pass "T13: marker '$marker' found in config bundle ✓ (customSpec included)"
   else
     fail "T13: marker '$marker' NOT found in bundle — customSpec may be excluded from config BundleComponent"
@@ -967,21 +1025,29 @@ else:
   if [[ "$http" == "422" || "$http" == "400" ]]; then
     pass "T15: quota exceeded → $http (validator caught it before k8s) ✓"
   elif [[ "$http" == "201" || "$http" == "200" ]]; then
-    # API accepted it — check if the Pod goes Pending due to quota.
+    # API accepted it — when quota is exceeded K8s rejects the Pod at
+    # admission, so no Pod object is created. The Deployment controller
+    # records the failure in status.conditions[type=ReplicaFailure].
     local dep_id="$code"
     if [[ "$dep_id" != "?" && "$dep_id" != "created" ]]; then
       CREATED_IDS+=("$dep_id")
     fi
     sleep 10
-    local pod_reason
-    pod_reason=$(remote_kubectl get pod -n "$TENANT_NS" \
+    local deploy_name="p2-quota-probe-$STAMP"
+    local replica_fail_reason
+    replica_fail_reason=$(remote_kubectl get deploy -n "$TENANT_NS" \
       -l "platform.phoenix-host.net/deployment-id=$dep_id" \
-      -o jsonpath='{.items[0].status.conditions[?(@.type=="PodScheduled")].reason}' \
+      -o jsonpath='{.items[0].status.conditions[?(@.type=="ReplicaFailure")].reason}' \
       2>/dev/null || echo "")
-    if echo "$pod_reason" | grep -qi "unschedulable\|quota\|exceeded"; then
-      pass "T15: pod is Unschedulable due to quota ($pod_reason) ✓"
+    # Also check Deployment events for quota messages as a fallback.
+    local events_quota
+    events_quota=$(remote_kubectl get events -n "$TENANT_NS" \
+      --field-selector "involvedObject.name=$deploy_name" 2>/dev/null | grep -i "quota\|exceeded" | wc -l || echo "0")
+    if echo "$replica_fail_reason" | grep -qi "failedcreate\|quota\|exceeded" || \
+       [[ "$events_quota" -gt "0" ]]; then
+      pass "T15: Deployment has ReplicaFailure due to quota ($replica_fail_reason) ✓"
     else
-      fail "T15: deployment accepted and pod not Unschedulable (quota not enforced? reason='$pod_reason')"
+      fail "T15: deployment accepted and no quota failure signal (ReplicaFailure='$replica_fail_reason', events=$events_quota)"
     fi
   else
     fail "T15: unexpected response HTTP=$http code=$code"
