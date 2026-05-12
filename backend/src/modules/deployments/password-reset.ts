@@ -21,7 +21,7 @@ interface InitContainer {
   readonly image: string;
   readonly command: readonly string[];
   readonly volumeMounts: readonly { name: string; mountPath: string; subPath?: string }[];
-  readonly resources: { requests: { cpu: string; memory: string }; limits: { cpu: string; memory: string } };
+  readonly resources: { requests: { cpu: string; memory: string }; limits: { memory: string } };
   readonly securityContext?: Record<string, unknown>;
 }
 
@@ -33,9 +33,10 @@ const DB_ENGINES: Record<string, 'mariadb' | 'mysql' | 'postgresql' | 'mongodb'>
   mongodb: 'mongodb',
 };
 
+// Asymmetric QoS (ADR-037): CPU request only, memory request==limit.
 const INIT_RESOURCES = {
-  requests: { cpu: '50m', memory: '128Mi' },
-  limits: { cpu: '200m', memory: '512Mi' },
+  requests: { cpu: '50m', memory: '512Mi' },
+  limits: { memory: '512Mi' },
 };
 
 function buildMariadbResetScript(passwordEnvVar: string): string {

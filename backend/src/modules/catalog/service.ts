@@ -234,6 +234,100 @@ export function validateIngressRules(manifest: {
   return null;
 }
 
+/**
+ * Validate per-component `resourceShare` declarations (ADR-037).
+ *
+ * Rules:
+ *   - All-or-nothing: every budget-bearing component (non-Job) declares
+ *     `resourceShare`, or none do. Partial manifests are rejected so the
+ *     runtime allocator can rely on the invariant.
+ *   - `weight` is integer 1..1000 (avoids floats; values >1000 add no
+ *     resolution and risk overflow under summation).
+ *   - `sum(minCpu) ≤ resources.recommended.cpu` — the catalog author's
+ *     claimed recommended budget must cover the minima they declare.
+ *   - `sum(minMemory) ≤ resources.recommended.memory` — same for memory.
+ *
+ * Returns null when valid; otherwise a short error string.
+ */
+export function validateResourceShares(
+  components: readonly Record<string, unknown>[],
+  recommended: { cpu?: string; memory?: string } | undefined,
+): string | null {
+  const budgetComponents = components.filter((c) => {
+    const type = (c as { type?: string }).type;
+    const resources = (c as { resources?: { cpu?: string; memory?: string } }).resources;
+    return type !== 'job' && !(resources?.cpu || resources?.memory);
+  });
+
+  if (budgetComponents.length === 0) return null;
+
+  const declared = budgetComponents.filter(
+    (c) => (c as { resourceShare?: unknown }).resourceShare !== undefined,
+  );
+
+  if (declared.length === 0) return null;
+  if (declared.length !== budgetComponents.length) {
+    const undeclared = budgetComponents
+      .filter((c) => (c as { resourceShare?: unknown }).resourceShare === undefined)
+      .map((c) => `"${(c as { name?: string }).name ?? '?'}"`);
+    return `partial resourceShare: components ${undeclared.join(', ')} are missing resourceShare while siblings declare one — all-or-nothing required`;
+  }
+
+  for (const c of declared) {
+    const share = (c as { resourceShare: { weight?: unknown; minCpu?: unknown; minMemory?: unknown } }).resourceShare;
+    const name = (c as { name?: string }).name ?? '?';
+    if (typeof share.weight !== 'number' || !Number.isInteger(share.weight) || share.weight < 1 || share.weight > 1000) {
+      return `component "${name}" resourceShare.weight must be an integer in 1..1000, got ${JSON.stringify(share.weight)}`;
+    }
+    if (share.minCpu !== undefined && typeof share.minCpu !== 'string') {
+      return `component "${name}" resourceShare.minCpu must be a string, got ${typeof share.minCpu}`;
+    }
+    if (share.minMemory !== undefined && typeof share.minMemory !== 'string') {
+      return `component "${name}" resourceShare.minMemory must be a string, got ${typeof share.minMemory}`;
+    }
+  }
+
+  // Sum of minima ≤ recommended budget — only check when recommended is
+  // present (it's optional on the catalog manifest level).
+  if (recommended?.cpu && recommended.cpu.length > 0) {
+    const recCpuMilli = toCpuMilli(recommended.cpu);
+    const sumMin = declared.reduce((acc, c) => {
+      const minCpu = (c as { resourceShare: { minCpu?: string } }).resourceShare.minCpu;
+      return acc + (minCpu ? toCpuMilli(minCpu) : 50);
+    }, 0);
+    if (sumMin > recCpuMilli) {
+      return `sum of component minCpu (${sumMin}m) exceeds recommended.cpu (${recCpuMilli}m) — author must raise recommended or lower minima`;
+    }
+  }
+
+  if (recommended?.memory && recommended.memory.length > 0) {
+    const recMemMi = toMemMi(recommended.memory);
+    const sumMin = declared.reduce((acc, c) => {
+      const minMem = (c as { resourceShare: { minMemory?: string } }).resourceShare.minMemory;
+      return acc + (minMem ? toMemMi(minMem) : 64);
+    }, 0);
+    if (sumMin > recMemMi) {
+      return `sum of component minMemory (${sumMin}Mi) exceeds recommended.memory (${recMemMi}Mi) — author must raise recommended or lower minima`;
+    }
+  }
+
+  return null;
+}
+
+function toCpuMilli(value: string): number {
+  const trimmed = value.trim();
+  if (trimmed.endsWith('m')) return Math.round(Number(trimmed.slice(0, -1)));
+  return Math.round(Number(trimmed) * 1000);
+}
+
+function toMemMi(value: string): number {
+  const trimmed = value.trim();
+  if (trimmed.endsWith('Gi')) return Math.round(Number(trimmed.slice(0, -2)) * 1024);
+  if (trimmed.endsWith('Mi')) return Math.round(Number(trimmed.slice(0, -2)));
+  if (trimmed.endsWith('Ki')) return Math.round(Number(trimmed.slice(0, -2)) / 1024);
+  return Math.round(Number(trimmed) / (1024 * 1024));
+}
+
 function resolveVersionStatus(eolDate: string | undefined): 'available' | 'deprecated' | 'eol' {
   if (!eolDate) return 'available';
   const eol = new Date(eolDate);
@@ -539,6 +633,20 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       }
       if (componentVolumeError) {
         manifestErrors.push(`${code}: ${componentVolumeError}`);
+        continue;
+      }
+
+      // Validate resourceShare (ADR-037): all-or-nothing, weight ∈ [1,1000],
+      // sum of per-component minCpu ≤ manifest's recommended CPU, same for
+      // memory. We only check budget-bearing components (Job type is
+      // excluded since Jobs declare their own hard-pinned resources).
+      const resourceShareError = validateResourceShares(
+        manifest.components ?? [],
+        (manifest as { resources?: { recommended?: { cpu?: string; memory?: string } } }).resources?.recommended,
+      );
+      if (resourceShareError) {
+        manifestErrors.push(`${code}: ${resourceShareError}`);
+        skippedCount++;
         continue;
       }
 

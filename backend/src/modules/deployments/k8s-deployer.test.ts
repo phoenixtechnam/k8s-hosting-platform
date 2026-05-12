@@ -515,3 +515,120 @@ describe('volumeKey', () => {
     expect(LOCAL_PATH_SEGMENT_RE.test('/data')).toBe(false);  // absolute
   });
 });
+
+describe('deployCatalogEntry: asymmetric QoS resource block (ADR-037)', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  function getContainerResources(call: unknown): {
+    requests: Record<string, string>;
+    limits: Record<string, string>;
+  } {
+    const body = (call as { body: { spec: { template: { spec: { containers: Array<{ resources: { requests: Record<string, string>; limits: Record<string, string> } }> } } } } }).body;
+    return body.spec.template.spec.containers[0].resources;
+  }
+
+  it('single-component deploy: requests has CPU+memory, limits has memory only (no CPU limit)', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      cpuRequest: '500m',
+      memoryRequest: '512Mi',
+      components: [makeComponent('deployment', { name: 'web' })],
+    }));
+    const resources = getContainerResources(calls.createDeployment.mock.calls[0][0]);
+    expect(resources.requests).toEqual({ cpu: '500m', memory: '512Mi' });
+    expect(resources.limits).toEqual({ memory: '512Mi' });
+    expect(resources.limits).not.toHaveProperty('cpu');
+  });
+
+  it('multi-component (no shares declared): budget is split evenly, every container is Burstable', async () => {
+    // The Nextcloud failure-mode test: before this fix, every component
+    // got the full cpuRequest as requests AND limits, summing to 4× the
+    // budget. Now they share evenly.
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      cpuRequest: '1',         // 1000m total
+      memoryRequest: '1Gi',    // 1024Mi total
+      components: [
+        makeComponent('deployment', { name: 'web' }),
+        makeComponent('deployment', { name: 'db' }),
+        makeComponent('deployment', { name: 'cache' }),
+        makeComponent('deployment', { name: 'cron' }),
+      ],
+    }));
+    expect(calls.createDeployment).toHaveBeenCalledTimes(4);
+    let sumCpu = 0;
+    let sumMem = 0;
+    for (const callArgs of calls.createDeployment.mock.calls) {
+      const r = getContainerResources(callArgs[0]);
+      // Every container: no CPU limit (Burstable for CPU).
+      expect(r.limits).not.toHaveProperty('cpu');
+      // Memory request == memory limit (Guaranteed for memory).
+      expect(r.requests.memory).toBe(r.limits.memory);
+      sumCpu += parseInt(r.requests.cpu, 10);
+      sumMem += parseInt(r.requests.memory, 10);
+    }
+    // Sum must equal the deployment-level budget exactly.
+    expect(sumCpu).toBe(1000);
+    expect(sumMem).toBe(1024);
+  });
+
+  it('multi-component (weighted shares): split respects ratios above per-component minimums', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      cpuRequest: '1',
+      memoryRequest: '1Gi',
+      components: [
+        makeComponent('deployment', { name: 'web', resourceShare: { weight: 50 } }),
+        makeComponent('deployment', { name: 'db', resourceShare: { weight: 35 } }),
+        makeComponent('deployment', { name: 'cache', resourceShare: { weight: 10 } }),
+        makeComponent('deployment', { name: 'cron', resourceShare: { weight: 5 } }),
+      ],
+    }));
+    const calls4 = calls.createDeployment.mock.calls;
+    // Order of mock calls matches input order.
+    const web = getContainerResources(calls4[0][0]);
+    const cron = getContainerResources(calls4[3][0]);
+    // Web has the largest weight → largest allocation.
+    expect(parseInt(web.requests.cpu, 10)).toBeGreaterThan(parseInt(cron.requests.cpu, 10));
+    // No container has a CPU limit.
+    for (const c of calls4) {
+      expect(getContainerResources(c[0]).limits).not.toHaveProperty('cpu');
+    }
+  });
+
+  it('Job components are excluded from the budget and keep their hard-pinned resources', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      cpuRequest: '1',
+      memoryRequest: '1Gi',
+      components: [
+        makeComponent('deployment', { name: 'web' }),
+        // wp-install Job declares a tiny footprint that shouldn't eat the budget.
+        makeComponent('job', { name: 'wp-install', resources: { cpu: '50m', memory: '64Mi' } }),
+      ],
+    }));
+    // Deployment got the full budget.
+    const webRes = getContainerResources(calls.createDeployment.mock.calls[0][0]);
+    expect(webRes.requests.cpu).toBe('1000m');
+    expect(webRes.requests.memory).toBe('1024Mi');
+    // Job kept its hard-pinned resources verbatim.
+    const jobRes = getContainerResources(calls.createJob.mock.calls[0][0]);
+    expect(jobRes.requests.cpu).toBe('50m');
+    expect(jobRes.requests.memory).toBe('64Mi');
+  });
+
+  it('CronJob components also follow the asymmetric QoS shape', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      cpuRequest: '500m',
+      memoryRequest: '512Mi',
+      components: [makeComponent('cronjob', { name: 'beat', schedule: '*/5 * * * *' })],
+    }));
+    // Drill into CronJob's nested job template.
+    const body = (calls.createCronJob.mock.calls[0][0] as { body: { spec: { jobTemplate: { spec: { template: { spec: { containers: Array<{ resources: { requests: Record<string, string>; limits: Record<string, string> } }> } } } } } } }).body;
+    const r = body.spec.jobTemplate.spec.template.spec.containers[0].resources;
+    expect(r.requests).toEqual({ cpu: '500m', memory: '512Mi' });
+    expect(r.limits).toEqual({ memory: '512Mi' });
+    expect(r.limits).not.toHaveProperty('cpu');
+  });
+});

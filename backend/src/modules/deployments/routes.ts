@@ -140,6 +140,20 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success(availability);
   });
 
+  // GET /api/v1/clients/:clientId/deployments/:id/resource-breakdown
+  //   ADR-037: returns the per-component CPU/memory allocation that the
+  //   allocator produced from the deployment-level cpu_request /
+  //   memory_request. Surfaces:
+  //     - The total (deployment-level) budget
+  //     - Per-component {cpu, memory, weight, pinned}
+  //     - Warnings (e.g. no resourceShare declared → even split)
+  //     - QoS model labels for client-facing badges
+  app.get('/clients/:clientId/deployments/:id/resource-breakdown', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const breakdown = await service.getResourceBreakdown(app.db, clientId, id);
+    return success(breakdown);
+  });
+
   // ─── Catalog version upgrade ───────────────────────────────────────────────
   // GET /api/v1/clients/:clientId/deployments/:id/available-upgrades
   //   Returns { from, direct[], recommendedChain[], lockMode }. Lists every

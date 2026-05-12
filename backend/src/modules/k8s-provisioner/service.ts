@@ -253,6 +253,17 @@ export async function applyResourceQuota(
   namespace: string,
   limits: { cpu: string; memory: string; storage: string },
 ): Promise<void> {
+  // Asymmetric QoS model (ADR-037):
+  //
+  //   CPU is enforced on `requests.cpu` — pods declare a baseline request,
+  //   omit CPU limits, and burst freely within the customer plan. cgroup
+  //   `cpu.shares` arbitrates contention proportionally.
+  //
+  //   Memory is enforced on `limits.memory` AND `requests.memory` (set
+  //   equal per container) — memory is incompressible, OOM-kill is
+  //   non-graceful, and kubelet eviction can cross namespaces. Pods
+  //   stay Guaranteed for memory; the quota caps both axes at the plan.
+  //
   // K8s ResourceQuota constraint: PriorityClass scope applies ONLY to
   // Pod-level resources (cpu, memory, pods). Resource counts like
   // `requests.storage` (the per-namespace PVC budget) are NOT
@@ -261,7 +272,7 @@ export async function applyResourceQuota(
   // scoped quota. So we split into TWO quotas:
   //
   //   <ns>-quota          (scoped, counts only tenant-default Pods)
-  //     limits.cpu, limits.memory
+  //     requests.cpu, limits.memory, requests.memory
   //
   //   <ns>-storage-quota  (unscoped, namespace-wide)
   //     requests.storage
@@ -274,7 +285,8 @@ export async function applyResourceQuota(
     metadata: { name: quotaName, namespace },
     spec: {
       hard: {
-        'limits.cpu': limits.cpu,
+        'requests.cpu': limits.cpu,
+        'requests.memory': `${limits.memory}Gi`,
         'limits.memory': `${limits.memory}Gi`,
       },
       scopeSelector: {

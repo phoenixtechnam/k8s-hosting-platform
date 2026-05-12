@@ -147,14 +147,23 @@ describe('K8s Provisioner Service', () => {
       const storageCall = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-storage-quota');
       expect(podCall).toBeDefined();
       expect(storageCall).toBeDefined();
-      expect((podCall![0] as { body: { spec: { hard: Record<string, string>; scopeSelector: object } } }).body.spec).toMatchObject({
-        hard: { 'limits.cpu': '2', 'limits.memory': '4Gi' },
+      // Asymmetric QoS (ADR-037): CPU enforced on `requests.cpu`
+      // (pods burst freely), memory enforced on both axes (Guaranteed).
+      const podSpec = (podCall![0] as { body: { spec: { hard: Record<string, string>; scopeSelector: object } } }).body.spec;
+      expect(podSpec).toMatchObject({
+        hard: {
+          'requests.cpu': '2',
+          'requests.memory': '4Gi',
+          'limits.memory': '4Gi',
+        },
         scopeSelector: {
           matchExpressions: [
             { scopeName: 'PriorityClass', operator: 'In', values: ['tenant-default'] },
           ],
         },
       });
+      // Critically: no `limits.cpu` key — that's what allows CPU bursting.
+      expect(podSpec.hard).not.toHaveProperty('limits.cpu');
       expect((storageCall![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard).toEqual({
         'requests.storage': '50Gi',
       });

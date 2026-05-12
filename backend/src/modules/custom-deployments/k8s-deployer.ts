@@ -321,13 +321,18 @@ function buildContainer(
     name: p.name,
     protocol: p.protocol,
   }));
-  // CPU/memory limits: explicit when set, else default to 2× request
-  // (CPU) and 1.5× request (memory). This is stricter than catalog
-  // (which sets limits === requests for every container) — custom
-  // deployments need limits to protect against runaway processes from
-  // tenant-supplied images.
-  const cpuLimit = service.resources.cpuLimit ?? defaultCpuLimit(service.resources.cpuRequest);
-  const memLimit = service.resources.memoryLimit ?? defaultMemoryLimit(service.resources.memoryRequest);
+  // Asymmetric QoS (ADR-037):
+  //   CPU:    request only, NO limit — fair-throttled by cgroup shares
+  //           under contention, free burst within the customer's
+  //           ResourceQuota on `requests.cpu`. A custom deployment with
+  //           an explicit `cpuLimit` in the spec is honoured (legacy
+  //           tenants who set one explicitly opt out of bursting).
+  //   Memory: request == limit (Guaranteed) — protects against OOM and
+  //           cross-tenant kubelet eviction. `memoryLimit` from the spec
+  //           is honoured only when ≥ memoryRequest; otherwise we clamp
+  //           to memoryRequest to keep the Guaranteed shape.
+  const cpuLimit = service.resources.cpuLimit; // undefined ⇒ no limit
+  const memLimit = service.resources.memoryLimit ?? service.resources.memoryRequest;
 
   // Compose's `entrypoint:` → k8s `command` (k8s docs call it "Entrypoint Array").
   // Compose's `command:`    → k8s `args`    (k8s docs call it "Cmd Array").
@@ -355,7 +360,9 @@ function buildContainer(
         cpu: service.resources.cpuRequest,
         memory: service.resources.memoryRequest,
       },
-      limits: { cpu: cpuLimit, memory: memLimit },
+      limits: cpuLimit !== undefined
+        ? { cpu: cpuLimit, memory: memLimit }
+        : { memory: memLimit },
     },
     securityContext: buildContainerSecurityContext(service, input.spec),
     ...(service.workingDir ? { workingDir: service.workingDir } : {}),
@@ -789,27 +796,6 @@ function buildContainerSecurityContext(
     ctx.capabilities = { add: service.capAdd };
   }
   return ctx;
-}
-
-// ─── Resource defaults ──────────────────────────────────────────────────────
-
-function defaultCpuLimit(request: string): string {
-  // 2× request, rounded to the nearest millicpu.
-  const m = /^([0-9]+(?:\.[0-9]+)?)(m)?$/.exec(request);
-  if (!m) return request;
-  const n = parseFloat(m[1]);
-  const isM = m[2] === 'm';
-  const millis = Math.round((isM ? n : n * 1000) * 2);
-  return `${millis}m`;
-}
-
-function defaultMemoryLimit(request: string): string {
-  // 1.5× request, preserving the unit.
-  const m = /^([0-9]+(?:\.[0-9]+)?)(Ki|Mi|Gi|Ti|k|M|G|T)?$/.exec(request);
-  if (!m) return request;
-  const n = parseFloat(m[1]);
-  const unit = m[2] ?? '';
-  return `${Math.round(n * 1.5)}${unit}`;
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

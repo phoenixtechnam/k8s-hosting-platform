@@ -7,6 +7,29 @@
 import { eq, and, ne, desc, asc, lt, gt, sql } from 'drizzle-orm';
 import { deployments, catalogEntries, catalogEntryVersions, clients, clusterNodes, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { InsufficientResourceBudgetError } from './resource-allocator.js';
+
+/**
+ * Translate an allocator INSUFFICIENT_BUDGET error to a 400 ApiError with
+ * structured per-component minimums so the UI can render an actionable
+ * "raise budget to X" message.
+ */
+function rethrowAsApiErrorIfBudget(err: unknown): never {
+  if (err instanceof InsufficientResourceBudgetError) {
+    throw new ApiError(
+      'INSUFFICIENT_RESOURCE_BUDGET',
+      err.message,
+      400,
+      {
+        required: err.required,
+        assigned: err.assigned,
+        perComponentMinimums: err.perComponentMinimums,
+      },
+      "Raise the deployment's CPU or memory, or shrink a component's minimum.",
+    );
+  }
+  throw err;
+}
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
 import { getSettings as getSystemSettings } from '../system-settings/service.js';
@@ -73,6 +96,7 @@ function resolveComponents(
     command?: string[];
     args?: string[];
     resources?: { cpu?: string; memory?: string };
+    resourceShare?: { weight: number; minCpu?: string; minMemory?: string };
   }>;
 
   if (baseComponents.length === 0) {
@@ -102,6 +126,7 @@ function resolveComponents(
       command: comp.command,
       args: comp.args,
       resources: comp.resources,
+      resourceShare: comp.resourceShare,
     };
   });
 }
@@ -520,6 +545,12 @@ export async function createDeployment(
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[deployments] K8s deploy failed for ${input.name}:`, message);
       await db.update(deployments).set({ status: 'failed', lastError: message }).where(eq(deployments.id, id));
+      // INSUFFICIENT_RESOURCE_BUDGET is a user-actionable validation error,
+      // not a runtime K8s failure — surface as 400 so the UI can render a
+      // per-component minimums table + "raise to X" quick-fix.
+      if (err instanceof InsufficientResourceBudgetError) {
+        rethrowAsApiErrorIfBudget(err);
+      }
     }
   }
 
@@ -1075,6 +1106,9 @@ export async function updateDeploymentResources(
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[deployments] K8s resource update failed for ${deployment.name}:`, message);
         await db.update(deployments).set({ lastError: message }).where(eq(deployments.id, deploymentId));
+        if (err instanceof InsufficientResourceBudgetError) {
+          rethrowAsApiErrorIfBudget(err);
+        }
       }
     }
   }
@@ -1117,6 +1151,106 @@ export async function getDeploymentWithVolumePaths(
   const volumePaths = entry ? computeVolumePaths(deployment, entry) : [];
 
   return { ...deployment, volumePaths };
+}
+
+// ─── Resource Breakdown (ADR-037) ───────────────────────────────────────────
+
+/**
+ * Compute the per-component CPU/memory allocation for a deployment.
+ * Re-runs the allocator with the deployment's current state so the UI
+ * shows the live split that K8s actually sees.
+ *
+ * Returns INSUFFICIENT_RESOURCE_BUDGET as an ApiError if the budget is
+ * too small to honour per-component minima.
+ */
+export async function getResourceBreakdown(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+): Promise<{
+  total: { cpu: string; memory: string };
+  components: Array<{ name: string; cpu: string; memory: string; weight: number | null; pinned: boolean }>;
+  warnings: string[];
+  qosModel: { cpu: 'burstable'; memory: 'guaranteed' };
+}> {
+  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  if (deployment.source === 'custom') {
+    throw new ApiError(
+      'NOT_SUPPORTED_FOR_CUSTOM',
+      'Resource breakdown is not applicable to custom deployments — see customSpec for explicit per-service resources.',
+      400,
+    );
+  }
+  const [entry] = await db
+    .select()
+    .from(catalogEntries)
+    .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId ?? '');
+
+  const resolved = await resolveVersionAwareDeploymentConfig(db, entry, deployment.installedVersion);
+  const totalCpu = deployment.cpuRequest ?? '250m';
+  const totalMem = deployment.memoryRequest ?? '256Mi';
+
+  const { allocateResources, InsufficientResourceBudgetError } = await import('./resource-allocator.js');
+
+  let allocations: Map<string, { cpu: string; memory: string }>;
+  try {
+    allocations = allocateResources(
+      { cpu: totalCpu, memory: totalMem },
+      resolved.components.map((c) => ({
+        name: c.name,
+        type: c.type,
+        resources: c.resources,
+        resourceShare: c.resourceShare,
+      })),
+    );
+  } catch (err) {
+    if (err instanceof InsufficientResourceBudgetError) {
+      rethrowAsApiErrorIfBudget(err);
+    }
+    throw err;
+  }
+
+  const warnings: string[] = [];
+  const budgetBearing = resolved.components.filter(
+    (c) => c.type !== 'job' && !(c.resources?.cpu || c.resources?.memory),
+  );
+  const allDeclared = budgetBearing.length > 0
+    && budgetBearing.every((c) => c.resourceShare !== undefined);
+  if (budgetBearing.length > 1 && !allDeclared) {
+    warnings.push(
+      'No resourceShare declared in the catalog manifest — using even split with default 50m/64Mi minimums. ' +
+      'The catalog author can declare per-component weights for a better fit.',
+    );
+  }
+
+  const components = resolved.components.map((c) => {
+    const allocated = allocations.get(c.name);
+    if (allocated) {
+      return {
+        name: c.name,
+        cpu: allocated.cpu,
+        memory: allocated.memory,
+        weight: c.resourceShare?.weight ?? null,
+        pinned: false,
+      };
+    }
+    // Hard-pinned (Job, or explicit `resources`): not in the budget split.
+    return {
+      name: c.name,
+      cpu: c.resources?.cpu ?? '0m',
+      memory: c.resources?.memory ?? '0Mi',
+      weight: null,
+      pinned: true,
+    };
+  });
+
+  return {
+    total: { cpu: totalCpu, memory: totalMem },
+    components,
+    warnings,
+    qosModel: { cpu: 'burstable', memory: 'guaranteed' },
+  };
 }
 
 // ─── Shared Helpers (used by routes for restart, etc.) ───────────────────────

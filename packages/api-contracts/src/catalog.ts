@@ -48,6 +48,20 @@ export const componentSchema = z.object({
   schedule: z.string().optional(),
   /** Database engine this component provides — enables SQL Manager access */
   database: z.enum(['mariadb', 'mysql', 'postgresql', 'mongodb']).optional(),
+  /**
+   * Weighted share for the deployment-level CPU/memory budget across
+   * multiple components (ADR-037). When every budget-bearing component
+   * in a deployment declares one, the user's assigned `cpu_request` /
+   * `memory_request` is split across components by these weights, with
+   * minCpu / minMemory acting as per-component floors. The catalog
+   * sync validator enforces all-or-nothing — partial manifests are
+   * rejected, so the runtime allocator can rely on the invariant.
+   */
+  resourceShare: z.object({
+    weight: z.number().int().min(1).max(1000),
+    minCpu: z.string().optional(),
+    minMemory: z.string().optional(),
+  }).optional(),
 });
 
 /**
@@ -326,6 +340,46 @@ export const adminUpgradesGroupSchema = z.object({
 
 export type AdminUpgradesGroup = z.infer<typeof adminUpgradesGroupSchema>;
 export type AdminUpgradesDeployment = z.infer<typeof adminUpgradesDeploymentSchema>;
+
+// ─── Resource Breakdown (ADR-037) ───────────────────────────────────────────
+
+export const resourceBreakdownComponentSchema = z.object({
+  name: z.string(),
+  /** Allocated CPU in millicores (e.g. "450m"). */
+  cpu: z.string(),
+  /** Allocated memory in mebibytes (e.g. "256Mi"). */
+  memory: z.string(),
+  /** Manifest-declared weight, or null when no shares are declared (even split). */
+  weight: z.number().nullable(),
+  /**
+   * Whether the component is hard-pinned (excluded from the budget split).
+   * Job-type components and components with explicit `resources` in the
+   * manifest are pinned and don't participate in weighted allocation.
+   */
+  pinned: z.boolean(),
+});
+
+export const resourceBreakdownResponseSchema = z.object({
+  /** The deployment-level totals (the values the user assigned). */
+  total: z.object({ cpu: z.string(), memory: z.string() }),
+  /** Per-component allocation, sums to `total` for non-pinned components. */
+  components: z.array(resourceBreakdownComponentSchema),
+  /**
+   * Non-fatal warnings (e.g. "no resourceShare declared — using even split",
+   * "budget is below the manifest's recommended minimum").
+   */
+  warnings: z.array(z.string()),
+  /**
+   * Asymmetric QoS model surfaced for client UX (ADR-037).
+   * Frontend renders "burstable" vs "guaranteed" badges accordingly.
+   */
+  qosModel: z.object({
+    cpu: z.literal('burstable'),
+    memory: z.literal('guaranteed'),
+  }),
+});
+
+export type ResourceBreakdownResponse = z.infer<typeof resourceBreakdownResponseSchema>;
 
 // ─── Delete Preview ─────────────────────────────────────────────────────────
 

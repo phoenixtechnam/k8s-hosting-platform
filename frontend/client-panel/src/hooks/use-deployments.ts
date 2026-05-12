@@ -114,6 +114,29 @@ export function useResourceAvailability(clientId: string | undefined, deployment
   });
 }
 
+export interface ResourceBreakdown {
+  readonly total: { readonly cpu: string; readonly memory: string };
+  readonly components: ReadonlyArray<{
+    readonly name: string;
+    readonly cpu: string;
+    readonly memory: string;
+    readonly weight: number | null;
+    readonly pinned: boolean;
+  }>;
+  readonly warnings: readonly string[];
+  readonly qosModel: { readonly cpu: 'burstable'; readonly memory: 'guaranteed' };
+}
+
+/** ADR-037: per-component CPU/memory allocation for a deployment. */
+export function useResourceBreakdown(clientId: string | undefined, deploymentId: string | undefined) {
+  return useQuery({
+    queryKey: ['resource-breakdown', clientId, deploymentId],
+    queryFn: () => apiFetch<{ data: ResourceBreakdown }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}/resource-breakdown`),
+    enabled: Boolean(clientId && deploymentId),
+    staleTime: 30_000,
+  });
+}
+
 export function useUpdateDeploymentResources(clientId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({

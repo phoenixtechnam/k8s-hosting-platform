@@ -19,6 +19,7 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { buildPasswordResetInitContainer } from './password-reset.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { allocateResources, InsufficientResourceBudgetError } from './resource-allocator.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -49,8 +50,25 @@ export interface DeployComponentInput {
    * `cpuRequest`/`memoryRequest` of a WordPress deploy (250m/512Mi) wastes
    * client ResourceQuota on a container that runs for 15 seconds. When
    * unset, falls back to the top-level `cpuRequest`/`memoryRequest`.
+   *
+   * Components that declare `resources` are excluded from the weighted
+   * budget split — their declared values are used verbatim, and the
+   * allocator distributes the deployment-level `cpuRequest`/`memoryRequest`
+   * across the remaining components.
    */
   readonly resources?: { readonly cpu?: string; readonly memory?: string };
+  /**
+   * Weighted share for multi-component budget allocation. When every
+   * budget-bearing component in a deployment declares one, the
+   * deployment-level `cpuRequest`/`memoryRequest` is split by these
+   * weights (after each component's minCpu/minMemory is honoured).
+   * Sync-time validation enforces all-or-nothing.
+   */
+  readonly resourceShare?: {
+    readonly weight: number;
+    readonly minCpu?: string;
+    readonly minMemory?: string;
+  };
 }
 
 export interface DeployCatalogEntryInput {
@@ -323,7 +341,8 @@ function buildVolumeMountSpec(
     image: 'busybox:1.36',
     command: ['sh', '-c', mkdirCmd],
     volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
-    resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
+    // Asymmetric QoS (ADR-037): CPU request only, memory request==limit.
+    resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '32Mi' } },
   };
 
   const podVolumes = [{ name: 'client-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } }];
@@ -461,12 +480,29 @@ export async function deployCatalogEntry(
       })
     : null;
 
+  // Weighted per-component allocation of the deployment-level CPU/memory
+  // budget. Components with hard-pinned `resources` (one-shot Jobs, etc.)
+  // are excluded from the budget; the remaining components share the
+  // budget by their `resourceShare.weight`, with even-split fallback when
+  // no shares are declared. Throws INSUFFICIENT_RESOURCE_BUDGET if the
+  // sum of minimums exceeds the budget.
+  const allocations = allocateResources(
+    { cpu: cpuRequest, memory: memoryRequest },
+    components.map((c) => ({
+      name: c.name,
+      type: c.type,
+      resources: c.resources,
+      resourceShare: c.resourceShare,
+    })),
+  );
+
   for (const component of components) {
     const name = k8sResourceName(deploymentName, component.name, componentCount);
     const labels = deploymentLabels(deploymentName, component.name);
 
-    const compCpu = component.resources?.cpu ?? cpuRequest;
-    const compMem = component.resources?.memory ?? memoryRequest;
+    const allocation = allocations.get(component.name);
+    const compCpu = component.resources?.cpu ?? allocation?.cpu ?? cpuRequest;
+    const compMem = component.resources?.memory ?? allocation?.memory ?? memoryRequest;
     // Pull host-port bindings for this component out of the manifest's
     // top-level networking.host_ports[]. The shape is
     // `{ component, port, protocol }`; we match on component name and
@@ -489,9 +525,17 @@ export async function deployCatalogEntry(
           ? { containerPort: p.port, hostPort: hp, ...(((p as { protocol?: string }).protocol === 'UDP' || (p as { protocol?: string }).protocol === 'udp') ? { protocol: 'UDP' } : {}) }
           : { containerPort: p.port, ...(((p as { protocol?: string }).protocol === 'UDP' || (p as { protocol?: string }).protocol === 'udp') ? { protocol: 'UDP' } : {}) };
       }),
+      // Asymmetric QoS (ADR-037):
+      //   CPU:    request only, no limit → bursts freely within node
+      //           capacity, fair-throttled by cgroup shares under contention.
+      //           Namespace-level ResourceQuota on `requests.cpu` is the
+      //           customer-plan ceiling.
+      //   Memory: request == limit → Guaranteed memory, no OOM risk from
+      //           bursting. Memory is incompressible — kernel OOM-kill is
+      //           non-graceful and kubelet eviction can cross namespaces.
       resources: {
         requests: { cpu: compCpu, memory: compMem },
-        limits: { cpu: compCpu, memory: compMem },
+        limits: { memory: compMem },
       },
       ...(component.command && component.command.length > 0 ? { command: [...component.command] } : {}),
       ...(component.args && component.args.length > 0 ? { args: [...component.args] } : {}),

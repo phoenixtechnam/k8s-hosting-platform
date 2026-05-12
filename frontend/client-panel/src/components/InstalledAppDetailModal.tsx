@@ -6,6 +6,7 @@ import { getStatusColor } from '@/lib/status-colors';
 import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
 import NetworkAccessSection from '@/components/NetworkAccessSection';
 import AvailableUpgradesCard from '@/components/AvailableUpgradesCard';
+import { ResourceBreakdown } from '@/components/ResourceBreakdown';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
 import clsx from 'clsx';
 import DatabaseManagementModal from './DatabaseManagementModal';
@@ -600,7 +601,12 @@ export default function InstalledAppDetailModal({
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">CPU Request</label>
+                  <label
+                    className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1"
+                    title="Your CPU baseline — guaranteed minimum. When neighbour customers are idle, your pods can burst above this value (shared CPU model)."
+                  >
+                    CPU baseline (burstable)
+                  </label>
                   <input
                     type="text"
                     value={editCpu}
@@ -615,7 +621,12 @@ export default function InstalledAppDetailModal({
                   )}
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Memory Request</label>
+                  <label
+                    className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1"
+                    title="Memory is guaranteed — your pods always have access to this amount but cannot exceed it without restart."
+                  >
+                    Memory (guaranteed)
+                  </label>
                   <div className="flex gap-1">
                     <input
                       type="number"
@@ -681,6 +692,9 @@ export default function InstalledAppDetailModal({
                   {updateResources.error instanceof Error ? updateResources.error.message : 'Failed to update resources'}
                 </p>
               )}
+              {/* Per-component breakdown — surfaced while editing so the user
+                  sees what their CPU/memory split looks like across the app. */}
+              <ResourceBreakdown clientId={deployment.clientId} deploymentId={deployment.id} />
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4">
@@ -714,6 +728,13 @@ export default function InstalledAppDetailModal({
                   </div>
                 );
               })()}
+            </div>
+          )}
+          {/* Per-component breakdown (read-only view). Hidden for
+              single-component apps where the breakdown adds no info. */}
+          {!editingResources && (
+            <div className="mt-3">
+              <ResourceBreakdown clientId={deployment.clientId} deploymentId={deployment.id} />
             </div>
           )}
         </div>

@@ -172,15 +172,16 @@ export async function ensureFileManagerRunning(
                   capabilities: { drop: ['ALL'], add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN'] },
                 },
                 resources: {
-                  // Requests stay tight (FM is mostly idle); limits raised
-                  // so file streaming + zip/tar/git operations aren't CPU-
-                  // throttled. Memory stays at 128Mi — the streaming
+                  // Asymmetric QoS (ADR-037): CPU request only, memory
+                  // request==limit. Requests stay tight (FM is mostly idle);
+                  // CPU bursts freely when needed for file streaming + zip/
+                  // tar/git operations. Memory stays at 128Mi — the streaming
                   // handlers (write-raw, download via createReadStream,
                   // fetch-url piped to disk) don't buffer file content.
                   // FM runs under platform-tenant-overhead PriorityClass
                   // and is exempted from client quota by scopeSelector.
-                  requests: { cpu: '25m', memory: '32Mi' },
-                  limits: { cpu: '500m', memory: '128Mi' },
+                  requests: { cpu: '25m', memory: '128Mi' },
+                  limits: { memory: '128Mi' },
                 },
                 volumeMounts: [
                   { name: 'client-storage', mountPath: '/data' },
