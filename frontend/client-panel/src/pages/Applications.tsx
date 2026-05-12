@@ -13,14 +13,16 @@ import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import DeployWorkloadModal from '@/components/DeployWorkloadModal';
 import InstalledAppDetailModal from '@/components/InstalledAppDetailModal';
+import { CustomContainersTab } from '@/components/custom-deployments/CustomContainersTab';
 import { getStatusColor } from '@/lib/status-colors';
 import type { CatalogEntry } from '@/types/api';
 
-type Tab = 'catalog' | 'installed';
+type Tab = 'catalog' | 'installed' | 'custom';
 
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
   { id: 'installed', label: 'Installed Apps' },
   { id: 'catalog', label: 'Application Catalog' },
+  { id: 'custom', label: 'Custom Containers' },
 ] as const;
 
 const TYPE_FILTERS = ['All', 'Applications', 'Runtimes', 'Static', 'Databases', 'Services'] as const;
@@ -101,6 +103,9 @@ export default function Applications() {
 
       {activeTab === 'catalog' && <CatalogTab onDeploy={openDeployModal} />}
       {activeTab === 'installed' && <InstalledTab onDeploy={() => openDeployModal()} />}
+      {activeTab === 'custom' && clientId && (
+        <CustomContainersTab clientId={clientId} canManage={canManage} />
+      )}
 
       <DeployWorkloadModal
         open={deployModalOpen}
