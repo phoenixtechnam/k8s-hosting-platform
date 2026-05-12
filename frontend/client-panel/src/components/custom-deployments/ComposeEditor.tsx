@@ -90,7 +90,7 @@ services:
       retries: 3
 
 volumes:
-  cache-data: {}    # stored as a subPath on your tenant PVC
+  cache-data: {}    # stored as a subPath on your tenant storage
 `;
 
 type RightTab = 'issues' | 'spec';
@@ -181,7 +181,7 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
   const canSubmit = Boolean(name && yaml.trim() && !nameError && errorCount === 0 && !createMutation.isPending && !deleteMutation.isPending);
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex h-[90vh] w-full max-w-[1200px] flex-col overflow-hidden rounded-lg bg-white shadow-xl dark:bg-gray-900">
         <header className="flex items-center justify-between border-b border-gray-200 px-6 py-3 dark:border-gray-700">
           <div className="flex items-center gap-3">
@@ -222,7 +222,7 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
 
         <div className="flex flex-1 overflow-hidden">
           {/* Editor */}
-          <div className="flex w-1/2 flex-col border-r border-gray-200 dark:border-gray-700">
+          <div className="flex w-2/3 flex-col border-r border-gray-200 dark:border-gray-700">
             <div className="flex items-center gap-1 border-b border-gray-200 px-4 py-1.5 text-xs font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
               compose.yaml
               <Tooltip text="Paste a Compose 3.7–3.9 file here. Supported: services, image, ports, environment, depends_on, healthcheck, named volumes. Bind mounts and most advanced Compose features are rejected for security reasons." />
@@ -243,7 +243,7 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
           </div>
 
           {/* Right pane */}
-          <div className="flex w-1/2 flex-col">
+          <div className="flex w-1/3 flex-col">
             <div className="flex items-center gap-4 border-b border-gray-200 px-4 dark:border-gray-700">
               {(['issues', 'spec'] as const).map((tab) => (
                 <div key={tab} className="flex items-center gap-1">

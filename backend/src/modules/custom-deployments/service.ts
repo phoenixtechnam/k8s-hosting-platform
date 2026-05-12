@@ -260,6 +260,10 @@ export async function createComposeDeployment(
     );
   }
 
+  if (!input.name) {
+    throw new ApiError('MISSING_REQUIRED_FIELD', 'Stack name is required to create a deployment.', 400, { field: 'name' });
+  }
+
   const { namespace, workerNodeName, storageTier } = await loadClientContext(db, clientId);
 
   // Phase 1: parse → validate → reject if errors.

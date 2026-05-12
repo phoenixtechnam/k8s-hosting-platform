@@ -401,7 +401,8 @@ export const createCustomDeploymentSimpleSchema = z.object({
  */
 export const createCustomDeploymentComposeSchema = z.object({
   mode: z.literal('compose'),
-  name: z.string().min(1).max(63).regex(CUSTOM_NAME_RE),
+  /** Optional during the editor preview/validate path; required for actual deployment. */
+  name: z.string().max(63).regex(CUSTOM_NAME_RE).optional(),
   compose_yaml: z.string().min(1).max(256 * 1024),
   /** Files referenced by compose `env_file:` directives. Map of
    *  filename → UTF-8 content. */
