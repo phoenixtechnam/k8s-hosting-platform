@@ -6,10 +6,12 @@ import Footer from './Footer';
 import LifecycleBanner from '@/components/LifecycleBanner';
 import { useTokenRefresh } from '@/hooks/use-token-refresh';
 import { useDocumentTitle } from '@/hooks/use-system-info';
+import { useFileManagerKeepalive } from '@/hooks/use-file-manager-keepalive';
 
 export default function Layout() {
   useTokenRefresh();
   useDocumentTitle();
+  useFileManagerKeepalive();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
