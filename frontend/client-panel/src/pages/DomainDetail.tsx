@@ -698,7 +698,8 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
       }
       // Value may be `deploymentId` (catalog) or `deploymentId:port` (custom multi-port).
       const [deploymentId, portStr] = value.split(':');
-      const service_port = portStr ? parseInt(portStr, 10) : null;
+      const parsedPort = portStr ? parseInt(portStr, 10) : NaN;
+      const service_port = Number.isFinite(parsedPort) ? parsedPort : null;
       await updateRoute.mutateAsync({ routeId, deployment_id: deploymentId, service_port });
     } finally {
       setAssigningRouteId(null);

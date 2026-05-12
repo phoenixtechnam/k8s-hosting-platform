@@ -174,7 +174,9 @@ export async function createRoute(
   // no ingress port would produce a broken Ingress rule that never
   // resolves — catch it at creation time with a clear error.
   if (deploymentId) {
-    const [dep] = await db.select().from(deployments).where(eq(deployments.id, deploymentId));
+    const [dep] = await db.select().from(deployments).where(
+      and(eq(deployments.id, deploymentId), eq(deployments.clientId, clientId)),
+    );
     if (!dep) {
       throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment '${deploymentId}' not found`, 404);
     }

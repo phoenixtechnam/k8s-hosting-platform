@@ -343,15 +343,23 @@ export async function reconcileIngress(
           };
           const services = Object.entries(spec.services ?? {});
           if (services.length > 0) {
-            const [svcName, svc] = services[0];
-            const ingressPorts = (svc.ports ?? []).filter(p => p.ingressEligible && p.exposeAsService);
-            const selectedPort = route.servicePort
-              ? (svc.ports ?? []).find(p => p.containerPort === route.servicePort)
-              : ingressPorts[0];
-            if (selectedPort) {
-              const svcCount = services.length;
-              const k8sSvcName = svcCount <= 1 ? dep.name : `${dep.name}-${svcName}`;
-              backend = { serviceName: k8sSvcName, port: selectedPort.containerPort };
+            let resolved: { svcName: string; port: number } | undefined;
+            if (route.servicePort) {
+              // Find the service that owns the requested port.
+              for (const [svcName, svc] of services) {
+                const p = (svc.ports ?? []).find(p => p.containerPort === route.servicePort);
+                if (p) { resolved = { svcName, port: p.containerPort }; break; }
+              }
+            } else {
+              // No port preference — pick the first ingress-eligible port.
+              for (const [svcName, svc] of services) {
+                const p = (svc.ports ?? []).find(p => p.ingressEligible && p.exposeAsService);
+                if (p) { resolved = { svcName, port: p.containerPort }; break; }
+              }
+            }
+            if (resolved) {
+              const k8sSvcName = services.length <= 1 ? dep.name : `${dep.name}-${resolved.svcName}`;
+              backend = { serviceName: k8sSvcName, port: resolved.port };
             }
           }
         }

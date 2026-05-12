@@ -9,7 +9,7 @@
 import { useState, Suspense, lazy, Component, type ReactNode } from 'react';
 import { AlertTriangle, FileText, Loader2, X } from 'lucide-react';
 import clsx from 'clsx';
-import { useCreateCustomDeployment, useValidateCustomDeployment } from '@/hooks/use-custom-deployments';
+import { useCreateCustomDeployment, useValidateCustomDeployment, useDeleteCustomDeployment } from '@/hooks/use-custom-deployments';
 import { apiFetch } from '@/lib/api-client';
 import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@k8s-hosting/api-contracts';
 import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
@@ -101,6 +101,7 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
 
   const validateMutation = useValidateCustomDeployment(clientId);
   const createMutation = useCreateCustomDeployment(clientId);
+  const deleteMutation = useDeleteCustomDeployment(clientId);
 
   const nameError = (() => {
     if (!name) return null;
@@ -135,20 +136,22 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
   const submit = async () => {
     setSubmitError(null);
     try {
-      // Both create and re-deploy-from-compose go through the compose create
-      // endpoint. For compose edit we delete the old deployment and recreate
-      // (the spec shape has no partial-compose-patch surface in this release).
-      // TODO: when the per-service patch surface ships, switch edit to PATCH.
+      if (isEdit && existingDeployment) {
+        // Compose has no partial-patch surface — delete the old deployment and
+        // recreate from the new YAML. The name is locked in edit mode so the
+        // new record reclaims the same name immediately after deletion.
+        await deleteMutation.mutateAsync(existingDeployment.id);
+      }
       await createMutation.mutateAsync(buildInput());
       onCreated();
     } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : 'create failed');
+      setSubmitError(e instanceof Error ? e.message : 'operation failed');
     }
   };
 
   const errorCount = issues.filter((i) => i.severity === 'error').length;
   const warningCount = issues.filter((i) => i.severity === 'warning').length;
-  const canSubmit = Boolean(name && yaml.trim() && !nameError && errorCount === 0 && !createMutation.isPending);
+  const canSubmit = Boolean(name && yaml.trim() && !nameError && errorCount === 0 && !createMutation.isPending && !deleteMutation.isPending);
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">

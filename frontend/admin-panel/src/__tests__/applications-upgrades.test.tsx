@@ -95,39 +95,49 @@ const mockDeployments = {
   },
 };
 
-const mockUpgrades = {
+// AdminUpgradesGroup shape — returned by GET /admin/upgrades/overview
+// and consumed by DeploymentUpgradesTab via useAdminUpgradesOverview.
+const mockUpgradesOverview = {
   data: [
     {
-      id: 'upg-001',
-      deploymentId: 'inst-002',
-      fromVersion: '6.8',
-      toVersion: '6.9',
-      status: 'upgrading',
-      triggeredBy: 'admin',
-      triggerType: 'manual',
-      backupId: null,
-      progressPct: 50,
-      statusMessage: 'Upgrading application',
-      errorMessage: null,
-      startedAt: '2024-01-01T00:00:00Z',
-      completedAt: null,
-      createdAt: '2024-01-01T00:00:00Z',
-    },
-    {
-      id: 'upg-002',
-      deploymentId: 'inst-001',
-      fromVersion: '6.6',
-      toVersion: '6.7',
-      status: 'completed',
-      triggeredBy: 'admin',
-      triggerType: 'manual',
-      backupId: 'bak-001',
-      progressPct: 100,
-      statusMessage: 'Upgrade completed successfully',
-      errorMessage: null,
-      startedAt: '2024-01-01T00:00:00Z',
-      completedAt: '2024-01-01T01:00:00Z',
-      createdAt: '2024-01-01T00:00:00Z',
+      catalogEntryId: 'cat-001',
+      code: 'wordpress',
+      name: 'WordPress',
+      lockMode: 'advisory',
+      latestVersion: '6.9',
+      defaultVersion: '6.9',
+      deployments: [
+        {
+          id: 'inst-001',
+          clientId: 'client-001',
+          clientCompanyName: 'Acme Corp',
+          name: 'my-wordpress',
+          status: 'running',
+          installedVersion: '6.7',
+          previousVersion: null,
+          autoUpgrade: false,
+          lastUpgradedAt: null,
+          domainName: null,
+          previewUrl: null,
+          availableUpgradeCount: 2,
+          latestReachable: '6.9',
+        },
+        {
+          id: 'inst-002',
+          clientId: 'client-002',
+          clientCompanyName: 'Beta Inc',
+          name: 'blog-wordpress',
+          status: 'running',
+          installedVersion: '6.8',
+          previousVersion: null,
+          autoUpgrade: false,
+          lastUpgradedAt: null,
+          domainName: null,
+          previewUrl: null,
+          availableUpgradeCount: 1,
+          latestReachable: '6.9',
+        },
+      ],
     },
   ],
 };
@@ -137,7 +147,7 @@ vi.mock('@/lib/api-client', () => ({
   apiFetch: vi.fn().mockImplementation((url: string) => {
     if (url.includes('/catalog')) return Promise.resolve(mockCatalog);
     if (url.includes('/admin/deployments')) return Promise.resolve(mockDeployments);
-    if (url.includes('/admin/application-upgrades')) return Promise.resolve(mockUpgrades);
+    if (url.includes('/admin/upgrades/overview')) return Promise.resolve(mockUpgradesOverview);
     return Promise.resolve({ data: [] });
   }),
 }));
@@ -169,24 +179,20 @@ describe('Applications page', () => {
     vi.clearAllMocks();
   });
 
-  it('should render all four tabs', () => {
+  it('should render tab bar with all tabs', async () => {
     renderWithProviders(<Applications />);
-    expect(screen.getByTestId('tab-catalog')).toBeDefined();
-    expect(screen.getByTestId('tab-installed')).toBeDefined();
-    expect(screen.getByTestId('tab-upgrades')).toBeDefined();
-    expect(screen.getByTestId('tab-repos')).toBeDefined();
-  });
-
-  it('should render catalog tab by default', () => {
-    renderWithProviders(<Applications />);
-    expect(screen.getByTestId('catalog-tab')).toBeDefined();
-  });
-
-  it('should switch to installed tab', async () => {
-    renderWithProviders(<Applications />);
-    screen.getByTestId('tab-installed').click();
     await waitFor(() => {
-      expect(screen.getByTestId('installed-tab')).toBeDefined();
+      expect(screen.getByTestId('tab-catalog')).toBeDefined();
+      expect(screen.getByTestId('tab-installed')).toBeDefined();
+      expect(screen.getByTestId('tab-upgrades')).toBeDefined();
+      expect(screen.getByTestId('tab-repos')).toBeDefined();
+    });
+  });
+
+  it('should render catalog tab by default', async () => {
+    renderWithProviders(<Applications />);
+    await waitFor(() => {
+      expect(screen.getByTestId('catalog-tab')).toBeDefined();
     });
   });
 
@@ -194,7 +200,7 @@ describe('Applications page', () => {
     renderWithProviders(<Applications />);
     screen.getByTestId('tab-upgrades').click();
     await waitFor(() => {
-      expect(screen.getByTestId('upgrades-tab')).toBeDefined();
+      expect(screen.getByTestId('deployment-upgrades-tab')).toBeDefined();
     });
   });
 
@@ -223,27 +229,28 @@ describe('Applications page', () => {
     });
   });
 
-  it('should display upgrade history table', async () => {
+  it('should display upgrade overview table', async () => {
     renderWithProviders(<Applications />);
     screen.getByTestId('tab-upgrades').click();
     await waitFor(() => {
-      expect(screen.getByTestId('upgrades-table')).toBeDefined();
+      expect(screen.getByTestId('deployments-table-wordpress')).toBeDefined();
     });
   });
 
-  it('should show rollback button for failed upgrades', async () => {
-    // Override with a failed upgrade
+  it('should show rollback button for deployments with a previous version', async () => {
     const { apiFetch } = await import('@/lib/api-client');
     (apiFetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
-      if (url.includes('/admin/application-upgrades')) {
+      if (url.includes('/admin/upgrades/overview')) {
         return Promise.resolve({
           data: [{
-            ...mockUpgrades.data[0],
-            id: 'upg-fail',
-            deploymentId: 'inst-002',
-            status: 'failed',
-            progressPct: -1,
-            errorMessage: 'Health check failed',
+            ...mockUpgradesOverview.data[0],
+            deployments: [{
+              ...mockUpgradesOverview.data[0].deployments[0],
+              id: 'inst-rollback',
+              previousVersion: '6.6',
+              availableUpgradeCount: 1,
+              latestReachable: '6.9',
+            }],
           }],
         });
       }
@@ -255,7 +262,7 @@ describe('Applications page', () => {
     renderWithProviders(<Applications />);
     screen.getByTestId('tab-upgrades').click();
     await waitFor(() => {
-      expect(screen.getByTestId('rollback-btn-upg-fail')).toBeDefined();
+      expect(screen.getByTestId('rollback-btn-inst-rollback')).toBeDefined();
     });
   });
 });

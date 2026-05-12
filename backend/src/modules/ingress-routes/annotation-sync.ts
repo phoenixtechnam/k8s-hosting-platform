@@ -523,16 +523,35 @@ export async function syncProtectedDirIngresses(
     const [dep] = await db.select().from(deployments).where(eq(deployments.id, route.deploymentId));
     if (dep) {
       serviceName = dep.name;
-      // For custom deployments, pick port from customSpec when no explicit override.
-      if (!route.servicePort && dep.catalogEntryId === null && dep.customSpec) {
+      // For custom deployments, resolve service name + port from customSpec.
+      if (dep.catalogEntryId === null && dep.customSpec) {
         const spec = dep.customSpec as {
           services?: Record<string, {
             ports?: Array<{ containerPort: number; exposeAsService?: boolean; ingressEligible?: boolean }>;
           }>;
         };
-        const firstSvc = Object.values(spec.services ?? {})[0];
-        const ingressPort = firstSvc?.ports?.find(p => p.ingressEligible && p.exposeAsService);
-        if (ingressPort) servicePort = ingressPort.containerPort;
+        const services = Object.entries(spec.services ?? {});
+        if (services.length > 0) {
+          let resolvedSvcName: string | undefined;
+          let resolvedPort: number | undefined;
+          if (route.servicePort) {
+            // Find the service that owns the explicitly-selected port.
+            for (const [svcName, svc] of services) {
+              const p = (svc.ports ?? []).find(p => p.containerPort === route.servicePort);
+              if (p) { resolvedSvcName = svcName; resolvedPort = p.containerPort; break; }
+            }
+          } else {
+            // No port preference — pick the first ingress-eligible port.
+            for (const [svcName, svc] of services) {
+              const p = (svc.ports ?? []).find(p => p.ingressEligible && p.exposeAsService);
+              if (p) { resolvedSvcName = svcName; resolvedPort = p.containerPort; break; }
+            }
+          }
+          if (resolvedSvcName && resolvedPort !== undefined) {
+            serviceName = services.length <= 1 ? dep.name : `${dep.name}-${resolvedSvcName}`;
+            servicePort = resolvedPort;
+          }
+        }
       }
     }
   }
