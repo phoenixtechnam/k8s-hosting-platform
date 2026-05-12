@@ -343,6 +343,57 @@ describe('validateCustomSpec — Service-name length cap', () => {
   });
 });
 
+describe('validateCustomSpec — multi-service Service-name length cap (PR-3)', () => {
+  // Service k8s name = {deployment}-{service}-{port}. With max port
+  // = 15 chars, deployment + service must stay ≤ 46. Each offending
+  // service gets its own issue so the editor can underline all
+  // problems in a single pass.
+  it('rejects multi-service deploy where dep + svc + port > 63', () => {
+    const r = validateCustomSpec(
+      spec({
+        services: {
+          'svc-very-long-name-aaaaaaaaaaaaaaaaaaa': { ports: [{ containerPort: 80, name: 'http', protocol: 'TCP', exposeAsService: true, ingressEligible: false }] },
+          tiny: {},
+        },
+      }),
+      { ...clientCtx, singleServiceOnly: false, deploymentName: 'app-with-long-name-x' },
+    );
+    expect(r.issues.find((i) => i.code === 'MULTI_SERVICE_NAME_TOO_LONG')).toBeDefined();
+  });
+  it('reports EACH offending service (not just one)', () => {
+    const r = validateCustomSpec(
+      spec({
+        services: {
+          'first-very-long-service-name-aaaa': { ports: [{ containerPort: 80, name: 'http', protocol: 'TCP', exposeAsService: true, ingressEligible: false }] },
+          'second-very-long-service-name-bbbb': { ports: [{ containerPort: 80, name: 'http', protocol: 'TCP', exposeAsService: true, ingressEligible: false }] },
+        },
+      }),
+      { ...clientCtx, singleServiceOnly: false, deploymentName: 'my-deployment-name' },
+    );
+    const offenders = r.issues.filter((i) => i.code === 'MULTI_SERVICE_NAME_TOO_LONG');
+    expect(offenders).toHaveLength(2);
+  });
+  it('accepts when combined dep + svc + port ≤ 63', () => {
+    const r = validateCustomSpec(
+      spec({
+        services: {
+          web: { ports: [{ containerPort: 80, name: 'http', protocol: 'TCP', exposeAsService: true, ingressEligible: false }] },
+          db: { ports: [] },
+        },
+      }),
+      { ...clientCtx, singleServiceOnly: false, deploymentName: 'my-app' },
+    );
+    expect(r.issues.find((i) => i.code === 'MULTI_SERVICE_NAME_TOO_LONG')).toBeUndefined();
+  });
+  it('skips the check when the service does not expose any port', () => {
+    const r = validateCustomSpec(
+      spec({ services: { 'a-very-long-service-name-bbbbbbbbbbb': { ports: [] }, other: {} } }),
+      { ...clientCtx, singleServiceOnly: false, deploymentName: 'a-really-long-deployment-name' },
+    );
+    expect(r.issues.find((i) => i.code === 'MULTI_SERVICE_NAME_TOO_LONG')).toBeUndefined();
+  });
+});
+
 describe('validateCustomSpec — unpinned tag advisory', () => {
   it('warns on :latest', () => {
     const r = validateCustomSpec(
