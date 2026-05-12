@@ -68,12 +68,6 @@ export function MailNodeSelectorCard() {
   const nodes = nodesQuery.data?.data ?? [];
 
   const nodeRequired = draftMode === 'preferred' || draftMode === 'required';
-  const canSave =
-    !update.isPending &&
-    (draftMode !== current.mode || (nodeRequired ? draftNode !== (current.nodeName ?? '') : false) ||
-      (!nodeRequired && current.nodeName !== null));
-
-  // Determine if any actual change has been made
   const hasChange =
     draftMode !== current.mode ||
     (nodeRequired && draftNode !== (current.nodeName ?? '')) ||

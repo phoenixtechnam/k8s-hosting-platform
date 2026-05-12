@@ -42,7 +42,6 @@ import {
   blobStoreJobStatusResponseSchema,
 } from '@k8s-hosting/api-contracts';
 import {
-  STALWART_CLI_VERSION,
   STALWART_CLI_SHA256,
   STALWART_CLI_DOWNLOAD_URL,
 } from './blob-store-cli-version.js';
