@@ -43,6 +43,7 @@ import { planRoutes } from './modules/plans/routes.js';
 import { regionRoutes } from './modules/regions/routes.js';
 import { catalogRoutes } from './modules/catalog/routes.js';
 import { deploymentRoutes } from './modules/deployments/routes.js';
+import { customDeploymentRoutes } from './modules/custom-deployments/routes.js';
 import { dashboardRoutes } from './modules/dashboard/routes.js';
 import { auditLogRoutes } from './modules/audit-logs/routes.js';
 import { storageSettingsRoutes } from './modules/storage-settings/routes.js';
@@ -394,6 +395,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(cronJobRoutes, { prefix: '/api/v1' });
   await app.register(catalogRoutes, { prefix: '/api/v1' });
   await app.register(deploymentRoutes, { prefix: '/api/v1' });
+  await app.register(customDeploymentRoutes, { prefix: '/api/v1' });
   await app.register(dashboardRoutes, { prefix: '/api/v1' });
   await app.register(auditLogRoutes, { prefix: '/api/v1' });
   await app.register(storageSettingsRoutes, { prefix: '/api/v1' });
