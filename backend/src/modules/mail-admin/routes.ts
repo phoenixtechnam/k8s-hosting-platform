@@ -615,7 +615,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) {
         throw new ApiError(
           'VALIDATION_ERROR',
-          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          parsed.error.issues.map((i: { path: PropertyKey[]; message: string }) => `${i.path.join('.')}: ${i.message}`).join(', '),
           400,
         );
       }
@@ -668,7 +668,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) {
         throw new ApiError(
           'VALIDATION_ERROR',
-          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          parsed.error.issues.map((i: { path: PropertyKey[]; message: string }) => `${i.path.join('.')}: ${i.message}`).join(', '),
           400,
         );
       }
