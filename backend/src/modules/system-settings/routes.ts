@@ -66,6 +66,13 @@ const updateSchema = z.object({
   imageGcHighThreshold: z.number().int().min(50).max(95).optional(),
   imageGcLowThreshold: z.number().int().min(40).max(94).optional(),
   imageGcMinTtlMinutes: z.number().int().min(0).max(1440).optional(),
+  // Custom Deployments kill switches (migration 0099).
+  customDeploymentsEnabled: z.boolean().optional(),
+  customDeploymentsAllowCompose: z.boolean().optional(),
+  customDeploymentsAllowPrivateRegistries: z.boolean().optional(),
+  customDeploymentsImagePullAudit: z.boolean().optional(),
+  customDeploymentsScanOnPull: z.boolean().optional(),
+  customDeploymentsWarnUnpinnedTags: z.boolean().optional(),
 });
 
 export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> {

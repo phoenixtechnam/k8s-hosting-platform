@@ -50,6 +50,13 @@ export const updateSystemSettingsSchema = z.object({
   imageGcHighThreshold: z.number().int().min(50).max(95).optional(),
   imageGcLowThreshold: z.number().int().min(40).max(94).optional(),
   imageGcMinTtlMinutes: z.number().int().min(0).max(1440).optional(),
+  // Custom Deployments kill switches (migration 0099).
+  customDeploymentsEnabled: z.boolean().optional(),
+  customDeploymentsAllowCompose: z.boolean().optional(),
+  customDeploymentsAllowPrivateRegistries: z.boolean().optional(),
+  customDeploymentsImagePullAudit: z.boolean().optional(),
+  customDeploymentsScanOnPull: z.boolean().optional(),
+  customDeploymentsWarnUnpinnedTags: z.boolean().optional(),
 });
 
 // ─── Response Schema ───────────────────────────────────────────────────────
@@ -73,6 +80,12 @@ export const systemSettingsResponseSchema = z.object({
   imageGcHighThreshold: z.number(),
   imageGcLowThreshold: z.number(),
   imageGcMinTtlMinutes: z.number(),
+  customDeploymentsEnabled: z.boolean(),
+  customDeploymentsAllowCompose: z.boolean(),
+  customDeploymentsAllowPrivateRegistries: z.boolean(),
+  customDeploymentsImagePullAudit: z.boolean(),
+  customDeploymentsScanOnPull: z.boolean(),
+  customDeploymentsWarnUnpinnedTags: z.boolean(),
   updatedAt: z.string(),
 });
 
