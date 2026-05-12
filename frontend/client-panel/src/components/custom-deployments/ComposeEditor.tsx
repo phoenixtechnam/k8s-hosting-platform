@@ -284,7 +284,7 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
             Validate
           </button>
           <button type="button" onClick={submit} disabled={!canSubmit} className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="custom-compose-submit">
-            {createMutation.isPending ? 'Creating…' : 'Deploy stack'}
+            {deleteMutation.isPending ? 'Removing old…' : createMutation.isPending ? (isEdit ? 'Recreating…' : 'Creating…') : isEdit ? 'Recreate stack' : 'Deploy stack'}
           </button>
         </footer>
       </div>
