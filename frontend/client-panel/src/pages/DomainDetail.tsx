@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
   CheckCircle, Network, Pencil, Check, RefreshCw, Lock,
-  ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck, ChevronDown,
+  ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';

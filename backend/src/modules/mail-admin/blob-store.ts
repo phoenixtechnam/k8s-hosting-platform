@@ -55,6 +55,7 @@ const ADMIN_SECRET_NAME = 'stalwart-admin-creds';
 const JOB_NAME_PREFIX = 'stalwart-blob-store-update-';
 const JOB_LABEL_KEY = 'app.kubernetes.io/component';
 const JOB_LABEL_VALUE = 'stalwart-blob-store-update';
+const CIFS_MOUNT_PATH = '/mnt/blobstore';
 
 // CIFS hostPath mount constants — must match the systemd mount provisioned
 // by bootstrap.sh (//host/share → /mnt/stalwart-cifs-blobstore).

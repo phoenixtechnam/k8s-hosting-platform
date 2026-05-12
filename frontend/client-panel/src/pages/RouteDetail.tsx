@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, AlertTriangle, Info, Plus, Trash2, X, Shield, Settings,
-  ArrowLeftRight, ShieldAlert, Save, ChevronDown, ChevronUp, ChevronRight, FolderLock,
+  ArrowLeftRight, Save, ChevronDown, ChevronRight, FolderLock,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -25,7 +25,6 @@ import {
   useRouteWafLogs,
   type RouteDetailResponse,
   type ProtectedDir,
-  type DirUser,
   type WafLogEntry,
 } from '@/hooks/use-route-settings';
 
