@@ -149,6 +149,7 @@ STAMP=$(date +%s)
 # deployment row whose name starts with the p2-<STAMP> prefix.
 
 CREATED_IDS=()
+CLEANUP_TMPDIRS=()
 
 reset_kill_switches() {
   local reset_body='{"customDeploymentsEnabled":true,"customDeploymentsAllowCompose":true,"customDeploymentsAllowPrivateRegistries":true,"customDeploymentsImagePullAudit":true,"customDeploymentsScanOnPull":false,"customDeploymentsWarnUnpinnedTags":true}'
@@ -163,6 +164,11 @@ reset_kill_switches() {
 
 cleanup() {
   echo -e "\n\033[1m── Phase 3: cleanup ──\033[0m"
+
+  # Reactivate the client first — T7 may have left it suspended on failure.
+  api_status POST "/admin/clients/bulk" \
+    "{\"client_ids\":[\"$CLIENT_ID\"],\"action\":\"reactivate\"}" >/dev/null 2>&1 || true
+
   reset_kill_switches
 
   for id in "${CREATED_IDS[@]:-}"; do
@@ -170,6 +176,11 @@ cleanup() {
     local s
     s=$(api_status DELETE "/clients/$CLIENT_ID/custom-deployments/$id" "")
     info "Cleanup: DELETE /custom-deployments/$id → $s"
+  done
+
+  # Remove any temp directories created during the run (e.g. T13 bundle download).
+  for d in "${CLEANUP_TMPDIRS[@]:-}"; do
+    [[ -n "$d" && -d "$d" ]] && rm -rf "$d" && info "Cleanup: removed tmpdir $d"
   done
 
   # Belt-and-braces: sweep any remaining resources by the e2e label we set.
@@ -313,12 +324,12 @@ volumes:
   shared: {}
 "
   local body
-  body=$(python3 -c "
-import json
+  body=$(COMPOSE_YAML="$compose" python3 -c "
+import json, os
 print(json.dumps({
   'mode': 'compose',
   'name': '$name',
-  'compose_yaml': '''$compose''',
+  'compose_yaml': os.environ['COMPOSE_YAML'],
 }))
 ")
   local id
@@ -458,23 +469,8 @@ print(json.dumps({
 
 # ─── Group B: Kill switches ───────────────────────────────────────────────────
 
-# Saves current flag state so we can snapshot-then-restore atomically.
-SAVED_FLAGS=""
-
-save_flags() {
-  SAVED_FLAGS=$(api GET "/admin/system-settings" | python3 -c "
-import json,sys
-d=json.load(sys.stdin).get('data',{})
-keys=['customDeploymentsEnabled','customDeploymentsAllowCompose','customDeploymentsAllowPrivateRegistries']
-obj={k:d[k] for k in keys if k in d}
-print(json.dumps(obj))
-" 2>/dev/null || echo '{}')
-}
-
 scenario_kill_master() {
   scenario_start "T8 — master kill switch (customDeploymentsEnabled=false)"
-
-  save_flags
 
   # Flip the master off.
   local status
@@ -518,8 +514,6 @@ print(d.get('error',{}).get('code','?') if 'error' in d else '?')
 scenario_kill_flags() {
   scenario_start "T9 — compose + private-registry kill switches"
 
-  save_flags
-
   # ── Compose kill switch ──
   api_status PATCH "/admin/system-settings" '{"customDeploymentsAllowCompose":false}' >/dev/null
   sleep 6
@@ -532,9 +526,9 @@ scenario_kill_flags() {
       - \"80\"
 "
   local body
-  body=$(python3 -c "
-import json
-print(json.dumps({'mode':'compose','name':'kill-compose-probe','compose_yaml':'''$compose_yaml'''}))
+  body=$(COMPOSE_YAML="$compose_yaml" python3 -c "
+import json, os
+print(json.dumps({'mode':'compose','name':'kill-compose-probe','compose_yaml':os.environ['COMPOSE_YAML']}))
 ")
   local http code
   http=$(api_status POST "/clients/$CLIENT_ID/custom-deployments" "$body")
@@ -649,9 +643,9 @@ scenario_validate_ep() {
       - \"8080\"
 "
   local body http resp ok
-  body=$(python3 -c "
-import json
-print(json.dumps({'compose_yaml':'''$valid_yaml'''}))
+  body=$(COMPOSE_YAML="$valid_yaml" python3 -c "
+import json, os
+print(json.dumps({'compose_yaml':os.environ['COMPOSE_YAML']}))
 ")
   resp=$(api POST "/clients/$CLIENT_ID/custom-deployments/validate" "$body")
   ok=$(echo "$resp" | python3 -c "
@@ -674,9 +668,9 @@ print(d.get('ok','?'))
     image: nginx:1.27-alpine
     privileged: true
 "
-  body=$(python3 -c "
-import json
-print(json.dumps({'compose_yaml':'''$bad_yaml'''}))
+  body=$(COMPOSE_YAML="$bad_yaml" python3 -c "
+import json, os
+print(json.dumps({'compose_yaml':os.environ['COMPOSE_YAML']}))
 ")
   resp=$(api POST "/clients/$CLIENT_ID/custom-deployments/validate" "$body")
   ok=$(echo "$resp" | python3 -c "
@@ -719,12 +713,12 @@ scenario_dep_timeout() {
       - \"8080\"
 "
   local body id
-  body=$(python3 -c "
-import json
+  body=$(COMPOSE_YAML="$compose" python3 -c "
+import json, os
 print(json.dumps({
   'mode': 'compose',
   'name': '$name',
-  'compose_yaml': '''$compose''',
+  'compose_yaml': os.environ['COMPOSE_YAML'],
 }))
 ")
   id=$(create_deployment "$body")
@@ -847,6 +841,7 @@ print(d.get('url',''))
 
   local tmpdir
   tmpdir=$(mktemp -d)
+  CLEANUP_TMPDIRS+=("$tmpdir")
   curl -skL "$download_url" -o "$tmpdir/bundle.tar.gz" 2>/dev/null || {
     fail "T13: download failed"
     rm -rf "$tmpdir"
@@ -937,7 +932,7 @@ scenario_quota() {
 
   # Request 2× the hard limit (guaranteed to exceed).
   local excess="100000Gi"
-  local body http code
+  local body http code quota_resp
   body=$(python3 -c "
 import json
 print(json.dumps({
@@ -947,8 +942,19 @@ print(json.dumps({
   'resources': {'memory_request': '$excess', 'memory_limit': '$excess'},
 }))
 ")
-  http=$(api_status POST "/clients/$CLIENT_ID/custom-deployments" "$body")
-  code=$(api POST "/clients/$CLIENT_ID/custom-deployments" "$body" | python3 -c "
+  quota_resp=$(api POST "/clients/$CLIENT_ID/custom-deployments" "$body")
+  http=$(echo "$quota_resp" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+err=d.get('error',{})
+if err:
+    print(err.get('statusCode',400))
+elif d.get('data',{}).get('id'):
+    print(201)
+else:
+    print(200)
+" 2>/dev/null || echo "0")
+  code=$(echo "$quota_resp" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 if 'error' in d:

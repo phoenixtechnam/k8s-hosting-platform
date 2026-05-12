@@ -183,20 +183,30 @@ for c in d:
 " 2>/dev/null || true)
   fi
   if [[ -n "$CLIENT_ID" ]]; then
-    PROBE=$(curl -sk -o /dev/null -w "%{http_code}" -X POST \
-      "$ADMIN_HOST/api/v1/clients/$CLIENT_ID/custom-deployments" \
-      -H "Authorization: Bearer $TOKEN" \
-      -H "Content-Type: application/json" \
-      -d '{"mode":"simple","name":"preflight-probe-delete-me","image":"nginx:1.27-alpine"}')
+    # Single call: capture both HTTP status and response body to avoid a
+    # double-POST that would create two rows with no way to clean the first.
+    PROBE_RESP=$(api POST "/clients/$CLIENT_ID/custom-deployments" \
+      '{"mode":"simple","name":"preflight-probe-delete-me","image":"nginx:1.27-alpine"}')
+    PROBE=$(echo "$PROBE_RESP" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+# The API wraps errors in {error:{code,message,statusCode}} or returns {data:{...}}.
+# Use statusCode from error, or infer 201 from id presence.
+err=d.get('error',{})
+sc=err.get('statusCode','')
+if sc: print(sc)
+elif d.get('data',{}).get('id'): print('201')
+else: print('200')
+" 2>/dev/null || echo "0")
+    PROBE_ID=$(echo "$PROBE_RESP" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['data']['id'])
+except Exception: print('')
+" 2>/dev/null || true)
+
     if [[ "$PROBE" == "201" || "$PROBE" == "200" || "$PROBE" == "403" || "$PROBE" == "422" ]]; then
       pass "Custom deployments API endpoint reachable (HTTP $PROBE → columns exist)"
-      # Clean up any probe row that was created
-      if [[ "$PROBE" == "201" || "$PROBE" == "200" ]]; then
-        PROBE_ID=$(api POST "/clients/$CLIENT_ID/custom-deployments" \
-          '{"mode":"simple","name":"preflight-probe-delete-me2","image":"nginx:1.27-alpine"}' \
-          | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('id',''))" 2>/dev/null || true)
-        [[ -n "$PROBE_ID" ]] && api DELETE "/clients/$CLIENT_ID/custom-deployments/$PROBE_ID" >/dev/null 2>&1 || true
-      fi
+      [[ -n "$PROBE_ID" ]] && api DELETE "/clients/$CLIENT_ID/custom-deployments/$PROBE_ID" >/dev/null 2>&1 || true
     elif [[ "$PROBE" == "500" ]]; then
       fail "POST /custom-deployments → 500 — likely migration not applied"
     else
@@ -218,8 +228,12 @@ check_bool() {
   actual=$(echo "$SETTINGS" | python3 -c "
 import json,sys
 d=json.load(sys.stdin).get('data',{})
-v=d.get('$key')
-print('true' if v else 'false')
+if '$key' not in d:
+    print('MISSING')
+elif d['$key']:
+    print('true')
+else:
+    print('false')
 " 2>/dev/null || echo "MISSING")
   if [[ "$actual" == "$expected" ]]; then
     pass "$key = $expected ✓"
