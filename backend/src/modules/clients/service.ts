@@ -883,8 +883,15 @@ export async function updateClient(
     }
   }
 
-  // Sync K8s ResourceQuota when resource limits change
-  if (input.cpu_limit_override !== undefined || input.memory_limit_override !== undefined || input.storage_limit_override !== undefined || input.plan_id !== undefined) {
+  // Sync K8s ResourceQuota when resource limits change (fast synchronous
+  // path; the full reprovision task below is async and idempotent).
+  const planOrLimitsChanged = (
+    (input.plan_id !== undefined && input.plan_id !== existing.planId)
+    || input.cpu_limit_override !== undefined
+    || input.memory_limit_override !== undefined
+    || input.storage_limit_override !== undefined
+  );
+  if (planOrLimitsChanged) {
     try {
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
       const { applyResourceQuota } = await import('../k8s-provisioner/service.js');
@@ -898,6 +905,48 @@ export async function updateClient(
       });
     } catch (err) {
       console.warn('[clients] Failed to sync K8s ResourceQuota:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Auto-reprovision: queue a full provision_namespace task when plan or
+  // resource limits change so namespace PSS labels, ResourceQuota, and
+  // NetworkPolicy converge without requiring the operator to click
+  // "Re-provision" manually. The task is fire-and-forget; the returned
+  // reprovisionTaskId lets the UI open the progress modal if desired.
+  //
+  // Guard: skip when the client has no namespace yet (not provisioned /
+  // still pending), is already being provisioned, or is being archived
+  // in this same PATCH (the archive orchestrator deletes the namespace).
+  let reprovisionTaskId: string | null = null;
+  if (planOrLimitsChanged) {
+    const eligibleStatus = existing.provisioningStatus === 'provisioned' || existing.provisioningStatus === 'failed';
+    const notArchiving = existing.status !== 'archived' && input.status !== 'archived';
+    const notBusy = existing.provisioningStatus !== 'provisioning';
+    if (eligibleStatus && notArchiving && notBusy) {
+      try {
+        const { provisioningTasks: provTasksTable } = await import('../../db/schema.js');
+        const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+        const { runProvisionNamespace, PROVISION_STEPS, buildStepsLog, mirrorProvisioningToTaskTracker } = await import('../k8s-provisioner/service.js');
+        const taskId = crypto.randomUUID();
+        await db.insert(provTasksTable).values({
+          id: taskId,
+          clientId: id,
+          type: 'provision_namespace',
+          status: 'pending',
+          totalSteps: PROVISION_STEPS.length,
+          completedSteps: 0,
+          stepsLog: buildStepsLog(PROVISION_STEPS),
+          startedBy: opts.triggeredByUserId ?? null,
+        });
+        await mirrorProvisioningToTaskTracker(db, taskId).catch(() => {});
+        const k8s = opts.k8sClients ?? createK8sClients(process.env.KUBECONFIG_PATH);
+        runProvisionNamespace(db, k8s, taskId, id).catch((err) => {
+          console.warn('[clients.updateClient] auto-reprovision failed:', err instanceof Error ? err.message : String(err));
+        });
+        reprovisionTaskId = taskId;
+      } catch (err) {
+        console.warn('[clients.updateClient] auto-reprovision setup failed:', err instanceof Error ? err.message : String(err));
+      }
     }
   }
 
@@ -1067,12 +1116,14 @@ export async function updateClient(
     storageArchiveOperationId?: string;
     storageRestoreOperationId?: string;
     storageOperationId?: string;
+    reprovisionTaskId?: string;
   } = {};
   if (storageGrowOperationId != null) sideEffects.storageGrowOperationId = storageGrowOperationId;
   if (storageShrinkOperationId != null) sideEffects.storageShrinkOperationId = storageShrinkOperationId;
   if (storageArchiveOperationId != null) sideEffects.storageArchiveOperationId = storageArchiveOperationId;
   if (storageRestoreOperationId != null) sideEffects.storageRestoreOperationId = storageRestoreOperationId;
   if (storageOperationId != null) sideEffects.storageOperationId = storageOperationId;
+  if (reprovisionTaskId != null) sideEffects.reprovisionTaskId = reprovisionTaskId;
   return Object.keys(sideEffects).length > 0
     ? { ...updated, ...sideEffects }
     : updated;
