@@ -519,6 +519,7 @@ async function ensureCifsCredentialsSecret(
   }
 
   if (!exists) {
+    // backup-coverage: excluded:cluster-infrastructure
     await core.createNamespacedSecret({
       namespace: MAIL_NAMESPACE,
       body: {

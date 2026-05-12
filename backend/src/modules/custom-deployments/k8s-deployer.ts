@@ -175,6 +175,7 @@ async function applySecret(
     data: { content: Buffer.from(s.content, 'utf8').toString('base64') },
   };
   try {
+    // backup-coverage: captured-by:secrets
     await k8s.core.createNamespacedSecret({ namespace: input.namespace, body });
   } catch (err) {
     if (!isK8s409(err)) throw wrapK8sDeployerError(err, 'Secret', name, 'create');

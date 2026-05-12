@@ -407,6 +407,7 @@ async function createStateSecret(
     stringData: { 'states.json': statesJson },
   };
   try {
+    // backup-coverage: excluded:transient-job-state
     await (k8s.core as unknown as {
       createNamespacedSecret: (args: { namespace: string; body: unknown }) => Promise<unknown>;
     }).createNamespacedSecret({ namespace, body });
@@ -443,6 +444,7 @@ async function createUploadTokenSecret(
     stringData: { token },
   };
   try {
+    // backup-coverage: excluded:transient-job-token
     await (k8s.core as unknown as {
       createNamespacedSecret: (args: { namespace: string; body: unknown }) => Promise<unknown>;
     }).createNamespacedSecret({ namespace, body });

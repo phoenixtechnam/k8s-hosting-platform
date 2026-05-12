@@ -248,6 +248,7 @@ export async function materializePullSecret(
   } as const;
 
   try {
+    // backup-coverage: excluded:pull-credential
     await k8s.core.createNamespacedSecret({ namespace, body });
     return name;
   } catch (err: unknown) {

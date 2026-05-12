@@ -314,6 +314,7 @@ async function applyResticSecret(
   } catch (updateErr) {
     const code = (updateErr as { statusCode?: number }).statusCode;
     if (code === 404) {
+      // backup-coverage: excluded:cluster-infrastructure
       await core.createNamespacedSecret({
         namespace: MAIL_NAMESPACE,
         body: body as unknown as object,
