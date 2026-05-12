@@ -7,8 +7,9 @@
 // to load (e.g. in low-end environments or during tests).
 
 import { useState, Suspense, lazy, Component, type ReactNode } from 'react';
-import { AlertTriangle, FileText, Loader2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle, FileText, Loader2, X } from 'lucide-react';
 import clsx from 'clsx';
+import { Tooltip } from '@/components/ui/Tooltip';
 import { useCreateCustomDeployment, useValidateCustomDeployment, useDeleteCustomDeployment } from '@/hooks/use-custom-deployments';
 import { apiFetch } from '@/lib/api-client';
 import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@k8s-hosting/api-contracts';
@@ -88,6 +89,7 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
   const [spec, setSpec] = useState<CustomDeploymentSpec | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [jsonSchema, setJsonSchema] = useState<unknown>(null);
+  const [validateState, setValidateState] = useState<'idle' | 'success' | 'warning' | 'error'>('idle');
 
   // Fetch the compose JSON Schema from the backend once on mount so
   // Monaco can show per-field validation, autocomplete, and hover docs.
@@ -128,8 +130,12 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
       setIssues(r.data.issues);
       setSpec(r.data.spec);
       setRightTab(r.data.ok ? 'spec' : 'issues');
+      const errs = r.data.issues.filter(i => i.severity === 'error').length;
+      const warns = r.data.issues.filter(i => i.severity === 'warning').length;
+      setValidateState(errs > 0 ? 'error' : warns > 0 ? 'warning' : 'success');
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : 'validation failed');
+      setValidateState('error');
     }
   };
 
@@ -174,7 +180,10 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
         </header>
 
         <div className="flex items-center gap-3 border-b border-gray-200 px-6 py-2 dark:border-gray-700">
-          <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Stack name</label>
+          <div className="flex items-center gap-1">
+            <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Stack name</label>
+            <Tooltip text="A unique DNS-compatible name for this compose stack. Lowercase letters, digits, and hyphens only; must start and end with an alphanumeric character. Locked once deployed — to rename, delete the stack and redeploy." />
+          </div>
           <input
             type="text"
             value={name}
@@ -193,8 +202,9 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
         <div className="flex flex-1 overflow-hidden">
           {/* Editor */}
           <div className="flex w-1/2 flex-col border-r border-gray-200 dark:border-gray-700">
-            <div className="border-b border-gray-200 px-4 py-1.5 text-xs font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
+            <div className="flex items-center gap-1 border-b border-gray-200 px-4 py-1.5 text-xs font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
               compose.yaml
+              <Tooltip text="Paste a Compose 3.7–3.9 file here. Supported: services, image, ports, environment, depends_on, healthcheck, named volumes. Bind mounts and most advanced Compose features are rejected for security reasons." />
             </div>
             <EditorErrorBoundary fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
               <Suspense fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
@@ -215,19 +225,25 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
           <div className="flex w-1/2 flex-col">
             <div className="flex items-center gap-4 border-b border-gray-200 px-4 dark:border-gray-700">
               {(['issues', 'spec'] as const).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setRightTab(tab)}
-                  className={clsx(
-                    'border-b-2 px-1 py-2 text-xs font-medium transition-colors',
-                    rightTab === tab
-                      ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300',
-                  )}
-                  data-testid={`compose-right-${tab}`}
-                >
-                  {tab === 'issues' ? `Issues (${errorCount}/${warningCount})` : 'Rendered spec'}
-                </button>
+                <div key={tab} className="flex items-center gap-1">
+                  <button
+                    onClick={() => setRightTab(tab)}
+                    className={clsx(
+                      'border-b-2 px-1 py-2 text-xs font-medium transition-colors',
+                      rightTab === tab
+                        ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300',
+                    )}
+                    data-testid={`compose-right-${tab}`}
+                  >
+                    {tab === 'issues' ? `Issues (${errorCount}/${warningCount})` : 'Rendered spec'}
+                  </button>
+                  <Tooltip text={
+                    tab === 'issues'
+                      ? 'Validation results after clicking Validate. Errors (red) must be fixed before deploying. Warnings (orange) are advisory. Format: error count / warning count.'
+                      : 'The normalised deployment spec that will be applied to the cluster — shows exactly which services, ports, volumes, and environment variables were parsed from your compose.yaml.'
+                  } />
+                </div>
               ))}
             </div>
             <div className="flex-1 overflow-auto px-4 py-3 text-xs">
@@ -279,9 +295,29 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated, exi
           <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
             Cancel
           </button>
-          <button type="button" onClick={runValidate} disabled={validateMutation.isPending} className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
-            {validateMutation.isPending && <Loader2 size={14} className="animate-spin" />}
-            Validate
+          <button
+            type="button"
+            onClick={runValidate}
+            disabled={validateMutation.isPending}
+            className={clsx(
+              'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50',
+              validateState === 'success' && 'border-green-500 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-600 dark:bg-green-900/20 dark:text-green-300',
+              validateState === 'warning' && 'border-amber-500 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-900/20 dark:text-amber-300',
+              validateState === 'error' && 'border-red-500 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-600 dark:bg-red-900/20 dark:text-red-300',
+              validateState === 'idle' && 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
+            )}
+          >
+            {validateMutation.isPending ? (
+              <><Loader2 size={14} className="animate-spin" />Validating…</>
+            ) : validateState === 'success' ? (
+              <><CheckCircle size={14} />Validated</>
+            ) : validateState === 'warning' ? (
+              <><AlertTriangle size={14} />Warnings</>
+            ) : validateState === 'error' ? (
+              <><AlertCircle size={14} />Failed</>
+            ) : (
+              'Validate'
+            )}
           </button>
           <button type="button" onClick={submit} disabled={!canSubmit} className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="custom-compose-submit">
             {deleteMutation.isPending ? 'Removing old…' : createMutation.isPending ? (isEdit ? 'Recreating…' : 'Creating…') : isEdit ? 'Recreate stack' : 'Deploy stack'}

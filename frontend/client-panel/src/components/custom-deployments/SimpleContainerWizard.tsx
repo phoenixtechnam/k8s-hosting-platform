@@ -4,11 +4,12 @@
 // then POSTs on submit.
 
 import { useState } from 'react';
-import { AlertTriangle, Plus, Trash2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle, Loader2, Plus, Trash2, X } from 'lucide-react';
 import clsx from 'clsx';
 import { useCreateCustomDeployment, useUpdateCustomDeployment, useValidateCustomDeployment } from '@/hooks/use-custom-deployments';
 import type { CreateCustomDeploymentSimpleInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@k8s-hosting/api-contracts';
 import type { CustomDeploymentRow } from '@/hooks/use-custom-deployments';
+import { Tooltip } from '@/components/ui/Tooltip';
 
 interface Props {
   readonly clientId: string;
@@ -62,6 +63,7 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [issues, setIssues] = useState<readonly CustomDeploymentIssue[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [validateState, setValidateState] = useState<'idle' | 'success' | 'warning' | 'error'>('idle');
 
   const validateMutation = useValidateCustomDeployment(clientId);
   const createMutation = useCreateCustomDeployment(clientId);
@@ -84,16 +86,35 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
     return null;
   })();
 
+  const cpuError = (() => {
+    if (!cpuRequest.trim()) return 'required';
+    if (!/^\d+(\.\d+)?m?$/.test(cpuRequest)) return 'e.g. 100m, 0.5, 1';
+    const n = parseFloat(cpuRequest.replace('m', ''));
+    if (isNaN(n) || n <= 0) return 'must be greater than 0';
+    return null;
+  })();
+
+  const memoryError = (() => {
+    if (!memoryRequest.trim()) return 'required';
+    if (!/^\d+(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$/.test(memoryRequest)) return 'e.g. 128Mi, 512Mi, 1Gi';
+    if (parseInt(memoryRequest, 10) === 0) return 'must be greater than 0';
+    return null;
+  })();
+
   const isPending = isEdit ? updateMutation.isPending : createMutation.isPending;
-  const canSubmit = Boolean(name && image && !nameError && !isPending);
+  const canSubmit = Boolean(name && image && !nameError && !cpuError && !memoryError && !isPending);
 
   const runValidate = async () => {
     setSubmitError(null);
     try {
       const r = await validateMutation.mutateAsync(buildInput());
       setIssues(r.data.issues);
+      const errs = r.data.issues.filter(i => i.severity === 'error').length;
+      const warns = r.data.issues.filter(i => i.severity === 'warning').length;
+      setValidateState(errs > 0 ? 'error' : warns > 0 ? 'warning' : 'success');
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : 'validation failed');
+      setValidateState('error');
     }
   };
 
@@ -141,7 +162,10 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
           {/* Name + image */}
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Deployment name" hint="DNS-compatible, unique within your account.">
+            <Field
+              label="Deployment name"
+              tooltip="A unique DNS-compatible identifier for your stack. Lowercase letters, digits, and hyphens only; must start and end with an alphanumeric character. Cannot be changed after creation."
+            >
               <input
                 type="text"
                 className={inputCls(Boolean(nameError))}
@@ -153,7 +177,10 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
               />
               {nameError && <FieldError>{nameError}</FieldError>}
             </Field>
-            <Field label="Image" hint="Any registry. PATs via the PAT modal after create.">
+            <Field
+              label="Image"
+              tooltip="Docker image reference (e.g. nginx:1.27, ghcr.io/owner/image:tag). Public images work immediately. For private registries, save the deployment first then add a PAT via the registry key button."
+            >
               <input
                 type="text"
                 className={inputCls(false)}
@@ -167,12 +194,34 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
 
           {/* Ports */}
           <section>
-            <SectionHeader title="Ports" hint="Each exposed port becomes a ClusterIP Service. One can be ingress-eligible.">
+            <SectionHeader
+              title="Ports"
+              tooltip="Declare the network ports your container listens on. Each port with 'Service' checked gets a ClusterIP Service, and ports marked 'Ingress' can be selected as the backend target when you add a domain route."
+            >
               <button type="button" className={addBtnCls} onClick={() => setPorts([...ports, { containerPort: 0, name: '', protocol: 'TCP', exposeAsService: true, ingressEligible: false }])}>
                 <Plus size={14} /> Port
               </button>
             </SectionHeader>
             {ports.length === 0 && <Empty>No ports declared.</Empty>}
+            {ports.length > 0 && (
+              <div className="mb-1 grid grid-cols-12 gap-2 text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                <span className="col-span-2 flex items-center gap-0.5">
+                  Port <Tooltip text="The port number your container listens on inside the pod (1–65535)." />
+                </span>
+                <span className="col-span-3 flex items-center gap-0.5">
+                  Name <Tooltip text="A short label for this port (e.g. http, grpc, metrics). Used to reference the port in ingress route configuration." />
+                </span>
+                <span className="col-span-2 flex items-center gap-0.5">
+                  Protocol <Tooltip text="Network protocol. TCP covers HTTP/HTTPS and most services. UDP for DNS, media streaming, or game servers. SCTP is rarely needed." />
+                </span>
+                <span className="col-span-2 flex items-center gap-0.5">
+                  Service <Tooltip text="Creates a ClusterIP Service for this port, making it reachable by other pods and the ingress controller within the cluster." />
+                </span>
+                <span className="col-span-2 flex items-center gap-0.5">
+                  Ingress <Tooltip text="Marks this port as eligible to be used as the backend when creating a domain route. Only one port per deployment needs this enabled." />
+                </span>
+              </div>
+            )}
             {ports.map((p, i) => (
               <div key={i} className="grid grid-cols-12 items-center gap-2 py-1">
                 <input type="number" className={clsx(inputCls(false), 'col-span-2')} value={p.containerPort || ''} onChange={(e) => setPorts(rowsUpdate(ports, i, { containerPort: parseInt(e.target.value, 10) || 0 }))} placeholder="80" />
@@ -197,12 +246,28 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
 
           {/* Volumes */}
           <section>
-            <SectionHeader title="Volumes" hint="Named only. Stored as subPath on your tenant PVC.">
+            <SectionHeader
+              title="Volumes"
+              tooltip="Named persistent volumes stored as subdirectories on your tenant PVC. Bind mounts to host paths are not permitted. Data is preserved across pod restarts and redeployments."
+            >
               <button type="button" className={addBtnCls} onClick={() => setVolumes([...volumes, { kind: 'volume' as const, name: '', containerPath: '', readOnly: false }])}>
                 <Plus size={14} /> Volume
               </button>
             </SectionHeader>
             {volumes.length === 0 && <Empty>No volumes declared.</Empty>}
+            {volumes.length > 0 && (
+              <div className="mb-1 grid grid-cols-12 gap-2 text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                <span className="col-span-3 flex items-center gap-0.5">
+                  Name <Tooltip text="Volume identifier (e.g. 'data'). Becomes a subdirectory under your tenant storage path — e.g. /storage/my-app/data." />
+                </span>
+                <span className="col-span-6 flex items-center gap-0.5">
+                  Mount path <Tooltip text="Absolute path inside the container where this volume is mounted (e.g. /var/lib/data). The container sees this directory as persistent storage." />
+                </span>
+                <span className="col-span-2 flex items-center gap-0.5">
+                  Read-only <Tooltip text="When checked, the container can read files from this volume but cannot write or delete them. Useful for config files shared across pods." />
+                </span>
+              </div>
+            )}
             {volumes.map((v, i) => (
               <div key={i} className="grid grid-cols-12 items-center gap-2 py-1">
                 <input type="text" className={clsx(inputCls(false), 'col-span-3')} value={v.name} onChange={(e) => setVolumes(rowsUpdate(volumes, i, { name: e.target.value }))} placeholder="data" />
@@ -220,12 +285,25 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
 
           {/* Env */}
           <section>
-            <SectionHeader title="Environment" hint="KEY=value. Use the PAT modal for credentials.">
+            <SectionHeader
+              title="Environment"
+              tooltip="Environment variables injected into your container at startup. Values are stored in a Kubernetes Secret in your tenant namespace. Use the PAT modal for registry credentials — avoid putting raw passwords here."
+            >
               <button type="button" className={addBtnCls} onClick={() => setEnv([...env, { name: '', value: '' }])}>
                 <Plus size={14} /> Env
               </button>
             </SectionHeader>
             {env.length === 0 && <Empty>No env vars declared.</Empty>}
+            {env.length > 0 && (
+              <div className="mb-1 grid grid-cols-12 gap-2 text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                <span className="col-span-4 flex items-center gap-0.5">
+                  Key <Tooltip text="Environment variable name (e.g. DATABASE_URL, REDIS_HOST). Must be a valid shell identifier — letters, digits, and underscores; conventionally uppercase." />
+                </span>
+                <span className="col-span-7 flex items-center gap-0.5">
+                  Value <Tooltip text="The value assigned to this variable. Visible to anyone with access to your deployment spec. For sensitive values (API keys, passwords), prefer injecting via a separate Secret or the PAT modal." />
+                </span>
+              </div>
+            )}
             {env.map((row, i) => (
               <div key={i} className="grid grid-cols-12 items-center gap-2 py-1">
                 <input type="text" className={clsx(inputCls(false), 'col-span-4')} value={row.name} onChange={(e) => setEnv(rowsUpdate(env, i, { name: e.target.value }))} placeholder="DB_HOST" />
@@ -243,11 +321,19 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
           </button>
           {showAdvanced && (
             <div className="grid grid-cols-2 gap-4">
-              <Field label="CPU request" hint="e.g. 100m, 250m, 1">
-                <input type="text" className={inputCls(false)} value={cpuRequest} onChange={(e) => setCpuRequest(e.target.value)} />
+              <Field
+                label="CPU request"
+                tooltip="Minimum CPU guaranteed to your container. 100m = 0.1 vCPU, 500m = 0.5 vCPU, 1 = 1 full vCPU. Your container may burst above this if the node has spare capacity, but is guaranteed this floor."
+              >
+                <input type="text" className={inputCls(Boolean(cpuError))} value={cpuRequest} onChange={(e) => setCpuRequest(e.target.value)} />
+                {cpuError && <FieldError>{cpuError}</FieldError>}
               </Field>
-              <Field label="Memory request" hint="e.g. 128Mi, 1Gi">
-                <input type="text" className={inputCls(false)} value={memoryRequest} onChange={(e) => setMemoryRequest(e.target.value)} />
+              <Field
+                label="Memory request"
+                tooltip="Minimum RAM guaranteed to your container. 128Mi = 128 mebibytes, 512Mi = 512 MiB, 1Gi = 1 GiB. If the container exceeds the cluster memory limit it will be OOM-killed and restarted automatically."
+              >
+                <input type="text" className={inputCls(Boolean(memoryError))} value={memoryRequest} onChange={(e) => setMemoryRequest(e.target.value)} />
+                {memoryError && <FieldError>{memoryError}</FieldError>}
               </Field>
             </div>
           )}
@@ -283,8 +369,29 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
           <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
             Cancel
           </button>
-          <button type="button" onClick={runValidate} disabled={!image || validateMutation.isPending} className="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
-            {validateMutation.isPending ? 'Validating…' : 'Validate'}
+          <button
+            type="button"
+            onClick={runValidate}
+            disabled={!image || validateMutation.isPending}
+            className={clsx(
+              'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50',
+              validateState === 'success' && 'border-green-500 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-600 dark:bg-green-900/20 dark:text-green-300',
+              validateState === 'warning' && 'border-amber-500 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-900/20 dark:text-amber-300',
+              validateState === 'error' && 'border-red-500 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-600 dark:bg-red-900/20 dark:text-red-300',
+              validateState === 'idle' && 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
+            )}
+          >
+            {validateMutation.isPending ? (
+              <><Loader2 size={14} className="animate-spin" />Validating…</>
+            ) : validateState === 'success' ? (
+              <><CheckCircle size={14} />Validated</>
+            ) : validateState === 'warning' ? (
+              <><AlertTriangle size={14} />Warnings</>
+            ) : validateState === 'error' ? (
+              <><AlertCircle size={14} />Failed</>
+            ) : (
+              'Validate'
+            )}
           </button>
           <button type="button" onClick={submit} disabled={!canSubmit} className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="custom-simple-submit">
             {isPending ? (isEdit ? 'Saving…' : 'Creating…') : (isEdit ? 'Save changes' : 'Create')}
@@ -307,11 +414,13 @@ const inputCls = (error: boolean) =>
 
 const addBtnCls = 'inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700';
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, tooltip, children }: { label: string; tooltip?: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">{label}</label>
-      {hint && <p className="text-xs text-gray-500 dark:text-gray-400">{hint}</p>}
+      <div className="flex items-center gap-1">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">{label}</label>
+        {tooltip && <Tooltip text={tooltip} />}
+      </div>
       <div className="mt-1">{children}</div>
     </div>
   );
@@ -321,12 +430,12 @@ function FieldError({ children }: { children: React.ReactNode }) {
   return <p className="mt-1 text-xs text-red-600 dark:text-red-400">{children}</p>;
 }
 
-function SectionHeader({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
+function SectionHeader({ title, tooltip, children }: { title: string; tooltip: string; children: React.ReactNode }) {
   return (
     <div className="mb-2 flex items-end justify-between">
-      <div>
+      <div className="flex items-center gap-1">
         <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</h4>
-        <p className="text-xs text-gray-500 dark:text-gray-400">{hint}</p>
+        <Tooltip text={tooltip} />
       </div>
       {children}
     </div>

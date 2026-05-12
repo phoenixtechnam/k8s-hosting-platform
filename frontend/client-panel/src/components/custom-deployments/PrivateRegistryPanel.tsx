@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import { KeyRound, Loader2, Trash2, X } from 'lucide-react';
 import { useAttachPullCredential, usePullCredential, useRevokePullCredential } from '@/hooks/use-custom-deployments';
+import { Tooltip } from '@/components/ui/Tooltip';
 
 interface Props {
   readonly clientId: string;
@@ -91,16 +92,28 @@ export function PrivateRegistryPanel({ clientId, deploymentId, deploymentName, o
         )}
 
         <div className="space-y-3">
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Registry host
+          <div>
+            <div className="flex items-center gap-1">
+              <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Registry host</label>
+              <Tooltip text="Hostname of your container registry (e.g. ghcr.io, registry.hub.docker.com, registry.example.com). The credential is scoped to this host — only image pulls from this hostname use this token." />
+            </div>
             <input type="text" value={registryHost} onChange={(e) => setRegistryHost(e.target.value)} placeholder="ghcr.io" className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 font-mono text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100" />
-          </label>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Username
+          </div>
+          <div>
+            <div className="flex items-center gap-1">
+              <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Username</label>
+              <Tooltip text="Your registry account username, GitHub handle, or service account name. Combined with the token to form the pull secret." />
+            </div>
             <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="my-github-handle" className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 font-mono text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100" />
-          </label>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Token (PAT)
+          </div>
+          <div>
+            <div className="flex items-center gap-1">
+              <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Token (PAT)</label>
+              <Tooltip text="A Personal Access Token or robot account password with at least package:read scope. Stored AES-256 encrypted at rest and never returned in full — only the last 4 characters are shown after saving. If the token is lost or expired, rotate it here." />
+            </div>
             <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="ghp_…" autoComplete="off" className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1 font-mono text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100" data-testid="custom-pat-token" />
             <span className="mt-1 block text-[10px] text-gray-500 dark:text-gray-400">Never logged. Returned to API responses only as last 4 chars.</span>
-          </label>
+          </div>
         </div>
 
         {error && <div className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</div>}
