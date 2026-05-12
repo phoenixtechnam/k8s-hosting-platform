@@ -18,6 +18,7 @@ function spec(
     restartPolicy: 'Always',
     readOnlyRootFilesystem: false,
     tmpfs: [],
+    capAdd: [],
     dependsOn: [],
   };
   const services: Record<string, CustomDeploymentService> = {};
@@ -111,7 +112,7 @@ describe('validateCustomSpec — reference integrity', () => {
     const r = validateCustomSpec(
       spec({
         services: {
-          web: { volumeMounts: [{ name: 'orphan', containerPath: '/data', readOnly: false }] },
+          web: { volumeMounts: [{ kind: 'volume' as const, name: 'orphan', containerPath: '/data', readOnly: false }] },
         },
       }),
       clientCtx,
@@ -122,7 +123,7 @@ describe('validateCustomSpec — reference integrity', () => {
     const r = validateCustomSpec(
       spec({
         services: {
-          web: { volumeMounts: [{ name: 'data', containerPath: '/data', readOnly: false }] },
+          web: { volumeMounts: [{ kind: 'volume' as const, name: 'data', containerPath: '/data', readOnly: false }] },
         },
         volumes: { data: {} },
       }),
@@ -213,7 +214,7 @@ describe('validateCustomSpec — port rules', () => {
     );
     expect(r.issues.find((i) => i.code === 'PORT_NAME_DUPLICATE')).toBeDefined();
   });
-  it('rejects multiple ingressEligible ports (Phase 1 cap)', () => {
+  it('allows multiple ingressEligible ports (multi-port support)', () => {
     const r = validateCustomSpec(
       spec({
         services: {
@@ -227,7 +228,23 @@ describe('validateCustomSpec — port rules', () => {
       }),
       clientCtx,
     );
-    expect(r.issues.find((i) => i.code === 'TOO_MANY_INGRESS_ELIGIBLE_PORTS')).toBeDefined();
+    expect(r.issues.find((i) => i.code === 'TOO_MANY_INGRESS_ELIGIBLE_PORTS')).toBeUndefined();
+    expect(r.ok).toBe(true);
+  });
+
+  it('warns when more than 5 ports are ingressEligible', () => {
+    const ports = Array.from({ length: 6 }, (_, idx) => ({
+      containerPort: 8000 + idx,
+      name: `p${8000 + idx}`,
+      protocol: 'TCP' as const,
+      exposeAsService: true,
+      ingressEligible: true,
+    }));
+    const r = validateCustomSpec(spec({ services: { web: { ports } } }), clientCtx);
+    const warn = r.issues.find((i) => i.code === 'MANY_INGRESS_ELIGIBLE_PORTS');
+    expect(warn).toBeDefined();
+    expect(warn?.severity).toBe('warning');
+    expect(r.ok).toBe(true);
   });
 });
 

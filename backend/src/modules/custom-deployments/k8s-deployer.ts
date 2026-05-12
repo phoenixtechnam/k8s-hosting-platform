@@ -438,17 +438,28 @@ function buildVolumeMounts(
   const mounts: Array<Record<string, unknown>> = [];
 
   for (const vm of service.volumeMounts) {
-    mounts.push({
-      name: CLIENT_PVC_VOLUME_NAME,
-      mountPath: vm.containerPath,
-      subPath: `${input.storageSubPath}/${vm.name}`,
-      ...(vm.readOnly ? { readOnly: true } : {}),
-    });
+    const mountKind = vm.kind ?? 'volume';
+    if (mountKind === 'configMap') {
+      mounts.push({
+        name: configMapVolumeName(input.deploymentId, vm.name),
+        mountPath: vm.containerPath,
+        ...(vm.readOnly ? { readOnly: true } : {}),
+      });
+    } else if (mountKind === 'secret') {
+      mounts.push({
+        name: secretVolumeName(input.deploymentId, vm.name),
+        mountPath: vm.containerPath,
+        readOnly: true,
+      });
+    } else {
+      mounts.push({
+        name: CLIENT_PVC_VOLUME_NAME,
+        mountPath: vm.containerPath,
+        subPath: `${input.storageSubPath}/${vm.name}`,
+        ...(vm.readOnly ? { readOnly: true } : {}),
+      });
+    }
   }
-
-  // ConfigMap mounts via projected volumes are out of scope Phase 1;
-  // the tenant references configMaps via `valueFromConfigMap` env
-  // refs only. Same for Secrets.
 
   for (const t of service.tmpfs) {
     mounts.push({
@@ -473,17 +484,48 @@ function buildPodVolumes(
 ): Array<Record<string, unknown>> {
   const volumes: Array<Record<string, unknown>> = [];
 
-  // 1. Tenant PVC — included if THIS service mounts at least one
-  //    named volume (no point attaching the PVC for a stateless web
-  //    container that mounts nothing).
-  if (service.volumeMounts.length > 0) {
+  // 1. Tenant PVC — included if THIS service has at least one named volume mount.
+  const hasNamedVolumes = service.volumeMounts.some((vm) => (vm.kind ?? 'volume') === 'volume');
+  if (hasNamedVolumes) {
     volumes.push({
       name: CLIENT_PVC_VOLUME_NAME,
       persistentVolumeClaim: { claimName: `${input.namespace}-storage` },
     });
   }
 
-  // 2. Tmpfs emptyDirs — per-service (not pod-wide).
+  // 2. ConfigMap volumes — one per unique configMap mount.
+  const configMapsSeen = new Set<string>();
+  for (const vm of service.volumeMounts) {
+    if ((vm.kind ?? 'volume') !== 'configMap') continue;
+    const volName = configMapVolumeName(input.deploymentId, vm.name);
+    if (configMapsSeen.has(volName)) continue;
+    configMapsSeen.add(volName);
+    volumes.push({
+      name: volName,
+      configMap: {
+        name: renderConfigMapName(input.deploymentId, vm.name),
+        defaultMode: 0o644,
+      },
+    });
+  }
+
+  // 3. Secret volumes — one per unique secret mount.
+  const secretsSeen = new Set<string>();
+  for (const vm of service.volumeMounts) {
+    if ((vm.kind ?? 'volume') !== 'secret') continue;
+    const volName = secretVolumeName(input.deploymentId, vm.name);
+    if (secretsSeen.has(volName)) continue;
+    secretsSeen.add(volName);
+    volumes.push({
+      name: volName,
+      secret: {
+        secretName: renderSecretName(input.deploymentId, vm.name),
+        defaultMode: 0o400,
+      },
+    });
+  }
+
+  // 4. Tmpfs emptyDirs — per-service (not pod-wide).
   const tmpfsSeen = new Set<string>();
   for (const t of service.tmpfs) {
     const name = tmpfsVolumeName(t.path);
@@ -508,8 +550,13 @@ function buildInitDirsContainer(
   input: DeployCustomInput,
   service: CustomDeploymentService,
 ): Record<string, unknown> | null {
-  // Volumes THIS service mounts — pre-create their subPath roots.
-  const namedVolumes = [...new Set(service.volumeMounts.map((vm) => vm.name))];
+  // Only pre-create directories for named volume mounts (PVC subPaths).
+  // ConfigMap/Secret mounts are k8s-managed and don't need dir pre-creation.
+  const namedVolumes = [...new Set(
+    service.volumeMounts
+      .filter((vm) => (vm.kind ?? 'volume') === 'volume')
+      .map((vm) => vm.name),
+  )];
   if (namedVolumes.length === 0) return null;
 
   const mkdirParts = namedVolumes.map((volName) => {
@@ -705,6 +752,9 @@ function buildPodSecurityContext(
   }
   if (service.runAsUser !== undefined) ctx.runAsUser = service.runAsUser;
   if (service.runAsGroup !== undefined) ctx.runAsGroup = service.runAsGroup;
+  if (service.sysctls && Object.keys(service.sysctls).length > 0) {
+    ctx.sysctls = Object.entries(service.sysctls).map(([name, value]) => ({ name, value }));
+  }
   return ctx;
 }
 
@@ -728,6 +778,9 @@ function buildContainerSecurityContext(
   // flag, so here we just propagate what the spec asked for.
   if (service.runAsUser !== undefined) ctx.runAsUser = service.runAsUser;
   if (service.runAsGroup !== undefined) ctx.runAsGroup = service.runAsGroup;
+  if (service.capAdd && service.capAdd.length > 0) {
+    ctx.capabilities = { add: service.capAdd };
+  }
   return ctx;
 }
 
@@ -767,6 +820,16 @@ function tmpfsVolumeName(path: string): string {
   // with `-`, lowercase, prepend `tmpfs-`. The result is unique per
   // path within a pod.
   return 'tmpfs-' + path.replace(/^\//, '').replace(/[^a-z0-9-]+/gi, '-').toLowerCase().slice(0, 50);
+}
+
+function configMapVolumeName(deploymentId: string, key: string): string {
+  // Pod volume name for a projected ConfigMap. Short prefix to stay
+  // under the 63-char DNS-label limit for volume names.
+  return `cdcm-${deploymentId.slice(0, 8)}-${key}`.slice(0, 63);
+}
+
+function secretVolumeName(deploymentId: string, key: string): string {
+  return `cdsec-${deploymentId.slice(0, 8)}-${key}`.slice(0, 63);
 }
 
 function ownerLabels(input: DeployCustomInput): Record<string, string> {

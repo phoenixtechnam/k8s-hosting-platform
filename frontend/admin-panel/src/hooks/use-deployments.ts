@@ -30,6 +30,8 @@ export interface Deployment {
   readonly storagePath: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** ADR-036 normalized spec for custom deployments. Null on catalog deployments. */
+  readonly customSpec?: { allowRoot?: boolean; [key: string]: unknown } | null;
 }
 
 export function useDeployments(clientId: string | undefined, type?: string) {
@@ -141,6 +143,20 @@ export function useBulkRestartDeployments() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments'] });
+    },
+  });
+}
+
+export function useSetCustomDeploymentAllowRoot(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deploymentId, allowRoot }: { deploymentId: string; allowRoot: boolean }) =>
+      apiFetch<{ data: unknown }>(
+        `/api/v1/admin/clients/${clientId}/custom-deployments/${deploymentId}/allow-root`,
+        { method: 'PATCH', body: JSON.stringify({ allowRoot }) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
     },
   });
 }

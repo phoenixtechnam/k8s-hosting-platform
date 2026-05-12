@@ -13,7 +13,7 @@ import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
 import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
-import { useDeployments, useRestartDeployment, useBulkRestartDeployments, useDeleteDeployment, useUpdateDeployment } from '@/hooks/use-deployments';
+import { useDeployments, useRestartDeployment, useBulkRestartDeployments, useDeleteDeployment, useUpdateDeployment, useSetCustomDeploymentAllowRoot } from '@/hooks/use-deployments';
 import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
 import { useImpersonate } from '@/hooks/use-impersonate';
@@ -1257,6 +1257,7 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
   const restartDeployment = useRestartDeployment(clientId);
   const deleteDeployment = useDeleteDeployment(clientId);
   const updateDeployment = useUpdateDeployment(clientId);
+  const setAllowRoot = useSetCustomDeploymentAllowRoot(clientId);
 
   // ADR-036 source filter. Defaults to 'all'; admins can drill into
   // catalog-only or custom-only to scope bulk action mistakes.
@@ -1416,6 +1417,28 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
                       >
                         {deleteDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                         Delete
+                      </button>
+                    )}
+                    {d.source === 'custom' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const current = Boolean(d.customSpec?.allowRoot);
+                          const next = !current;
+                          if (next && !window.confirm(`Grant allowRoot on "${d.name}"? The container will run as uid 0. Only do this for trusted images.`)) return;
+                          setAllowRoot.mutate({ deploymentId: d.id, allowRoot: next });
+                        }}
+                        disabled={setAllowRoot.isPending}
+                        className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+                          d.customSpec?.allowRoot
+                            ? 'border-orange-300 dark:border-orange-700 bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40'
+                            : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
+                        }`}
+                        title={d.customSpec?.allowRoot ? 'allowRoot is ON — click to revoke root access' : 'allowRoot is OFF — click to grant root access (super_admin only)'}
+                        data-testid={`allow-root-${d.id}`}
+                      >
+                        {setAllowRoot.isPending ? <Loader2 size={12} className="animate-spin" /> : null}
+                        {d.customSpec?.allowRoot ? 'Root ON' : 'Root OFF'}
                       </button>
                     )}
                   </div>

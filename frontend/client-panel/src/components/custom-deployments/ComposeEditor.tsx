@@ -1,18 +1,48 @@
 // Compose editor — split view with YAML on the left, Issues / Rendered
 // preview tabs on the right.
 //
-// PR-4 ships a plain <textarea> instead of Monaco + monaco-yaml.
-// Monaco's ~1.5 MB chunk + the YAML language-server wiring is a
-// separate concern; this textarea path is functional end-to-end and
-// the JSON Schema is already served at /custom-deployments/compose-
-// schema so a follow-up PR can drop Monaco in without changing the
-// API surface.
+// Uses Monaco + monaco-yaml for YAML validation, autocomplete, and
+// JSON Schema-driven hints from the backend's compose-schema endpoint.
+// Falls back to a plain <textarea> via ErrorBoundary if Monaco fails
+// to load (e.g. in low-end environments or during tests).
 
-import { useState } from 'react';
+import { useState, Suspense, lazy, Component, type ReactNode } from 'react';
 import { AlertTriangle, FileText, Loader2, X } from 'lucide-react';
 import clsx from 'clsx';
 import { useCreateCustomDeployment, useValidateCustomDeployment } from '@/hooks/use-custom-deployments';
+import { apiFetch } from '@/lib/api-client';
 import type { CreateCustomDeploymentComposeInput, CustomDeploymentIssue, CustomDeploymentSpec } from '@k8s-hosting/api-contracts';
+
+// Lazy-load Monaco + monaco-yaml (~1.5 MB gzipped). The dynamic import
+// is wrapped in a thin component so the ErrorBoundary can catch any
+// Monaco init failure and fall back to the textarea.
+const MonacoYamlEditor = lazy(() =>
+  import('./MonacoYamlEditor').catch(() => ({ default: null as unknown as typeof import('./MonacoYamlEditor').default })),
+);
+
+interface EditorFallbackProps {
+  value: string;
+  onChange: (v: string) => void;
+}
+
+function TextareaFallback({ value, onChange }: EditorFallbackProps) {
+  return (
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="flex-1 resize-none border-0 bg-gray-50 px-4 py-3 font-mono text-xs text-gray-900 outline-none dark:bg-gray-950 dark:text-gray-100"
+      spellCheck={false}
+      data-testid="custom-compose-textarea"
+    />
+  );
+}
+
+interface ErrorBoundaryState { hasError: boolean }
+class EditorErrorBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false };
+  static getDerivedStateFromError(): ErrorBoundaryState { return { hasError: true }; }
+  render() { return this.state.hasError ? this.props.fallback : this.props.children; }
+}
 
 interface Props {
   readonly clientId: string;
@@ -47,6 +77,17 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated }: P
   const [issues, setIssues] = useState<readonly CustomDeploymentIssue[]>([]);
   const [spec, setSpec] = useState<CustomDeploymentSpec | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [jsonSchema, setJsonSchema] = useState<unknown>(null);
+
+  // Fetch the compose JSON Schema from the backend once on mount so
+  // Monaco can show per-field validation, autocomplete, and hover docs.
+  const loadSchema = async () => {
+    try {
+      const r = await apiFetch<{ data: unknown }>('/custom-deployments/compose-schema');
+      setJsonSchema((r as { data: unknown }).data);
+    } catch { /* non-fatal — editor still works without schema */ }
+  };
+  if (!jsonSchema) { void loadSchema(); }
 
   const validateMutation = useValidateCustomDeployment(clientId);
   const createMutation = useCreateCustomDeployment(clientId);
@@ -135,13 +176,19 @@ export function ComposeEditor({ clientId, existingNames, onClose, onCreated }: P
             <div className="border-b border-gray-200 px-4 py-1.5 text-xs font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
               compose.yaml
             </div>
-            <textarea
-              value={yaml}
-              onChange={(e) => setYaml(e.target.value)}
-              className="flex-1 resize-none border-0 bg-gray-50 px-4 py-3 font-mono text-xs text-gray-900 outline-none dark:bg-gray-950 dark:text-gray-100"
-              spellCheck={false}
-              data-testid="custom-compose-textarea"
-            />
+            <EditorErrorBoundary fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
+              <Suspense fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
+                {MonacoYamlEditor ? (
+                  <MonacoYamlEditor
+                    value={yaml}
+                    onChange={setYaml}
+                    jsonSchema={jsonSchema}
+                  />
+                ) : (
+                  <TextareaFallback value={yaml} onChange={setYaml} />
+                )}
+              </Suspense>
+            </EditorErrorBoundary>
           </div>
 
           {/* Right pane */}

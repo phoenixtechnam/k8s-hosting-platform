@@ -570,6 +570,32 @@ export async function readPullCredentialPublic(
   return getPullCredential(db, deploymentId);
 }
 
+/**
+ * Admin-only: flip the `allowRoot` flag on an existing deployment.
+ * Does NOT trigger a re-deploy — the tenant must re-apply the spec
+ * (restart or update) after the admin flips this flag.
+ *
+ * Caller MUST have verified super_admin role before calling this.
+ */
+export async function setAllowRoot(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+  allowRoot: boolean,
+): Promise<CustomDeploymentRow> {
+  const current = await getCustomDeployment(db, clientId, deploymentId);
+  const nextSpec: CustomDeploymentSpec = { ...current.customSpec, allowRoot };
+  const [updated] = await db
+    .update(deployments)
+    .set({ customSpec: nextSpec as unknown as Record<string, unknown> })
+    .where(and(eq(deployments.id, deploymentId), eq(deployments.clientId, clientId), eq(deployments.source, 'custom')))
+    .returning();
+  if (!updated) {
+    throw new ApiError('CUSTOM_DEPLOYMENT_NOT_FOUND', `Deployment '${deploymentId}' not found`, 404);
+  }
+  return toRow(updated);
+}
+
 // ─── Cluster apply ──────────────────────────────────────────────────────────
 
 async function deployToCluster(
@@ -700,6 +726,7 @@ function buildSpecFromSimple(input: CreateCustomDeploymentSimpleInput): CustomDe
         runAsGroup: input.run_as_group,
         readOnlyRootFilesystem: input.read_only_root_filesystem ?? false,
         tmpfs: [],
+        capAdd: [],
         dependsOn: [],
         workingDir: undefined,
         stopGracePeriodSeconds: undefined,

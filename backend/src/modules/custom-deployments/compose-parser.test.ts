@@ -163,7 +163,7 @@ services:
       - "data:/var/www/html"
 `);
     const mounts = r.spec!.services.web.volumeMounts;
-    expect(mounts).toEqual([{ name: 'data', containerPath: '/var/www/html', readOnly: false }]);
+    expect(mounts).toEqual([{ kind: 'volume', name: 'data', containerPath: '/var/www/html', readOnly: false }]);
   });
 
   it('parses :ro modifier', () => {

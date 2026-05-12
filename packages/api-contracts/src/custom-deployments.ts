@@ -25,6 +25,19 @@ import { uuidField, paginatedResponseSchema } from './shared.js';
 export const CUSTOM_SPEC_VERSION = 1 as const;
 
 /**
+ * `capabilities.add` allowlist. PSS baseline admission on tenant
+ * namespaces blocks anything not on this list. Single-element tuple
+ * so `z.enum(ALLOWED_CAP_ADD)` works at the Zod layer.
+ */
+export const ALLOWED_CAP_ADD = ['NET_BIND_SERVICE'] as const;
+
+/**
+ * Pod-level sysctl allowlist. Only safe-to-namespace sysctls are
+ * permitted. Single-element tuple so `z.enum(ALLOWED_SYSCTLS)` works.
+ */
+export const ALLOWED_SYSCTLS = ['net.ipv4.ip_unprivileged_port_start'] as const;
+
+/**
  * K8s service name: lowercase DNS_LABEL (RFC 1123), 1-63 chars,
  * start and end alphanumeric. Same regex as the catalog
  * deployments `k8sNameRegex`, intentionally identical so a custom
@@ -115,7 +128,17 @@ export const customPortSchema = z.object({
 });
 
 export const customVolumeMountSchema = z.object({
-  /** References a key in customSpec.volumes (top-level). */
+  /**
+   * What the name references:
+   *   'volume'    → a key in customSpec.volumes (subPath on tenant PVC)
+   *   'configMap' → a key in customSpec.configMaps (projected ConfigMap volume)
+   *   'secret'    → a key in customSpec.secrets (projected Secret volume)
+   *
+   * Defaults to 'volume' for backward compatibility with Phase 1 mounts
+   * that were created without an explicit kind.
+   */
+  kind: z.enum(['volume', 'configMap', 'secret']).default('volume'),
+  /** References a volume / configMap / secret name (see `kind`). */
   name: z.string().regex(VOLUME_NAME_RE, {
     message: 'Volume name must be a single lowercase segment (^[a-z][a-z0-9_-]{0,63}$)',
   }),
@@ -259,6 +282,20 @@ export const customServiceSchema = z.object({
   /** Tmpfs (`emptyDir { medium: Memory }`) mounts. Used when
    *  readOnlyRootFilesystem=true and the app still needs scratch space. */
   tmpfs: z.array(customTmpfsSchema).max(10).default([]),
+  /**
+   * `capabilities.add` — only entries from `ALLOWED_CAP_ADD` are
+   * accepted; PSS baseline on the namespace blocks anything else.
+   * Parsed from compose `cap_add:`. Empty by default.
+   */
+  capAdd: z.array(z.enum(ALLOWED_CAP_ADD)).max(1).default([]),
+  /**
+   * Pod-level sysctl overrides. Only keys from `ALLOWED_SYSCTLS` are
+   * accepted. Maps to `PodSpec.securityContext.sysctls[]`.
+   * Parsed from compose `sysctls:`.
+   */
+  sysctls: z.record(z.enum(ALLOWED_SYSCTLS), z.string().regex(/^[0-9]+$/, {
+    message: 'sysctl value must be a non-negative integer string',
+  })).optional(),
   /** PodSpec.terminationGracePeriodSeconds, max 5 min. */
   stopGracePeriodSeconds: z.number().int().min(0).max(300).optional(),
   /** Names of other services this depends on. Resolves to one
@@ -376,6 +413,13 @@ export const createCustomDeploymentSchema = z.discriminatedUnion('mode', [
   createCustomDeploymentSimpleSchema,
   createCustomDeploymentComposeSchema,
 ]);
+
+/** Admin-only: flip `allowRoot` on an existing deployment.
+ *  Requires super_admin role. Does NOT trigger a re-deploy; the
+ *  tenant must explicitly re-apply the spec after the flag is set. */
+export const setAllowRootSchema = z.object({
+  allowRoot: z.boolean(),
+});
 
 /** Update is a narrow patch — most fields are immutable post-create
  *  (rename = delete + recreate). Tag bumps go via /upgrade-tag. */
@@ -516,6 +560,7 @@ export type CreateCustomDeploymentSimpleInput = z.infer<typeof createCustomDeplo
 export type CreateCustomDeploymentComposeInput = z.infer<typeof createCustomDeploymentComposeSchema>;
 export type CreateCustomDeploymentInput = z.infer<typeof createCustomDeploymentSchema>;
 export type UpdateCustomDeploymentInput = z.infer<typeof updateCustomDeploymentSchema>;
+export type SetAllowRootInput = z.infer<typeof setAllowRootSchema>;
 export type CustomDeploymentIssue = z.infer<typeof customDeploymentIssueSchema>;
 export type ValidateCustomDeploymentResult = z.infer<typeof validateCustomDeploymentResultSchema>;
 export type RenderedManifest = z.infer<typeof renderedManifestSchema>;

@@ -28,7 +28,13 @@
 #
 # USAGE
 #   ADMIN_PASSWORD=<...> ./scripts/integration-custom-deployments-phase2.sh [group]
-#   group: group-a | group-b | group-c | group-d | all  (default: all)
+#   group: group-a | group-b | group-c | group-d | group-e | all  (default: all)
+#
+#   Group E — Close-out features (PR close-out)
+#     cap-add-sysctl   cap_add: [NET_BIND_SERVICE] + sysctl plumbed into Pod
+#     cfgsec-mounts    per-service configs/secrets → k8s ConfigMap + Secret volumes
+#     multi-port       2x ingressEligible ports → ok=true, no hard error
+#     allow-root       admin PATCH /allow-root; unauthenticated → 401/403
 #
 # PREREQ
 #   - Phase-1 harness must have returned "0 failed".
@@ -1054,6 +1060,277 @@ else:
   fi
 }
 
+# ─── Group E — Close-out features (PR-5+) ────────────────────────────────────
+
+# T16 — cap_add + sysctl plumbed through to Pod spec
+scenario_cap_add_sysctl() {
+  scenario_start "T16 — cap_add: [NET_BIND_SERVICE] + sysctl rendered in Pod spec"
+  local name="p2e-cap-$STAMP"
+  local body
+  body=$(printf '{
+  "mode": "compose",
+  "name": "%s",
+  "compose_yaml": "services:\n  web:\n    image: nginx:1.27\n    cap_add:\n      - NET_BIND_SERVICE\n    sysctls:\n      net.ipv4.ip_unprivileged_port_start: \\"80\\"\n    ports:\n      - \\"80\\"\n"
+}' "$name")
+
+  # Validate first
+  local vresp
+  vresp=$(api POST "/clients/$CLIENT_ID/custom-deployments/validate" "$body")
+  local vok
+  vok=$(echo "$vresp" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(d['ok'])" 2>/dev/null || echo "false")
+  if [[ "$vok" == "True" ]]; then
+    pass "T16: validate cap_add+sysctl compose → ok=true"
+  else
+    fail "T16: validate cap_add+sysctl → not ok: $vresp"
+    return
+  fi
+
+  local resp
+  resp=$(api POST "/clients/$CLIENT_ID/custom-deployments" "$body")
+  local dep_id
+  dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
+  if [[ -z "$dep_id" ]]; then
+    fail "T16: create cap_add deployment → no id: $resp"
+    return
+  fi
+  CREATED_IDS+=("$dep_id")
+  pass "T16: created $dep_id"
+
+  if ! wait_pod_running "$TENANT_NS" "$name-web" 120; then
+    fail "T16: pod $name-web did not reach Running"
+    remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" -o wide 2>/dev/null || true
+    return
+  fi
+  pass "T16: pod $name-web Running"
+
+  local caps
+  caps=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+    -o jsonpath='{.items[0].spec.containers[0].securityContext.capabilities.add[0]}' 2>/dev/null || true)
+  if [[ "$caps" == "NET_BIND_SERVICE" ]]; then
+    pass "T16: capabilities.add=[NET_BIND_SERVICE] in Pod spec"
+  else
+    fail "T16: capabilities.add not as expected; got: '$caps'"
+  fi
+
+  local sysctl_name sysctl_val
+  sysctl_name=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+    -o jsonpath='{.items[0].spec.securityContext.sysctls[0].name}' 2>/dev/null || true)
+  sysctl_val=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+    -o jsonpath='{.items[0].spec.securityContext.sysctls[0].value}' 2>/dev/null || true)
+  if [[ "$sysctl_name" == "net.ipv4.ip_unprivileged_port_start" && "$sysctl_val" == "80" ]]; then
+    pass "T16: sysctl net.ipv4.ip_unprivileged_port_start=80 in Pod spec"
+  else
+    fail "T16: sysctl not as expected; name='$sysctl_name' val='$sysctl_val'"
+  fi
+}
+
+# T17 — ConfigMap + Secret volume mounts via per-service configs/secrets
+scenario_cfgsec_mounts() {
+  scenario_start "T17 — per-service configs/secrets rendered as k8s volumes"
+  local name="p2e-cfg-$STAMP"
+  local body
+  # Uses an inline config and an environment-backed secret (env var is optional;
+  # backend encodes it as a Secret with a placeholder value if not present).
+  body=$(printf '{
+  "mode": "compose",
+  "name": "%s",
+  "compose_yaml": "services:\n  web:\n    image: nginx:1.27\n    ports:\n      - '"'"'80'"'"'\n    configs:\n      - source: nginx-conf\n        target: /etc/nginx/conf.d/default.conf\n    secrets:\n      - source: api-key\n        target: /run/secrets/api-key\nconfigs:\n  nginx-conf:\n    content: |\n      server { listen 80; location / { return 200 '"'"'ok'"'"'; } }\nsecrets:\n  api-key:\n    environment: PLATFORM_DUMMY_SECRET\nvolumes: {}\n"
+}' "$name")
+
+  local vresp
+  vresp=$(api POST "/clients/$CLIENT_ID/custom-deployments/validate" "$body")
+  local errs
+  errs=$(echo "$vresp" | python3 -c "
+import json,sys; d=json.load(sys.stdin)['data']
+print(len([i for i in d.get('issues',[]) if i.get('severity')=='error']))
+" 2>/dev/null || echo "?")
+  if [[ "$errs" == "0" ]]; then
+    pass "T17: validate cfgsec → 0 errors"
+  else
+    fail "T17: validate cfgsec → $errs errors: $vresp"
+  fi
+
+  local resp
+  resp=$(api POST "/clients/$CLIENT_ID/custom-deployments" "$body")
+  local dep_id
+  dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
+  if [[ -z "$dep_id" ]]; then
+    fail "T17: create cfgsec deployment → no id: $resp"
+    return
+  fi
+  CREATED_IDS+=("$dep_id")
+  pass "T17: created $dep_id"
+
+  if ! wait_pod_running "$TENANT_NS" "$name-web" 120; then
+    fail "T17: pod $name-web did not reach Running"
+    return
+  fi
+  pass "T17: pod $name-web Running"
+
+  local cm_vol
+  cm_vol=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+    -o jsonpath='{.items[0].spec.volumes[*].configMap.name}' 2>/dev/null || true)
+  if echo "$cm_vol" | grep -q "cdcm-"; then
+    pass "T17: ConfigMap volume (cdcm-*) mounted in pod"
+  else
+    fail "T17: no cdcm- ConfigMap volume found; volumes: $cm_vol"
+  fi
+
+  local sec_vol
+  sec_vol=$(remote_kubectl get pods -n "$TENANT_NS" -l "app=$name-web" \
+    -o jsonpath='{.items[0].spec.volumes[*].secret.secretName}' 2>/dev/null || true)
+  if echo "$sec_vol" | grep -q "cdsec-"; then
+    pass "T17: Secret volume (cdsec-*) mounted in pod"
+  else
+    fail "T17: no cdsec- Secret volume found; secret volumes: $sec_vol"
+  fi
+}
+
+# T18 — Multi-port ingressEligible: 2 ports both ingressEligible must validate OK
+scenario_multi_port_ingress() {
+  scenario_start "T18 — multi-port ingressEligible: 2 ports both OK (no error)"
+  local name="p2e-mp-$STAMP"
+  local body
+  body=$(printf '{
+  "mode": "simple",
+  "name": "%s",
+  "image": "nginx:1.27",
+  "ports": [
+    {"containerPort": 80,  "name": "http",  "protocol": "TCP", "exposeAsService": true, "ingressEligible": true},
+    {"containerPort": 443, "name": "https", "protocol": "TCP", "exposeAsService": true, "ingressEligible": true}
+  ],
+  "volumes": [],
+  "env": [],
+  "resources": {"cpuRequest": "100m", "memoryRequest": "128Mi"}
+}' "$name")
+
+  local vresp
+  vresp=$(api POST "/clients/$CLIENT_ID/custom-deployments/validate" "$body")
+  local vok
+  vok=$(echo "$vresp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['ok'])" 2>/dev/null || echo "false")
+  if [[ "$vok" != "True" ]]; then
+    fail "T18: validate 2x ingressEligible → not ok: $vresp"
+    return
+  fi
+  pass "T18: validate 2x ingressEligible → ok=true"
+
+  local hard_err
+  hard_err=$(echo "$vresp" | python3 -c "
+import json,sys; d=json.load(sys.stdin)['data']
+bad=[i for i in d.get('issues',[]) if i.get('code')=='TOO_MANY_INGRESS_ELIGIBLE_PORTS']
+print(len(bad))
+" 2>/dev/null || echo "?")
+  if [[ "$hard_err" == "0" ]]; then
+    pass "T18: no TOO_MANY_INGRESS_ELIGIBLE_PORTS hard error"
+  else
+    fail "T18: Phase-1 single-port cap still active (TOO_MANY_INGRESS_ELIGIBLE_PORTS)"
+    return
+  fi
+
+  local resp
+  resp=$(api POST "/clients/$CLIENT_ID/custom-deployments" "$body")
+  local dep_id
+  dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
+  if [[ -z "$dep_id" ]]; then
+    fail "T18: create multi-port deployment → no id: $resp"
+    return
+  fi
+  CREATED_IDS+=("$dep_id")
+  pass "T18: created $dep_id"
+
+  if ! wait_pod_running "$TENANT_NS" "$name" 120; then
+    fail "T18: pod $name did not reach Running"
+    return
+  fi
+  pass "T18: pod $name Running"
+
+  local svc_count
+  svc_count=$(remote_kubectl get svc -n "$TENANT_NS" \
+    -l "platform.phoenix-host.net/deployment-id=$dep_id" \
+    --no-headers 2>/dev/null | wc -l)
+  if [[ "$svc_count" -ge 2 ]]; then
+    pass "T18: ≥2 Services created (one per exposed port)"
+  else
+    fail "T18: expected ≥2 Services, got $svc_count"
+  fi
+}
+
+# T19 — allowRoot admin PATCH endpoint
+scenario_allow_root_endpoint() {
+  scenario_start "T19 — admin PATCH /allow-root endpoint"
+  local name="p2e-ar-$STAMP"
+  local body
+  body=$(printf '{
+  "mode": "simple",
+  "name": "%s",
+  "image": "nginx:1.27",
+  "ports": [{"containerPort": 80, "name": "http", "protocol": "TCP", "exposeAsService": true, "ingressEligible": false}],
+  "volumes": [],
+  "env": [],
+  "resources": {"cpuRequest": "100m", "memoryRequest": "128Mi"}
+}' "$name")
+
+  local resp
+  resp=$(api POST "/clients/$CLIENT_ID/custom-deployments" "$body")
+  local dep_id
+  dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
+  if [[ -z "$dep_id" ]]; then
+    fail "T19: create allowRoot test deployment → no id: $resp"
+    return
+  fi
+  CREATED_IDS+=("$dep_id")
+  pass "T19: created $dep_id"
+
+  # 1) PATCH allow-root=true as super_admin
+  local status
+  status=$(api_status PATCH "/admin/clients/$CLIENT_ID/custom-deployments/$dep_id/allow-root" '{"allowRoot":true}')
+  if [[ "$status" == "200" ]]; then
+    pass "T19: PATCH allow-root=true → 200"
+  else
+    fail "T19: PATCH allow-root=true → $status (expected 200)"
+    return
+  fi
+
+  # 2) Confirm allowRoot is reflected in the deployment spec
+  local ar
+  ar=$(api GET "/clients/$CLIENT_ID/custom-deployments/$dep_id" | python3 -c "
+import json,sys; d=json.load(sys.stdin)['data']
+spec = d.get('customSpec') or {}
+print(spec.get('allowRoot', False))
+" 2>/dev/null || echo "")
+  if [[ "$ar" == "True" ]]; then
+    pass "T19: deployment row allowRoot=true after PATCH"
+  else
+    fail "T19: allowRoot not true after PATCH; got: '$ar'"
+  fi
+
+  # 3) Revoke
+  status=$(api_status PATCH "/admin/clients/$CLIENT_ID/custom-deployments/$dep_id/allow-root" '{"allowRoot":false}')
+  if [[ "$status" == "200" ]]; then
+    pass "T19: PATCH allow-root=false (revoke) → 200"
+  else
+    fail "T19: PATCH allow-root=false → $status"
+  fi
+
+  # 4) Unauthenticated request must be rejected
+  local anon_status
+  anon_status=$(curl -sk -o /dev/null -w "%{http_code}" \
+    -X PATCH "$ADMIN_HOST/api/v1/admin/clients/$CLIENT_ID/custom-deployments/$dep_id/allow-root" \
+    -H "Content-Type: application/json" -d '{"allowRoot":true}')
+  if [[ "$anon_status" == "401" || "$anon_status" == "403" ]]; then
+    pass "T19: unauthenticated PATCH allow-root → $anon_status (access denied)"
+  else
+    fail "T19: expected 401/403 for unauthenticated PATCH; got $anon_status"
+  fi
+}
+
+run_group_e() {
+  scenario_cap_add_sysctl
+  scenario_cfgsec_mounts
+  scenario_multi_port_ingress
+  scenario_allow_root_endpoint
+}
+
 # ─── Run ─────────────────────────────────────────────────────────────────────
 
 run_group_a() {
@@ -1084,14 +1361,16 @@ case "$GROUP" in
   group-b) run_group_b ;;
   group-c) run_group_c ;;
   group-d) run_group_d ;;
+  group-e) run_group_e ;;
   all)
     run_group_a
     run_group_b
     run_group_c
     run_group_d
+    run_group_e
     ;;
   *)
-    echo "Unknown group: $GROUP (valid: group-a | group-b | group-c | group-d | all)" >&2
+    echo "Unknown group: $GROUP (valid: group-a | group-b | group-c | group-d | group-e | all)" >&2
     exit 2
     ;;
 esac

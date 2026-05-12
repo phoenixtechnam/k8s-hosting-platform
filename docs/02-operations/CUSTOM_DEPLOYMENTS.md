@@ -190,6 +190,36 @@ WHERE id = '<id>';
 
 Then `PATCH … {"restart": true}` to redeploy.
 
+### "A tenant image needs to run as root (uid 0)"
+
+By default `runAsNonRoot: true` is enforced in the Pod security context. If an
+image cannot be rebuilt and must run as uid 0, a `super_admin` can grant the
+exception via the admin-only endpoint:
+
+```bash
+# Grant
+curl -X PATCH /api/v1/admin/clients/<cid>/custom-deployments/<id>/allow-root \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"allowRoot": true}'
+
+# Revoke
+curl -X PATCH /api/v1/admin/clients/<cid>/custom-deployments/<id>/allow-root \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"allowRoot": false}'
+```
+
+This flips the `allowRoot` field in the stored `customSpec`. The next
+reconcile cycle applies the change (you can force it with a `POST …/restart`).
+
+> **Security note:** `allowRoot` only disables `runAsNonRoot`; PSS
+> `baseline`, `NetworkPolicy`, and `ResourceQuota` remain active. The
+> residual risk is contained within the tenant namespace.
+
+The admin panel's **Deployments** tab shows a **Root OFF / Root ON** toggle for
+`source='custom'` rows — visible only to `super_admin` sessions.
+
 ## Backup + lifecycle
 
 Custom deployments are covered by the existing fabric — **no new
@@ -206,6 +236,14 @@ BundleComponent or lifecycle hook was required**:
   (`active` / `suspended` / `archived` / `restored` / `deleted`)
   transparently cover custom rows. `integration-lifecycle-e2e.sh`
   has a custom-row scenario from PR-5.
+
+  > **`deleted` transition note:** Unlike catalog deployments, there is no
+  > dedicated `LifecycleHook` for custom deployment teardown. Kubernetes
+  > resource cleanup (Deployments, Services, PVC subPaths) is handled by the
+  > platform reconciler's `deleteCustomDeploymentResources()` path, which
+  > label-sweeps everything owned by `platform.phoenix-host.net/deployment-id`.
+  > The ADR-033 `db-deployments` hook removes the DB row on `deleted`.
+  > No manual cleanup is needed beyond `DELETE /custom-deployments/:id`.
 
 ## Threat model
 

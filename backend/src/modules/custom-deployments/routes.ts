@@ -17,6 +17,7 @@ import {
   authenticate,
   requireClientAccess,
   requireClientRoleByMethod,
+  requireRole,
 } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
@@ -27,6 +28,7 @@ import {
   updateCustomDeploymentSchema,
   submitPullCredentialSchema,
   checkUpdatesBatchSchema,
+  setAllowRootSchema,
 } from './schema.js';
 import { checkForUpdate } from './update-checker.js';
 import { loadDecryptedToken } from './pat-store.js';
@@ -349,6 +351,39 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     await service.revokePullCredential(app.db, k8s, clientId, id);
     reply.status(204).send();
   });
+}
+
+/**
+ * Admin-only routes for custom deployments.
+ *
+ *   PATCH /api/v1/admin/clients/:clientId/custom-deployments/:id/allow-root
+ *
+ * Requires `super_admin` role. Flips the `allowRoot` flag on a custom
+ * deployment without triggering a re-deploy (the tenant must restart
+ * after the flag is set for it to take effect at the kubelet level).
+ */
+export async function customDeploymentAdminRoutes(app: FastifyInstance): Promise<void> {
+  app.addHook('onRequest', authenticate);
+  app.addHook('onRequest', requireRole('super_admin'));
+
+  app.patch(
+    '/admin/clients/:clientId/custom-deployments/:id/allow-root',
+    async (request) => {
+      const { clientId, id } = request.params as { clientId: string; id: string };
+      const parsed = setAllowRootSchema.safeParse(request.body);
+      if (!parsed.success) {
+        const firstError = parsed.error.issues[0];
+        throw new ApiError(
+          'INVALID_FIELD_VALUE',
+          `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
+          400,
+          { field: firstError.path.join('.') },
+        );
+      }
+      const row = await service.setAllowRoot(app.db, clientId, id, parsed.data.allowRoot);
+      return success(row);
+    },
+  );
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

@@ -43,6 +43,8 @@ import {
   CUSTOM_NAME_RE,
   PORT_NAME_RE,
   VOLUME_NAME_RE,
+  ALLOWED_CAP_ADD,
+  ALLOWED_SYSCTLS,
   type CustomDeploymentSpec,
   type CustomDeploymentService,
   type CustomDeploymentPort,
@@ -60,9 +62,9 @@ const MAX_SERVICES = 10;
 const MAX_YAML_DEPTH = 16;
 const MAX_INLINE_CONFIG_BYTES = 1024 * 1024;
 
-// Capability + sysctl allowlists. Anything else → COMPOSE_FIELD_REJECTED.
-const ALLOWED_CAP_ADD = new Set(['NET_BIND_SERVICE']);
-const ALLOWED_SYSCTLS = new Set(['net.ipv4.ip_unprivileged_port_start']);
+// Use shared allowlist Sets derived from the api-contracts constants.
+const ALLOWED_CAP_ADD_SET = new Set<string>(ALLOWED_CAP_ADD);
+const ALLOWED_SYSCTLS_SET = new Set<string>(ALLOWED_SYSCTLS);
 
 // Compose `restart:` literal → k8s restartPolicy.
 const RESTART_MAP: Record<string, CustomDeploymentService['restartPolicy']> = {
@@ -375,29 +377,38 @@ function parseService(
     });
   }
 
-  // `cap_add` allowed only when every entry is in ALLOWED_CAP_ADD.
+  // `cap_add` — validate and collect allowed entries.
+  const capAdd: Array<typeof ALLOWED_CAP_ADD[number]> = [];
   if (raw.cap_add !== undefined) {
     const list = Array.isArray(raw.cap_add) ? raw.cap_add : [];
     for (const cap of list) {
-      if (typeof cap !== 'string' || !ALLOWED_CAP_ADD.has(cap)) {
-        reject('cap_add', `Only ${[...ALLOWED_CAP_ADD].join(', ')} is permitted via cap_add.`);
+      if (typeof cap !== 'string' || !ALLOWED_CAP_ADD_SET.has(cap)) {
+        reject('cap_add', `Only ${ALLOWED_CAP_ADD.join(', ')} is permitted via cap_add.`);
         break;
+      } else {
+        capAdd.push(cap as typeof ALLOWED_CAP_ADD[number]);
       }
     }
   }
 
-  // `sysctls` allowed only for the safe set.
+  // `sysctls` — validate and collect allowed entries.
+  const sysctls: Record<typeof ALLOWED_SYSCTLS[number], string> = {} as Record<typeof ALLOWED_SYSCTLS[number], string>;
+  let hasSysctls = false;
   if (raw.sysctls !== undefined) {
-    const entries = isPlainObject(raw.sysctls)
-      ? Object.keys(raw.sysctls)
+    const entries: Array<[string, string]> = isPlainObject(raw.sysctls)
+      ? Object.entries(raw.sysctls).map(([k, v]) => [k, String(v)])
       : Array.isArray(raw.sysctls)
-        ? raw.sysctls.map((s) => typeof s === 'string' ? s.split('=')[0] : '')
+        ? raw.sysctls
+          .filter((s): s is string => typeof s === 'string')
+          .map((s) => { const [k, ...rest] = s.split('='); return [k, rest.join('=')] as [string, string]; })
         : [];
-    for (const key of entries) {
-      if (!ALLOWED_SYSCTLS.has(key)) {
-        reject('sysctls', `Only ${[...ALLOWED_SYSCTLS].join(', ')} is permitted via sysctls.`);
+    for (const [key, value] of entries) {
+      if (!ALLOWED_SYSCTLS_SET.has(key)) {
+        reject('sysctls', `Only ${ALLOWED_SYSCTLS.join(', ')} is permitted via sysctls.`);
         break;
       }
+      sysctls[key as typeof ALLOWED_SYSCTLS[number]] = value;
+      hasSysctls = true;
     }
   }
 
@@ -522,6 +533,15 @@ function parseService(
   const readOnlyRootFilesystem = raw.read_only === true;
   const workingDir = typeof raw.working_dir === 'string' ? raw.working_dir : undefined;
 
+  // ─── per-service configs / secrets → additional volumeMounts ───
+  const configMountEntries = parseServiceFileMounts(
+    raw.configs, `${path}.configs`, 'configMap', '/<name>', issues,
+  );
+  const secretMountEntries = parseServiceFileMounts(
+    raw.secrets, `${path}.secrets`, 'secret', '/run/secrets/<name>', issues,
+  );
+  volumeMounts.push(...configMountEntries, ...secretMountEntries);
+
   return {
     image,
     ...(command && command.length > 0 ? { command } : {}),
@@ -540,6 +560,8 @@ function parseService(
     ...(stopGracePeriodSeconds !== undefined ? { stopGracePeriodSeconds } : {}),
     dependsOn,
     ...(labels ? { labels } : {}),
+    capAdd,
+    ...(hasSysctls ? { sysctls } : {}),
   };
 }
 
@@ -824,6 +846,7 @@ function parseVolumeMounts(
         continue;
       }
       out.push({
+        kind: 'volume' as const,
         name: source,
         containerPath: target,
         readOnly: mode === 'ro',
@@ -865,6 +888,7 @@ function parseVolumeMounts(
         continue;
       }
       out.push({
+        kind: 'volume' as const,
         name: source,
         containerPath: target,
         readOnly: entry.read_only === true,
@@ -1104,6 +1128,93 @@ function parseLabels(
     message: `${path} must be a mapping or array.`,
   });
   return undefined;
+}
+
+// ─── Per-service config/secret mount parsing ────────────────────────────────
+
+/**
+ * Parse a per-service `configs:` or `secrets:` block into volumeMount
+ * entries with the appropriate `kind`. Compose has two forms:
+ *
+ *   Short:  - my-config                         → target: /<config-name>
+ *   Long:   - source: my-config
+ *               target: /etc/app/config.yaml
+ *
+ * For secrets, the compose default target `/run/secrets/<name>` is
+ * blocked by the reserved-path regex — users MUST supply an explicit
+ * target, or we emit an error.
+ */
+function parseServiceFileMounts(
+  raw: unknown,
+  path: string,
+  kind: 'configMap' | 'secret',
+  defaultTargetDescription: string,
+  issues: CustomDeploymentIssue[],
+): CustomDeploymentVolumeMount[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    issues.push({
+      severity: 'error',
+      code: 'COMPOSE_FIELD_TYPE',
+      path,
+      message: `${path} must be an array.`,
+    });
+    return [];
+  }
+  const out: CustomDeploymentVolumeMount[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const entry = raw[i];
+    let sourceName: string;
+    let targetPath: string | undefined;
+
+    if (typeof entry === 'string') {
+      sourceName = entry;
+      targetPath = kind === 'configMap' ? `/${entry}` : undefined;
+    } else if (isPlainObject(entry)) {
+      const src = entry.source;
+      if (typeof src !== 'string' || src.length === 0) {
+        issues.push({
+          severity: 'error',
+          code: 'COMPOSE_FIELD_TYPE',
+          path: `${path}[${i}].source`,
+          message: `${path}[${i}].source must be a non-empty string.`,
+        });
+        continue;
+      }
+      sourceName = src;
+      targetPath = typeof entry.target === 'string' ? entry.target : undefined;
+      if (!targetPath && kind === 'configMap') {
+        targetPath = `/${sourceName}`;
+      }
+    } else {
+      issues.push({
+        severity: 'error',
+        code: 'COMPOSE_FIELD_TYPE',
+        path: `${path}[${i}]`,
+        message: `${path}[${i}] must be a string name or long-form mapping.`,
+      });
+      continue;
+    }
+
+    if (!targetPath) {
+      issues.push({
+        severity: 'error',
+        code: 'COMPOSE_FIELD_REJECTED',
+        path: `${path}[${i}]`,
+        message: `${kind === 'secret' ? 'Secret' : 'Config'} '${sourceName}' must specify an explicit target path — the compose default (${defaultTargetDescription}) is a reserved system path on this platform.`,
+        hint: `Add 'target: /etc/app/${sourceName}' (or another non-reserved path) to mount the ${kind === 'secret' ? 'secret' : 'config'}.`,
+      });
+      continue;
+    }
+
+    out.push({
+      kind,
+      name: sourceName,
+      containerPath: targetPath,
+      readOnly: true,
+    });
+  }
+  return out;
 }
 
 // ─── Inline config/secret extraction ────────────────────────────────────────

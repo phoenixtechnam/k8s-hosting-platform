@@ -17,7 +17,7 @@ interface Props {
 }
 
 interface PortRow { containerPort: number; name: string; protocol: 'TCP' | 'UDP' | 'SCTP'; exposeAsService: boolean; ingressEligible: boolean }
-interface VolumeRow { name: string; containerPath: string; readOnly: boolean }
+interface VolumeRow { kind: 'volume'; name: string; containerPath: string; readOnly: boolean }
 interface EnvRow { name: string; value: string }
 
 export function SimpleContainerWizard({ clientId, existingNames, onClose, onCreated }: Props) {
@@ -152,7 +152,7 @@ export function SimpleContainerWizard({ clientId, existingNames, onClose, onCrea
           {/* Volumes */}
           <section>
             <SectionHeader title="Volumes" hint="Named only. Stored as subPath on your tenant PVC.">
-              <button type="button" className={addBtnCls} onClick={() => setVolumes([...volumes, { name: '', containerPath: '', readOnly: false }])}>
+              <button type="button" className={addBtnCls} onClick={() => setVolumes([...volumes, { kind: 'volume' as const, name: '', containerPath: '', readOnly: false }])}>
                 <Plus size={14} /> Volume
               </button>
             </SectionHeader>

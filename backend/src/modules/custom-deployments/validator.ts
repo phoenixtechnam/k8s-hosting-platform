@@ -27,7 +27,7 @@ import {
   isPinnedReference,
 } from './image-reference.js';
 
-const MAX_INGRESS_ELIGIBLE_PORTS = 1;
+const MAX_INGRESS_ELIGIBLE_PORTS_WARN = 5;
 
 /**
  * Max deployment-name length when the deployment will create k8s
@@ -136,9 +136,30 @@ export function validateCustomSpec(
   const declaredSecretNames = new Set(spec.secrets.map((s) => s.name));
 
   for (const [name, svc] of Object.entries(spec.services)) {
-    // volumeMounts → volumes
+    // volumeMounts → volumes / configMaps / secrets (kind-aware)
     for (const vm of svc.volumeMounts) {
-      if (!declaredVolumeNames.has(vm.name)) {
+      const mountKind = vm.kind ?? 'volume';
+      if (mountKind === 'configMap') {
+        if (!declaredConfigMapNames.has(vm.name)) {
+          issues.push({
+            severity: 'error',
+            code: 'CONFIGMAP_NOT_DECLARED',
+            path: `services.${name}.volumeMounts`,
+            message: `volumeMount (configMap) references undeclared configMap '${vm.name}'.`,
+            hint: `Add an entry under top-level configs.${vm.name}.`,
+          });
+        }
+      } else if (mountKind === 'secret') {
+        if (!declaredSecretNames.has(vm.name)) {
+          issues.push({
+            severity: 'error',
+            code: 'SECRET_NOT_DECLARED',
+            path: `services.${name}.volumeMounts`,
+            message: `volumeMount (secret) references undeclared secret '${vm.name}'.`,
+            hint: `Add an entry under top-level secrets.${vm.name}.`,
+          });
+        }
+      } else if (!declaredVolumeNames.has(vm.name)) {
         issues.push({
           severity: 'error',
           code: 'VOLUME_NOT_DECLARED',
@@ -301,17 +322,20 @@ export function validateCustomSpec(
     }
   }
 
-  // ─── 5. At most ONE ingressEligible port per deployment (Phase 1) ───
+  // ─── 5. Advisory warning for many ingressEligible ports ───
+  // Multi-port ingress is supported. Warn above 5 so tenants don't
+  // accidentally mark every container port as ingress-eligible when
+  // only one or two are meant to be externally reachable.
   const ingressEligibleCount = Object.values(spec.services)
     .flatMap((svc) => svc.ports.filter((p) => p.ingressEligible && p.exposeAsService))
     .length;
-  if (ingressEligibleCount > MAX_INGRESS_ELIGIBLE_PORTS) {
+  if (ingressEligibleCount > MAX_INGRESS_ELIGIBLE_PORTS_WARN) {
     issues.push({
-      severity: 'error',
-      code: 'TOO_MANY_INGRESS_ELIGIBLE_PORTS',
+      severity: 'warning',
+      code: 'MANY_INGRESS_ELIGIBLE_PORTS',
       path: 'services',
-      message: `At most ${MAX_INGRESS_ELIGIBLE_PORTS} ingressEligible port is allowed per deployment in this release. Found ${ingressEligibleCount}.`,
-      hint: 'Mark only the primary HTTP port as ingressEligible; expose the others via routes in a future release.',
+      message: `${ingressEligibleCount} ports are marked ingressEligible — verify all are intended to be externally reachable via Routes.`,
+      hint: 'Typically only HTTP/HTTPS ports (80, 443, or app-specific) need ingressEligible:true.',
     });
   }
 
