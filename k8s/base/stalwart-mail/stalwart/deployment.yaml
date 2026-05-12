@@ -41,9 +41,9 @@ metadata:
     # ensures restore-state on next pod start picks up new credentials.
     configmap.reloader.stakater.com/reload: "stalwart-config"
     secret.reloader.stakater.com/reload: "stalwart-admin-creds,stalwart-snapshot-restic-repo"
-    # Flux SSA must NOT force spec.replicas so that Apply HA can patch
-    # it imperatively via the platform-storage-policy reconciler.
-    kustomize.toolkit.fluxcd.io/ssa: merge
+    # replicas: 1 is intentional (RocksDB local-path PVC constraint).
+    # ssa: merge no longer needed since platform-storage-policy no longer
+    # manages this Deployment's replica count.
 spec:
   # Rolling-update strategy: kill the old pod BEFORE scheduling the new
   # one. Stalwart binds 6 hostPorts (25/465/587/143/993/4190); k8s default
@@ -58,16 +58,14 @@ spec:
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
-  # Cut 3 (2026-05-05): replicas removed from manifest — owned by the
-  # platform-storage-policy reconciler (Apply HA / Apply Local). Same
-  # pattern as admin-panel / platform-api / roundcube. Without this,
-  # Flux's kustomize-controller (server-side-apply with force-conflicts)
-  # claims `.spec.replicas` and reverts every reconcile back to 1, so
-  # the operator's `kubectl scale` (via /scale subresource) gets undone
-  # within ~5 min. Empirically observed on staging 2026-05-04 evening
-  # — Apply HA scaled stalwart 1→3 but next Flux reconcile reverted to
-  # 1 because the manifest pinned it. Fresh clusters land at k8s
-  # default = 1 until storage-policy fires for the first time.
+  # stalwart-rocksdb-ha (2026-05-12): replicas pinned to 1 because
+  # the RocksDB DataStore lives on a local-path PVC (ReadWriteOnce,
+  # node-local). Multiple replicas would leave additional pods Pending
+  # with Multi-Attach errors. DR is handled via rsync migration +
+  # auto-failover (mail-admin module), not via replica count.
+  # stalwart-mail was removed from STATELESS_DEPLOYMENTS in the
+  # platform-storage-policy reconciler so HA toggle no longer touches it.
+  replicas: 1
   selector:
     matchLabels:
       app: stalwart-mail
