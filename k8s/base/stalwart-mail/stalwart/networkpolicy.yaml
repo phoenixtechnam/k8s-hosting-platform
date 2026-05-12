@@ -7,10 +7,13 @@
 #
 # Egress:
 #   - DNS (kube-system port 53)
-#   - mail-pg PostgreSQL (port 5432, mail namespace only)
 #   - Outbound SMTP (port 25) for direct MX delivery
 #   - Outbound SMTP submission (465/587) for commercial relays
 #   - HTTPS (443) for DNSBL, ACME, relay APIs
+#
+# NOTE (Phase 1 RocksDB migration): the egress rule for TCP 5432 to
+# the mail namespace (mail-db PostgreSQL) has been removed. RocksDB is
+# embedded on the local-path PVC — no outbound DB connection needed.
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -104,14 +107,6 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # mail-pg PostgreSQL — only within mail namespace
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: mail
-      ports:
-        - protocol: TCP
-          port: 5432
     # Outbound SMTP (direct MX delivery)
     - to: []
       ports:

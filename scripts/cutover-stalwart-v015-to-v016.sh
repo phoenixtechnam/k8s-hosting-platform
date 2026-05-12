@@ -152,40 +152,11 @@ echo "==> Step 5b: Deleting any 0.15 webadmin Ingress on stalwart.<domain>..."
 _kubectl delete ingress -n mail stalwart-webadmin-ingress --ignore-not-found=true
 echo "    Done."
 
-# ── Step 5c: Ensure mail-pg-app-credentials Secret exists for v016 ──────────
-# CNPG reads this Secret at initdb. If missing, the cluster comes up
-# "healthy" but pg_authid.rolpassword IS NULL → Stalwart can't auth.
-# bootstrap.sh creates this on fresh installs; cutover-day on existing
-# clusters needs it added explicitly. The username field is fixed
-# (stalwart_app); the password is random.
-echo "==> Step 5c: Checking mail-pg-app-credentials Secret (required by 0.16)..."
-if _kubectl get secret -n mail mail-pg-app-credentials &>/dev/null; then
-  echo "    OK — mail-pg-app-credentials already exists."
-else
-  echo "    Secret missing. Generating a fresh password and creating it."
-  mail_pg_pw="$(openssl rand -hex 32)"
-  _kubectl create secret generic mail-pg-app-credentials \
-    --namespace=mail \
-    --from-literal=username="stalwart_app" \
-    --from-literal=password="$mail_pg_pw"
-
-  # If mail-pg already exists (CNPG bootstrapped without the Secret
-  # because we're running cutover late), apply the password to the
-  # primary now so Stalwart can connect.
-  pg_pod="$(_kubectl get pod -n mail -l cnpg.io/cluster=mail-pg,role=primary \
-              --no-headers -o custom-columns=":metadata.name" 2>/dev/null | head -1 || true)"
-  if [[ -n "$pg_pod" ]]; then
-    echo "    mail-pg primary already running ($pg_pod) — applying password to PG."
-    _kubectl exec -n mail "$pg_pod" -c postgres -- \
-      psql -U postgres -tAc "ALTER USER stalwart_app WITH PASSWORD '$mail_pg_pw';" \
-      &>/dev/null || echo "    WARN: ALTER USER failed; verify manually."
-  fi
-
-  pg_pw_file="$(mktemp -t mail-pg-app-pw.XXXXXX)"
-  chmod 600 "$pg_pw_file"
-  printf '%s\n' "$mail_pg_pw" > "$pg_pw_file"
-  echo "    mail-pg-app password written to $pg_pw_file (chmod 600)."
-fi
+# ── Step 5c: (REMOVED — Phase 1 RocksDB migration) ──────────────────────────
+# The mail-pg-app-credentials Secret was required by the PG-backed v016.
+# With the Phase 1 RocksDB migration, Stalwart uses embedded RocksDB on a
+# local-path PVC (stalwart-rocksdb-data). No CNPG credentials needed.
+echo "==> Step 5c: Skipped — mail-pg-app-credentials no longer needed (RocksDB DataStore)."
 
 # ── Step 6: Ensure stalwart-admin-creds Secret exists for v016 ─────────────
 echo "==> Step 6: Checking stalwart-admin-creds Secret (required by 0.16)..."

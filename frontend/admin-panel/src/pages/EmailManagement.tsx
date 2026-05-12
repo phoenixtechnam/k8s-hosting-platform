@@ -17,8 +17,8 @@ import MailServerSettings from '@/components/MailServerSettings';
 import MailSslStatusCard from '@/components/MailSslStatusCard';
 import MailStorageCard from '@/components/MailStorageCard';
 import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
-import { MailNodeSelectorCard } from '@/components/MailNodeSelectorCard';
-import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
+import MailDrCard from '@/components/MailDrCard';
+import MailPortExposureCard from '@/components/MailPortExposureCard';
 import MailSnapshotHealthCard from '@/components/MailSnapshotHealthCard';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
@@ -72,6 +72,15 @@ export default function EmailManagement() {
 
       <StalwartAdminPanel />
 
+      {/* ─── Placement & DR section ──────────────────────────────── */}
+      <div className="space-y-4">
+        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
+          Placement &amp; Disaster Recovery
+        </h2>
+        <MailDrCard />
+        <MailPortExposureCard />
+      </div>
+
       {/* ─── Storage section ─────────────────────────────────────── */}
       <div className="space-y-4">
         <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
@@ -81,21 +90,12 @@ export default function EmailManagement() {
         <StalwartBlobStoreCard />
       </div>
 
-      {/* ─── Node Placement section ───────────────────────────────── */}
-      <div className="space-y-4">
-        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
-          Node Placement
-        </h2>
-        <MailNodeSelectorCard />
-      </div>
-
       {/* ─── Backup & Snapshots section ───────────────────────────── */}
       <div className="space-y-4">
         <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
           Backup &amp; Snapshots
         </h2>
         <MailSnapshotHealthCard />
-        <CnpgBackupHealthCard clusterFilter="mail-pg" />
       </div>
     </div>
   );

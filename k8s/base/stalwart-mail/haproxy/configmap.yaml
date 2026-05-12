@@ -1,0 +1,74 @@
+# haproxy config for Stalwart PROXY-Protocol v2 forwarding.
+# Deployed on every server-role node when mail port exposure mode is 'allServerNodes'.
+# Forwards SMTP/IMAP/Submission ports to the Stalwart ClusterIP Service while
+# preserving original client IPs via PROXY Protocol v2 (send-proxy-v2).
+#
+# WHY PROXY Protocol v2:
+#   With externalTrafficPolicy: Cluster, kube-proxy masquerades source IPs.
+#   haproxy's 'send-proxy-v2' injects the real client IP into the TCP stream;
+#   Stalwart reads it via the PROXY Protocol header on affected listeners.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stalwart-haproxy-config
+  namespace: mail
+  labels:
+    app.kubernetes.io/component: stalwart-haproxy
+    app.kubernetes.io/part-of: hosting-platform
+data:
+  haproxy.cfg: |
+    global
+      log stdout format raw local0
+      maxconn 4096
+      stats socket /tmp/haproxy.sock mode 600 level admin
+
+    defaults
+      log global
+      mode tcp
+      option tcplog
+      timeout connect 5s
+      timeout client  600s
+      timeout server  600s
+
+    frontend smtp_in
+      bind *:25
+      default_backend stalwart_smtp
+
+    backend stalwart_smtp
+      server stalwart stalwart-mail.mail.svc.cluster.local:25 send-proxy-v2 check inter 10s
+
+    frontend submission_in
+      bind *:587
+      default_backend stalwart_submission
+
+    backend stalwart_submission
+      server stalwart stalwart-mail.mail.svc.cluster.local:587 send-proxy-v2 check inter 10s
+
+    frontend smtps_in
+      bind *:465
+      default_backend stalwart_smtps
+
+    backend stalwart_smtps
+      server stalwart stalwart-mail.mail.svc.cluster.local:465 send-proxy-v2 check inter 10s
+
+    frontend imap_in
+      bind *:143
+      default_backend stalwart_imap
+
+    backend stalwart_imap
+      server stalwart stalwart-mail.mail.svc.cluster.local:143 send-proxy-v2 check inter 10s
+
+    frontend imaps_in
+      bind *:993
+      default_backend stalwart_imaps
+
+    backend stalwart_imaps
+      server stalwart stalwart-mail.mail.svc.cluster.local:993 send-proxy-v2 check inter 10s
+
+    frontend sieve_in
+      bind *:4190
+      default_backend stalwart_sieve
+
+    backend stalwart_sieve
+      server stalwart stalwart-mail.mail.svc.cluster.local:4190 send-proxy-v2 check inter 10s

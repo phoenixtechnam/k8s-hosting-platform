@@ -8,6 +8,7 @@ resources:
   # Include it for documentation; it produces no resources.
   - namespace.yaml
   - configmap.yaml
+  - pvc.yaml
   - deployment.yaml
   - service.yaml
   - ingress-mgmt.yaml

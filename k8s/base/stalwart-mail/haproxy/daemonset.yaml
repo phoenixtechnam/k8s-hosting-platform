@@ -1,0 +1,116 @@
+# haproxy DaemonSet — mail port forwarder with PROXY Protocol v2.
+#
+# WHY hostNetwork: true:
+#   Binds directly to each server node's external IP on mail ports.
+#   This is only deployed when mailPortExposureMode = 'allServerNodes'.
+#   In 'thisNodeOnly' mode, Stalwart uses hostPort directly on its pod.
+#
+# PROXY Protocol v2 preserves original client IPs even though haproxy
+# forwards via the cluster network to stalwart-mail.mail.svc.cluster.local.
+# Stalwart listens with proxyNetworks configured (set by platform-api when
+# switching to allServerNodes mode).
+#
+# PORT CONFLICT PREVENTION:
+#   When switching from 'thisNodeOnly' to 'allServerNodes', platform-api:
+#   1. Removes hostPort from the Stalwart Deployment
+#   2. Waits for the Deployment rollout
+#   3. THEN enables this DaemonSet by patching the nodeSelector back to
+#      platform.phoenix-host.net/node-role: server
+#   Reverse order applies when switching back.
+#
+# ENABLE/DISABLE MECHANISM:
+#   platform-api toggles this DaemonSet by patching spec.template.spec.nodeSelector:
+#     Enabled:  { platform.phoenix-host.net/node-role: server }
+#     Disabled: { platform.phoenix-host.net/mail-haproxy-disabled: "true" }
+#   The disabled selector matches no nodes, so the DaemonSet schedules zero pods.
+#   The DaemonSet itself stays in the cluster so Flux can manage its spec;
+#   platform-api does not create or delete it directly.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: stalwart-haproxy
+  namespace: mail
+  labels:
+    app.kubernetes.io/component: stalwart-haproxy
+    app.kubernetes.io/part-of: hosting-platform
+  annotations:
+    configmap.reloader.stakater.com/reload: "stalwart-haproxy-config"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stalwart-haproxy
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stalwart-haproxy
+        app.kubernetes.io/part-of: hosting-platform
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      priorityClassName: system-node-critical
+      # Default nodeSelector = disabled. platform-api patches this to
+      # platform.phoenix-host.net/node-role: server to enable scheduling.
+      nodeSelector:
+        platform.phoenix-host.net/mail-haproxy-disabled: "true"
+      tolerations:
+        - key: platform.phoenix-host.net/server-only
+          operator: Exists
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: haproxy
+          image: haproxy:2.9-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 25
+              hostPort: 25
+              protocol: TCP
+              name: smtp
+            - containerPort: 465
+              hostPort: 465
+              protocol: TCP
+              name: smtps
+            - containerPort: 587
+              hostPort: 587
+              protocol: TCP
+              name: submission
+            - containerPort: 143
+              hostPort: 143
+              protocol: TCP
+              name: imap
+            - containerPort: 993
+              hostPort: 993
+              protocol: TCP
+              name: imaps
+            - containerPort: 4190
+              hostPort: 4190
+              protocol: TCP
+              name: sieve
+          volumeMounts:
+            - name: haproxy-config
+              mountPath: /usr/local/etc/haproxy/haproxy.cfg
+              subPath: haproxy.cfg
+              readOnly: true
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "echo 'show info' | socat - /tmp/haproxy.sock | grep -q 'Uptime'"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: haproxy-config
+          configMap:
+            name: stalwart-haproxy-config

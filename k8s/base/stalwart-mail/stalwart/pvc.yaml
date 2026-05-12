@@ -1,0 +1,42 @@
+# PersistentVolumeClaim for Stalwart RocksDB DataStore.
+#
+# Phase 1 (RocksDB migration): replaces the CNPG mail-db PostgreSQL
+# cluster with an embedded RocksDB store on a local-path PVC.
+#
+# WHY local-path (not Longhorn):
+#   RocksDB's performance is tightly coupled to disk I/O latency.
+#   The storage benchmark (project_stalwart_storage_benchmark_2026_05_11.md)
+#   showed local-path NVMe delivers 36.8 msg/sec vs Longhorn's 1.06 msg/sec
+#   — a 35× improvement. Longhorn replication across the network defeats
+#   the low-latency benefit of RocksDB.
+#
+# CAVEAT: local-path PVCs are NOT replicated. If the node running Stalwart
+#   fails, the data on this PVC is at risk. Mitigation: the snapshot
+#   CronJob (snapshot-cronjob.yaml) exports the DataStore every 2 minutes
+#   via `stalwart -e` + restic backup to the configured BackupStore.
+#   The restore-state initContainer in deployment.yaml re-imports the
+#   latest snapshot on first start on a fresh node.
+#
+# GROW: online grow is supported (local-path CSI supports expansion).
+#   Use the admin panel Storage → Mail section; the platform-api
+#   patches spec.resources.requests.storage. See mail-pvc.ts.
+#
+# SHRINK: not supported without data-loss — create a new cluster,
+#   restore from snapshot, cut over. Tracked as Phase 5 migration pipeline.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: stalwart-rocksdb-data
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi

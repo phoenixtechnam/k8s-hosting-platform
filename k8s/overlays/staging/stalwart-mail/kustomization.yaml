@@ -1,8 +1,7 @@
-# Staging overlay for Stalwart 0.16 (mail-pg CNPG + Stalwart Deployment).
+# Staging overlay for Stalwart 0.16 (RocksDB DataStore).
 #
-# Replaces the stalwart-v015-deprecated overlay during the staging cutover.
-# The cutover script (scripts/cutover-stalwart-v015-to-v016.sh) deletes the
-# 0.15 StatefulSet/PVC/Secrets manually; Flux then converges on 0.16.
+# Phase 1 (RocksDB migration): mail-pg CNPG cluster removed; Stalwart
+# now uses embedded RocksDB on stalwart-rocksdb-data PVC (local-path).
 #
 # Differences from the base:
 #   1. stalwart-mail Service: LoadBalancer → ClusterIP+externalIPs
@@ -25,10 +24,8 @@ namespace: mail
 
 resources:
   - ../../../base/stalwart-mail
-  # NOTE: 0.16 does NOT need the platform-postgres ExternalName bridge
-  # that 0.15 used. The 0.16 Deployment connects directly to its own
-  # dedicated mail-pg CNPG cluster (mail-pg-rw.mail.svc.cluster.local)
-  # — see base/stalwart-mail/stalwart/deployment.yaml STALWART_PG_HOST.
+  # NOTE: 0.16 (RocksDB) does NOT need the platform-postgres ExternalName
+  # bridge that 0.15 used. The DataStore is local RocksDB — no external DB.
 
 patches:
   # Stalwart-mail-v016 Service: LoadBalancer → ClusterIP+externalIPs.
@@ -78,15 +75,9 @@ patches:
       name: stalwart-webadmin
 
   # Reloader: roll the Deployment when the LE-prod TLS cert is renewed.
-  # The base watches `mail-pg-app-credentials,stalwart-admin-creds`. We
-  # APPEND `stalwart-webadmin-prod-tls` while preserving both base
-  # entries — strategic-merge replaces the annotation value (it's a
-  # single string, not a list), so the patch must include all three.
-  # Code-review CRITICAL fix (2026-05-04): the prior patch listed only
-  # `stalwart-webadmin-prod-tls,stalwart-admin-creds` which silently
-  # dropped `mail-pg-app-credentials` from the watch list — when CNPG
-  # rotates the mail-pg credentials, Stalwart would keep the old
-  # password and fail to connect with no auto-recovery.
+  # Phase 1 (RocksDB): mail-pg-app-credentials removed from the list.
+  # The base already watches stalwart-admin-creds,stalwart-snapshot-restic-repo.
+  # This overlay appends stalwart-webadmin-prod-tls (LE cert renewal).
   - patch: |
       apiVersion: apps/v1
       kind: Deployment
@@ -94,7 +85,7 @@ patches:
         name: stalwart-mail
         namespace: mail
         annotations:
-          secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds,stalwart-webadmin-prod-tls"
+          secret.reloader.stakater.com/reload: "stalwart-admin-creds,stalwart-snapshot-restic-repo,stalwart-webadmin-prod-tls"
     target:
       kind: Deployment
       name: stalwart-mail

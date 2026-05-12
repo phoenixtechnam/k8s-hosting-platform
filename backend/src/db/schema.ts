@@ -2015,6 +2015,41 @@ export const systemSettings = pgTable('system_settings', {
     snapshotCount: number;
     runAt: string;
   } | null>(),
+  // 0101: RocksDB DataStore tracking (Phase 1 migration).
+  // mailDatastoreType: which DataStore engine is live on this cluster.
+  //   'postgres' = CNPG-backed (legacy default until manually migrated).
+  //   'rocksdb'  = embedded RocksDB on local-path PVC (Phase 1+).
+  //   Once Phase 1 is applied on a cluster, update this to 'rocksdb'
+  //   so the admin panel can reflect the correct storage type.
+  // mailRocksdbNodeName: the Kubernetes node name where the
+  //   stalwart-rocksdb-data PVC is bound. Set by the placement
+  //   reconciler (Phase 2) when it pins the Stalwart pod to a node.
+  //   Nullable — unset until placement reconciler runs.
+  mailDatastoreType: varchar('mail_datastore_type', { length: 20 }).notNull().default('postgres'),
+  mailRocksdbNodeName: varchar('mail_rocksdb_node_name', { length: 253 }),
+  // 0103: mail placement policy (Phase 2 — primary/secondary/tertiary + DR state).
+  // mailPrimaryNode/mailSecondaryNode/mailTertiaryNode: operator-configured preferred
+  //   node hostnames for placement policy (Phase 2 failover scheduler uses them).
+  // mailActiveNode: the node currently serving mail (may differ from primary during DR).
+  // mailDrState: current DR state machine state ('healthy' | 'degraded' |
+  //   'failing-over' | 'failed-over' | 'failing-back').
+  // mailAutoFailoverEnabled: when true the Phase 5 scheduler can trigger failover
+  //   automatically once mailFailoverThresholdSeconds have elapsed without a healthy pod.
+  // mailFailoverThresholdSeconds: seconds of pod unavailability before auto-failover.
+  // mailLastFailoverAt: timestamp of last failover action (manual or automatic).
+  // mailPortExposureMode: 'thisNodeOnly' = Stalwart hostPort on active node only;
+  //   'allServerNodes' = haproxy DaemonSet forwards on all server nodes + PROXY proto.
+  // mailDatastorePvcSizeGi: requested size (Gi) for the stalwart-rocksdb-data PVC.
+  mailPrimaryNode: varchar('mail_primary_node', { length: 253 }),
+  mailSecondaryNode: varchar('mail_secondary_node', { length: 253 }),
+  mailTertiaryNode: varchar('mail_tertiary_node', { length: 253 }),
+  mailActiveNode: varchar('mail_active_node', { length: 253 }),
+  mailDrState: varchar('mail_dr_state', { length: 32 }).notNull().default('healthy'),
+  mailAutoFailoverEnabled: boolean('mail_auto_failover_enabled').notNull().default(false),
+  mailFailoverThresholdSeconds: integer('mail_failover_threshold_seconds').notNull().default(300),
+  mailLastFailoverAt: timestamp('mail_last_failover_at', { withTimezone: true }),
+  mailPortExposureMode: varchar('mail_port_exposure_mode', { length: 32 }).notNull().default('thisNodeOnly'),
+  mailDatastorePvcSizeGi: integer('mail_datastore_pvc_size_gi').notNull().default(20),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

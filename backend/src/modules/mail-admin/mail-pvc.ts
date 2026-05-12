@@ -1,17 +1,14 @@
 /**
- * Mail PVC storage — read + online-grow the mail-pg-1 PVC.
+ * Mail PVC storage — read + online-grow the stalwart-rocksdb-data PVC.
  *
- * The platform mail-pg CNPG cluster owns one PVC per instance. With
- * `instances: 1` (the default) only `mail-pg-1` exists; HA mode (3
- * instances) creates `mail-pg-2`, `mail-pg-3` too. v1 of this surface
- * targets the primary PVC explicitly — multi-instance grow is a
- * follow-up (CNPG can extend its own cluster.spec.storage.size which
- * propagates to all replicas, but that's out of scope here).
+ * Phase 1 (RocksDB migration): the CNPG mail-db PostgreSQL cluster has been
+ * replaced with an embedded RocksDB DataStore on a local-path PVC named
+ * `stalwart-rocksdb-data` in namespace `mail`.
  *
  * Mirrors the pattern in storage-lifecycle/service.ts:runGrowOnline:
  *   - PVC.spec.resources.requests.storage patch via MERGE_PATCH
- *   - Longhorn ControllerExpandVolume → kubelet xfs_growfs → status.capacity
- *   - No pod restart; PG stays running through the grow
+ *   - local-path CSI ControllerExpandVolume → kubelet resize → status.capacity
+ *   - No pod restart; RocksDB stays running through the grow
  *
  * Three explicit reject paths (return 400 with clear codes):
  *   - MAIL_PVC_SHRINK_NOT_SUPPORTED — newGiB < currentGiB
@@ -28,10 +25,9 @@ import {
 } from '@k8s-hosting/api-contracts';
 
 const MAIL_NAMESPACE = 'mail';
-// Cluster renamed 2026-05-07: mail-pg → mail-pg-17 → mail-pg-18 → mail-db.
-// CNPG-managed PVCs follow the cluster name pattern <cluster>-<index>.
-// Single instance currently → mail-db-1.
-const MAIL_PVC_NAME = 'mail-db-1';
+// Phase 1 (RocksDB migration): switched from CNPG PVC (mail-db-1) to the
+// Stalwart RocksDB DataStore PVC (stalwart-rocksdb-data, local-path, 20Gi).
+const MAIL_PVC_NAME = 'stalwart-rocksdb-data';
 const LAST_RESIZED_ANNOTATION = 'platform.phoenix-host.net/last-resized-at';
 
 export interface MailPvcOptions {
@@ -119,7 +115,10 @@ export async function resizeMailPvc(
   if (newBytes < current.requestedBytes) {
     throw new ApiError(
       'MAIL_PVC_SHRINK_NOT_SUPPORTED',
-      `K8s does not support online PVC shrink. Current ${formatGiB(current.requestedBytes)}, requested ${newGiB}GiB. To reduce capacity, snapshot mail-pg, restore into a fresh smaller cluster, swap.`,
+      // TODO(Phase 5): offline shrink requires a migration pipeline —
+      // export DataStore snapshot, provision a fresh PVC at the smaller
+      // size, import snapshot, swap the PVC claim in the Deployment.
+      `K8s does not support online PVC shrink. Current ${formatGiB(current.requestedBytes)}, requested ${newGiB}GiB. To reduce capacity, take a snapshot, provision a fresh smaller PVC, import the snapshot, and swap.`,
       400,
     );
   }
@@ -265,19 +264,21 @@ function isIsoDate(s: unknown): s is string {
 }
 
 /**
- * Best-effort `df -B1` probe inside the CNPG primary pod. Returns
+ * Best-effort `df -B1` probe inside the running Stalwart pod. Returns
  * { usedBytes, freeBytes }. Falls back to nulls on any failure
- * (image without busybox df, exec RBAC denial, pod not Ready, etc.)
- * because the operator's primary need is to see the requested +
- * capacity sizes, not micro-accurate live usage.
+ * (exec RBAC denial, pod not Ready, etc.) because the operator's
+ * primary need is to see the requested + capacity sizes, not
+ * micro-accurate live usage.
+ *
+ * Phase 1 (RocksDB migration): probes /var/lib/stalwart/data (the
+ * RocksDB DataStore mount) in the `stalwart` container instead of the
+ * CNPG primary pod.
  */
 async function tryDfProbe(
   exec: import('@kubernetes/client-node').Exec,
   kubeconfigPath: string | undefined,
 ): Promise<{ usedBytes: number | null; freeBytes: number | null }> {
-  // Find the primary pod via label selector. Exposes a small surface
-  // — only the Pod name + container — so an unrelated pod failure
-  // doesn't block the GET.
+  // Find the Stalwart pod via label selector.
   try {
     const k8s = await import('@kubernetes/client-node');
     const kc = new k8s.KubeConfig();
@@ -287,20 +288,20 @@ async function tryDfProbe(
 
     const pods = await core.listNamespacedPod({
       namespace: MAIL_NAMESPACE,
-      labelSelector: 'cnpg.io/cluster=mail-db,role=primary',
+      labelSelector: 'app=stalwart-mail',
       limit: 1,
-    } as unknown as Parameters<typeof core.listNamespacedPod>[0]) as { items?: { metadata?: { name?: string } }[] };
+    } as unknown as Parameters<typeof core.listNamespacedPod>[0]) as { items?: { metadata?: { name?: string }; status?: { phase?: string } }[] };
 
-    const podName = pods.items?.[0]?.metadata?.name;
+    const podName = (pods.items ?? []).find((p) => p.status?.phase === 'Running')?.metadata?.name;
     if (!podName) return { usedBytes: null, freeBytes: null };
 
-    // CNPG mounts the PG data dir at /var/lib/postgresql/data.
+    // RocksDB DataStore lives at /var/lib/stalwart/data (the PVC mount).
     const stdout = await execStdout(
       exec,
       MAIL_NAMESPACE,
       podName,
-      'postgres',
-      ['df', '-B1', '/var/lib/postgresql/data'],
+      'stalwart',
+      ['df', '-B1', '/var/lib/stalwart/data'],
     );
     return parseDfOutput(stdout);
   } catch {

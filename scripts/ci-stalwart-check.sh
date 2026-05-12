@@ -70,7 +70,7 @@ PYEOF
   then
     echo "ERROR [$overlay]: stalwart-mail Deployment is missing the Reloader annotation." >&2
     echo "       Add to metadata.annotations:" >&2
-    echo "         secret.reloader.stakater.com/reload: \"mail-pg-app-credentials,stalwart-admin-creds\"" >&2
+    echo "         secret.reloader.stakater.com/reload: \"stalwart-admin-creds,stalwart-snapshot-restic-repo\"" >&2
     failures=$((failures + 1))
   fi
 

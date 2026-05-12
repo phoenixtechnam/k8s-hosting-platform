@@ -41,13 +41,27 @@ import {
   getMailSnapshotBackupTarget,
   updateMailSnapshotBackupTarget,
   recordMailSnapshotLastRun,
+  rotateResticPassword,
 } from './snapshot-settings.js';
+import { getMailPlacement, updateMailPlacement } from './placement.js';
+import {
+  startMailMigration,
+  startFailoverMigration,
+  startFailbackMigration,
+  getMailMigrationStatus,
+} from './migration.js';
+import { getMailPortExposure, updateMailPortExposure } from './port-exposure.js';
 import {
   mailPvcResizeRequestSchema,
   blobStoreUpdateRequestSchema,
   mailNodeSelectorUpdateSchema,
   mailSnapshotScheduleUpdateSchema,
   mailSnapshotBackupTargetUpdateSchema,
+  mailPlacementUpdateRequestSchema,
+  mailPortExposureUpdateSchema,
+  mailMigrationStartRequestSchema,
+  mailFailoverRequestSchema,
+  mailFailbackRequestSchema,
 } from '@k8s-hosting/api-contracts';
 
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
@@ -722,6 +736,287 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       }
       await recordMailSnapshotLastRun(app.db, { totalSnapshotSizeBytes, snapshotCount });
       return success({ recorded: true });
+    },
+  );
+
+  // ─── Snapshot restic password rotation ───────────────────────────
+  // DELETE the stalwart-snapshot-restic-password Secret so the next
+  // backup-target update generates a fresh random password. Operators
+  // must `restic rekey` any existing repos before the next backup run.
+  app.post(
+    '/admin/mail/snapshot-backup-target/rotate-password',
+    { preHandler: requireRole('super_admin') },
+    async (req: { user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      app.log.warn({ userId }, 'mail-admin: restic password rotation requested');
+      try {
+        const result = await rotateResticPassword({
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        app.log.warn({ userId }, 'mail-admin: restic password rotated — operator must rekey existing repos');
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: restic password rotation failed');
+        throw new ApiError(
+          'RESTIC_PASSWORD_ROTATION_FAILED',
+          'Restic password rotation failed — see server logs',
+          500,
+        );
+      }
+    },
+  );
+
+  // ─── Mail placement policy ────────────────────────────────────────
+  // GET reads primary/secondary/tertiary node assignment + DR state.
+  // PATCH updates the assignment (validates nodes exist in cluster).
+  app.get(
+    '/admin/mail/placement',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const cfg = app.config as Record<string, unknown>;
+      try {
+        const result = await getMailPlacement(app.db, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: placement read failed');
+        throw new ApiError(
+          'MAIL_PLACEMENT_READ_FAILED',
+          'Could not read mail placement policy — see server logs',
+          503,
+        );
+      }
+    },
+  );
+
+  app.patch(
+    '/admin/mail/placement',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = mailPlacementUpdateRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i: { path: PropertyKey[]; message: string }) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      app.log.warn(
+        { userId, primaryNode: parsed.data.primaryNode, secondaryNode: parsed.data.secondaryNode },
+        'mail-admin: placement update requested',
+      );
+      try {
+        await updateMailPlacement(parsed.data, app.db, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        app.log.warn({ userId }, 'mail-admin: placement updated');
+        return success({ updated: true });
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: placement update failed');
+        throw new ApiError(
+          'MAIL_PLACEMENT_UPDATE_FAILED',
+          'Mail placement update failed — see server logs',
+          500,
+        );
+      }
+    },
+  );
+
+  // ─── Mail failover / failback / migrate (Phase 5) ────────────────
+  // POST /admin/mail/failover — pick secondary/tertiary node + start migration.
+  // POST /admin/mail/failback — migrate back to primary node.
+  // POST /admin/mail/migrate  — migrate to an explicit targetNode.
+  // GET  /admin/mail/migrate/:runId — poll migration status.
+  app.post(
+    '/admin/mail/failover',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = mailFailoverRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i: { path: PropertyKey[]; message: string }) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      app.log.warn({ userId }, 'mail-admin: manual failover requested');
+      try {
+        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+        const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+        const k8s = createK8sClients(kubeconfigPath);
+        // If targetNode is explicitly provided, use it; otherwise pick secondary/tertiary.
+        let result: { runId: string };
+        if (parsed.data.targetNode) {
+          result = await startMailMigration(
+            { targetNode: parsed.data.targetNode, triggeredBy: 'manual-failover' },
+            { ...k8s, db: app.db, kubeconfigPath },
+          );
+        } else {
+          result = await startFailoverMigration(
+            { confirm: true },
+            { ...k8s, db: app.db, kubeconfigPath },
+          );
+        }
+        app.log.warn({ userId, runId: result.runId }, 'mail-admin: failover migration started');
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: failover failed');
+        throw new ApiError('MAIL_FAILOVER_FAILED', 'Mail failover failed — see server logs', 500);
+      }
+    },
+  );
+
+  app.post(
+    '/admin/mail/failback',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = mailFailbackRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i: { path: PropertyKey[]; message: string }) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      app.log.warn({ userId }, 'mail-admin: manual failback requested');
+      try {
+        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+        const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+        const k8s = createK8sClients(kubeconfigPath);
+        const result = await startFailbackMigration(
+          { confirm: true },
+          { ...k8s, db: app.db, kubeconfigPath },
+        );
+        app.log.warn({ userId, runId: result.runId }, 'mail-admin: failback migration started');
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: failback failed');
+        throw new ApiError('MAIL_FAILBACK_FAILED', 'Mail failback failed — see server logs', 500);
+      }
+    },
+  );
+
+  app.post(
+    '/admin/mail/migrate',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = mailMigrationStartRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i: { path: PropertyKey[]; message: string }) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      app.log.warn({ userId, targetNode: parsed.data.targetNode }, 'mail-admin: migrate requested');
+      try {
+        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+        const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+        const k8s = createK8sClients(kubeconfigPath);
+        const result = await startMailMigration(
+          { targetNode: parsed.data.targetNode, triggeredBy: 'operator', newGiB: parsed.data.newGiB },
+          { ...k8s, db: app.db, kubeconfigPath },
+        );
+        app.log.warn({ userId, runId: result.runId, targetNode: parsed.data.targetNode }, 'mail-admin: migration started');
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: migrate failed');
+        throw new ApiError('MAIL_MIGRATE_FAILED', 'Mail migration failed to start — see server logs', 500);
+      }
+    },
+  );
+
+  app.get(
+    '/admin/mail/migrate/:runId',
+    { preHandler: requireRole('super_admin') },
+    async (req: { params: unknown }) => {
+      const params = req.params as { runId?: string };
+      const runId = params.runId ?? '';
+      if (!/^[0-9a-f-]{36}$/.test(runId)) {
+        throw new ApiError('VALIDATION_ERROR', 'runId must be a UUID', 400);
+      }
+      try {
+        const result = await getMailMigrationStatus(runId, { db: app.db });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err, runId }, 'mail-admin: migrate status read failed');
+        throw new ApiError('MAIL_MIGRATE_STATUS_FAILED', 'Could not read migration status — see server logs', 503);
+      }
+    },
+  );
+
+  // ─── Mail port exposure mode ──────────────────────────────────────
+  // GET reads current mode + haproxy DaemonSet status.
+  // PATCH toggles between thisNodeOnly and allServerNodes.
+  app.get(
+    '/admin/mail/port-exposure',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const cfg = app.config as Record<string, unknown>;
+      try {
+        const result = await getMailPortExposure(app.db, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: port-exposure read failed');
+        throw new ApiError(
+          'MAIL_PORT_EXPOSURE_READ_FAILED',
+          'Could not read mail port exposure mode — see server logs',
+          503,
+        );
+      }
+    },
+  );
+
+  app.patch(
+    '/admin/mail/port-exposure',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = mailPortExposureUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i: { path: PropertyKey[]; message: string }) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      app.log.warn({ userId, mode: parsed.data.mode }, 'mail-admin: port-exposure mode change requested');
+      try {
+        await updateMailPortExposure(parsed.data, app.db, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        app.log.warn({ userId, mode: parsed.data.mode }, 'mail-admin: port-exposure mode updated');
+        return success({ updated: true });
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: port-exposure update failed');
+        throw new ApiError(
+          'MAIL_PORT_EXPOSURE_UPDATE_FAILED',
+          'Mail port exposure update failed — see server logs',
+          500,
+        );
+      }
     },
   );
 }

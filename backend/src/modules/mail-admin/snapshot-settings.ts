@@ -37,6 +37,7 @@ const MAIL_NAMESPACE = 'mail';
 const SNAPSHOT_CRONJOB_NAME = 'stalwart-snapshot';
 const SETTINGS_ID = 'system';
 const RESTIC_SECRET_NAME = 'stalwart-snapshot-restic-repo';
+const RESTIC_PASSWORD_SECRET = 'stalwart-snapshot-restic-password';
 
 export interface SnapshotSettingsOptions {
   readonly kubeconfigPath: string | undefined;
@@ -45,6 +46,82 @@ export interface SnapshotSettingsOptions {
 interface K8sBatchClient {
   batch: import('@kubernetes/client-node').BatchV1Api;
   core: import('@kubernetes/client-node').CoreV1Api;
+}
+
+// ── Restic password management ─────────────────────────────────────────────────
+
+/**
+ * Return the stable restic repository password. On first call, generates
+ * a random 32-char password, stores it in the `stalwart-snapshot-restic-password`
+ * Secret, and returns it. Subsequent calls return the same password from the
+ * Secret, making it stable across backup-target changes.
+ *
+ * The separate Secret means the password survives re-creates of
+ * `stalwart-snapshot-restic-repo` (which carries backend-specific env vars
+ * that change when the target changes). restic repos keyed with this password
+ * stay readable after a target switch — assuming the same repo path is used
+ * or the operator runs `restic rekey` on the old repo when moving backends.
+ */
+async function getOrCreateResticPassword(
+  core: import('@kubernetes/client-node').CoreV1Api,
+): Promise<string> {
+  try {
+    const secret = await core.readNamespacedSecret({
+      namespace: MAIL_NAMESPACE,
+      name: RESTIC_PASSWORD_SECRET,
+    }) as { data?: Record<string, string> };
+    const encoded = secret.data?.['RESTIC_PASSWORD'];
+    if (encoded) {
+      const pw = Buffer.from(encoded, 'base64').toString('utf8');
+      if (pw) return pw;
+    }
+  } catch (err) {
+    const code = (err as { statusCode?: number }).statusCode;
+    if (code !== 404) throw err;
+    // 404 → Secret doesn't exist yet; generate and create below.
+  }
+
+  // Generate a random 32-char password: 4 × 8-char hex segments.
+  const { randomBytes } = await import('node:crypto');
+  const password = randomBytes(16).toString('hex'); // 32 hex chars
+  // backup-coverage: excluded:cluster-infrastructure
+  await core.createNamespacedSecret({
+    namespace: MAIL_NAMESPACE,
+    body: {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: { name: RESTIC_PASSWORD_SECRET, namespace: MAIL_NAMESPACE },
+      type: 'Opaque',
+      data: { RESTIC_PASSWORD: Buffer.from(password).toString('base64') },
+    } as unknown as object,
+  });
+  return password;
+}
+
+/**
+ * Rotate the restic repository password.
+ *
+ * Deletes the existing `stalwart-snapshot-restic-password` Secret so the next
+ * backup-target update generates a fresh password.
+ *
+ * IMPORTANT: After rotation, any existing restic repository will no longer be
+ * accessible with the new password. Operators must run `restic rekey` on the
+ * repository before the next backup runs, or accept that history is inaccessible
+ * until the repo is re-initialised (first backup after rotation recreates it).
+ */
+export async function rotateResticPassword(opts: SnapshotSettingsOptions): Promise<{ status: string }> {
+  const { core } = await loadK8sClients(opts.kubeconfigPath);
+  try {
+    await core.deleteNamespacedSecret({
+      namespace: MAIL_NAMESPACE,
+      name: RESTIC_PASSWORD_SECRET,
+    });
+  } catch (err) {
+    const code = (err as { statusCode?: number }).statusCode;
+    if (code !== 404) throw err;
+    // Already gone — fine.
+  }
+  return { status: 'password_rotated' };
 }
 
 async function loadK8sClients(kubeconfigPath: string | undefined): Promise<K8sBatchClient> {
@@ -196,7 +273,7 @@ export async function updateMailSnapshotBackupTarget(
   }
 
   // Build the restic Secret data from the backup configuration.
-  const secretData = buildResticSecretData(config, encryptionKey);
+  const secretData = await buildResticSecretData(config, encryptionKey, core);
   await applyResticSecret(core, secretData);
 
   await db.update(systemSettings)
@@ -233,14 +310,15 @@ export async function recordMailSnapshotLastRun(
 
 type BackupConfig = typeof backupConfigurations.$inferSelect;
 
-function buildResticSecretData(
+async function buildResticSecretData(
   config: BackupConfig,
   encryptionKey: string,
-): Record<string, string> {
-  // Use a random passphrase if one isn't already stored. For simplicity,
-  // derive it deterministically from the backup store ID so the sidecar
-  // can always re-open the existing repo after a Secret re-create.
-  const resticPassword = `mail-snapshot-${config.id}`;
+  core: import('@kubernetes/client-node').CoreV1Api,
+): Promise<Record<string, string>> {
+  // Use a stable, randomly-generated password stored in a dedicated Secret.
+  // This replaces the old deterministic derivation (`mail-snapshot-${config.id}`)
+  // so the password survives backup-target changes without breaking existing repos.
+  const resticPassword = await getOrCreateResticPassword(core);
 
   if (config.storageType === 's3') {
     const accessKey = config.s3AccessKeyEncrypted
@@ -268,9 +346,11 @@ function buildResticSecretData(
     const sshHost = config.sshHost ?? '';
     const sshPort = String(config.sshPort ?? 22);
     const sshUser = config.sshUser ?? 'root';
-    const sshPath = config.sshPath ?? '/mail-snapshots';
-    // restic SFTP URL: sftp:user@host:path
-    const repoUrl = `sftp:${sshUser}@${sshHost}:${sshPath}/mail-snapshots`;
+    // Normalise the path: strip trailing /mail-snapshots to avoid doubling.
+    const rawPath = config.sshPath ?? '/mail-snapshots';
+    const sshBasePath = rawPath.replace(/\/mail-snapshots\/?$/, '') || '/';
+    // restic SFTP URL: sftp:user@host:/base-path/mail-snapshots
+    const repoUrl = `sftp:${sshUser}@${sshHost}:${sshBasePath}/mail-snapshots`;
     return {
       RESTIC_REPOSITORY: repoUrl,
       RESTIC_PASSWORD: resticPassword,
@@ -279,6 +359,18 @@ function buildResticSecretData(
       // and the SFTP user allows password-less auth (key already provisioned).
       SFTP_HOST: sshHost,
       SFTP_PORT: sshPort,
+    };
+  }
+
+  if (config.storageType === 'cifs') {
+    // CIFS backup via systemd-mount at /mnt/stalwart-cifs-blobstore.
+    // restic uses the 'local' backend rooted at the CIFS mount path.
+    // This shares the same CIFS mount as the BlobStore (same share/path),
+    // but uses a sub-directory dedicated to snapshots to avoid collision.
+    const cifsPath = 'mail-snapshots';
+    return {
+      RESTIC_REPOSITORY: `/mnt/stalwart-cifs-blobstore/${cifsPath}`,
+      RESTIC_PASSWORD: resticPassword,
     };
   }
 

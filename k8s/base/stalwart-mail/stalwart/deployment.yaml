@@ -1,31 +1,30 @@
 # Stalwart 0.16 Deployment.
 #
 # WHY Deployment (not StatefulSet):
-#   Stalwart 0.16 is fully stateless when backed by PostgreSQL —
-#   all configuration, account data, and mail blobs are in the DB.
-#   A Deployment enables proper rolling updates + scale-out.
+#   With RocksDB on a local-path PVC the pod is inherently pinned to the
+#   node that owns the PVC. A Deployment still enables proper rolling
+#   updates — maxSurge=0/maxUnavailable=1 kills the old pod first, then
+#   the new pod binds the same PVC on the same node.
 #
-# CONFIG RENDERING (initContainer render-config):
-#   Stalwart 0.16 does NOT support ${VAR} env-var substitution in
-#   config.json.  The render-config initContainer (busybox sed) resolves
-#   the ${STALWART_PG_*} placeholders from the ConfigMap template into a
-#   concrete config.json written to an emptyDir.  The main container
-#   mounts that emptyDir at /etc/stalwart (the path the upstream image
-#   ENTRYPOINT passes to --config).
+# CONFIG (direct ConfigMap mount):
+#   RocksDB config.json is static — no PG credentials, no env-var
+#   substitution. The ConfigMap is mounted DIRECTLY at /etc/stalwart.
+#   No initContainer needed for config rendering.
 #
 # BOOTSTRAP FLOW:
-#   On first deploy the mail-pg DB is empty.  Stalwart connects to PG
-#   and starts in "full mode with empty DB" — no admin account exists yet.
-#   STALWART_RECOVERY_ADMIN env var (sourced from stalwart-admin-creds
-#   Secret, key recoveryAdmin) provides a temporary HTTP-Basic credential
-#   that stalwart-cli can use to POST the bootstrap plan before any
-#   permanent admin exists.  bootstrap.sh generates stalwart-admin-creds
-#   with recoveryAdmin = "admin:<random>" before applying the overlay, so
-#   the Secret is present when the Deployment rolls out.
+#   On first deploy the RocksDB data directory is empty. The restore-state
+#   initContainer checks for /var/lib/stalwart/data/CURRENT (RocksDB
+#   sentinel). If absent AND stalwart-snapshot-restic-repo is configured,
+#   it downloads the latest snapshot via restic and imports it with
+#   `stalwart -i`. Otherwise Stalwart starts with an empty DataStore.
+#   STALWART_RECOVERY_ADMIN env var provides a temporary HTTP-Basic
+#   credential so stalwart-cli can POST the bootstrap plan before any
+#   permanent admin exists.
 #
 # RELOADER:
 #   Stakater Reloader rolls the Deployment when stalwart-config
-#   ConfigMap or mail-pg-app-credentials Secret changes.
+#   ConfigMap or stalwart-admin-creds or stalwart-snapshot-restic-repo
+#   Secret changes.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -38,8 +37,13 @@ metadata:
     app.kubernetes.io/component: mail-server
   annotations:
     # Stakater Reloader: roll on config or credentials change.
+    # stalwart-snapshot-restic-repo: rolling on backup-target change
+    # ensures restore-state on next pod start picks up new credentials.
     configmap.reloader.stakater.com/reload: "stalwart-config"
-    secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds"
+    secret.reloader.stakater.com/reload: "stalwart-admin-creds,stalwart-snapshot-restic-repo"
+    # Flux SSA must NOT force spec.replicas so that Apply HA can patch
+    # it imperatively via the platform-storage-policy reconciler.
+    kustomize.toolkit.fluxcd.io/ssa: merge
 spec:
   # Rolling-update strategy: kill the old pod BEFORE scheduling the new
   # one. Stalwart binds 6 hostPorts (25/465/587/143/993/4190); k8s default
@@ -72,6 +76,7 @@ spec:
       labels:
         app: stalwart-mail
         app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: stalwart
       annotations:
         # Declarative hostPort manifest read by firewall-reconciler:
         # each port listed here is added to the host's nft `tenant_ports_tcp`
@@ -82,7 +87,7 @@ spec:
         # the cluster consistent.
         platform.phoenix-host.net/firewall-tcp-ports: "25,465,587,143,993,4190"
     spec:
-      terminationGracePeriodSeconds: 90
+      terminationGracePeriodSeconds: 300
       # Spread Stalwart pods one-per-node so any node IP that lands
       # external mail traffic has a local pod to receive it. Combined
       # with hostPort=containerPort below, traffic to <any-node>:25/587/etc
@@ -109,117 +114,73 @@ spec:
       securityContext:
         runAsNonRoot: false  # Stalwart 0.16 binds port 25 — needs root or CAP_NET_BIND_SERVICE
       initContainers:
-        # Render config.json template: substitute ${STALWART_PG_*} placeholders
-        # using busybox sed (busybox has no envsubst).  The resolved file is
-        # written to the config-rendered emptyDir so Stalwart can read it.
-        #
-        # HIGH fix (code review 2026-05-03): sed replacement strings interpret
-        # `&` (matched text), `\` (escape), and `|` (our delimiter) specially.
-        # A password containing any of these would silently corrupt config.json
-        # and Stalwart would fail to connect to PG with no obvious cause.
-        # Each value is escaped via `sed 's/[&\\|]/\\&/g'` before being injected.
-        - name: render-config
-          image: docker.io/busybox:1.36
-          imagePullPolicy: IfNotPresent
-          command:
-            - sh
-            - -c
-            - |
-              # All $$ escapes here protect the inline shell variables
-              # from Flux postBuild envsubst — Flux otherwise tries to
-              # resolve `${STALWART_PG_HOST}` against platform-cluster-
-              # config (where it isn't defined) and the apply fails with
-              # "envsubst error: variable substitution failed".
-              # `$${VAR}` → `${VAR}` after Flux render; sh then expands.
-              esc() { printf '%s' "$$1" | sed 's/[&\\|]/\\&/g'; }
-              H=$$(esc "$$STALWART_PG_HOST")
-              D=$$(esc "$$STALWART_PG_DATABASE")
-              U=$$(esc "$$STALWART_PG_USER")
-              P=$$(esc "$$STALWART_PG_PASSWORD")
-              sed \
-                -e "s|\$${STALWART_PG_HOST}|$$H|g" \
-                -e "s|\$${STALWART_PG_DATABASE}|$$D|g" \
-                -e "s|\$${STALWART_PG_USER}|$$U|g" \
-                -e "s|\$${STALWART_PG_PASSWORD}|$$P|g" \
-                /tmpl/config.json > /etc/stalwart/config.json
-              echo "Rendered /etc/stalwart/config.json"
-          env:
-            # Bump+rename history: mail-pg-rw (PG 16.9) → mail-pg-17-rw
-            # (PG 17.5, transient) → mail-pg-18-rw (PG 18.3, 2026-05-07
-            # transient) → mail-db-rw (PG 18.3 minimal-trixie, renamed
-            # 2026-05-07 to drop version baggage from cluster name).
-            - name: STALWART_PG_HOST
-              value: "mail-db-rw.mail.svc.cluster.local"
-            - name: STALWART_PG_DATABASE
-              value: "stalwart_app"
-            - name: STALWART_PG_USER
-              valueFrom:
-                secretKeyRef:
-                  name: mail-pg-app-credentials
-                  key: username
-            - name: STALWART_PG_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: mail-pg-app-credentials
-                  key: password
-          volumeMounts:
-            - name: config-tmpl
-              mountPath: /tmpl
-              readOnly: true
-            - name: config-rendered
-              mountPath: /etc/stalwart
         # restore-state: download + import the latest Stalwart DataStore
-        # snapshot when the RocksDB data directory is empty AND the pod
-        # annotation `mail.platform/allow-restore: "true"` is present.
+        # snapshot when the RocksDB data directory is empty AND the
+        # stalwart-snapshot-restic-repo Secret is configured.
         #
-        # WHY this is a skeleton (no-op today):
-        #   Full S3/SFTP download logic requires platform-api to write the
-        #   snapshot URL + auth token into a Pod annotation or a ConfigMap
-        #   at snapshot time. That integration is Phase 2 (requires active
-        #   BackupStore wiring in the snapshot reconciler). Until then,
-        #   this container always exits 0 — it never blocks Stalwart startup.
+        # SENTINEL CHECK: /var/lib/stalwart/data/CURRENT is the RocksDB
+        #   MANIFEST file — its presence means a valid DataStore exists.
+        #   If it exists, the restore is skipped unconditionally.
         #
-        # ACTIVATION path (Phase 2):
-        #   1. snapshot-cronjob uploads snap.lz4 to the active BackupStore
-        #   2. platform-api writes `mail.platform/latest-snapshot-url` +
-        #      `mail.platform/allow-restore: "true"` to the Stalwart Pod
-        #      annotation (via Deployment annotation or pod-template patch).
-        #   3. This initContainer reads the annotation, downloads snap.lz4,
-        #      runs `stalwart -c /etc/stalwart/config.json -i /snapshot/snap.lz4`,
-        #      and exits 0 on success.
+        # RESTIC RESTORE: if RESTIC_REPOSITORY is set (from the
+        #   stalwart-snapshot-restic-repo Secret), we restore the latest
+        #   snapshot to /restore-tmp, then run `stalwart -i` to import it.
         #
         # EXIT POLICY: ALWAYS exit 0. A restore failure must not prevent
-        # Stalwart from starting in degraded mode — the operator can
-        # trigger a manual restore via platform-api after investigating.
+        #   Stalwart from starting in degraded mode — the operator can
+        #   trigger a manual restore via platform-api after investigating.
+        #
+        # $$ ESCAPING: all shell variables use $$ (double-dollar) to
+        #   survive Flux postBuild substituteFrom rendering. Flux collapses
+        #   $$VAR → $VAR before applying the manifest; sh then expands.
         - name: restore-state
-          image: docker.io/busybox:1.36
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest # {"$imagepolicy": "flux-system:mail-backup-tools"}
+          imagePullPolicy: Always
           command:
             - sh
             - -c
             - |
-              DATA_SENTINEL=/var/lib/stalwart/data/CURRENT
-              if [ -f "$$DATA_SENTINEL" ]; then
-                echo "restore-state: DataStore sentinel exists — skipping restore"
+              set -e
+              SENTINEL=/var/lib/stalwart/data/CURRENT
+              ALLOW_RESTORE=$$(cat /podinfo/allow-restore 2>/dev/null || echo "false")
+              if [ -f "$$SENTINEL" ]; then
+                echo "restore-state: DataStore exists — skipping restore"
                 exit 0
               fi
-              echo "restore-state: DataStore is empty"
-              # Phase 2 will check for `mail.platform/allow-restore: "true"`
-              # annotation and download + import the latest snapshot here.
-              # Until then, log and exit cleanly so Stalwart starts fresh.
-              echo "restore-state: no restore configured (Phase 2 pending) — exiting 0"
-              exit 0
+              if [ -z "$$RESTIC_REPOSITORY" ]; then
+                echo "restore-state: RESTIC_REPOSITORY not set — fresh start"
+                exit 0
+              fi
+              if [ "$$ALLOW_RESTORE" != "true" ]; then
+                echo "restore-state: allow-restore annotation not set — fresh start (set mail.platform/allow-restore: \"true\" on the Deployment to enable)"
+                exit 0
+              fi
+              echo "restore-state: empty DataStore + repo configured + allow-restore=true — restoring latest snapshot"
+              mkdir -p /var/lib/stalwart/data
+              restic restore latest --target /restore-tmp 2>&1 || { echo "restore-state: restic restore failed — fresh start"; exit 0; }
+              # stalwart -i imports a snapshot directory
+              stalwart -c /etc/stalwart/config.json -i /restore-tmp/snapshot/snap 2>&1 || { echo "restore-state: stalwart import failed — fresh start"; exit 0; }
+              echo "restore-state: restore complete"
+          envFrom:
+            - secretRef:
+                name: stalwart-snapshot-restic-repo
+                optional: true
           volumeMounts:
-            - name: config-rendered
+            - name: config
               mountPath: /etc/stalwart
+              readOnly: true
+            - name: stalwart-data
+              mountPath: /var/lib/stalwart/data
+            - name: pod-annotations
+              mountPath: /podinfo
               readOnly: true
       containers:
         - name: stalwart
           image: docker.io/stalwartlabs/stalwart:v0.16.3
           imagePullPolicy: IfNotPresent
           # The upstream image ENTRYPOINT passes --config /etc/stalwart/config.json.
-          # config-rendered emptyDir (written by render-config initContainer) is
-          # mounted at that path so Stalwart picks up the fully-resolved config.
+          # The ConfigMap is mounted directly at /etc/stalwart so Stalwart
+          # picks up the fully-resolved config without any initContainer.
           # Mail ports use hostPort so external mail traffic to ANY node
           # IP lands directly on a local Stalwart process — bypasses
           # kube-proxy DNAT (which doesn't work for the externalIPs
@@ -284,9 +245,11 @@ spec:
                   key: recoveryAdmin
                   optional: true
           volumeMounts:
-            - name: config-rendered
+            - name: config
               mountPath: /etc/stalwart
               readOnly: true
+            - name: stalwart-data
+              mountPath: /var/lib/stalwart/data
           resources:
             requests:
               cpu: 100m
@@ -298,12 +261,9 @@ spec:
             httpGet:
               path: /healthz/live
               port: mgmt-http
-            # Stalwart 0.16's first-time PG schema migration on a CNPG
-            # cluster under load takes 60-180s in the wild — observed on
-            # staging multiple times where the container exits cleanly
-            # at exactly 90s (18*5s) because kubelet sends SIGTERM at the
-            # threshold and Stalwart's signal handler clean-shuts.
-            # Raise to 60 * 5s = 300s grace.
+            # RocksDB startup is much faster than PG schema migration.
+            # Keep 60*5s=300s grace for large DataStore replay on slow
+            # nodes; in practice RocksDB opens in <5s.
             failureThreshold: 60
             periodSeconds: 5
             timeoutSeconds: 5
@@ -324,11 +284,15 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
       volumes:
-        - name: config-tmpl
+        - name: config
           configMap:
             name: stalwart-config
+        - name: stalwart-data
+          persistentVolumeClaim:
+            claimName: stalwart-rocksdb-data
+        - name: pod-annotations
+          downwardAPI:
             items:
-              - key: config.json
-                path: config.json
-        - name: config-rendered
-          emptyDir: {}
+              - path: allow-restore
+                fieldRef:
+                  fieldPath: metadata.annotations['mail.platform/allow-restore']

@@ -2,11 +2,10 @@
 #
 # WHY a CronJob rather than a sidecar:
 #   The snapshot writes a DIRECTORY of per-subspace files (one file per
-#   subspace, e.g. subspace_o, subspace_x, ...). On PG-backed installs
-#   the export scans all 19 subspaces over the network — ~40s overhead.
-#   Running this as a separate Job avoids tying the export I/O budget
-#   to the live Stalwart pod and makes failures visible as Job status
-#   rather than sidecar restarts.
+#   subspace, e.g. subspace_o, subspace_x, ...). Running this as a
+#   separate Job avoids tying the export I/O budget to the live Stalwart
+#   pod and makes failures visible as Job status rather than sidecar
+#   restarts.
 #
 # UPLOAD FLOW:
 #   1. `snapshot` container: runs `stalwart -e /snapshot/snap` (a
@@ -19,12 +18,28 @@
 #      If the Secret does not exist or RESTIC_REPOSITORY is empty, the
 #      sidecar exits 0 with a log message — upload is optional.
 #
+# RocksDB PVC MOUNT:
+#   `stalwart -e` reads the RocksDB DataStore directly from disk.
+#   The stalwart-rocksdb-data PVC is mounted ReadOnly in the snapshot
+#   container so no data is written during export. Because the PVC is
+#   local-path (node-local), the Job MUST land on the same node as the
+#   Stalwart Deployment pod — enforced via inter-pod affinity below.
+#
+# NODE AFFINITY:
+#   preferredDuringScheduling inter-pod affinity on
+#   app.kubernetes.io/component=stalwart selects the node running the
+#   Stalwart pod. requiredDuringScheduling is not used here because it
+#   would block the Job if Stalwart is down for maintenance; preferred
+#   is sufficient since local-path PVCs are naturally node-local (the
+#   PVC will simply fail to mount on a wrong node, which surfaces a
+#   clear error rather than silently reading stale data).
+#
 # RESTORE:
 #   On pod reschedule to a node without existing DataStore state, the
 #   restore-state initContainer in deployment.yaml checks for the
-#   `/var/lib/stalwart/data/CURRENT` sentinel file. When absent and the
-#   pod annotation `mail.platform/allow-restore: "true"` is present,
-#   it downloads the latest snapshot and runs `stalwart -i`.
+#   `/var/lib/stalwart/data/CURRENT` sentinel file. When absent and
+#   stalwart-snapshot-restic-repo is configured, it restores the latest
+#   snapshot from restic.
 #
 # FLUX postBuild NOTE:
 #   All $$ in inline shell are Flux-postBuild-escaped ($$VAR → $VAR
@@ -42,6 +57,7 @@ metadata:
     # backup-coverage: excluded:cluster-infrastructure
     # This Job reads/writes Stalwart DataStore snapshots; it IS the
     # backup mechanism, not a target for platform tenant-bundle backup.
+    ttlSecondsAfterFinished: "3600"
 spec:
   schedule: "*/2 * * * *"
   concurrencyPolicy: Forbid
@@ -60,50 +76,20 @@ spec:
           serviceAccountName: default
           securityContext:
             runAsNonRoot: false  # stalwart binary runs as root (binds port 25)
-          initContainers:
-            # Render config.json template: substitute ${STALWART_PG_*} placeholders
-            # using busybox sed. Mirrors the render-config initContainer in
-            # deployment.yaml — see that file for the $$ / Flux-escape rationale.
-            - name: render-config
-              image: docker.io/busybox:1.36
-              imagePullPolicy: IfNotPresent
-              command:
-                - sh
-                - -c
-                - |
-                  esc() { printf '%s' "$$1" | sed 's/[&\\|]/\\&/g'; }
-                  H=$$(esc "$$STALWART_PG_HOST")
-                  D=$$(esc "$$STALWART_PG_DATABASE")
-                  U=$$(esc "$$STALWART_PG_USER")
-                  P=$$(esc "$$STALWART_PG_PASSWORD")
-                  sed \
-                    -e "s|\$${STALWART_PG_HOST}|$$H|g" \
-                    -e "s|\$${STALWART_PG_DATABASE}|$$D|g" \
-                    -e "s|\$${STALWART_PG_USER}|$$U|g" \
-                    -e "s|\$${STALWART_PG_PASSWORD}|$$P|g" \
-                    /tmpl/config.json > /etc/stalwart/config.json
-                  echo "Rendered /etc/stalwart/config.json"
-              env:
-                - name: STALWART_PG_HOST
-                  value: "mail-db-rw.mail.svc.cluster.local"
-                - name: STALWART_PG_DATABASE
-                  value: "stalwart_app"
-                - name: STALWART_PG_USER
-                  valueFrom:
-                    secretKeyRef:
-                      name: mail-pg-app-credentials
-                      key: username
-                - name: STALWART_PG_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: mail-pg-app-credentials
-                      key: password
-              volumeMounts:
-                - name: config-tmpl
-                  mountPath: /tmpl
-                  readOnly: true
-                - name: config-rendered
-                  mountPath: /etc/stalwart
+          # Inter-pod affinity: schedule this Job on the same node as
+          # the running Stalwart pod. The local-path PVC (stalwart-rocksdb-data)
+          # is only accessible from the node it was created on.
+          affinity:
+            podAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        app.kubernetes.io/component: stalwart
+                    topologyKey: kubernetes.io/hostname
+                    namespaces:
+                      - mail
           containers:
             - name: snapshot
               image: docker.io/stalwartlabs/stalwart:v0.16.3
@@ -120,24 +106,12 @@ spec:
                   echo "SNAPSHOT_DONE size=$$SNAP_SIZE path=$$SNAP_PATH"
                   # Signal the upload sidecar that the export is complete.
                   touch /snapshot/done
-              env:
-                - name: STALWART_PG_HOST
-                  value: "mail-db-rw.mail.svc.cluster.local"
-                - name: STALWART_PG_DATABASE
-                  value: "stalwart_app"
-                - name: STALWART_PG_USER
-                  valueFrom:
-                    secretKeyRef:
-                      name: mail-pg-app-credentials
-                      key: username
-                - name: STALWART_PG_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: mail-pg-app-credentials
-                      key: password
               volumeMounts:
-                - name: config-rendered
+                - name: config
                   mountPath: /etc/stalwart
+                  readOnly: true
+                - name: stalwart-data
+                  mountPath: /var/lib/stalwart/data
                   readOnly: true
                 - name: snapshot-out
                   mountPath: /snapshot
@@ -179,14 +153,12 @@ spec:
                   cpu: 500m
                   memory: 512Mi
           volumes:
-            - name: config-tmpl
+            - name: config
               configMap:
                 name: stalwart-config
-                items:
-                  - key: config.json
-                    path: config.json
-            - name: config-rendered
-              emptyDir: {}
+            - name: stalwart-data
+              persistentVolumeClaim:
+                claimName: stalwart-rocksdb-data
             - name: snapshot-out
               emptyDir:
                 sizeLimit: 2Gi

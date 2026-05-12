@@ -3378,27 +3378,9 @@ EOF
     log "  Login: $admin_email / $admin_password"
   fi
 
-  # Stalwart 0.16 dedicated CNPG credentials (mail-pg-app-credentials).
-  # CNPG reads this Secret once at initdb — must exist before the
-  # stalwart-mail overlay is applied. The username is fixed (stalwart_app);
-  # the password is random. See k8s/base/stalwart-mail/mail-pg/cluster.yaml.
-  kctl create namespace mail 2>/dev/null || true
-  if kctl get secret -n mail mail-pg-app-credentials &>/dev/null 2>&1; then
-    log "mail-pg-app-credentials already exists, skipping."
-  else
-    local mail_pg_password
-    # openssl rand -hex 32 — deterministic 64-char output, 256 bits of
-    # source entropy, no characters that need stripping. Replaces
-    # `-base64 24 | tr -d '/+=' | head -c 32` which could yield <32
-    # chars in the rare case of many strippable base64 chars
-    # (security review M-2, 2026-05-03).
-    mail_pg_password="$(openssl rand -hex 32)"
-    kctl create secret generic mail-pg-app-credentials \
-      --namespace=mail \
-      --from-literal=username="stalwart_app" \
-      --from-literal=password="$mail_pg_password"
-    log "mail-pg-app-credentials created."
-  fi
+  # Phase 1 (RocksDB migration): mail-pg-app-credentials Secret removed.
+  # Stalwart no longer uses CNPG PostgreSQL — the DataStore is RocksDB on
+  # a local-path PVC (stalwart-rocksdb-data). No PG credentials needed.
 
   # Stalwart 0.16 admin credentials (stalwart-admin-creds).
   # Must exist BEFORE the stalwart-mail overlay is applied so that the
@@ -3719,7 +3701,6 @@ bundle_bootstrap_secrets() {
     "platform oauth2-proxy-config"
     "platform sftp-host-keys"
     "platform stalwart-secrets"
-    "mail mail-pg-app-credentials"
     "mail stalwart-admin-creds"
   )
 
@@ -4279,15 +4260,8 @@ bootstrap_stalwart_v016() {
     return 0
   fi
 
-  # ── Step 1: Wait for mail-pg CNPG Cluster to be Ready ────────────────
-  log "  Waiting for mail-pg CNPG Cluster (up to 300s)..."
-  if ! kctl wait --for=condition=Ready cluster/mail-pg -n mail --timeout=300s 2>/dev/null; then
-    warn "  mail-pg not Ready after 300s — skipping Stalwart v016 bootstrap."
-    warn "  Re-run bootstrap.sh after mail-pg becomes Ready, or run:"
-    warn "    kubectl wait --for=condition=Ready cluster/mail-pg -n mail"
-    return 0
-  fi
-  log "  mail-pg is Ready."
+  # Phase 1 (RocksDB migration): mail-pg CNPG cluster wait removed.
+  # Stalwart now uses embedded RocksDB — no CNPG dependency at startup.
 
   # ── Step 2: Wait for Stalwart pod to start ────────────────────────────
   log "  Waiting for stalwart-mail rollout (up to 300s)..."
@@ -4306,9 +4280,9 @@ bootstrap_stalwart_v016() {
   fi
 
   # ── Step 3: Detect whether bootstrap plan has already been applied ────────
-  # With config.json pointing to PG, Stalwart always starts in "full mode"
-  # (JMAP /session → 200) even when the DB is empty.  We detect bootstrap
-  # state by attempting authenticated access with the permanent adminPassword:
+  # With RocksDB, Stalwart starts in "full mode" (JMAP /session → 200)
+  # even when the DataStore is empty. We detect bootstrap state by
+  # attempting authenticated access with the permanent adminPassword:
   #   - 200  → admin account exists in DB → fully bootstrapped → skip.
   #   - 401  → admin account not yet in DB → need to apply bootstrap plan.
   # stalwart-admin-creds is created by generate_platform_secrets() before
@@ -4960,10 +4934,9 @@ main() {
     # CRITICAL ORDERING (Cut 3 staging-cutover lesson, 2026-05-04):
     # generate_platform_secrets MUST run BEFORE install_flux. Flux's
     # Kustomization starts reconciling within seconds of creation; if
-    # it applies v016 manifests before mail-pg-app-credentials and
-    # stalwart-admin-creds exist, CNPG bootstraps mail-pg with NULL
-    # passwords (cluster goes "healthy" but Stalwart pod can't auth)
-    # AND the v016 Deployment crashes with "secret not found".
+    # it applies v016 manifests before stalwart-admin-creds exists, the
+    # Stalwart Deployment crashes with "secret not found".
+    # Phase 1 (RocksDB): mail-pg-app-credentials is no longer needed.
     # generate_platform_secrets is fully self-contained — it only needs
     # the kube-API + namespaces/Secrets RBAC, which are available right
     # after install_cnpg.

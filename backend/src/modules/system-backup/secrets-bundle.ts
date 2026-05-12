@@ -48,7 +48,8 @@ export const BUNDLE_SECRET_LIST: ReadonlyArray<{ namespace: string; name: string
   { namespace: 'platform', name: 'oauth2-proxy-config' },
   { namespace: 'platform', name: 'sftp-host-keys' },
   { namespace: 'platform', name: 'stalwart-secrets' },
-  { namespace: 'mail', name: 'mail-pg-app-credentials' },
+  // Phase 1 (RocksDB migration): mail-pg-app-credentials removed — Stalwart
+  // no longer uses CNPG PostgreSQL; no PG credentials to bundle.
   { namespace: 'mail', name: 'stalwart-admin-creds' },
 ];
 

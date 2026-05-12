@@ -1,0 +1,33 @@
+# Allow haproxy DaemonSet pods to reach Stalwart pods in the mail namespace.
+# hostNetwork pods are NOT subject to NetworkPolicy on most CNIs (Calico included),
+# but this policy is kept for documentation and partial enforcement on future CNIs.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-haproxy-to-stalwart
+  namespace: mail
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: stalwart
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: stalwart-haproxy
+      ports:
+        - protocol: TCP
+          port: 25
+        - protocol: TCP
+          port: 465
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 143
+        - protocol: TCP
+          port: 993
+        - protocol: TCP
+          port: 4190
+  policyTypes:
+    - Ingress

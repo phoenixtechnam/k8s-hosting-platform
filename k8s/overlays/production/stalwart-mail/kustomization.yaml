@@ -16,8 +16,8 @@
 #      on LE renewal) so a pod restart picks up the new chain.
 #
 # Notes for the cutover operator:
-#   - mail-pg CNPG cluster lives in `mail` ns; bootstrap.sh creates
-#     mail-pg-app-credentials before Flux applies this overlay.
+#   - Phase 1 (RocksDB): mail-pg CNPG cluster and mail-pg-app-credentials
+#     Secret are no longer required. Stalwart uses embedded RocksDB.
 #   - stalwart-admin-creds + platform-stalwart-creds (mirror) are
 #     operator-bootstrapped — see scripts/bootstrap.sh.
 #   - The bootstrap Job (stalwart-bootstrap) is suspend:true in
@@ -54,12 +54,9 @@ patches:
       name: stalwart-webadmin
 
   # Reloader: roll the Deployment when the LE-prod TLS cert is renewed.
-  # MUST list ALL three Secrets — strategic-merge replaces the
-  # annotation value as a single string (not a list), so dropping any
-  # entry stops Reloader from watching it. Code-review CRITICAL fix
-  # (2026-05-04 staging cutover): early version listed only TLS+admin
-  # and silently dropped mail-pg-app-credentials, masking CNPG password
-  # rotations.
+  # Phase 1 (RocksDB): mail-pg-app-credentials removed from the list.
+  # The base already watches stalwart-admin-creds,stalwart-snapshot-restic-repo.
+  # This overlay appends stalwart-webadmin-prod-tls (LE cert renewal).
   - patch: |
       apiVersion: apps/v1
       kind: Deployment
@@ -67,7 +64,7 @@ patches:
         name: stalwart-mail
         namespace: mail
         annotations:
-          secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds,stalwart-webadmin-prod-tls"
+          secret.reloader.stakater.com/reload: "stalwart-admin-creds,stalwart-snapshot-restic-repo,stalwart-webadmin-prod-tls"
     target:
       kind: Deployment
       name: stalwart-mail

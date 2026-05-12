@@ -339,7 +339,7 @@ export async function getMailSnapshotJobStatus(
         namespace: MAIL_NAMESPACE,
         name: podName,
         tailLines: 50,
-        // Read from the `snapshot` container (not render-config)
+        // Read from the `snapshot` container.
         container: 'snapshot',
       });
       podLogTail =

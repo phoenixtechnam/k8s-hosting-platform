@@ -779,6 +779,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           custom: k8sForImapsync.custom,
         });
         app.addHook('onClose', () => cnpgBackupHealthStop());
+
+        // DR watcher: monitors active mail node health every 30s and triggers
+        // restore-based auto-failover when auto_failover_enabled=true and the
+        // active node has been NotReady for >= failover_threshold_seconds.
+        const { startDrWatcher } = await import('./modules/mail-admin/dr-watcher.js');
+        const drWatcherStop = startDrWatcher({
+          db: app.db,
+          core: k8sForImapsync.core,
+          apps: k8sForImapsync.apps,
+          logger: {
+            warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
+            info: (...args: unknown[]) => app.log.info(args.join(' ')),
+          },
+        });
+        app.addHook('onClose', () => drWatcherStop());
       } catch (err) {
         app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
       }
