@@ -91,20 +91,15 @@ export function startProxyNetworksReconciler(
   return () => clearInterval(timer);
 }
 
-interface AllowedIpRow {
-  readonly id: string;
-  readonly address?: string | null;
-  readonly reason?: string | null;
-}
-
 /**
  * One tick of the reconciler. Exported for unit-testability.
  *
  * Steps:
  *   1. Enumerate server-role node InternalIPs from the K8s API.
- *   2. GET x:NetworkListener — filter to listeners binding any mail port.
- *   3. For each such listener: UPDATE proxyNetworks if it differs.
- *   4. GET x:AllowedIp — sync per-node mail-haproxy-<hostname> entries.
+ *   2. GET x:SystemSettings/singleton — UPDATE proxyTrustedNetworks if it
+ *      differs from the expected per-node IP set.
+ *   3. GET x:AllowedIp — CREATE entries for any cluster IPs not already
+ *      present (ownership by address; existing entries are never touched).
  *
  * Never throws — any error is logged and the tick returns. A subsequent
  * tick will retry.
@@ -134,9 +129,13 @@ export async function runProxyNetworksReconcilerTick(
     return;
   }
 
+  // Stalwart stores bare-IP keys for /32-equivalent entries (it strips
+  // the suffix on storage), so we write what we'll read back. Wider CIDRs
+  // would be preserved verbatim, but server-role node InternalIPs are
+  // always individual hosts.
   const expectedProxyNetworks: Record<string, boolean> = {};
   for (const node of serverNodes) {
-    expectedProxyNetworks[`${node.ip}/32`] = true;
+    expectedProxyNetworks[node.ip] = true;
   }
 
   const baseUrl = deps.stalwartMgmtUrl ?? STALWART_MGMT_URL;
@@ -370,13 +369,24 @@ function assertJmapSetSucceeded(
   }
 }
 
-/** Set-equal comparison of proxyTrustedNetworks key sets. */
+/**
+ * Set-equal comparison of proxyTrustedNetworks key sets.
+ *
+ * Stalwart normalises CIDR keys on storage: bare-IPv4 hosts written as
+ * `1.2.3.4/32` round-trip to `1.2.3.4` (the /32 suffix is dropped), while
+ * non-/32 prefixes like `10.42.0.0/16` are preserved. Without
+ * canonicalising both sides we'd patch every tick because what we wrote
+ * (`1.2.3.4/32`) wouldn't match what we read (`1.2.3.4`).
+ */
 export function proxyNetworksMatches(
   current: Record<string, boolean> | null | undefined,
   expected: Record<string, boolean>,
 ): boolean {
-  const currentKeys = current ? Object.keys(current).filter((k) => current[k] === true) : [];
-  const expectedKeys = Object.keys(expected);
+  const canon = (k: string): string => k.endsWith('/32') ? k.slice(0, -3) : k;
+  const currentKeys = current
+    ? Object.keys(current).filter((k) => current[k] === true).map(canon)
+    : [];
+  const expectedKeys = Object.keys(expected).map(canon);
   if (currentKeys.length !== expectedKeys.length) return false;
   const set = new Set(currentKeys);
   for (const k of expectedKeys) {
@@ -388,10 +398,20 @@ export function proxyNetworksMatches(
 // ── Internal: AllowedIp reconcile ────────────────────────────────────
 
 /**
- * Sync x:AllowedIp entries `mail-haproxy-<hostname>` so cluster node IPs
- * are never subject to Stalwart's rate-limiter even if PROXY-v2 unwrap
- * ever fails. Entries for nodes no longer in the cluster are destroyed
- * to keep the list tight.
+ * Ensure each cluster server-role node IP is present in x:AllowedIp so it
+ * is exempt from Stalwart's connection/login rate-limiter even if PROXY-v2
+ * unwrap ever fails.
+ *
+ * Ownership model: we do NOT track entries by ID — Stalwart auto-generates
+ * server-side IDs (e.g. `iqvat29iabae`) ignoring our create-time key.
+ * Stalwart enforces uniqueness on the `address` field, so we use that as
+ * the natural key: if an entry with the same address already exists
+ * (regardless of who created it), we leave it alone. If it doesn't, we
+ * create it with a reason field marking it as ours.
+ *
+ * We never destroy or update existing entries — the operator owns those,
+ * and the manually-added bootstrap entries (`cluster-pod`, `cluster-svc`,
+ * etc.) must remain untouched.
  */
 async function reconcileAllowedIps(
   baseUrl: string,
@@ -399,7 +419,6 @@ async function reconcileAllowedIps(
   serverNodes: ReadonlyArray<{ hostname: string; ip: string }>,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
 ): Promise<void> {
-  const PREFIX = 'mail-haproxy-';
   const getRes = await jmapPost(baseUrl, auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
@@ -411,60 +430,36 @@ async function reconcileAllowedIps(
   const rawList: unknown = args?.list;
   if (!Array.isArray(rawList)) return;
 
-  const existing: Map<string, AllowedIpRow> = new Map();
+  // Stalwart strips `/32` from individual-host CIDRs but preserves wider
+  // prefixes — canonicalise to the bare IP for the existing-entry check.
+  const canonAddress = (a: string): string => a.endsWith('/32') ? a.slice(0, -3) : a;
+  const existingAddresses = new Set<string>();
   for (const raw of rawList as unknown[]) {
     if (!raw || typeof raw !== 'object') continue;
-    const row = raw as AllowedIpRow;
-    if (typeof row.id === 'string' && row.id.startsWith(PREFIX)) {
-      existing.set(row.id, row);
-    }
+    const addr = (raw as { address?: unknown }).address;
+    if (typeof addr === 'string') existingAddresses.add(canonAddress(addr));
   }
 
-  // Build expected map keyed by ID.
-  const expected = new Map<string, { address: string; reason: string }>();
-  for (const node of serverNodes) {
-    expected.set(`${PREFIX}${node.hostname}`, {
-      address: `${node.ip}/32`,
-      reason: `Cluster server node ${node.hostname} (haproxy source) — exempt from rate-limit`,
-    });
-  }
-
-  // Plan create / update / destroy.
   const create: Record<string, { address: string; reason: string }> = {};
-  const update: Record<string, Record<string, unknown>> = {};
-  const destroy: string[] = [];
-
-  for (const [id, want] of expected) {
-    const have = existing.get(id);
-    if (!have) {
-      create[id] = want;
-    } else if (have.address !== want.address) {
-      update[id] = { address: want.address, reason: want.reason };
-    }
-  }
-  for (const id of existing.keys()) {
-    if (!expected.has(id)) destroy.push(id);
+  for (const node of serverNodes) {
+    if (existingAddresses.has(node.ip)) continue;
+    // Create-time keys aren't preserved by Stalwart, but a stable string
+    // keeps the JMAP request body deterministic for log/audit purposes.
+    const createKey = `mail-haproxy-${node.hostname}`;
+    create[createKey] = {
+      address: node.ip,
+      reason: `Cluster server node ${node.hostname} (haproxy source) — exempt from rate-limit`,
+    };
   }
 
-  if (
-    Object.keys(create).length === 0 &&
-    Object.keys(update).length === 0 &&
-    destroy.length === 0
-  ) {
-    return;
-  }
+  if (Object.keys(create).length === 0) return;
 
   const setRes = await jmapPost(baseUrl, auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
       [
         'x:AllowedIp/set',
-        {
-          accountId: ADMIN_ACCOUNT_ID,
-          ...(Object.keys(create).length > 0 ? { create } : {}),
-          ...(Object.keys(update).length > 0 ? { update } : {}),
-          ...(destroy.length > 0 ? { destroy } : {}),
-        },
+        { accountId: ADMIN_ACCOUNT_ID, create },
         'c0',
       ],
     ],
@@ -472,7 +467,7 @@ async function reconcileAllowedIps(
   assertJmapSetSucceeded(setRes, 'x:AllowedIp/set');
 
   log.info(
-    `AllowedIp synced — created=${Object.keys(create).length}, ` +
-      `updated=${Object.keys(update).length}, destroyed=${destroy.length}`,
+    `AllowedIp synced — created=${Object.keys(create).length} ` +
+      `(${Object.values(create).map((c) => c.address).join(', ')})`,
   );
 }

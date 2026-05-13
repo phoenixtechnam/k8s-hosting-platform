@@ -24,19 +24,35 @@ describe('proxyNetworksMatches', () => {
   it('returns true for the same set regardless of insertion order', () => {
     expect(
       proxyNetworksMatches(
-        { '10.0.0.1/32': true, '10.0.0.2/32': true },
-        { '10.0.0.2/32': true, '10.0.0.1/32': true },
+        { '10.0.0.1': true, '10.0.0.2': true },
+        { '10.0.0.2': true, '10.0.0.1': true },
       ),
     ).toBe(true);
   });
+  it('canonicalises /32 to bare IP — Stalwart strips /32 on storage so the comparison must not flap', () => {
+    expect(
+      proxyNetworksMatches({ '10.0.0.1': true }, { '10.0.0.1/32': true }),
+    ).toBe(true);
+    expect(
+      proxyNetworksMatches({ '10.0.0.1/32': true }, { '10.0.0.1': true }),
+    ).toBe(true);
+  });
+  it('preserves wider CIDR prefixes (only /32 is normalised)', () => {
+    expect(
+      proxyNetworksMatches({ '10.42.0.0/16': true }, { '10.42.0.0/16': true }),
+    ).toBe(true);
+    expect(
+      proxyNetworksMatches({ '10.42.0.0/16': true }, { '10.42.0.0': true }),
+    ).toBe(false);
+  });
   it('returns false when sizes differ', () => {
     expect(
-      proxyNetworksMatches({ '10.0.0.1/32': true }, { '10.0.0.1/32': true, '10.0.0.2/32': true }),
+      proxyNetworksMatches({ '10.0.0.1': true }, { '10.0.0.1': true, '10.0.0.2': true }),
     ).toBe(false);
   });
   it('returns false when keys differ', () => {
     expect(
-      proxyNetworksMatches({ '10.0.0.1/32': true }, { '10.0.0.2/32': true }),
+      proxyNetworksMatches({ '10.0.0.1': true }, { '10.0.0.2': true }),
     ).toBe(false);
   });
   it('ignores keys whose value is not exactly true (defensive)', () => {
@@ -44,8 +60,8 @@ describe('proxyNetworksMatches', () => {
       proxyNetworksMatches(
         // Cast through `as unknown` because we're testing defensive narrowing
         // of the wire shape where a buggy peer could send `false`.
-        { '10.0.0.1/32': false as unknown as true, '10.0.0.2/32': true },
-        { '10.0.0.2/32': true },
+        { '10.0.0.1': false as unknown as true, '10.0.0.2': true },
+        { '10.0.0.2': true },
       ),
     ).toBe(true);
   });
@@ -244,7 +260,7 @@ describe('runProxyNetworksReconcilerTick', () => {
             [
               'x:SystemSettings/get',
               {
-                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1/32': true } }],
+                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1': true } }],
               },
               'c0',
             ],
@@ -289,7 +305,7 @@ describe('runProxyNetworksReconcilerTick', () => {
             [
               'x:SystemSettings/get',
               {
-                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1/32': true } }],
+                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1': true } }],
               },
               'c0',
             ],
@@ -333,12 +349,12 @@ describe('runProxyNetworksReconcilerTick', () => {
 
     expect(updatedBody).toEqual({
       singleton: {
-        proxyTrustedNetworks: { '10.0.0.1/32': true, '10.0.0.2/32': true },
+        proxyTrustedNetworks: { '10.0.0.1': true, '10.0.0.2': true },
       },
     });
   });
 
-  it('creates AllowedIp entries for new server nodes (mail-haproxy-<hostname>)', async () => {
+  it('creates AllowedIp entries for cluster IPs that are not already allowlisted', async () => {
     let allowedSetBody: Record<string, unknown> | null = null;
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
@@ -348,7 +364,7 @@ describe('runProxyNetworksReconcilerTick', () => {
             [
               'x:SystemSettings/get',
               {
-                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1/32': true } }],
+                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1': true } }],
               },
               'c0',
             ],
@@ -389,14 +405,14 @@ describe('runProxyNetworksReconcilerTick', () => {
 
     expect(allowedSetBody?.create).toEqual({
       'mail-haproxy-s1': {
-        address: '10.0.0.1/32',
+        address: '10.0.0.1',
         reason: 'Cluster server node s1 (haproxy source) — exempt from rate-limit',
       },
     });
   });
 
-  it('destroys AllowedIp entries for removed server nodes (only ones we own)', async () => {
-    let allowedSetBody: Record<string, unknown> | null = null;
+  it('does NOT touch existing AllowedIp entries — ownership by address means we never destroy', async () => {
+    let allowedSetCalled = false;
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
       if (method === 'x:SystemSettings/get') {
@@ -404,9 +420,7 @@ describe('runProxyNetworksReconcilerTick', () => {
           methodResponses: [
             [
               'x:SystemSettings/get',
-              {
-                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1/32': true } }],
-              },
+              { list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1': true } }] },
               'c0',
             ],
           ],
@@ -419,10 +433,12 @@ describe('runProxyNetworksReconcilerTick', () => {
               'x:AllowedIp/get',
               {
                 list: [
-                  // We own this entry — node is gone, should be destroyed.
-                  { id: 'mail-haproxy-old', address: '10.0.0.99/32' },
-                  // We do NOT own this entry — must NOT be touched.
-                  { id: 'cluster-pod', address: '10.42.0.0/16' },
+                  // An operator-added entry. Same address as our node — we
+                  // should detect the match and skip creation, not destroy
+                  // or update someone else's record.
+                  { id: 'opaqueserverId', address: '10.0.0.1', reason: 'operator-added' },
+                  // Unrelated entry — also must remain untouched.
+                  { id: 'cluster-pod', address: '10.42.0.0/16', reason: 'k8s pod CIDR' },
                 ],
               },
               'c0',
@@ -431,11 +447,10 @@ describe('runProxyNetworksReconcilerTick', () => {
         };
       }
       if (method === 'x:AllowedIp/set') {
-        const call = (req.body as { methodCalls: unknown[][] }).methodCalls[0];
-        allowedSetBody = call[1] as Record<string, unknown>;
-        return { methodResponses: [['x:AllowedIp/set', { destroyed: ['mail-haproxy-old'] }, 'c0']] };
+        allowedSetCalled = true;
+        return { methodResponses: [['x:AllowedIp/set', {}, 'c0']] };
       }
-      return { methodResponses: [[method as string, { list: [] }, 'c0']] };
+      return { methodResponses: [[method as string, { updated: { singleton: {} } }, 'c0']] };
     });
 
     await runProxyNetworksReconcilerTick({
@@ -455,9 +470,63 @@ describe('runProxyNetworksReconcilerTick', () => {
       logger: { warn: () => undefined, info: () => undefined },
     });
 
-    expect(allowedSetBody?.destroy).toEqual(['mail-haproxy-old']);
-    // Must include create for the new node but never touch cluster-pod.
-    expect(JSON.stringify(allowedSetBody)).not.toContain('cluster-pod');
+    expect(allowedSetCalled).toBe(false);
+  });
+
+  it('canonicalises /32 addresses on existing AllowedIp entries (no duplicate create)', async () => {
+    let allowedSetCalled = false;
+    mockFetch((req) => {
+      const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
+      if (method === 'x:SystemSettings/get') {
+        return {
+          methodResponses: [
+            [
+              'x:SystemSettings/get',
+              { list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1': true } }] },
+              'c0',
+            ],
+          ],
+        };
+      }
+      if (method === 'x:AllowedIp/get') {
+        return {
+          methodResponses: [
+            [
+              'x:AllowedIp/get',
+              {
+                // Existing entry stored with /32 (legacy / hand-curated).
+                list: [{ id: 'X', address: '10.0.0.1/32', reason: 'legacy' }],
+              },
+              'c0',
+            ],
+          ],
+        };
+      }
+      if (method === 'x:AllowedIp/set') {
+        allowedSetCalled = true;
+        return { methodResponses: [['x:AllowedIp/set', {}, 'c0']] };
+      }
+      return { methodResponses: [[method as string, { updated: { singleton: {} } }, 'c0']] };
+    });
+
+    await runProxyNetworksReconcilerTick({
+      core: makeCore([
+        {
+          metadata: {
+            name: 's1',
+            labels: {
+              'platform.phoenix-host.net/node-role': 'server',
+              'kubernetes.io/hostname': 's1',
+            },
+          },
+          status: { addresses: [{ type: 'InternalIP', address: '10.0.0.1' }] },
+        },
+      ]),
+      env,
+      logger: { warn: () => undefined, info: () => undefined },
+    });
+
+    expect(allowedSetCalled).toBe(false);
   });
 
   it('skips the tick when admin credentials are not configured', async () => {
