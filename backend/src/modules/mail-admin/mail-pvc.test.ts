@@ -66,30 +66,33 @@ describe('mail-pvc.parseQuantity', () => {
   });
 });
 
-describe('mail-pvc.parseDfOutput', () => {
-  let parseDfOutput: typeof import('./mail-pvc.js').parseDfOutput;
+describe('mail-pvc.parseDuOutput', () => {
+  let parseDuOutput: typeof import('./mail-pvc.js').parseDuOutput;
 
   beforeEach(async () => {
-    ({ parseDfOutput } = await import('./mail-pvc.js'));
+    ({ parseDuOutput } = await import('./mail-pvc.js'));
   });
 
-  it('extracts used + available from typical df -B1 output', () => {
-    const out = [
-      'Filesystem    1B-blocks      Used Available Use% Mounted on',
-      '/dev/longhorn/pvc-x 5368709120 1073741824 4294967296  20% /var/lib/postgresql/data',
-    ].join('\n');
-    expect(parseDfOutput(out)).toEqual({
-      usedBytes: 1073741824,
-      freeBytes: 4294967296,
-    });
+  it('extracts byte count from typical du -sb output', () => {
+    expect(parseDuOutput('6020626\t/var/lib/stalwart/data\n')).toBe(6020626);
   });
 
-  it('returns nulls on too-few lines', () => {
-    expect(parseDfOutput('header only\n')).toEqual({ usedBytes: null, freeBytes: null });
+  it('handles space-separated output (some du variants)', () => {
+    expect(parseDuOutput('12345678 /var/lib/stalwart/data')).toBe(12345678);
   });
 
-  it('returns nulls on too-few columns', () => {
-    expect(parseDfOutput('h1 h2\nfoo bar\n')).toEqual({ usedBytes: null, freeBytes: null });
+  it('returns null on empty input', () => {
+    expect(parseDuOutput('')).toBeNull();
+    expect(parseDuOutput('   \n')).toBeNull();
+  });
+
+  it('returns null on unparseable first field', () => {
+    expect(parseDuOutput('NaN\t/path')).toBeNull();
+    expect(parseDuOutput('-100\t/path')).toBeNull();
+  });
+
+  it('accepts zero (empty data dir)', () => {
+    expect(parseDuOutput('0\t/var/lib/stalwart/data')).toBe(0);
   });
 });
 

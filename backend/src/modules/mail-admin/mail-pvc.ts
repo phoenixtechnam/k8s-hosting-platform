@@ -68,10 +68,11 @@ export async function getMailPvcStorage(
   const sc = (await storage.readStorageClass({ name: scName })) as ScShape;
   const expansionAllowed = sc.allowVolumeExpansion === true;
 
-  // Best-effort df probe via kubectl exec into the primary CNPG pod.
-  // Falls back to null on any failure — the GET endpoint is the
-  // operator's primary visibility tool, do NOT block on this.
-  const df = await tryDfProbe(exec, opts.kubeconfigPath);
+  // Best-effort `du -sb` probe in the Stalwart pod. Falls back to null
+  // on any failure — the GET endpoint is the operator's primary
+  // visibility tool, do NOT block on this. See tryDfProbe for the
+  // rationale on choosing du over df for local-path PVCs.
+  const df = await tryDfProbe(exec, opts.kubeconfigPath, requestedBytes);
 
   const annotations = pvc.metadata?.annotations ?? {};
   const lastResizedAtRaw = annotations[LAST_RESIZED_ANNOTATION];
@@ -264,21 +265,34 @@ function isIsoDate(s: unknown): s is string {
 }
 
 /**
- * Best-effort `df -B1` probe inside the running Stalwart pod. Returns
- * { usedBytes, freeBytes }. Falls back to nulls on any failure
- * (exec RBAC denial, pod not Ready, etc.) because the operator's
- * primary need is to see the requested + capacity sizes, not
- * micro-accurate live usage.
+ * Best-effort `du -sb` probe inside the running Stalwart pod. Returns
+ * the actual bytes written by Stalwart to the RocksDB DataStore mount
+ * + a derived `freeBytes = requestedBytes - usedBytes` (floored at 0).
+ *
+ * Why `du` and not `df`:
+ *   The mail PVC uses the `local-path` StorageClass on staging/prod.
+ *   local-path bind-mounts a directory off the node's root filesystem,
+ *   so `df` reports the WHOLE node disk — which on a 75 GB node with
+ *   45 GB of unrelated container images + tenant PVCs shows ~62% used,
+ *   yielding nonsense like "220% of the 20 GiB request" in the UI.
+ *
+ *   `du -sb` reports just the Stalwart data dir bytes. For Longhorn
+ *   PVCs the answer is also correct (du ≈ filesystem-reported used
+ *   minus a few hundred KB of fs metadata). Switching to `du` makes
+ *   the measurement consistent across both storage backends.
+ *
+ * Falls back to nulls on any failure (exec RBAC denial, pod not Ready,
+ * etc.) because the operator's primary need is to see the requested
+ * + capacity sizes, not micro-accurate live usage.
  *
  * Phase 1 (RocksDB migration): probes /var/lib/stalwart/data (the
- * RocksDB DataStore mount) in the `stalwart` container instead of the
- * CNPG primary pod.
+ * RocksDB DataStore mount) in the `stalwart` container.
  */
 async function tryDfProbe(
   exec: import('@kubernetes/client-node').Exec,
   kubeconfigPath: string | undefined,
+  requestedBytes: number,
 ): Promise<{ usedBytes: number | null; freeBytes: number | null }> {
-  // Find the Stalwart pod via label selector.
   try {
     const k8s = await import('@kubernetes/client-node');
     const kc = new k8s.KubeConfig();
@@ -295,15 +309,17 @@ async function tryDfProbe(
     const podName = (pods.items ?? []).find((p) => p.status?.phase === 'Running')?.metadata?.name;
     if (!podName) return { usedBytes: null, freeBytes: null };
 
-    // RocksDB DataStore lives at /var/lib/stalwart/data (the PVC mount).
     const stdout = await execStdout(
       exec,
       MAIL_NAMESPACE,
       podName,
       'stalwart',
-      ['df', '-B1', '/var/lib/stalwart/data'],
+      ['du', '-sb', '/var/lib/stalwart/data'],
     );
-    return parseDfOutput(stdout);
+    const usedBytes = parseDuOutput(stdout);
+    if (usedBytes === null) return { usedBytes: null, freeBytes: null };
+    const freeBytes = Math.max(0, requestedBytes - usedBytes);
+    return { usedBytes, freeBytes };
   } catch {
     return { usedBytes: null, freeBytes: null };
   }
@@ -355,26 +371,17 @@ function execStdout(
 }
 
 /**
- * Parse `df -B1` output:
+ * Parse `du -sb <path>` output:
  *
- *   Filesystem    1B-blocks      Used Available Use% Mounted on
- *   /dev/longhorn ...
+ *   12345678<TAB>/var/lib/stalwart/data
  *
- * The data line is the second line; columns 2/3/4 are total/used/avail
- * in bytes. Returns { usedBytes, freeBytes } or { null, null } on
- * unexpected shape.
+ * The first whitespace-separated field is the total byte count. Returns
+ * the parsed byte count or null on unexpected shape.
  */
-export function parseDfOutput(stdout: string): { usedBytes: number | null; freeBytes: number | null } {
-  const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
-  if (lines.length < 2) return { usedBytes: null, freeBytes: null };
-  // df may wrap long fs names — the data we want lives on the LAST line.
-  const dataLine = lines[lines.length - 1];
-  const parts = dataLine.split(/\s+/);
-  if (parts.length < 5) return { usedBytes: null, freeBytes: null };
-  const usedRaw = Number(parts[2]);
-  const availRaw = Number(parts[3]);
-  return {
-    usedBytes: Number.isFinite(usedRaw) ? usedRaw : null,
-    freeBytes: Number.isFinite(availRaw) ? availRaw : null,
-  };
+export function parseDuOutput(stdout: string): number | null {
+  const trimmed = stdout.trim();
+  if (!trimmed) return null;
+  const firstField = trimmed.split(/\s+/, 1)[0];
+  const n = Number(firstField);
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
