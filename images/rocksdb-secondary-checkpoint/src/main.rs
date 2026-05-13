@@ -202,11 +202,23 @@ fn run() -> Result<(), (i32, String)> {
     result?;
 
     // Workaround for librocksdb-sys 0.17.3 secondary-mode checkpoint
-    // dropping SST hard-links — see module-level docstring. Hard-link
-    // every *.sst file from the primary dir into the checkpoint dir.
+    // dropping data-file hard-links — see module-level docstring.
+    // Hard-link every regular file from the primary dir into the
+    // checkpoint dir, EXCEPT the LOCK file (which would make RocksDB
+    // think the primary is locked when it opens the checkpoint).
+    //
+    // The set of relevant file kinds is broader than just SSTs:
+    //   - *.sst    — RocksDB sorted-string tables
+    //   - *.blob   — Stalwart's inline blob storage (BlobStore=RocksDB)
+    //   - *.log    — RocksDB WAL files
+    //   - OPTIONS-*— Per-CF RocksDB config snapshots
+    //   - LOG[.old]— RocksDB's own info-log files (not strictly needed
+    //                but Stalwart's open may stat them)
+    // Easier than maintaining a whitelist: hard-link everything except
+    // LOCK. EEXIST is a silent skip (Checkpoint may have linked some).
     let t_link = Instant::now();
-    let n_linked = hardlink_ssts(&primary, &checkpoint).map_err(|e| (7, e))?;
-    eprintln!("hard-linked {n_linked} SSTs from {primary} → {checkpoint} in {:?}", t_link.elapsed());
+    let n_linked = hardlink_data_files(&primary, &checkpoint).map_err(|e| (7, e))?;
+    eprintln!("hard-linked {n_linked} files from {primary} → {checkpoint} in {:?}", t_link.elapsed());
 
     // Tier-2 robustness: chmod 777 the checkpoint dir + its contents.
     //
@@ -233,19 +245,21 @@ fn run() -> Result<(), (i32, String)> {
     Ok(())
 }
 
-/// Hard-link every `*.sst` file from `src_dir` into `dest_dir`.
-/// Returns the count of files hard-linked. Files that already exist
-/// at the destination (`EEXIST`) are skipped silently — that's the
-/// case where the rocksdb-internal Checkpoint code DID hard-link some
-/// of them (defense in depth: we don't depend on whether Checkpoint
-/// did or didn't do the link). Other errors are surfaced.
+/// Hard-link every regular file from `src_dir` into `dest_dir`, except
+/// the RocksDB `LOCK` file (linking that would make RocksDB think the
+/// primary is held when it opens the checkpoint). Subdirectories are
+/// skipped — RocksDB checkpoints are flat at this level.
+///
+/// Returns the count of files hard-linked. EEXIST is a silent skip
+/// (Checkpoint may have linked some — we don't depend on whether it
+/// did or didn't). Other errors are surfaced.
 ///
 /// `src_dir` and `dest_dir` MUST be on the same filesystem (hard-link
 /// is the load-bearing assertion; an EXDEV here would mean the
 /// caller picked a checkpoint location outside the data PVC, which
 /// is a bug). The error message surfaces EXDEV explicitly so the
 /// operator can diagnose.
-fn hardlink_ssts(src_dir: &str, dest_dir: &str) -> Result<usize, String> {
+fn hardlink_data_files(src_dir: &str, dest_dir: &str) -> Result<usize, String> {
     let mut n = 0usize;
     for entry in std::fs::read_dir(src_dir)
         .map_err(|e| format!("read_dir({src_dir}): {e}"))?
@@ -253,7 +267,17 @@ fn hardlink_ssts(src_dir: &str, dest_dir: &str) -> Result<usize, String> {
         let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if !name_str.ends_with(".sst") {
+        // Skip LOCK — linking it would falsely advertise the primary
+        // as held when the checkpoint is opened.
+        if name_str == "LOCK" {
+            continue;
+        }
+        // Skip subdirectories (e.g. archive dir if RocksDB ever places
+        // one inside the data dir).
+        let ftype = entry
+            .file_type()
+            .map_err(|e| format!("file_type({}): {e}", entry.path().display()))?;
+        if !ftype.is_file() {
             continue;
         }
         let src = entry.path();
