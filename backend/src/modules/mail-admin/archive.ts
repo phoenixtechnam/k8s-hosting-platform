@@ -919,14 +919,21 @@ async function createArchiveJobNoDowntime(
         // of jq to keep the image dependency list minimal. The new
         // path is bash-substituted into a single-quoted python arg so
         // it lands as a literal string in argv[1].
+        //
+        // The error message uses % formatting (not f-string) because
+        // f-strings can't contain backslashes in expressions, and
+        // single-quote shell context doesn't process backslash escapes
+        // so any \\" would land in Python source as backslash-quote
+        // and crash the lexer.
         'set -eu; ' +
           'mkdir -p /scratch/alt-cfg; ' +
           'python3 -c \'\n' +
           'import json, sys\n' +
           'cfg = json.load(open("/etc/stalwart/config.json"))\n' +
-          'if cfg.get("@type") != "RocksDb":\n' +
-          '    sys.stderr.write(f"no_downtime archive requires ' +
-          'DataStore @type=RocksDb, got: {cfg.get(\\"@type\\")!r}\\n")\n' +
+          'got = cfg.get("@type")\n' +
+          'if got != "RocksDb":\n' +
+          '    sys.stderr.write("no_downtime archive requires ' +
+          'DataStore @type=RocksDb, got: %r\\n" % (got,))\n' +
           '    sys.exit(1)\n' +
           'cfg["path"] = sys.argv[1]\n' +
           'json.dump(cfg, open("/scratch/alt-cfg/config.json", "w"))\n' +
