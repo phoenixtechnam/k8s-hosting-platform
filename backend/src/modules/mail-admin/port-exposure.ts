@@ -26,7 +26,7 @@
 
 import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { JSON_PATCH } from '../../shared/k8s-patch.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -172,84 +172,123 @@ async function readDeployment(apps: import('@kubernetes/client-node').AppsV1Api)
   }
 }
 
-async function removeHostPortsFromDeployment(
+/**
+ * Replace the Stalwart Deployment's container ports array.
+ *
+ * We use JSON-Patch (`replace` on the whole ports array) rather than
+ * strategic-merge-patch because strategic-merge merges port entries by
+ * `containerPort`, which means omitting `hostPort` from a port entry does
+ * NOT remove the existing hostPort — it just leaves the existing value
+ * in place. To toggle hostPort on/off reliably we have to replace the
+ * array wholesale.
+ *
+ * The container index in the patch path is 0 because the Stalwart
+ * Deployment's `containers` list has a single entry — the `stalwart`
+ * container (the init container is in `initContainers`, not `containers`).
+ * We assert that invariant at the start so a future Deployment change
+ * doesn't silently patch the wrong container.
+ */
+async function replaceStalwartContainerPorts(
   apps: import('@kubernetes/client-node').AppsV1Api,
+  withHostPorts: boolean,
 ): Promise<void> {
   const dep = await readDeployment(apps);
   const containers = dep.spec?.template?.spec?.containers ?? [];
+  const stalwartIdx = containers.findIndex((c) => c.name === 'stalwart');
+  if (stalwartIdx < 0) {
+    throw new ApiError(
+      'MAIL_DEPLOYMENT_PATCH_FAILED',
+      'Stalwart container not found in Deployment spec',
+      503,
+    );
+  }
+  const stalwart = containers[stalwartIdx];
 
-  const patchedContainers = containers.map((c) => ({
-    ...c,
-    ports: (c.ports ?? []).map(({ hostPort: _removed, ...rest }) => rest),
-  }));
+  const newPorts = (stalwart.ports ?? []).map((p) => {
+    const isMailPort = (MAIL_HOST_PORTS as readonly number[]).includes(p.containerPort);
+    if (!isMailPort) {
+      // Non-mail port (mgmt-http :8080, http-acme :80) — never gets a hostPort.
+      const { hostPort: _drop, ...rest } = p;
+      return rest;
+    }
+    if (withHostPorts) {
+      return { ...p, hostPort: p.containerPort };
+    }
+    // Mail port + hostPorts disabled → strip hostPort.
+    const { hostPort: _drop, ...rest } = p;
+    return rest;
+  });
+
+  const body = [
+    {
+      op: 'replace',
+      path: `/spec/template/spec/containers/${stalwartIdx}/ports`,
+      value: newPorts,
+    },
+  ];
 
   await apps.patchNamespacedDeployment(
     {
       namespace: MAIL_NAMESPACE,
       name: DEPLOYMENT_NAME,
-      body: {
-        spec: { template: { spec: { containers: patchedContainers } } },
-      } as unknown as object,
+      body: body as unknown as object,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    STRATEGIC_MERGE_PATCH,
+    JSON_PATCH,
   ).catch((err) => {
     throw new ApiError(
       'MAIL_DEPLOYMENT_PATCH_FAILED',
-      `Failed to remove hostPorts from Stalwart Deployment: ${(err as Error).message ?? String(err)}`,
+      `Failed to ${withHostPorts ? 're-add' : 'remove'} hostPorts on Stalwart Deployment: ${(err as Error).message ?? String(err)}`,
       500,
     );
   });
+}
+
+async function removeHostPortsFromDeployment(
+  apps: import('@kubernetes/client-node').AppsV1Api,
+): Promise<void> {
+  await replaceStalwartContainerPorts(apps, /* withHostPorts= */ false);
 }
 
 async function addHostPortsToDeployment(
   apps: import('@kubernetes/client-node').AppsV1Api,
 ): Promise<void> {
-  const dep = await readDeployment(apps);
-  const containers = dep.spec?.template?.spec?.containers ?? [];
-
-  const patchedContainers = containers.map((c) => {
-    if (c.name !== 'stalwart') return c;
-    const patchedPorts = (c.ports ?? []).map((p) => {
-      return (MAIL_HOST_PORTS as readonly number[]).includes(p.containerPort)
-        ? { ...p, hostPort: p.containerPort }
-        : p;
-    });
-    return { ...c, ports: patchedPorts };
-  });
-
-  await apps.patchNamespacedDeployment(
-    {
-      namespace: MAIL_NAMESPACE,
-      name: DEPLOYMENT_NAME,
-      body: {
-        spec: { template: { spec: { containers: patchedContainers } } },
-      } as unknown as object,
-    } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    STRATEGIC_MERGE_PATCH,
-  ).catch((err) => {
-    throw new ApiError(
-      'MAIL_DEPLOYMENT_PATCH_FAILED',
-      `Failed to re-add hostPorts to Stalwart Deployment: ${(err as Error).message ?? String(err)}`,
-      500,
-    );
-  });
+  await replaceStalwartContainerPorts(apps, /* withHostPorts= */ true);
 }
 
+/**
+ * Replace the haproxy DaemonSet's nodeSelector.
+ *
+ * We use JSON-Patch (`add` op on `nodeSelector`, which acts as upsert)
+ * rather than RFC 7396 merge-patch because merge-patch merges nodeSelector
+ * keys INTO the existing map — so toggling from
+ *   { 'mail-haproxy-disabled': 'true' }
+ * to
+ *   { 'node-role': 'server' }
+ * via merge-patch produces
+ *   { 'mail-haproxy-disabled': 'true', 'node-role': 'server' }
+ * (both keys present), which matches zero nodes. JSON-Patch `add` on the
+ * parent path replaces the whole map atomically.
+ */
 async function setDaemonSetNodeSelector(
   apps: import('@kubernetes/client-node').AppsV1Api,
   nodeSelector: Record<string, string>,
   enable: boolean,
 ): Promise<void> {
   try {
+    const body = [
+      {
+        op: 'add',
+        path: '/spec/template/spec/nodeSelector',
+        value: nodeSelector,
+      },
+    ];
     await apps.patchNamespacedDaemonSet(
       {
         namespace: MAIL_NAMESPACE,
         name: DAEMONSET_NAME,
-        body: {
-          spec: { template: { spec: { nodeSelector } } },
-        } as unknown as object,
+        body: body as unknown as object,
       } as unknown as Parameters<typeof apps.patchNamespacedDaemonSet>[0],
-      MERGE_PATCH,
+      JSON_PATCH,
     );
   } catch (err) {
     const code = (err as { statusCode?: number }).statusCode;

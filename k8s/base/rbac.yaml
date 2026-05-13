@@ -82,13 +82,23 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments/scale", "statefulsets/scale"]
     verbs: ["get", "update", "patch"]
-  # DaemonSets — read-only, used by cluster-health to surface
-  # ingress-nginx + longhorn-manager readiness. Scoped to get/list/watch
-  # because we never create or mutate DaemonSets from the API (bootstrap
-  # + Helm own those).
+  # DaemonSets — get/list/watch for cluster-health (ingress-nginx +
+  # longhorn-manager readiness surfacing), plus patch for the mail-HA
+  # `stalwart-haproxy` DS toggle.
+  #
+  # The mail port-exposure feature (backend/src/modules/mail-admin/
+  # port-exposure.ts) flips the haproxy DaemonSet between disabled
+  # (non-matching nodeSelector) and enabled (server-role nodeSelector)
+  # when an operator changes thisNodeOnly ↔ allServerNodes. Without the
+  # patch verb, the PATCH /admin/mail/port-exposure endpoint returns
+  # MAIL_HAPROXY_DS_PATCH_FAILED with 403 from kube-apiserver.
+  #
+  # We do NOT grant create/delete: the DaemonSet itself is owned by
+  # Flux (k8s/base/stalwart-mail/haproxy/). platform-api only mutates
+  # spec.template.spec.nodeSelector.
   - apiGroups: ["apps"]
     resources: ["daemonsets"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]

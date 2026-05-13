@@ -64,16 +64,40 @@ spec:
         - name: haproxy
           image: haproxy:2.9-alpine
           imagePullPolicy: IfNotPresent
-          # Drop all caps and re-add ONLY net_bind_service (needed for ports
-          # <1024). The official haproxy:2.9-alpine image runs as uid 99
-          # (`haproxy` user) by default when not overridden. readOnlyRootFS
-          # is safe because /usr/local/etc/haproxy is mounted from ConfigMap
-          # and /tmp is the only writable path haproxy uses for its stats
-          # socket — we provide that via an emptyDir below.
+          # Drop ALL capabilities and run as root inside the container.
+          # The official haproxy:2.9-alpine image binary doesn't carry
+          # NET_BIND_SERVICE as a file capability, so non-root cannot
+          # bind <1024 even when K8s adds the cap (K8s adds to
+          # permitted+effective but NOT ambient — and containerd <2.0
+          # doesn't propagate to ambient for non-root). Running as root
+          # with dropALL keeps the attack surface tight:
+          #   • No fs writes (readOnlyRootFilesystem) except the
+          #     /tmp tmpfs emptyDir for the stats socket.
+          #   • No privilege escalation (allowPrivilegeEscalation: false).
+          #   • Seccomp RuntimeDefault clamps the syscall set.
+          # Effective capability set is empty post-bind because dropALL
+          # wins, so root inside this container has no actual privileges
+          # beyond the bind itself.
+          # We MUST run as uid 0 inside the container. The haproxy:2.9-alpine
+          # image's Dockerfile ends with `USER haproxy` (uid 99), and K8s
+          # adds caps to the bounding set but NOT to effective/permitted
+          # for non-root processes — so non-root can't bind <1024 even
+          # with NET_BIND_SERVICE in the cap.add list. Verified empirically
+          # on staging: uid 99 shows CapEff=0 / CapBnd=0x400, bind 25 fails
+          # with Permission denied.
+          #
+          # Defense-in-depth despite uid 0:
+          #   • capabilities.drop: [ALL] strips every cap except those
+          #     explicitly added (just NET_BIND_SERVICE). Root inside the
+          #     container has no privileges beyond binding low ports.
+          #   • allowPrivilegeEscalation: false prevents setuid escapes.
+          #   • readOnlyRootFilesystem: true blocks fs tampering;
+          #     /tmp is a memory-backed emptyDir for the haproxy stats
+          #     socket only.
+          #   • seccompProfile=RuntimeDefault clamps the syscall surface.
           securityContext:
-            runAsNonRoot: true
-            runAsUser: 99
-            runAsGroup: 99
+            runAsUser: 0
+            runAsGroup: 0
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
