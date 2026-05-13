@@ -2528,7 +2528,7 @@ except Exception as e:
     local node_ip
     node_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}' 2>/dev/null" | tr -d '[:space:]')
     [[ -z "$node_ip" ]] && { attempt=$((attempt + 1)); continue; }
-    banner_host=$(( sleep 0.4; printf "EHLO test\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) | timeout 8 openssl s_client -connect "${node_ip}:465" -crlf -quiet -servername "$test_host" 2>/dev/null | grep -oE '^220 [^ ]+' | awk '{print $2}' | head -1)
+    banner_host=$( ( sleep 0.4; printf "EHLO test\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) | timeout 8 openssl s_client -connect "${node_ip}:465" -crlf -quiet -servername "$test_host" 2>/dev/null | grep -oE '^220 [^ ]+' | awk '{print $2}' | head -1)
     [[ "$banner_host" == "$test_host" ]] && break
     attempt=$((attempt + 1))
   done

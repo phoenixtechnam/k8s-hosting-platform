@@ -32,6 +32,11 @@ set -euo pipefail
 #   • Lines containing the pragma `ci-flux-escape: ignore` are
 #     allowed through (use sparingly for docstrings/teaching comments
 #     where the literal `${VAR}` form needs to appear post-Flux).
+#   • Files containing `ci-flux-escape: ignore-file` are skipped
+#     entirely. Use for Jobs that are explicitly opted out of Flux's
+#     reconcile loop (`kustomize.toolkit.fluxcd.io/reconcile: disabled`
+#     + applied directly via bootstrap.sh or operator scripts), where
+#     Flux postBuild substitution never runs on the manifest.
 #
 # Companion to feedback_flux_postbuild_escape.md.
 
@@ -59,9 +64,17 @@ path = sys.argv[1]
 with open(path, 'r', encoding='utf-8', errors='replace') as fh:
     lines = fh.readlines()
 
-# Quick reject: not a CronJob/Job manifest.
 joined = ''.join(lines)
+
+# Quick reject: not a CronJob/Job manifest.
 if not re.search(r'(?m)^kind:\s*(CronJob|Job)\s*$', joined):
+    sys.exit(0)
+
+# File-level opt-out: explicitly excluded from Flux's reconcile loop.
+# Use for bootstrap Jobs that get applied directly by operator scripts
+# (bootstrap.sh patching suspend=false) — Flux never substitutes their
+# manifest, so bare ${VAR} is safe.
+if 'ci-flux-escape: ignore-file' in joined:
     sys.exit(0)
 
 # State machine: track when we're inside an args:/command: block.

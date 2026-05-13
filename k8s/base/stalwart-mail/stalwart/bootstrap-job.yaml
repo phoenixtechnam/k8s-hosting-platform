@@ -1,5 +1,12 @@
 # Stalwart 0.16 bootstrap Job.
 #
+# ci-flux-escape: ignore-file
+#   This Job is annotated `kustomize.toolkit.fluxcd.io/reconcile: disabled`
+#   and applied directly by bootstrap.sh (patches suspend=false to start it
+#   on the cluster's first install). Flux postBuild.substituteFrom NEVER
+#   runs over this manifest, so the bash heredoc's bare ${VAR} references
+#   are safe — bash inside the container expands them at runtime, not Flux.
+#
 # PURPOSE: Seeds the empty Stalwart RocksDB with the initial configuration
 # (server hostname, default domain) via a direct JMAP x:Bootstrap/set call.
 # Full post-bootstrap configuration (SystemSettings, Jmap limits, DKIM,
