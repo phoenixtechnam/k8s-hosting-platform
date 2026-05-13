@@ -21,6 +21,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { triggerMailSnapshot } from './snapshot.js';
@@ -235,43 +236,41 @@ export async function triggerRestoreBasedFailover(
     });
   }
 
-  // Patch Deployment: new node affinity + new PVC + allow-restore annotation
-  await (apps as unknown as {
-    patchNamespacedDeployment: (
-      name: string, ns: string, body: unknown,
-      u1?: unknown, u2?: unknown, u3?: unknown, u4?: unknown,
-      opts?: unknown
-    ) => Promise<unknown>
-  }).patchNamespacedDeployment(
-    DEPLOYMENT_NAME, MAIL_NAMESPACE,
-    {
-      metadata: { annotations: { 'mail.platform/allow-restore': 'true' } },
-      spec: {
-        template: {
-          spec: {
-            affinity: {
-              nodeAffinity: {
-                requiredDuringSchedulingIgnoredDuringExecution: {
-                  nodeSelectorTerms: [{
-                    matchExpressions: [{
-                      key: 'kubernetes.io/hostname',
-                      operator: 'In',
-                      values: [targetNode],
-                    }],
+  // Patch Deployment: new node affinity + new PVC + allow-restore annotation.
+  // STRATEGIC_MERGE_PATCH for Deployment spec merge semantics.
+  const failoverPatchBody = {
+    metadata: { annotations: { 'mail.platform/allow-restore': 'true' } },
+    spec: {
+      template: {
+        spec: {
+          affinity: {
+            nodeAffinity: {
+              requiredDuringSchedulingIgnoredDuringExecution: {
+                nodeSelectorTerms: [{
+                  matchExpressions: [{
+                    key: 'kubernetes.io/hostname',
+                    operator: 'In',
+                    values: [targetNode],
                   }],
-                },
+                }],
               },
             },
-            volumes: [{
-              name: 'stalwart-data',
-              persistentVolumeClaim: { claimName: newPvcName },
-            }],
           },
+          volumes: [{
+            name: 'stalwart-data',
+            persistentVolumeClaim: { claimName: newPvcName },
+          }],
         },
       },
     },
-    undefined, undefined, undefined, undefined,
-    { headers: { 'Content-Type': 'application/strategic-merge-patch+json' } },
+  };
+  await apps.patchNamespacedDeployment(
+    {
+      namespace: MAIL_NAMESPACE,
+      name: DEPLOYMENT_NAME,
+      body: failoverPatchBody,
+    } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
+    STRATEGIC_MERGE_PATCH,
   );
 
   await db.update(systemSettings)
@@ -352,43 +351,41 @@ async function runMigrationStateMachine(
 
   await waitForJobCompletion(batch, rsyncJobName, 1800); // 30 min timeout
 
-  // Step 6: Swap PVC claim in Deployment to point at new PVC
+  // Step 6: Swap PVC claim in Deployment to point at new PVC.
+  // STRATEGIC_MERGE_PATCH for Deployment-spec merge semantics.
   await setStep(db, runId, 'cutover');
-  await (apps as unknown as {
-    patchNamespacedDeployment: (
-      name: string, ns: string, body: unknown,
-      u1?: unknown, u2?: unknown, u3?: unknown, u4?: unknown,
-      opts?: unknown
-    ) => Promise<unknown>
-  }).patchNamespacedDeployment(
-    DEPLOYMENT_NAME, MAIL_NAMESPACE,
-    {
-      spec: {
-        template: {
-          spec: {
-            volumes: [{
-              name: 'stalwart-data',
-              persistentVolumeClaim: { claimName: newPvcName },
-            }],
-            affinity: {
-              nodeAffinity: {
-                requiredDuringSchedulingIgnoredDuringExecution: {
-                  nodeSelectorTerms: [{
-                    matchExpressions: [{
-                      key: 'kubernetes.io/hostname',
-                      operator: 'In',
-                      values: [targetNode],
-                    }],
+  const cutoverPatchBody = {
+    spec: {
+      template: {
+        spec: {
+          volumes: [{
+            name: 'stalwart-data',
+            persistentVolumeClaim: { claimName: newPvcName },
+          }],
+          affinity: {
+            nodeAffinity: {
+              requiredDuringSchedulingIgnoredDuringExecution: {
+                nodeSelectorTerms: [{
+                  matchExpressions: [{
+                    key: 'kubernetes.io/hostname',
+                    operator: 'In',
+                    values: [targetNode],
                   }],
-                },
+                }],
               },
             },
           },
         },
       },
     },
-    undefined, undefined, undefined, undefined,
-    { headers: { 'Content-Type': 'application/strategic-merge-patch+json' } },
+  };
+  await apps.patchNamespacedDeployment(
+    {
+      namespace: MAIL_NAMESPACE,
+      name: DEPLOYMENT_NAME,
+      body: cutoverPatchBody,
+    } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
+    STRATEGIC_MERGE_PATCH,
   );
 
   // Step 7: Scale back up
@@ -409,17 +406,22 @@ async function runMigrationStateMachine(
 
   // Step 9: Mark old PVC for deferred cleanup + update DB
   try {
-    await (core as unknown as {
-      patchNamespacedPersistentVolumeClaim: (
-        name: string, ns: string, body: unknown,
-        u1?: unknown, u2?: unknown, u3?: unknown, u4?: unknown,
-        opts?: unknown
-      ) => Promise<unknown>
-    }).patchNamespacedPersistentVolumeClaim(
-      MAIL_PVC_NAME, MAIL_NAMESPACE,
-      { metadata: { annotations: { 'platform.phoenix-host.net/delete-after': new Date(Date.now() + 86400000).toISOString() } } },
-      undefined, undefined, undefined, undefined,
-      { headers: { 'Content-Type': 'application/merge-patch+json' } },
+    // STRATEGIC_MERGE_PATCH on a built-in resource (PVC) — equivalent
+    // to merge-patch for a simple metadata.annotations write.
+    await core.patchNamespacedPersistentVolumeClaim(
+      {
+        namespace: MAIL_NAMESPACE,
+        name: MAIL_PVC_NAME,
+        body: {
+          metadata: {
+            annotations: {
+              'platform.phoenix-host.net/delete-after':
+                new Date(Date.now() + 86400000).toISOString(),
+            },
+          },
+        },
+      } as unknown as Parameters<typeof core.patchNamespacedPersistentVolumeClaim>[0],
+      STRATEGIC_MERGE_PATCH,
     );
   } catch (annotErr) {
     log.warn('[migration] failed to annotate old PVC for cleanup (non-fatal):', annotErr);
@@ -481,17 +483,15 @@ async function ensureLocalPathPvc(core: CoreV1Api, name: string, nodeName: strin
 }
 
 async function patchDeploymentReplicas(apps: AppsV1Api, replicas: number): Promise<void> {
-  await (apps as unknown as {
-    patchNamespacedDeployment: (
-      name: string, ns: string, body: unknown,
-      u1?: unknown, u2?: unknown, u3?: unknown, u4?: unknown,
-      opts?: unknown
-    ) => Promise<unknown>
-  }).patchNamespacedDeployment(
-    DEPLOYMENT_NAME, MAIL_NAMESPACE,
-    { spec: { replicas } },
-    undefined, undefined, undefined, undefined,
-    { headers: { 'Content-Type': 'application/merge-patch+json' } },
+  // STRATEGIC_MERGE_PATCH is fine for a single-field spec write; same
+  // semantics as merge-patch for this shape.
+  await apps.patchNamespacedDeployment(
+    {
+      namespace: MAIL_NAMESPACE,
+      name: DEPLOYMENT_NAME,
+      body: { spec: { replicas } },
+    } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
+    STRATEGIC_MERGE_PATCH,
   );
 }
 
