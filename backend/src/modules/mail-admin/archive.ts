@@ -905,28 +905,33 @@ async function createArchiveJobNoDowntime(
     },
     {
       name: 'alt-config',
-      image: toolsImage, // has jq + sh
+      image: toolsImage, // has python3 + sh (NO jq — keep this dependency tight)
       imagePullPolicy: 'IfNotPresent',
       command: ['sh', '-c'],
       args: [
         // Stalwart 0.16's minimal config.json is `{"@type": "RocksDb",
         // "path": "/var/lib/stalwart/data"}` (verified in
-        // k8s/base/stalwart-mail/stalwart/configmap.yaml). Rewriting
-        // `.path` is a single jq assignment — no array iteration needed.
-        // We also assert `@type == "RocksDb"` so we fail fast if Stalwart
-        // upstream changes the config shape.
+        // k8s/base/stalwart-mail/stalwart/configmap.yaml). Rewrite
+        // `.path` to the checkpoint dir + assert `@type == "RocksDb"`
+        // so we fail fast if Stalwart upstream changes the schema.
+        //
+        // Using python3 (stdlib, already in mail-backup-tools) instead
+        // of jq to keep the image dependency list minimal. The new
+        // path is bash-substituted into a single-quoted python arg so
+        // it lands as a literal string in argv[1].
         'set -eu; ' +
           'mkdir -p /scratch/alt-cfg; ' +
-          // Defensive check: bail loudly if the live config isn't a
-          // RocksDb store. Some future deploy might switch to FoundationDB
-          // and the no_downtime path would silently miss the swap.
-          'TYPE=$(jq -r \'."@type"\' /etc/stalwart/config.json); ' +
-          'if [ "$TYPE" != "RocksDb" ]; then ' +
-          'echo "no_downtime archive requires DataStore type=RocksDb, ' +
-          'got: $TYPE" >&2; exit 1; fi; ' +
-          'jq --arg p "' + checkpointDirOnPvc + '" \'.path = $p\' ' +
-          '/etc/stalwart/config.json > /scratch/alt-cfg/config.json; ' +
-          'echo "alt config written (path → $p):"; ' +
+          'python3 -c \'\n' +
+          'import json, sys\n' +
+          'cfg = json.load(open("/etc/stalwart/config.json"))\n' +
+          'if cfg.get("@type") != "RocksDb":\n' +
+          '    sys.stderr.write(f"no_downtime archive requires ' +
+          'DataStore @type=RocksDb, got: {cfg.get(\\"@type\\")!r}\\n")\n' +
+          '    sys.exit(1)\n' +
+          'cfg["path"] = sys.argv[1]\n' +
+          'json.dump(cfg, open("/scratch/alt-cfg/config.json", "w"))\n' +
+          '\' "' + checkpointDirOnPvc + '"; ' +
+          'echo "alt config written (path → ' + checkpointDirOnPvc + '):"; ' +
           'cat /scratch/alt-cfg/config.json',
       ],
       volumeMounts: [configVolumeMount, scratchVolumeMount],
