@@ -1,17 +1,20 @@
 /**
- * Proxy-networks reconciler — keeps Stalwart's `proxyNetworks` on every
- * mail NetworkListener in sync with the set of server-role node IPs
- * (the source addresses haproxy DaemonSet pods will use, since they run
- * hostNetwork).
+ * Proxy-trusted-networks reconciler — keeps Stalwart's global
+ * `SystemSettings.proxyTrustedNetworks` map in sync with the set of
+ * server-role node IPs (the source addresses haproxy DaemonSet pods
+ * will use, since they run hostNetwork).
  *
  * Why this exists:
  *   When mailPortExposureMode flips to 'allServerNodes', haproxy pods on
  *   each server node accept mail connections, write a PROXY-v2 header
  *   carrying the real client IP, and forward to stalwart-mail.mail.svc.
  *   Stalwart must trust those source addresses to honor the PROXY-v2
- *   header — that trust list is `proxyNetworks` on each NetworkListener.
+ *   header — that trust list is `proxyTrustedNetworks` on the singleton
+ *   SystemSettings record (applied to every mail listener uniformly;
+ *   the per-listener `overrideProxyTrustedNetworks` field is left
+ *   untouched).
  *
- *   Setting `proxyNetworks` to 0.0.0.0/0 would let any internet attacker
+ *   Setting the trust list to 0.0.0.0/0 would let any internet attacker
  *   spoof source IPs via PROXY-v2 and defeat Stalwart's IP rate-limiter.
  *   So the list is narrowed to the actual haproxy sources: the server
  *   nodes' kubelet InternalIPs (`/32` each).
@@ -22,17 +25,13 @@
  *   itself when an external user misbehaves.
  *
  *   The reconciler runs in both 'thisNodeOnly' and 'allServerNodes' modes
- *   (per operator request) so we don't have to re-patch listeners every
+ *   (per operator request) so we don't have to re-patch settings every
  *   time the mode flips.
- *
- * Mail listeners are identified by their bind port (any of 25, 465, 587,
- * 143, 993, 4190) — this is robust to Stalwart's default listener names
- * vs. names added by bootstrap.sh.
  *
  * Tick cadence: 60s (matches the certificate reconciler). Empty node
  * sets are NEVER pushed; if the node listing fails or returns zero
  * server-role nodes, the tick logs a warning and waits for the next
- * cycle. Listeners' proxyNetworks are never blown away.
+ * cycle. The trust list is never blown away.
  */
 
 import { readStalwartCredentials } from './credentials.js';
@@ -41,9 +40,6 @@ type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 
 /** Default tick: 60s — same cadence as certificate reconciler. */
 export const PROXY_NETWORKS_RECONCILER_TICK_MS = 60_000;
-
-/** Mail ports a NetworkListener can bind that this reconciler touches. */
-export const MAIL_LISTENER_PORTS: readonly number[] = [25, 143, 465, 587, 993, 4190] as const;
 
 /** Server-role node label — matches placement.ts. */
 const SERVER_ROLE_LABEL_KEY = 'platform.phoenix-host.net/node-role';
@@ -93,13 +89,6 @@ export function startProxyNetworksReconciler(
   void runProxyNetworksReconcilerTick(deps);
   const timer = setInterval(() => void runProxyNetworksReconcilerTick(deps), tickMs);
   return () => clearInterval(timer);
-}
-
-interface NetworkListenerRow {
-  readonly id: string;
-  readonly name: string;
-  readonly bind?: Record<string, boolean> | null;
-  readonly proxyNetworks?: Record<string, boolean> | null;
 }
 
 interface AllowedIpRow {
@@ -164,16 +153,21 @@ export async function runProxyNetworksReconcilerTick(
     return;
   }
 
-  // ── Step 1: reconcile NetworkListener.proxyNetworks ────────────────
+  // ── Step 1: reconcile global SystemSettings.proxyTrustedNetworks ───
+  // Stalwart applies this to every NetworkListener that doesn't carry an
+  // explicit `overrideProxyTrustedNetworks` map. Setting it globally is
+  // one write per change rather than fanning out across all 6 mail
+  // listeners — and matches the way mail-port behaviour should be
+  // uniform across the protocol set.
   try {
-    await reconcileListenerProxyNetworks(
+    await reconcileSystemProxyTrustedNetworks(
       baseUrl,
       auth,
       expectedProxyNetworks,
       log,
     );
   } catch (err) {
-    log.warn('NetworkListener reconcile failed:', err);
+    log.warn('SystemSettings.proxyTrustedNetworks reconcile failed:', err);
     // Continue to AllowedIp reconcile — independent failure modes.
   }
 
@@ -274,9 +268,15 @@ async function jmapPost(
   return data as JmapInvocationResponse;
 }
 
-// ── Internal: NetworkListener reconcile ──────────────────────────────
+// ── Internal: SystemSettings reconcile ───────────────────────────────
 
-async function reconcileListenerProxyNetworks(
+/**
+ * Patch the singleton SystemSettings record's `proxyTrustedNetworks` map.
+ * Stalwart applies this trust list to every NetworkListener that lacks
+ * its own `overrideProxyTrustedNetworks` (which, in this platform,
+ * none do — we never set the per-listener override).
+ */
+async function reconcileSystemProxyTrustedNetworks(
   baseUrl: string,
   auth: string,
   expected: Record<string, boolean>,
@@ -285,56 +285,41 @@ async function reconcileListenerProxyNetworks(
   const getRes = await jmapPost(baseUrl, auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
-      ['x:NetworkListener/get', { accountId: ADMIN_ACCOUNT_ID, ids: null }, 'c0'],
+      [
+        'x:SystemSettings/get',
+        { ids: ['singleton'], properties: ['proxyTrustedNetworks'] },
+        'c0',
+      ],
     ],
   });
 
   const args = getRes.methodResponses[0]?.[1] as { list?: unknown };
   const rawList: unknown = args?.list;
-  if (!Array.isArray(rawList)) {
-    log.warn('x:NetworkListener/get returned non-list payload — skipping.');
+  if (!Array.isArray(rawList) || rawList.length === 0) {
+    log.warn('x:SystemSettings/get returned no singleton — Stalwart bootstrap may not be complete yet.');
     return;
   }
 
-  const mailListeners: NetworkListenerRow[] = [];
-  for (const raw of rawList as unknown[]) {
-    if (!raw || typeof raw !== 'object') continue;
-    const row = raw as NetworkListenerRow;
-    if (!row.id || !row.name) continue;
-    if (!isMailListener(row)) continue;
-    mailListeners.push(row);
-  }
-
-  if (mailListeners.length === 0) {
-    log.warn('No mail-port NetworkListeners found — Stalwart bootstrap may not be complete yet.');
-    return;
-  }
-
-  // Group listeners that need an update — issue one x:NetworkListener/set.
-  const update: Record<string, Record<string, unknown>> = {};
-  for (const row of mailListeners) {
-    if (!proxyNetworksMatches(row.proxyNetworks, expected)) {
-      update[row.id] = { proxyNetworks: expected };
-    }
-  }
-  if (Object.keys(update).length === 0) return;
+  const current = (rawList[0] as { proxyTrustedNetworks?: Record<string, boolean> | null })
+    .proxyTrustedNetworks;
+  if (proxyNetworksMatches(current, expected)) return;
 
   const setRes = await jmapPost(baseUrl, auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
       [
-        'x:NetworkListener/set',
-        { accountId: ADMIN_ACCOUNT_ID, update },
+        'x:SystemSettings/set',
+        {
+          update: { singleton: { proxyTrustedNetworks: expected } },
+        },
         'c0',
       ],
     ],
   });
-  assertJmapSetSucceeded(setRes, 'x:NetworkListener/set');
+  assertJmapSetSucceeded(setRes, 'x:SystemSettings/set');
 
   log.info(
-    `Updated proxyNetworks on ${Object.keys(update).length} listener(s): ` +
-      `${mailListeners.filter((l) => update[l.id]).map((l) => l.name).join(', ')} → ` +
-      `${Object.keys(expected).join(', ')}`,
+    `Updated SystemSettings.proxyTrustedNetworks → ${Object.keys(expected).join(', ')}`,
   );
 }
 
@@ -385,35 +370,7 @@ function assertJmapSetSucceeded(
   }
 }
 
-/**
- * A listener is a "mail listener" if it binds any of MAIL_LISTENER_PORTS.
- * Stalwart's bind map uses keys like `[::]:587`, `0.0.0.0:587`,
- * `127.0.0.1:25`. We parse the trailing :PORT off each key.
- */
-export function isMailListener(row: NetworkListenerRow): boolean {
-  const binds = row.bind;
-  if (!binds || typeof binds !== 'object') return false;
-  for (const bindKey of Object.keys(binds)) {
-    const port = parseBindPort(bindKey);
-    if (port !== null && (MAIL_LISTENER_PORTS as readonly number[]).includes(port)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** Parse the port from a Stalwart bind key like `[::]:587` or `0.0.0.0:25`. */
-export function parseBindPort(bindKey: string): number | null {
-  // IPv6 form `[::]:port` or `[2001:db8::1]:port`
-  const v6 = bindKey.match(/\]:(\d+)$/);
-  if (v6) return Number(v6[1]);
-  // IPv4 or hostname form `0.0.0.0:port`
-  const v4 = bindKey.match(/:(\d+)$/);
-  if (v4) return Number(v4[1]);
-  return null;
-}
-
-/** Set-equal comparison of proxyNetworks key sets. */
+/** Set-equal comparison of proxyTrustedNetworks key sets. */
 export function proxyNetworksMatches(
   current: Record<string, boolean> | null | undefined,
   expected: Record<string, boolean>,

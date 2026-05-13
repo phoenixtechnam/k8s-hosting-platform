@@ -1,70 +1,19 @@
 /**
  * Unit tests for proxy-networks-reconciler.
  *
- * Covers the pure helpers (parseBindPort, isMailListener,
- * proxyNetworksMatches) and the tick orchestration (mocked fetch +
- * stub CoreV1Api) so we exercise the security-critical branch where
- * the reconciler refuses to push an empty proxyNetworks set.
+ * Covers the pure helper (proxyNetworksMatches), the cluster-node
+ * enumeration (listServerNodeIps), and the tick orchestration (mocked
+ * fetch + stub CoreV1Api) so we exercise the security-critical branches
+ * where the reconciler refuses to push an empty trust set and surfaces
+ * JMAP /set partial-failures.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  isMailListener,
   listServerNodeIps,
-  MAIL_LISTENER_PORTS,
-  parseBindPort,
   proxyNetworksMatches,
   runProxyNetworksReconcilerTick,
 } from './proxy-networks-reconciler.js';
-
-describe('parseBindPort', () => {
-  it('parses ipv4 bind keys', () => {
-    expect(parseBindPort('0.0.0.0:587')).toBe(587);
-    expect(parseBindPort('127.0.0.1:25')).toBe(25);
-  });
-  it('parses ipv6 bind keys with the [...]:port form', () => {
-    expect(parseBindPort('[::]:587')).toBe(587);
-    expect(parseBindPort('[2001:db8::1]:4190')).toBe(4190);
-  });
-  it('returns null for malformed keys', () => {
-    expect(parseBindPort('not-a-bind')).toBeNull();
-    expect(parseBindPort('')).toBeNull();
-  });
-});
-
-describe('isMailListener', () => {
-  it.each(MAIL_LISTENER_PORTS)('flags listeners binding mail port %d', (port) => {
-    expect(
-      isMailListener({
-        id: 'L',
-        name: 'x',
-        bind: { [`[::]:${port}`]: true },
-      }),
-    ).toBe(true);
-  });
-
-  it('rejects non-mail ports like 8080', () => {
-    expect(
-      isMailListener({ id: 'L', name: 'mgmt', bind: { '[::]:8080': true } }),
-    ).toBe(false);
-  });
-
-  it('returns false when bind is null or empty', () => {
-    expect(isMailListener({ id: 'L', name: 'x' })).toBe(false);
-    expect(isMailListener({ id: 'L', name: 'x', bind: {} })).toBe(false);
-    expect(isMailListener({ id: 'L', name: 'x', bind: null })).toBe(false);
-  });
-
-  it('returns true if ANY bind key is a mail port (multi-bind listener)', () => {
-    expect(
-      isMailListener({
-        id: 'L',
-        name: 'x',
-        bind: { '[::]:8080': true, '[::]:587': true },
-      }),
-    ).toBe(true);
-  });
-});
 
 describe('proxyNetworksMatches', () => {
   it('returns true when both sets are empty', () => {
@@ -285,33 +234,26 @@ describe('runProxyNetworksReconcilerTick', () => {
     expect(JSON.stringify(warns)).toMatch(/No server-role nodes/);
   });
 
-  it('issues a NetworkListener/set update only when proxyNetworks differs', async () => {
+  it('skips x:SystemSettings/set when proxyTrustedNetworks already matches', async () => {
     let setCalled = false;
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
-      if (method === 'x:NetworkListener/get') {
+      if (method === 'x:SystemSettings/get') {
         return {
           methodResponses: [
             [
-              'x:NetworkListener/get',
+              'x:SystemSettings/get',
               {
-                list: [
-                  {
-                    id: 'L1',
-                    name: 'submission',
-                    bind: { '[::]:587': true },
-                    proxyNetworks: { '10.0.0.1/32': true }, // already correct
-                  },
-                ],
+                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1/32': true } }],
               },
               'c0',
             ],
           ],
         };
       }
-      if (method === 'x:NetworkListener/set') {
+      if (method === 'x:SystemSettings/set') {
         setCalled = true;
-        return { methodResponses: [['x:NetworkListener/set', { updated: {} }, 'c0']] };
+        return { methodResponses: [['x:SystemSettings/set', { updated: { singleton: {} } }, 'c0']] };
       }
       // AllowedIp paths
       return { methodResponses: [[method as string, { list: [] }, 'c0']] };
@@ -337,34 +279,27 @@ describe('runProxyNetworksReconcilerTick', () => {
     expect(setCalled).toBe(false);
   });
 
-  it('pushes the new IP set when the cluster gains a server node', async () => {
+  it('pushes the new IP set on the singleton SystemSettings record when nodes change', async () => {
     let updatedBody: Record<string, unknown> | null = null;
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
-      if (method === 'x:NetworkListener/get') {
+      if (method === 'x:SystemSettings/get') {
         return {
           methodResponses: [
             [
-              'x:NetworkListener/get',
+              'x:SystemSettings/get',
               {
-                list: [
-                  {
-                    id: 'L1',
-                    name: 'submission',
-                    bind: { '[::]:587': true },
-                    proxyNetworks: { '10.0.0.1/32': true }, // outdated
-                  },
-                ],
+                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1/32': true } }],
               },
               'c0',
             ],
           ],
         };
       }
-      if (method === 'x:NetworkListener/set') {
+      if (method === 'x:SystemSettings/set') {
         const call = (req.body as { methodCalls: unknown[][] }).methodCalls[0];
         updatedBody = (call[1] as { update: Record<string, unknown> }).update;
-        return { methodResponses: [['x:NetworkListener/set', { updated: {} }, 'c0']] };
+        return { methodResponses: [['x:SystemSettings/set', { updated: { singleton: {} } }, 'c0']] };
       }
       return { methodResponses: [[method as string, { list: [] }, 'c0']] };
     });
@@ -397,8 +332,8 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     expect(updatedBody).toEqual({
-      L1: {
-        proxyNetworks: { '10.0.0.1/32': true, '10.0.0.2/32': true },
+      singleton: {
+        proxyTrustedNetworks: { '10.0.0.1/32': true, '10.0.0.2/32': true },
       },
     });
   });
@@ -407,20 +342,13 @@ describe('runProxyNetworksReconcilerTick', () => {
     let allowedSetBody: Record<string, unknown> | null = null;
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
-      if (method === 'x:NetworkListener/get') {
+      if (method === 'x:SystemSettings/get') {
         return {
           methodResponses: [
             [
-              'x:NetworkListener/get',
+              'x:SystemSettings/get',
               {
-                list: [
-                  {
-                    id: 'L1',
-                    name: 'submission',
-                    bind: { '[::]:587': true },
-                    proxyNetworks: { '10.0.0.1/32': true },
-                  },
-                ],
+                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1/32': true } }],
               },
               'c0',
             ],
@@ -439,7 +367,7 @@ describe('runProxyNetworksReconcilerTick', () => {
         allowedSetBody = call[1] as Record<string, unknown>;
         return { methodResponses: [['x:AllowedIp/set', { created: {} }, 'c0']] };
       }
-      return { methodResponses: [[method as string, { updated: {} }, 'c0']] };
+      return { methodResponses: [[method as string, { updated: { singleton: {} } }, 'c0']] };
     });
 
     await runProxyNetworksReconcilerTick({
@@ -471,8 +399,18 @@ describe('runProxyNetworksReconcilerTick', () => {
     let allowedSetBody: Record<string, unknown> | null = null;
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
-      if (method === 'x:NetworkListener/get') {
-        return { methodResponses: [['x:NetworkListener/get', { list: [] }, 'c0']] };
+      if (method === 'x:SystemSettings/get') {
+        return {
+          methodResponses: [
+            [
+              'x:SystemSettings/get',
+              {
+                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1/32': true } }],
+              },
+              'c0',
+            ],
+          ],
+        };
       }
       if (method === 'x:AllowedIp/get') {
         return {
@@ -549,31 +487,22 @@ describe('runProxyNetworksReconcilerTick', () => {
     expect(fetchCalled).toBe(false);
   });
 
-  it('surfaces method-level JMAP errors on NetworkListener/set (no silent drift)', async () => {
+  it('surfaces method-level JMAP errors on SystemSettings/set (no silent drift)', async () => {
     const warns: unknown[] = [];
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
-      if (method === 'x:NetworkListener/get') {
+      if (method === 'x:SystemSettings/get') {
         return {
           methodResponses: [
             [
-              'x:NetworkListener/get',
-              {
-                list: [
-                  {
-                    id: 'L1',
-                    name: 'submission',
-                    bind: { '[::]:587': true },
-                    proxyNetworks: {}, // forces an update
-                  },
-                ],
-              },
+              'x:SystemSettings/get',
+              { list: [{ id: 'singleton', proxyTrustedNetworks: {} }] }, // forces an update
               'c0',
             ],
           ],
         };
       }
-      if (method === 'x:NetworkListener/set') {
+      if (method === 'x:SystemSettings/set') {
         // Method-level error: Stalwart rejected the call (e.g. invalid auth scope).
         return {
           methodResponses: [['error', { type: 'forbidden', description: 'auth scope' }, 'c0']],
@@ -609,40 +538,31 @@ describe('runProxyNetworksReconcilerTick', () => {
       (w as unknown[]).map((arg) => arg instanceof Error ? arg.message : JSON.stringify(arg)).join(' '),
     );
     const joined = errStrings.join('\n');
-    expect(joined).toMatch(/NetworkListener reconcile failed/);
+    expect(joined).toMatch(/SystemSettings.proxyTrustedNetworks reconcile failed/);
     expect(joined).toMatch(/forbidden|auth scope/);
   });
 
-  it('surfaces partial-failure (notUpdated) on NetworkListener/set', async () => {
+  it('surfaces partial-failure (notUpdated) on SystemSettings/set', async () => {
     const warns: unknown[] = [];
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
-      if (method === 'x:NetworkListener/get') {
+      if (method === 'x:SystemSettings/get') {
         return {
           methodResponses: [
             [
-              'x:NetworkListener/get',
-              {
-                list: [
-                  {
-                    id: 'L1',
-                    name: 'submission',
-                    bind: { '[::]:587': true },
-                    proxyNetworks: {},
-                  },
-                ],
-              },
+              'x:SystemSettings/get',
+              { list: [{ id: 'singleton', proxyTrustedNetworks: {} }] },
               'c0',
             ],
           ],
         };
       }
-      if (method === 'x:NetworkListener/set') {
+      if (method === 'x:SystemSettings/set') {
         return {
           methodResponses: [
             [
-              'x:NetworkListener/set',
-              { notUpdated: { L1: { type: 'invalidProperties', description: 'bad shape' } } },
+              'x:SystemSettings/set',
+              { notUpdated: { singleton: { type: 'invalidPatch', description: 'bad shape' } } },
               'c0',
             ],
           ],
