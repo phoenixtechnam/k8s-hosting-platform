@@ -63,6 +63,14 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # BuildKit cache via GitHub Actions cache backend. The Dockerfile
+          # has separate FROM build / FROM runtime stages with a `cargo
+          # fetch` step before `cargo build` — both layers cache cleanly
+          # when only src/main.rs changes (~30s rebuilds vs ~8min cold).
+          # `mode=max` caches every intermediate layer including the
+          # librocksdb-sys vendored C++ compile output.
+          cache-from: type=gha,scope=rocksdb-secondary-checkpoint
+          cache-to: type=gha,mode=max,scope=rocksdb-secondary-checkpoint
 
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.35.0

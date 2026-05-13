@@ -23,10 +23,12 @@ librocksdb-sys = "=0.17.3"
 libc = "0.2"
 
 [profile.release]
-# Strip symbols to keep the image small. 30+ MB → 4-6 MB is typical.
+# This binary runs once per archive Job, exits in ~20 ms total. There
+# is no measurable benefit to fat-LTO + single-codegen-unit + opt=3
+# tuning here — the time saved at runtime is microseconds while the
+# build cost is 8+ minutes per CI cycle. Optimise for build speed.
 strip = true
-# Single LTO unit + opt-level=3 minimises the static link footprint.
-lto = "fat"
-codegen-units = 1
-opt-level = 3
+lto = "thin"        # ~3× faster compile than "fat", ~5% larger binary
+codegen-units = 16  # default — parallel codegen
+opt-level = 3       # keep -O3; cheap in time terms relative to LTO
 panic = "abort"
