@@ -5,33 +5,14 @@
 # Runs in the second container of the stalwart-archive-* Job, AFTER
 # the initContainer has either:
 #   ARCHIVE_MODE=export  — written /export/export.lz4 via `stalwart -e`
-#   ARCHIVE_MODE=restore — done nothing (this container will fetch the
-#                          LZ4 first, then exit so the initContainer
-#                          ... wait, that's the wrong order. Restore
-#                          flow inverts: see below.)
+#   ARCHIVE_MODE=restore — done nothing (the orchestrator's Job spec for
+#                          restore uses TWO initContainers: this script
+#                          in restore mode first, then `stalwart -i`).
 #
-# Restore flow ordering:
-#   The Job for `ARCHIVE_MODE=restore` is templated by archive.ts so
-#   that the FIRST container in `containers:` is this script (downloads
-#   from restic into /export), and the SECOND step is `stalwart -i`.
-#   But k8s Jobs don't have native sequencing between two `containers`
-#   entries — only initContainers run sequentially. Today archive.ts
-#   uses ONE initContainer (stalwart -e or stalwart -i) and ONE main
-#   container (this script). For RESTORE we need the OPPOSITE order:
-#   download first, then stalwart -i.
-#
-#   Workaround: this script handles both ordering needs by writing a
-#   sentinel file. The stalwart initContainer should ONLY run if the
-#   sentinel says "ready". For restore, we delete the data dir + extract
-#   the LZ4 BEFORE the initContainer would run (impossible — initContainer
-#   runs first). So restore actually uses two SEPARATE init containers:
-#     1. archive-download (this script in restore mode)
-#     2. stalwart-import (stalwart -i)
-#   archive.ts encodes this in the Job spec.
-#
-# For now this script supports both modes — the spec dictates whether
-# it runs as an initContainer (restore: download first) or a main
-# container (export: upload after stalwart -e).
+# Stalwart 0.16's `-e <path>` writes a DIRECTORY at <path> with one
+# file per subspace (subspace_a, subspace_b, ..., subspace_x). The
+# script handles this by always backing up + restoring the directory
+# tree rooted at /export/export.lz4, never a single file.
 #
 # Env (from secret stalwart-snapshot-restic-repo via envFrom):
 #   RESTIC_REPOSITORY     e.g. s3:https://s3.example.com/bucket/path
@@ -53,7 +34,7 @@ set -eu
 MODE="${ARCHIVE_MODE:-export}"
 RUN_ID="${ARCHIVE_RUN_ID:-unknown}"
 EXPORT_DIR=/export
-EXPORT_FILE="${EXPORT_DIR}/export.lz4"
+EXPORT_PATH="${EXPORT_DIR}/export.lz4"  # Stalwart writes this as a DIR.
 
 log() { printf '=== archive-%s [%s] %s ===\n' "$MODE" "$RUN_ID" "$1"; }
 die() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
@@ -65,15 +46,27 @@ if [ -z "${RESTIC_PASSWORD:-}" ]; then
   die "RESTIC_PASSWORD not set"
 fi
 
-# ── EXPORT path ───────────────────────────────────────────────────────────────
-# Initialise repo if absent, snapshot the LZ4 file, prune by retention,
-# emit the parse marker.
-if [ "$MODE" = "export" ]; then
-  if [ ! -f "$EXPORT_FILE" ]; then
-    die "expected $EXPORT_FILE from stalwart-export initContainer; not found"
+# Total bytes under a path. Uses GNU du --bytes; falls back to
+# awk-summed `find -printf` if --bytes isn't available.
+dir_size_bytes() {
+  d="$1"
+  if du --bytes -s "$d" >/dev/null 2>&1; then
+    du --bytes -s "$d" | awk '{print $1}'
+  else
+    find "$d" -type f -printf '%s\n' 2>/dev/null | awk '{s+=$1} END {print s+0}'
   fi
-  export_size=$(stat -c %s "$EXPORT_FILE" 2>/dev/null || stat -f %z "$EXPORT_FILE")
-  log "export.lz4 size: ${export_size} bytes"
+}
+
+# ── EXPORT path ───────────────────────────────────────────────────────────────
+# Initialise repo if absent, snapshot the export tree, prune by
+# retention, emit the parse marker.
+if [ "$MODE" = "export" ]; then
+  if [ ! -d "$EXPORT_PATH" ]; then
+    die "expected $EXPORT_PATH (directory) from stalwart-export initContainer; not found"
+  fi
+  export_size=$(dir_size_bytes "$EXPORT_PATH")
+  subspace_count=$(find "$EXPORT_PATH" -maxdepth 1 -type f | wc -l | tr -d ' ')
+  log "export tree: ${subspace_count} subspace file(s), ${export_size} bytes total"
 
   log "initialising or checking restic repo"
   if ! restic snapshots --quiet >/dev/null 2>&1; then
@@ -85,7 +78,7 @@ if [ "$MODE" = "export" ]; then
   # `--host stalwart-archive` keeps archive snapshots separate from the
   # continuous-backup ones (which run with `--host` = pod hostname).
   # Operators can list/forget only one tier without touching the other.
-  backup_out=$(restic backup "$EXPORT_FILE" \
+  backup_out=$(restic backup "$EXPORT_PATH" \
     --tag mail-archive \
     --tag "run=${RUN_ID}" \
     --host stalwart-archive 2>&1) || die "restic backup failed: ${backup_out}"
@@ -128,20 +121,25 @@ if [ "$MODE" = "restore" ]; then
     die "RESTIC_SNAPSHOT_ID required for restore mode"
   fi
   log "restic restore ${RESTIC_SNAPSHOT_ID} → ${EXPORT_DIR}"
-  # restic restore writes files at their original absolute path; we
-  # pre-placed --target /export so the LZ4 lands at /export/export/export.lz4
-  # nope — restic preserves the source path. The original backup was
-  # /export/export.lz4 so restic writes /export/export/export.lz4.
-  # We want /export/export.lz4 — strip one level via --include.
+  # restic restore preserves the source absolute path. The original
+  # backup was the directory /export/export.lz4, so restic writes
+  # /restic-stage/export/export.lz4/{subspace_a,…}. We want the same
+  # tree at /export/export.lz4 for the downstream `stalwart -i` step.
   mkdir -p /restic-stage
-  restic restore "${RESTIC_SNAPSHOT_ID}" --target /restic-stage 2>&1 || die "restic restore failed"
-  if [ ! -f /restic-stage/export/export.lz4 ]; then
+  restic restore "${RESTIC_SNAPSHOT_ID}" --target /restic-stage 2>&1 \
+    || die "restic restore failed"
+  if [ ! -d /restic-stage/export/export.lz4 ]; then
     ls -la /restic-stage /restic-stage/export 2>&1 || true
-    die "expected /restic-stage/export/export.lz4 after restic restore"
+    die "expected /restic-stage/export/export.lz4 (directory) after restic restore"
   fi
-  cp /restic-stage/export/export.lz4 "$EXPORT_FILE"
-  size=$(stat -c %s "$EXPORT_FILE" 2>/dev/null || stat -f %z "$EXPORT_FILE")
-  log "extracted export.lz4 (${size} bytes), handing off to stalwart-import initContainer"
+  # Move the restored tree into place. Use rsync semantics via cp -a
+  # so symlinks/timestamps survive — though Stalwart's export tree is
+  # flat files only.
+  rm -rf "$EXPORT_PATH"
+  cp -a /restic-stage/export/export.lz4 "$EXPORT_PATH"
+  size=$(dir_size_bytes "$EXPORT_PATH")
+  count=$(find "$EXPORT_PATH" -maxdepth 1 -type f | wc -l | tr -d ' ')
+  log "extracted ${count} subspace file(s), ${size} bytes — handing off to stalwart-import"
   printf 'archive-result: {"resticSnapshotId":"%s","exportSizeBytes":%s,"resticAddedBytes":0}\n' \
     "${RESTIC_SNAPSHOT_ID}" "${size:-0}"
   exit 0
