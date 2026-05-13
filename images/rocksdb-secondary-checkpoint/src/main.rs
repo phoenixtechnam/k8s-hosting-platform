@@ -20,6 +20,27 @@
 //! Usage:
 //!     rocksdb-secondary-checkpoint <primary_path> <secondary_path> <checkpoint_path>
 //!
+//! Why the explicit SST hard-link pass after `rocksdb_checkpoint_create`:
+//!
+//! On staging we observed `rocksdb_checkpoint_create` in secondary mode
+//! producing a checkpoint dir containing ONLY `MANIFEST-*` + `CURRENT`,
+//! with ZERO of the 17 SST files the MANIFEST references. Opening
+//! that checkpoint as a primary in `stalwart -e` then fails with:
+//!   "No such file or directory: .../000024.sst — MANIFEST may be
+//!    corrupted."
+//!
+//! RocksDB documentation claims `CreateCheckpoint` in secondary mode
+//! "would only hard-link the SST files mentioned in the secondary's
+//! manifest" — but empirically with librocksdb-sys 0.17.3 the hard-
+//! link pass is silently skipped (likely because the secondary's
+//! dbname points at `/scratch/secondary/`, which has no SSTs of its
+//! own; the SSTs live in the primary's data dir).
+//!
+//! Workaround: after `rocksdb_checkpoint_create` returns, manually
+//! hard-link every `*.sst` file from the primary's data dir into the
+//! checkpoint dir. Extra files (compacted-but-not-yet-deleted) are
+//! harmless — RocksDB only opens files referenced by the MANIFEST.
+//!
 //! Exit codes:
 //!     0  — checkpoint created (and chmod 0o777)
 //!     1  — argv / preflight failure
@@ -32,6 +53,10 @@
 //!     6  — chmod 0o777 on the checkpoint dir / files failed (checkpoint
 //!          itself succeeded but the downstream non-root container won't
 //!          be able to write the RocksDB LOG file)
+//!     7  — explicit SST hard-link pass failed (see module docstring
+//!          on why this pass is needed). Usually EXDEV — the operator
+//!          configured the checkpoint dir on a different filesystem
+//!          than the primary's data dir.
 //!
 //! The secondary directory MUST be writable by this process. RocksDB writes
 //! the secondary instance's own MANIFEST + log files there — the primary's
@@ -176,6 +201,13 @@ fn run() -> Result<(), (i32, String)> {
 
     result?;
 
+    // Workaround for librocksdb-sys 0.17.3 secondary-mode checkpoint
+    // dropping SST hard-links — see module-level docstring. Hard-link
+    // every *.sst file from the primary dir into the checkpoint dir.
+    let t_link = Instant::now();
+    let n_linked = hardlink_ssts(&primary, &checkpoint).map_err(|e| (7, e))?;
+    eprintln!("hard-linked {n_linked} SSTs from {primary} → {checkpoint} in {:?}", t_link.elapsed());
+
     // Tier-2 robustness: chmod 777 the checkpoint dir + its contents.
     //
     // RocksDB Checkpoint creates the dir + hard-link entries owned by
@@ -199,6 +231,51 @@ fn run() -> Result<(), (i32, String)> {
 
     eprintln!("total wall time: {:?}", t0.elapsed());
     Ok(())
+}
+
+/// Hard-link every `*.sst` file from `src_dir` into `dest_dir`.
+/// Returns the count of files hard-linked. Files that already exist
+/// at the destination (`EEXIST`) are skipped silently — that's the
+/// case where the rocksdb-internal Checkpoint code DID hard-link some
+/// of them (defense in depth: we don't depend on whether Checkpoint
+/// did or didn't do the link). Other errors are surfaced.
+///
+/// `src_dir` and `dest_dir` MUST be on the same filesystem (hard-link
+/// is the load-bearing assertion; an EXDEV here would mean the
+/// caller picked a checkpoint location outside the data PVC, which
+/// is a bug). The error message surfaces EXDEV explicitly so the
+/// operator can diagnose.
+fn hardlink_ssts(src_dir: &str, dest_dir: &str) -> Result<usize, String> {
+    let mut n = 0usize;
+    for entry in std::fs::read_dir(src_dir)
+        .map_err(|e| format!("read_dir({src_dir}): {e}"))?
+    {
+        let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.ends_with(".sst") {
+            continue;
+        }
+        let src = entry.path();
+        let dest = std::path::Path::new(dest_dir).join(&name);
+        match std::fs::hard_link(&src, &dest) {
+            Ok(()) => {
+                n += 1;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // rocksdb Checkpoint already hard-linked this one.
+                continue;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "hard_link({} → {}): {e}",
+                    src.display(),
+                    dest.display()
+                ));
+            }
+        }
+    }
+    Ok(n)
 }
 
 /// chmod 0o777 on `path` and every immediate entry inside it.
