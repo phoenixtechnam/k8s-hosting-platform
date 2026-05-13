@@ -870,11 +870,19 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           400,
         );
       }
-      const encryptionKey = (cfg.ENCRYPTION_KEY as string | undefined) ?? '';
+      // Canonical env var name across the codebase is OIDC_ENCRYPTION_KEY
+      // (used by oidc settings, mTLS cert encryption, backup-config
+      // credentials, custom-deployment PAT envelope, etc.). A prior
+      // version of this route looked up `cfg.ENCRYPTION_KEY` — a
+      // typo that didn't match anything the operator sets — and
+      // therefore returned ENCRYPTION_KEY_MISSING even on properly
+      // configured clusters. Reads from OIDC_ENCRYPTION_KEY now to
+      // match the rest of the project.
+      const encryptionKey = (cfg.OIDC_ENCRYPTION_KEY as string | undefined) ?? '';
       if (!encryptionKey && parsed.data.backupStoreId) {
         throw new ApiError(
           'ENCRYPTION_KEY_MISSING',
-          'ENCRYPTION_KEY env var is not set — cannot decrypt backup store credentials',
+          'OIDC_ENCRYPTION_KEY env var is not set — cannot decrypt backup store credentials',
           500,
         );
       }
