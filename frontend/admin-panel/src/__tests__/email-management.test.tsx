@@ -36,13 +36,34 @@ function createWrapper() {
 }
 
 function setupMockApi(domains: unknown[] = [], relays: unknown[] = []) {
+  // The EmailManagement page mounts a fleet of mail-admin cards
+  // (MailDrCard, MailArchiveCard, MailSnapshotHealthCard, etc) which
+  // call their own endpoints on mount. Each card's queryFn expects a
+  // typed envelope; returning a bare `{data: []}` here makes the cards
+  // crash inside their error boundaries, which then propagates up and
+  // blanks out the entire page — including the email-domains table the
+  // tests below want to find.
+  //
+  // The mock returns shape-correct empty defaults for each known card
+  // endpoint. We don't care about the card's *content* in these tests;
+  // we care that the page renders cleanly through to the domains table.
   mockApiFetch.mockImplementation((url: string) => {
-    if (typeof url === 'string' && url.includes('/email/domains')) {
-      return Promise.resolve({ data: domains });
-    }
-    if (typeof url === 'string' && url.includes('/smtp-relays')) {
-      return Promise.resolve({ data: relays });
-    }
+    if (typeof url !== 'string') return Promise.resolve({ data: null });
+    if (url.includes('/email/domains'))        return Promise.resolve({ data: domains });
+    if (url.includes('/smtp-relays'))          return Promise.resolve({ data: relays });
+    if (url.includes('/mail/placement'))       return Promise.resolve({ data: { primaryNode: 'node-a', secondaryNode: null, tertiaryNode: null, autoFailoverEnabled: false, failoverThresholdSeconds: 60, drState: 'healthy', candidateNodes: [], currentScheduledNode: 'node-a', deploymentReady: true } });
+    if (url.includes('/mail/port-exposure'))   return Promise.resolve({ data: { mode: 'thisNodeOnly', haproxyReady: 0, haproxyDesired: 0 } });
+    if (url.includes('/mail/archive-status'))  return Promise.resolve({ data: { last: null, current: null, backupTarget: { backupStoreId: null, backupStoreName: null, storageType: null }, scheduledArchivingAvailable: false, scheduledArchivingBlockedBy: null } });
+    if (url.includes('/mail/archive-runs'))    return Promise.resolve({ data: { data: [], total: 0 } });
+    if (url.includes('/mail/snapshot/health')) return Promise.resolve({ data: { state: 'never_run', lastRun: null, nextRun: null } });
+    if (url.includes('/mail/snapshot/schedule')) return Promise.resolve({ data: { cron: null, enabled: false } });
+    if (url.includes('/mail/snapshot/backup-target')) return Promise.resolve({ data: { backupStoreId: null, backupStoreName: null, storageType: null } });
+    if (url.includes('/mail/snapshot'))        return Promise.resolve({ data: { running: false } });
+    if (url.includes('/mail/pvc/storage'))     return Promise.resolve({ data: { pvcName: 'stalwart-rocksdb-data', storageClass: 'local-path', capacityBytes: 21474836480, requestedBytes: 21474836480, usedBytes: 0, freeBytes: 21474836480, expansionAllowed: false, lastResizedAt: null } });
+    if (url.includes('/mail/blob-store'))      return Promise.resolve({ data: { type: 'local', config: {} } });
+    if (url.includes('/mail/ssl-status'))      return Promise.resolve({ data: { listeners: [] } });
+    if (url.includes('/mail/metrics'))         return Promise.resolve({ data: { totalMailboxes: 0, dkimConfigured: 0 } });
+    if (url.includes('/admin/mail/'))          return Promise.resolve({ data: null });
     return Promise.resolve({ data: [] });
   });
 }
