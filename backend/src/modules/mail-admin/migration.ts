@@ -215,6 +215,9 @@ export async function triggerRestoreBasedFailover(
     }).readNamespacedPersistentVolumeClaim(newPvcName, MAIL_NAMESPACE);
     // Already exists — skip creation
   } catch {
+    // Mail-DR PVC — transient copy of mail data during failover. Live
+    // PVC is captured by the mail-snapshot bundle component.
+    // backup-coverage: excluded:cluster-infrastructure
     await (core as unknown as {
       createNamespacedPersistentVolumeClaim: (ns: string, body: unknown) => Promise<unknown>
     }).createNamespacedPersistentVolumeClaim(MAIL_NAMESPACE, {
@@ -458,6 +461,9 @@ async function ensureLocalPathPvc(core: CoreV1Api, name: string, nodeName: strin
   } catch {
     // Fall through to create
   }
+  // Mail-DR helper PVC (callers are all failover/failback flows).
+  // Same rationale as the DR call site above.
+  // backup-coverage: excluded:cluster-infrastructure
   await (core as unknown as {
     createNamespacedPersistentVolumeClaim: (ns: string, body: unknown) => Promise<unknown>
   }).createNamespacedPersistentVolumeClaim(MAIL_NAMESPACE, {
