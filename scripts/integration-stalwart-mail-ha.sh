@@ -35,6 +35,31 @@
 #      but we don't want to ever push that key to a live cluster even
 #      transiently.)
 #
+#   Phase E — mail-archive E2E (--archive, ~5 min, requires ADMIN_TOKEN + configured backup target)
+#     E1. GET /admin/mail/archive-status — verify a backup target is configured
+#         (mail_snapshot_backup_store_id set; otherwise the export has nowhere
+#         to land — skip the rest of Phase E with a warn).
+#     E2. Capture SMTP greeting baseline (compare during run).
+#     E3. POST /admin/mail/archive/trigger {mode:'no_downtime'} → record runId.
+#     E4. While run state is not terminal, every 5s:
+#           - SMTP banner on port 25 must remain responsive (NO DOWNTIME contract)
+#           - Stalwart Deployment.spec.replicas must NOT drop to 0
+#         Stop when state ∈ {succeeded, failed}.
+#     E5. Final state == 'succeeded'; resticSnapshotId+exportSizeBytes populated;
+#         mode column = 'no_downtime'; finishedAt set.
+#     E6. Checkpoint dir cleaned up — no /var/lib/stalwart/data/.checkpoint-tmp-*
+#         left behind in the live PVC.
+#     E7. SMTP + IMAP still serving after the run (smoke greeting on 25/143).
+#
+#   Phase F — mail-archive downtime mode (--archive-downtime, ~5 min, DESTRUCTIVE)
+#     F1. POST /admin/mail/archive/trigger {mode:'downtime'}.
+#     F2. During state='scaling_down' or 'exporting', SMTP banner on port 25
+#         MUST become unreachable (downtime is the contract for this mode).
+#     F3. After the run terminates, SMTP banner returns within 60s.
+#     F4. Final state == 'succeeded'; mode column = 'downtime'.
+#         (Phase F validates the fallback path. If a no_downtime archive
+#         is running concurrently, Phase F refuses to start.)
+#
 # Exit code: 0 if everything passed (phases that ran). Non-zero with the
 # count of failures otherwise.
 #
@@ -46,7 +71,7 @@
 #   STALWART_DOMAIN=mail.staging.phoenix-host.net \
 #   ADMIN_TOKEN=eyJ... \
 #   PLATFORM_API_URL=https://admin.staging.phoenix-host.net \
-#     bash scripts/integration-stalwart-mail-ha.sh --mode-flip --negative
+#     bash scripts/integration-stalwart-mail-ha.sh --mode-flip --negative --archive
 #
 # Environment knobs (all optional except STALWART_DOMAIN):
 #   STALWART_DOMAIN          The FQDN whose cert + listeners we test.
@@ -94,10 +119,14 @@ SERVER_ROLE_LABEL='platform.phoenix-host.net/node-role=server'
 # Flags
 RUN_MODE_FLIP=false
 RUN_NEGATIVE=false
+RUN_ARCHIVE=false
+RUN_ARCHIVE_DOWNTIME=false
 for arg in "$@"; do
   case "$arg" in
-    --mode-flip)  RUN_MODE_FLIP=true ;;
-    --negative)   RUN_NEGATIVE=true ;;
+    --mode-flip)        RUN_MODE_FLIP=true ;;
+    --negative)         RUN_NEGATIVE=true ;;
+    --archive)          RUN_ARCHIVE=true ;;
+    --archive-downtime) RUN_ARCHIVE_DOWNTIME=true ;;
     --help|-h)
       sed -n '2,/^set -euo/p' "$0" | sed -e 's/^# //' -e 's/^#$//' -e '/^set -euo/d'
       exit 0
@@ -636,11 +665,324 @@ print(' '.join(sorted(canon(k) for k, v in ks.items() if v is True)))" 2>/dev/nu
   echo ""
 }
 
+# ── Phase E — mail-archive no-downtime E2E ────────────────────────────
+phase_e_archive_no_downtime() {
+  echo "## Phase E — mail-archive no-downtime E2E"
+
+  if [[ -z "$ADMIN_TOKEN" || -z "$PLATFORM_API_URL" ]]; then
+    note_warn "E0. ADMIN_TOKEN + PLATFORM_API_URL not set — skipping Phase E"
+    echo ""
+    return
+  fi
+
+  # E1. Verify a backup target is configured. Without it the export Job
+  # would land + then fail at the restic upload step; not a useful test
+  # signal. Operator must configure first.
+  local status_body backup_store_id
+  status_body="$(curl -sk \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    "${PLATFORM_API_URL}/api/v1/admin/mail/archive-status" --max-time 15 || echo '{}')"
+  backup_store_id="$(echo "$status_body" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("backupTarget",{}).get("backupStoreId") or "")' 2>/dev/null || echo "")"
+  if [[ -z "$backup_store_id" ]]; then
+    note_warn "E1. No backup target configured (mail_snapshot_backup_store_id) — skipping Phase E"
+    echo "      Configure one via the Mail Backup card before running --archive."
+    echo ""
+    return
+  fi
+  note_pass "E1. backup target configured: ${backup_store_id}"
+
+  # E2. SMTP greeting baseline.
+  local baseline_banner
+  baseline_banner="$(timeout 10 bash -c "
+    exec 3<>/dev/tcp/${PROBE_HOST}/25
+    read -t 5 -u 3 line
+    echo \"\$line\"
+    printf 'QUIT\\r\\n' >&3
+  " 2>/dev/null || echo '')"
+  if echo "$baseline_banner" | grep -qiE 'esmtp|stalwart|220'; then
+    note_pass "E2. SMTP baseline greeting OK before run"
+  else
+    note_fail "E2. SMTP baseline greeting unexpected: '${baseline_banner:0:80}'"
+    return
+  fi
+
+  # E3. Trigger no_downtime archive.
+  local trigger_response run_id
+  trigger_response="$(curl -sk \
+    -X POST "${PLATFORM_API_URL}/api/v1/admin/mail/archive/trigger" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d '{"mode":"no_downtime"}' --max-time 30 || echo '{}')"
+  run_id="$(echo "$trigger_response" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("runId") or "")' 2>/dev/null || echo "")"
+  if [[ -z "$run_id" ]]; then
+    note_fail "E3. trigger /admin/mail/archive/trigger did not return runId: ${trigger_response:0:200}"
+    return
+  fi
+  note_pass "E3. archive run triggered (no_downtime): runId=${run_id}"
+
+  # E4. Poll the run while continuously verifying SMTP banner stays up
+  # AND the Stalwart Deployment never scales to 0. The no_downtime path's
+  # contract: live mail keeps serving.
+  local poll_deadline=$(( $(date +%s) + 600 ))   # 10 min hard cap
+  local run_state="" run_step="" smtp_failures=0 scaledown_failures=0
+  local check_iter=0
+  while (( $(date +%s) < poll_deadline )); do
+    local run_body
+    run_body="$(curl -sk \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+      "${PLATFORM_API_URL}/api/v1/admin/mail/archive-runs/${run_id}" --max-time 15 || echo '{}')"
+    run_state="$(echo "$run_body" \
+      | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("state") or "")' 2>/dev/null || echo "")"
+    run_step="$(echo "$run_body" \
+      | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("currentStep") or "")' 2>/dev/null || echo "")"
+
+    # CONTRACT: Stalwart replicas must NOT drop. Pre-existing 1 → keep 1.
+    local replicas
+    replicas="$(kctl -n "$STALWART_NS" get deploy stalwart-mail -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)"
+    if [[ "$replicas" == "0" ]]; then
+      scaledown_failures=$(( scaledown_failures + 1 ))
+      echo "    ⚠ replicas dropped to 0 at iter $check_iter (state=$run_state, step=$run_step)" >&2
+    fi
+
+    # CONTRACT: SMTP banner stays responsive.
+    local probe_banner
+    probe_banner="$(timeout 5 bash -c "
+      exec 3<>/dev/tcp/${PROBE_HOST}/25
+      read -t 3 -u 3 line
+      echo \"\$line\"
+      printf 'QUIT\\r\\n' >&3
+    " 2>/dev/null || echo '')"
+    if ! echo "$probe_banner" | grep -qiE 'esmtp|stalwart|220'; then
+      smtp_failures=$(( smtp_failures + 1 ))
+      echo "    ⚠ SMTP banner missing at iter $check_iter (state=$run_state, step=$run_step): '${probe_banner:0:60}'" >&2
+    fi
+
+    echo "    poll: state=$run_state step=$run_step replicas=$replicas (iter $check_iter)"
+
+    if [[ "$run_state" == "succeeded" || "$run_state" == "failed" ]]; then break; fi
+    sleep 5
+    check_iter=$(( check_iter + 1 ))
+  done
+
+  # The contract is "no downtime" — zero failures expected.
+  if (( scaledown_failures == 0 )); then
+    note_pass "E4a. Stalwart replicas never dropped to 0 across ${check_iter} polls"
+  else
+    note_fail "E4a. Stalwart replicas dropped to 0 on ${scaledown_failures}/${check_iter} polls"
+  fi
+  # A single transient SMTP failure during the upload phase could happen
+  # due to network jitter; require <2 failures for pass.
+  if (( smtp_failures < 2 )); then
+    note_pass "E4b. SMTP banner remained responsive (${smtp_failures} transient failures across ${check_iter} polls)"
+  else
+    note_fail "E4b. SMTP banner failed on ${smtp_failures}/${check_iter} polls — no_downtime contract broken"
+  fi
+
+  # E5. Final state inspection.
+  if [[ "$run_state" != "succeeded" ]]; then
+    note_fail "E5. archive run terminal state=${run_state} (expected 'succeeded'); step=${run_step}"
+    return
+  fi
+  local final_body
+  final_body="$(curl -sk \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    "${PLATFORM_API_URL}/api/v1/admin/mail/archive-runs/${run_id}" --max-time 15 || echo '{}')"
+  local restic_id export_bytes db_mode
+  restic_id="$(echo "$final_body" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("resticSnapshotId") or "")' 2>/dev/null)"
+  export_bytes="$(echo "$final_body" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("exportSizeBytes") or 0)' 2>/dev/null)"
+  db_mode="$(echo "$final_body" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("mode") or "")' 2>/dev/null)"
+
+  if [[ -n "$restic_id" && "$restic_id" != "null" ]]; then
+    note_pass "E5a. resticSnapshotId populated: ${restic_id}"
+  else
+    note_fail "E5a. resticSnapshotId missing from succeeded run"
+  fi
+  if (( export_bytes > 0 )); then
+    note_pass "E5b. exportSizeBytes=${export_bytes}"
+  else
+    note_fail "E5b. exportSizeBytes=${export_bytes} (expected > 0)"
+  fi
+  if [[ "$db_mode" == "no_downtime" ]]; then
+    note_pass "E5c. mode column = 'no_downtime'"
+  else
+    note_fail "E5c. mode column = '${db_mode}' (expected 'no_downtime')"
+  fi
+
+  # E6. Checkpoint dir cleanup — no .checkpoint-tmp-* leftovers.
+  local leftover
+  leftover="$(kctl exec -n "$STALWART_NS" "$POD" -c stalwart -- \
+    sh -c 'ls -1d /var/lib/stalwart/data/.checkpoint-tmp-* 2>/dev/null | wc -l' 2>/dev/null \
+    | tr -d ' \n\r' || echo "?")"
+  if [[ "$leftover" == "0" ]]; then
+    note_pass "E6. checkpoint dir cleaned up (no .checkpoint-tmp-* in live PVC)"
+  else
+    note_fail "E6. ${leftover} stale .checkpoint-tmp-* dir(s) left in live PVC"
+  fi
+
+  # E7. SMTP + IMAP still serving after the run.
+  local post_smtp post_imap
+  post_smtp="$(timeout 10 bash -c "
+    exec 3<>/dev/tcp/${PROBE_HOST}/25
+    read -t 5 -u 3 line
+    echo \"\$line\"
+    printf 'QUIT\\r\\n' >&3
+  " 2>/dev/null || echo '')"
+  post_imap="$(timeout 10 bash -c "
+    exec 3<>/dev/tcp/${PROBE_HOST}/143
+    read -t 5 -u 3 line
+    echo \"\$line\"
+    printf 'a LOGOUT\\r\\n' >&3
+  " 2>/dev/null || echo '')"
+  if echo "$post_smtp" | grep -qiE 'esmtp|stalwart|220'; then
+    note_pass "E7a. SMTP greeting OK after run"
+  else
+    note_fail "E7a. SMTP greeting after run unexpected: '${post_smtp:0:80}'"
+  fi
+  if echo "$post_imap" | grep -qiE '^\* OK'; then
+    note_pass "E7b. IMAP greeting OK after run"
+  else
+    note_fail "E7b. IMAP greeting after run unexpected: '${post_imap:0:80}'"
+  fi
+  echo ""
+}
+
+# ── Phase F — mail-archive downtime mode (fallback) ────────────────────
+phase_f_archive_downtime() {
+  echo "## Phase F — mail-archive downtime-mode fallback (DESTRUCTIVE — incurs mail downtime)"
+
+  if [[ -z "$ADMIN_TOKEN" || -z "$PLATFORM_API_URL" ]]; then
+    note_warn "F0. ADMIN_TOKEN + PLATFORM_API_URL not set — skipping Phase F"
+    echo ""
+    return
+  fi
+
+  # Same backup-target gate as Phase E.
+  local status_body backup_store_id
+  status_body="$(curl -sk \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    "${PLATFORM_API_URL}/api/v1/admin/mail/archive-status" --max-time 15 || echo '{}')"
+  backup_store_id="$(echo "$status_body" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("backupTarget",{}).get("backupStoreId") or "")' 2>/dev/null || echo "")"
+  if [[ -z "$backup_store_id" ]]; then
+    note_warn "F1. No backup target configured — skipping Phase F"
+    echo ""
+    return
+  fi
+  note_pass "F1. backup target configured: ${backup_store_id}"
+
+  # F2. Trigger downtime archive.
+  local trigger_response run_id
+  trigger_response="$(curl -sk \
+    -X POST "${PLATFORM_API_URL}/api/v1/admin/mail/archive/trigger" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d '{"mode":"downtime"}' --max-time 30 || echo '{}')"
+  run_id="$(echo "$trigger_response" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("runId") or "")' 2>/dev/null || echo "")"
+  if [[ -z "$run_id" ]]; then
+    note_fail "F2. trigger downtime mode did not return runId: ${trigger_response:0:200}"
+    return
+  fi
+  note_pass "F2. downtime archive triggered: runId=${run_id}"
+
+  # F3. Wait for the run to enter the down phase, then verify SMTP is
+  # UNREACHABLE for at least one probe. The contract for downtime mode
+  # is that mail goes offline.
+  local poll_deadline=$(( $(date +%s) + 900 ))   # 15 min cap
+  local run_state="" run_step="" seen_smtp_down=false replicas_was_zero=false
+  while (( $(date +%s) < poll_deadline )); do
+    local run_body
+    run_body="$(curl -sk \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+      "${PLATFORM_API_URL}/api/v1/admin/mail/archive-runs/${run_id}" --max-time 15 || echo '{}')"
+    run_state="$(echo "$run_body" \
+      | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("state") or "")' 2>/dev/null)"
+    run_step="$(echo "$run_body" \
+      | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("currentStep") or "")' 2>/dev/null)"
+
+    local replicas
+    replicas="$(kctl -n "$STALWART_NS" get deploy stalwart-mail -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 1)"
+    if [[ "$replicas" == "0" ]]; then replicas_was_zero=true; fi
+
+    if [[ "$run_state" == "scaling_down" || "$run_state" == "exporting" || "$run_state" == "scaling_up" ]]; then
+      local probe_banner
+      probe_banner="$(timeout 3 bash -c "
+        exec 3<>/dev/tcp/${PROBE_HOST}/25
+        read -t 2 -u 3 line
+        echo \"\$line\"
+        printf 'QUIT\\r\\n' >&3
+      " 2>/dev/null || echo '')"
+      if [[ -z "$probe_banner" ]]; then
+        seen_smtp_down=true
+      fi
+    fi
+
+    echo "    poll: state=$run_state step=$run_step replicas=$replicas smtp_down_seen=$seen_smtp_down"
+    if [[ "$run_state" == "succeeded" || "$run_state" == "failed" ]]; then break; fi
+    sleep 5
+  done
+
+  if $replicas_was_zero; then
+    note_pass "F3a. Stalwart replicas dropped to 0 during run (downtime contract)"
+  else
+    note_warn "F3a. Stalwart replicas never observed at 0 — scale-down may have been too fast to catch"
+  fi
+  if $seen_smtp_down; then
+    note_pass "F3b. SMTP went unreachable during run (downtime contract)"
+  else
+    note_warn "F3b. SMTP never observed unreachable — downtime may have been brief (still acceptable)"
+  fi
+
+  # F4. After terminal, SMTP must return within 60s.
+  if [[ "$run_state" != "succeeded" ]]; then
+    note_fail "F4. terminal state=${run_state} (expected 'succeeded'); step=${run_step}"
+    return
+  fi
+  local waited=0 post_banner=""
+  while (( waited < 60 )); do
+    post_banner="$(timeout 5 bash -c "
+      exec 3<>/dev/tcp/${PROBE_HOST}/25
+      read -t 3 -u 3 line
+      echo \"\$line\"
+      printf 'QUIT\\r\\n' >&3
+    " 2>/dev/null || echo '')"
+    if echo "$post_banner" | grep -qiE 'esmtp|stalwart|220'; then break; fi
+    sleep 5
+    waited=$(( waited + 5 ))
+  done
+  if echo "$post_banner" | grep -qiE 'esmtp|stalwart|220'; then
+    note_pass "F4a. SMTP returned within ${waited}s of run completion"
+  else
+    note_fail "F4a. SMTP did NOT return within 60s — Stalwart scale-back broken? banner='${post_banner:0:80}'"
+  fi
+
+  # F4b. mode column = 'downtime'.
+  local final_body db_mode
+  final_body="$(curl -sk \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    "${PLATFORM_API_URL}/api/v1/admin/mail/archive-runs/${run_id}" --max-time 15 || echo '{}')"
+  db_mode="$(echo "$final_body" \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("data",{}).get("mode") or "")' 2>/dev/null)"
+  if [[ "$db_mode" == "downtime" ]]; then
+    note_pass "F4b. mode column = 'downtime'"
+  else
+    note_fail "F4b. mode column = '${db_mode}' (expected 'downtime')"
+  fi
+  echo ""
+}
+
 # ── Run phases ─────────────────────────────────────────────────────────
 phase_a_health
 phase_b_state
-if $RUN_MODE_FLIP; then phase_c_mode_flip; fi
-if $RUN_NEGATIVE;  then phase_d_negative; fi
+if $RUN_MODE_FLIP;        then phase_c_mode_flip;            fi
+if $RUN_NEGATIVE;         then phase_d_negative;             fi
+if $RUN_ARCHIVE;          then phase_e_archive_no_downtime;  fi
+if $RUN_ARCHIVE_DOWNTIME; then phase_f_archive_downtime;     fi
 
 # ── Summary ────────────────────────────────────────────────────────────
 echo "═══════════════════════════════════════════════════════════════════"

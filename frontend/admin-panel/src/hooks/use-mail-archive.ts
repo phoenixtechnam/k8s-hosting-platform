@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
+  MailArchiveMode,
   MailArchiveStatusResponse,
   MailArchiveListResponse,
   MailArchiveRun,
@@ -64,14 +65,24 @@ export function useMailArchiveRun(runId: string | null) {
   });
 }
 
-/** Trigger a new archive run. */
+/**
+ * Trigger a new archive run.
+ *
+ * Pass `mode` to choose between:
+ *   - 'no_downtime' (default) — RocksDB-secondary + Checkpoint, live
+ *     Stalwart keeps serving mail throughout. Wall time: a few seconds.
+ *   - 'downtime' — scale Stalwart to 0, export, scale back. ~60-120s
+ *     mail downtime. Belt-and-suspenders option.
+ *
+ * Omit mode entirely (or pass `{}`) to let the server pick the default.
+ */
 export function useTriggerMailArchive() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () =>
+    mutationFn: (input?: { mode?: MailArchiveMode }) =>
       apiFetch<Envelope<MailArchiveTriggerResponse>>('/api/v1/admin/mail/archive/trigger', {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify(input ?? {}),
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: STATUS_KEY });

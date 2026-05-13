@@ -38,6 +38,29 @@ export const mailArchiveStateSchema = z.enum([
 export type MailArchiveState = z.infer<typeof mailArchiveStateSchema>;
 
 /**
+ * Archive trigger mode — chooses between two implementations:
+ *
+ *   no_downtime   — DEFAULT. Uses RocksDB OpenAsSecondary + Checkpoint
+ *                   (rocksdb-secondary-checkpoint binary) to take a hard-
+ *                   linked snapshot of the live primary's data dir, then
+ *                   runs `stalwart -e` against the checkpoint via an
+ *                   alt-config. Live Stalwart keeps serving SMTP/IMAP
+ *                   throughout. Wall-clock cost: seconds.
+ *
+ *   downtime      — Fallback. Scales the stalwart-mail Deployment to 0
+ *                   first (releases the RocksDB LOCK), then runs
+ *                   `stalwart -e` against the live data dir, then scales
+ *                   back. ~60-120s mail downtime. Belt-and-suspenders
+ *                   choice for cases where the operator wants the
+ *                   strongest app-level-atomic semantics.
+ *
+ * Stored on each run for audit; the orchestrator picks the implementation
+ * based on this value.
+ */
+export const mailArchiveModeSchema = z.enum(['no_downtime', 'downtime']);
+export type MailArchiveMode = z.infer<typeof mailArchiveModeSchema>;
+
+/**
  * Lifecycle row for one archive run. Returned by GET /admin/mail/archive-runs
  * + the inner shape of the trigger endpoint's response after the orchestrator
  * starts.
@@ -46,7 +69,10 @@ export const mailArchiveRunSchema = z.object({
   id: z.string(),
   state: mailArchiveStateSchema,
   currentStep: z.string().nullable(),
-  /** Replica count BEFORE the run started — what we scale back to on completion. */
+  /** Which implementation ran this archive (see mailArchiveModeSchema). */
+  mode: mailArchiveModeSchema,
+  /** Replica count BEFORE the run started — what we scale back to on completion.
+   *  Always recorded even in no_downtime mode (for symmetry + observability). */
   originalReplicas: z.number().int().nonnegative(),
   /** k8s Job name running stalwart -e + restic upload (null until exporting). */
   jobName: z.string().nullable(),
@@ -100,6 +126,15 @@ export const mailArchiveListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 export type MailArchiveListResponse = z.infer<typeof mailArchiveListResponseSchema>;
+
+/**
+ * POST /admin/mail/archive/trigger request — operator picks the mode.
+ * Empty body → default ('no_downtime').
+ */
+export const mailArchiveTriggerRequestSchema = z.object({
+  mode: mailArchiveModeSchema.optional(),
+});
+export type MailArchiveTriggerRequest = z.infer<typeof mailArchiveTriggerRequestSchema>;
 
 /**
  * POST /admin/mail/archive/trigger response: returns the run-id so the

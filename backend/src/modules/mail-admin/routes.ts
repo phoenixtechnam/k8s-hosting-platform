@@ -40,7 +40,10 @@ import {
   getMailArchiveRun,
   listMailArchives,
 } from './archive.js';
-import { mailArchiveRestoreRequestSchema } from '@k8s-hosting/api-contracts';
+import {
+  mailArchiveRestoreRequestSchema,
+  mailArchiveTriggerRequestSchema,
+} from '@k8s-hosting/api-contracts';
 import { getMailNodeSelector, updateMailNodeSelector } from './node-selector.js';
 import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
 import {
@@ -690,15 +693,33 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/admin/mail/archive/trigger',
     { preHandler: requireRole('super_admin') },
-    async (req: { user?: { sub?: string } }) => {
+    async (req: { body: unknown; user?: { sub?: string } }) => {
       const cfg = app.config as Record<string, unknown>;
       const userId = req.user?.sub ?? 'unknown';
-      app.log.warn({ userId }, 'mail-admin: archive trigger requested (will incur ~60-120s mail downtime)');
+      // Body is optional — empty body is fine and means "default mode".
+      const parsed = mailArchiveTriggerRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      const mode = parsed.data.mode; // undefined → orchestrator default (no_downtime)
+      app.log.warn(
+        { userId, mode: mode ?? 'default(no_downtime)' },
+        mode === 'downtime'
+          ? 'mail-admin: archive trigger requested (will incur ~60-120s mail downtime)'
+          : 'mail-admin: archive trigger requested (no-downtime path)',
+      );
       try {
         const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
         const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
         const k8s = createK8sClients(kubeconfigPath);
-        const result = await startMailArchive({ ...k8s, db: app.db, kubeconfigPath, userId });
+        const result = await startMailArchive(
+          { ...k8s, db: app.db, kubeconfigPath, userId },
+          { mode },
+        );
         app.log.warn({ userId, runId: result.runId }, 'mail-admin: archive run started');
         return success(result);
       } catch (err) {

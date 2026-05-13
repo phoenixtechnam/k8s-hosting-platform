@@ -1,0 +1,32 @@
+[package]
+name = "rocksdb-secondary-checkpoint"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Open a RocksDB primary as secondary (no LOCK conflict) and create a hard-linked checkpoint. Used by the Stalwart mail-archive Job."
+
+[[bin]]
+name = "rocksdb-secondary-checkpoint"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to the same C++ rocksdb version Stalwart 0.16.5 uses (10.4.2).
+# On-disk file format compatibility is critical — opening a primary as
+# secondary with a different on-disk format version risks MANIFEST/SST
+# read failures. Confirm via:
+#   gh api -H 'Accept: application/vnd.github.raw' \
+#     /repos/stalwartlabs/stalwart/contents/Cargo.lock \
+#     | grep -A2 librocksdb-sys
+librocksdb-sys = "=0.17.3"
+
+# c_char support for FFI string handling.
+libc = "0.2"
+
+[profile.release]
+# Strip symbols to keep the image small. 30+ MB → 4-6 MB is typical.
+strip = true
+# Single LTO unit + opt-level=3 minimises the static link footprint.
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"

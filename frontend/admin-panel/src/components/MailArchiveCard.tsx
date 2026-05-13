@@ -16,24 +16,29 @@ import {
   useTriggerMailArchive,
   useRestoreMailArchive,
 } from '@/hooks/use-mail-archive';
-import type { MailArchiveRun } from '@k8s-hosting/api-contracts';
+import type { MailArchiveMode, MailArchiveRun } from '@k8s-hosting/api-contracts';
 
 /**
  * Email Management → Mail Archive card.
  *
- * Operator-triggered Stalwart-native (`stalwart -e`) archives. Each run:
- *   1. Scales stalwart-mail to 0 (releases the RocksDB LOCK)
- *   2. Runs `stalwart -e` in a one-shot Job
- *   3. Ships the LZ4 via restic to the configured backup target
- *   4. Scales stalwart-mail back to its original replica count
+ * Operator-triggered Stalwart-native (`stalwart -e`) archives.
  *
- * Mail SMTP/IMAP is unavailable for the duration (~60-120s typical).
- * This is intentional — the alternative (background cron) requires
- * upstream Stalwart support for a `--secondary` flag on `-e`
- * (stalwartlabs/stalwart#3175).
+ * Two modes (operator picks at trigger time, default is no_downtime):
  *
- * Restore is the same dance in reverse: scale-down, wipe data dir, run
- * `stalwart -i` against the restic-extracted LZ4, scale-up.
+ *   no_downtime  — Job opens the live RocksDB as a SECONDARY instance,
+ *                  takes a hard-linked Checkpoint, then runs `stalwart -e`
+ *                  against the checkpoint. Live Stalwart keeps serving
+ *                  SMTP/IMAP. Wall time: seconds.
+ *
+ *   downtime     — Scales stalwart-mail to 0 to release the RocksDB
+ *                  LOCK, runs `stalwart -e` directly, scales back.
+ *                  ~60-120s mail downtime. Use only if the no_downtime
+ *                  path is unavailable.
+ *
+ * Both modes ship the LZ4 via restic to the configured backup target.
+ *
+ * Restore always uses the downtime dance: `stalwart -i` writes into an
+ * empty primary, which would conflict with a live Stalwart's LOCK.
  *
  * Vocabulary: we use "archive" / "backup" in operator-facing copy. The
  * word "snapshot" is reserved for K8s VolumeSnapshot CRDs which don't
@@ -47,6 +52,7 @@ export default function MailArchiveCard() {
 
   const [pendingRunId, setPendingRunId] = useState<string | null>(null);
   const [showTriggerConfirm, setShowTriggerConfirm] = useState(false);
+  const [triggerMode, setTriggerMode] = useState<MailArchiveMode>('no_downtime');
   const [restoreSource, setRestoreSource] = useState<MailArchiveRun | null>(null);
 
   // Auto-track the in-flight run from the status payload so a page reload
@@ -84,7 +90,7 @@ export default function MailArchiveCard() {
 
   const handleTriggerConfirm = async () => {
     try {
-      const r = await trigger.mutateAsync();
+      const r = await trigger.mutateAsync({ mode: triggerMode });
       setPendingRunId(r.data.runId);
       setShowTriggerConfirm(false);
     } catch {
@@ -104,11 +110,12 @@ export default function MailArchiveCard() {
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
         Store-agnostic LZ4 export via Stalwart&apos;s own{' '}
-        <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart -e</code>. Each run
-        briefly scales Stalwart to zero replicas (~60–120s typical mail downtime), runs the export
-        against the released RocksDB LOCK, ships the LZ4 via restic to the configured backup
-        target, then scales back up. Use for weekly archival, pre-upgrade safety points, or
-        long-term retention.
+        <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart -e</code>. The default{' '}
+        <strong>no-downtime</strong> path opens RocksDB as a secondary, takes a hard-linked checkpoint,
+        and exports from there — live Stalwart keeps serving SMTP/IMAP throughout. Use for weekly
+        archival, pre-upgrade safety points, or long-term retention. A fallback{' '}
+        <strong>downtime</strong> mode (scale to 0, export, scale back, ~60–120s mail downtime) is
+        available if the no-downtime path is unavailable.
       </p>
 
       {/* Scheduled-archiving callout */}
@@ -170,25 +177,87 @@ export default function MailArchiveCard() {
         </Stat>
       </div>
 
-      {/* ── trigger button ── */}
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => setShowTriggerConfirm(true)}
-          disabled={Boolean(activeRunId) || noTarget || trigger.isPending}
-          data-testid="mail-archive-trigger"
-          className="inline-flex items-center gap-2 rounded-lg border border-brand-500 bg-brand-500 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {trigger.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-          Create Archive Now
-        </button>
-        <p className="text-xs text-gray-500 dark:text-gray-400">
-          {activeRunId
-            ? 'A run is in progress — see modal below.'
-            : noTarget
-              ? 'Configure a backup target before triggering.'
-              : 'Will incur ~60–120s mail downtime.'}
-        </p>
+      {/* ── trigger controls: mode picker + button ── */}
+      <div className="space-y-3">
+        <fieldset className="space-y-1.5">
+          <legend className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            Mode
+          </legend>
+          <div className="flex flex-wrap gap-2">
+            <label
+              className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm cursor-pointer flex-1 min-w-[260px] ${
+                triggerMode === 'no_downtime'
+                  ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20'
+                  : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900'
+              }`}
+            >
+              <input
+                type="radio"
+                name="archive-mode"
+                value="no_downtime"
+                checked={triggerMode === 'no_downtime'}
+                onChange={() => setTriggerMode('no_downtime')}
+                disabled={Boolean(activeRunId)}
+                data-testid="mail-archive-mode-no-downtime"
+                className="mt-0.5"
+              />
+              <span>
+                <strong className="text-gray-900 dark:text-gray-100">No downtime</strong>{' '}
+                <span className="text-xs text-gray-500 dark:text-gray-400">(default, recommended)</span>
+                <div className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                  RocksDB secondary + Checkpoint. Live mail keeps serving.
+                </div>
+              </span>
+            </label>
+            <label
+              className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm cursor-pointer flex-1 min-w-[260px] ${
+                triggerMode === 'downtime'
+                  ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/20'
+                  : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900'
+              }`}
+            >
+              <input
+                type="radio"
+                name="archive-mode"
+                value="downtime"
+                checked={triggerMode === 'downtime'}
+                onChange={() => setTriggerMode('downtime')}
+                disabled={Boolean(activeRunId)}
+                data-testid="mail-archive-mode-downtime"
+                className="mt-0.5"
+              />
+              <span>
+                <strong className="text-gray-900 dark:text-gray-100">With downtime</strong>{' '}
+                <span className="text-xs text-amber-700 dark:text-amber-400">(fallback)</span>
+                <div className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                  Scale Stalwart to 0, export, scale back. ~60–120s downtime.
+                </div>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setShowTriggerConfirm(true)}
+            disabled={Boolean(activeRunId) || noTarget || trigger.isPending}
+            data-testid="mail-archive-trigger"
+            className="inline-flex items-center gap-2 rounded-lg border border-brand-500 bg-brand-500 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {trigger.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+            Create Archive Now
+          </button>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {activeRunId
+              ? 'A run is in progress — see modal below.'
+              : noTarget
+                ? 'Configure a backup target before triggering.'
+                : triggerMode === 'downtime'
+                  ? 'Will incur ~60–120s mail downtime.'
+                  : 'Live mail keeps serving throughout.'}
+          </p>
+        </div>
       </div>
 
       {trigger.isError ? (
@@ -220,25 +289,45 @@ export default function MailArchiveCard() {
       {/* ── trigger confirm modal ── */}
       {showTriggerConfirm ? (
         <ConfirmModal
-          title="Create app-level archive?"
+          title={
+            triggerMode === 'no_downtime'
+              ? 'Create no-downtime archive?'
+              : 'Create archive (will incur mail downtime)?'
+          }
           body={
-            <>
-              This will:
-              <ol className="list-decimal ml-5 mt-2 space-y-1">
-                <li>Scale the Stalwart Deployment to <strong>0 replicas</strong>.</li>
-                <li>Wait for the running pod to terminate (releases RocksDB LOCK).</li>
-                <li>Run <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart -e</code> in a one-shot Job.</li>
-                <li>Upload the LZ4 to <strong>{data.backupTarget.backupStoreName ?? data.backupTarget.backupStoreId}</strong>.</li>
-                <li>Scale Stalwart back up to {data.last?.originalReplicas ?? 1} replica(s).</li>
-              </ol>
-              <p className="mt-2 text-amber-600 dark:text-amber-400 text-xs">
-                <strong>~60–120s of mail downtime is expected.</strong> SMTP retries from senders will
-                resume delivery; IMAP/JMAP clients will reconnect automatically.
-              </p>
-            </>
+            triggerMode === 'no_downtime' ? (
+              <>
+                This will, with <strong>no mail downtime</strong>:
+                <ol className="list-decimal ml-5 mt-2 space-y-1">
+                  <li>Open the live RocksDB data dir as a <strong>secondary</strong> instance (no LOCK conflict).</li>
+                  <li>Take a hard-linked <strong>Checkpoint</strong> into a Job-local emptyDir.</li>
+                  <li>Run <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart -e</code> against the checkpoint dir.</li>
+                  <li>Upload the LZ4 to <strong>{data.backupTarget.backupStoreName ?? data.backupTarget.backupStoreId}</strong>.</li>
+                </ol>
+                <p className="mt-2 text-gray-600 dark:text-gray-400 text-xs">
+                  Live Stalwart keeps serving SMTP/IMAP throughout. Wall time is a few seconds plus the
+                  restic upload.
+                </p>
+              </>
+            ) : (
+              <>
+                This will:
+                <ol className="list-decimal ml-5 mt-2 space-y-1">
+                  <li>Scale the Stalwart Deployment to <strong>0 replicas</strong>.</li>
+                  <li>Wait for the running pod to terminate (releases RocksDB LOCK).</li>
+                  <li>Run <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">stalwart -e</code> in a one-shot Job.</li>
+                  <li>Upload the LZ4 to <strong>{data.backupTarget.backupStoreName ?? data.backupTarget.backupStoreId}</strong>.</li>
+                  <li>Scale Stalwart back up to {data.last?.originalReplicas ?? 1} replica(s).</li>
+                </ol>
+                <p className="mt-2 text-amber-600 dark:text-amber-400 text-xs">
+                  <strong>~60–120s of mail downtime is expected.</strong> SMTP retries from senders will
+                  resume delivery; IMAP/JMAP clients will reconnect automatically.
+                </p>
+              </>
+            )
           }
           confirmLabel="Yes, create archive"
-          danger={false}
+          danger={triggerMode === 'downtime'}
           busy={trigger.isPending}
           onConfirm={handleTriggerConfirm}
           onCancel={() => setShowTriggerConfirm(false)}
@@ -284,6 +373,21 @@ function Stat({ label, children }: { readonly label: string; readonly children: 
       </div>
       <div>{children}</div>
     </div>
+  );
+}
+
+function ModeBadge({ mode }: { readonly mode: MailArchiveMode }) {
+  if (mode === 'no_downtime') {
+    return (
+      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
+        no-downtime
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+      downtime
+    </span>
   );
 }
 
@@ -338,6 +442,7 @@ function ArchiveList({
             <tr className="text-left text-gray-500 dark:text-gray-400">
               <th className="px-2 py-1.5">Started</th>
               <th className="px-2 py-1.5">State</th>
+              <th className="px-2 py-1.5">Mode</th>
               <th className="px-2 py-1.5">Step</th>
               <th className="px-2 py-1.5">Size</th>
               <th className="px-2 py-1.5">restic id</th>
@@ -352,6 +457,7 @@ function ArchiveList({
                   {new Date(r.startedAt).toLocaleString()}
                 </td>
                 <td className="px-2 py-1.5"><StateBadge state={r.state} /></td>
+                <td className="px-2 py-1.5"><ModeBadge mode={r.mode} /></td>
                 <td className="px-2 py-1.5 text-gray-500 dark:text-gray-400">{r.currentStep ?? '—'}</td>
                 <td className="px-2 py-1.5 text-gray-700 dark:text-gray-300 font-mono">
                   {formatBytes(r.exportSizeBytes)}

@@ -2,30 +2,44 @@
  * Stalwart-native, app-level archive orchestration.
  *
  * Distinct from the continuous restic backup of the raw data dir
- * (mail-snapshot-*). An archive run is operator-triggered, briefly
- * disruptive, and produces a store-agnostic LZ4 export via Stalwart's
- * own `stalwart -e` command:
+ * (mail-snapshot-*). Operator-triggered, produces a store-agnostic
+ * LZ4 export via Stalwart's own `stalwart -e` command.
  *
- *   1. Save current Stalwart replicas (so we can restore exactly).
- *   2. Scale the stalwart-mail Deployment to 0.
- *   3. Wait for all stalwart pods to terminate — this releases the
- *      RocksDB LOCK in the data directory.
- *   4. Spawn a one-shot Job (`stalwart-archive-<runId>`) that mounts
- *      the same PVC, runs `stalwart -e /tmp/export.lz4`, then ships
- *      the LZ4 via restic to the configured backup target. The Job
- *      uses podAffinity to land on the same node as the (now-dead)
- *      Stalwart pod — local-path PVCs are node-pinned.
- *   5. Wait for the Job to finish. Parse exportSizeBytes + restic
- *      snapshot ID from its terminal log line.
- *   6. ALWAYS scale Stalwart back up — even if the Job failed — so
- *      mail comes back online.
+ * Two implementations select via the run's `mode` column:
  *
- * Why operator-triggered and not a daily CronJob:
- *   `stalwart -e` opens RocksDB in primary mode which takes the LOCK.
- *   You can't run it next to a live primary today — see upstream issue
- *   stalwartlabs/stalwart#3175 (request for a `--secondary` flag). Until
- *   that lands, an archive run REQUIRES mail downtime (~60-120s typical),
- *   which we won't schedule silently.
+ *   mode='no_downtime' (DEFAULT for new operator triggers)
+ *   ────────────────────────────────────────────────────────────
+ *   Live Stalwart keeps serving SMTP/IMAP throughout. Steps:
+ *     1. Spawn a Job pinned to the same node as the live Stalwart
+ *        pod (the PVC is node-local, so the Job must land there).
+ *     2. initContainer #1: rocksdb-secondary-checkpoint opens the
+ *        live primary's RocksDB data dir as a SECONDARY instance
+ *        (no LOCK conflict), calls try_catch_up_with_primary, then
+ *        Checkpoint::Create with log_size_for_flush=u64::MAX into a
+ *        fresh dir on a Job-local emptyDir volume. Hard-links — no
+ *        data copy. Wall time: tens of milliseconds.
+ *     3. initContainer #2: writes an alt-config.json that swaps the
+ *        DataStore.path to the checkpoint dir.
+ *     4. initContainer #3: runs `stalwart -e` against the alt-config.
+ *        It opens the checkpoint dir in primary mode (the checkpoint
+ *        has its own LOCK file separate from the live primary).
+ *     5. main container: restic-uploads the LZ4 (existing flow).
+ *
+ *   mode='downtime' (fallback / belt-and-suspenders)
+ *   ────────────────────────────────────────────────────────────
+ *     1. Save current Stalwart replicas (so we can restore exactly).
+ *     2. Scale the stalwart-mail Deployment to 0.
+ *     3. Wait for all stalwart pods to terminate — this releases the
+ *        RocksDB LOCK in the data directory.
+ *     4. Spawn the export+upload Job (no rocksdb-secondary init —
+ *        just `stalwart -e` directly against the now-released
+ *        primary data dir).
+ *     5. Wait for Job, parse stats.
+ *     6. ALWAYS scale Stalwart back up — even if the Job failed.
+ *
+ * Cron-able if mode='no_downtime' becomes the universal path. Until
+ * Path B has had production soak time we keep cron disabled, but
+ * the orchestrator no longer requires downtime in the default mode.
  *
  * Why "archive" not "snapshot":
  *   K8s `VolumeSnapshot` CRDs are block-level, instantaneous, CSI-driven.
@@ -51,6 +65,7 @@ import { backupConfigurations, systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
   type MailArchiveListResponse,
+  type MailArchiveMode,
   type MailArchiveRun,
   type MailArchiveState,
   type MailArchiveStatusResponse,
@@ -69,8 +84,13 @@ const SETTINGS_ID = 'system';
 const ARCHIVE_JOB_PREFIX = 'stalwart-archive-';
 const ARCHIVE_TOOLS_IMAGE_ENV = 'MAIL_BACKUP_TOOLS_IMAGE';
 const STALWART_IMAGE_ENV = 'STALWART_IMAGE';
+const ROCKSDB_SECONDARY_IMAGE_ENV = 'ROCKSDB_SECONDARY_CHECKPOINT_IMAGE';
 const ARCHIVE_TIMEOUT_SECONDS = 900; // 15 min hard cap on the whole run
 const SCALE_DOWN_TIMEOUT_SECONDS = 180; // wait for pods to terminate
+
+/** Default mode for new operator triggers — Path B (no_downtime). The
+ *  scale-down path remains available via explicit `mode: 'downtime'`. */
+const DEFAULT_ARCHIVE_MODE: MailArchiveMode = 'no_downtime';
 
 export interface ArchiveDeps {
   readonly db: Database;
@@ -89,6 +109,7 @@ type ArchiveRunRow = Record<string, unknown> & {
   id: string;
   state: string;
   current_step: string | null;
+  mode: string | null;
   original_replicas: number;
   job_name: string | null;
   restic_snapshot_id: string | null;
@@ -102,10 +123,15 @@ type ArchiveRunRow = Record<string, unknown> & {
 };
 
 function rowToRun(row: ArchiveRunRow): MailArchiveRun {
+  // Migration 0106 backfills NULL → 'downtime' but we still defensively
+  // fallback in case an older row predates the migration.
+  const mode: MailArchiveMode =
+    row.mode === 'no_downtime' || row.mode === 'downtime' ? row.mode : 'downtime';
   return mailArchiveRunSchema.parse({
     id: row.id,
     state: row.state as MailArchiveState,
     currentStep: row.current_step,
+    mode,
     originalReplicas: row.original_replicas,
     jobName: row.job_name,
     resticSnapshotId: row.restic_snapshot_id,
@@ -133,9 +159,20 @@ const ACTIVE_STATES = new Set<MailArchiveState>([
  * Start a new archive run. Fire-and-forget: the orchestrator runs as a
  * background promise; operator polls /admin/mail/archive-runs/:id for
  * status.
+ *
+ * Mode selection (also stored on the row for audit):
+ *   - 'no_downtime' (default) → Path B: secondary-checkpoint + export
+ *      against the checkpoint dir. Live Stalwart keeps serving mail.
+ *   - 'downtime' → scale Stalwart to 0, export against the live data
+ *      dir, scale back. ~60-120s mail downtime.
  */
-export async function startMailArchive(deps: ArchiveDeps): Promise<{ runId: string }> {
+export async function startMailArchive(
+  deps: ArchiveDeps,
+  opts: { mode?: MailArchiveMode } = {},
+): Promise<{ runId: string }> {
   await rejectIfAnotherRunActive(deps.db);
+
+  const mode: MailArchiveMode = opts.mode ?? DEFAULT_ARCHIVE_MODE;
 
   const replicas = await readCurrentReplicas(deps.apps);
   if (replicas == null) {
@@ -145,23 +182,43 @@ export async function startMailArchive(deps: ArchiveDeps): Promise<{ runId: stri
       503,
     );
   }
+  if (mode === 'no_downtime' && replicas < 1) {
+    // Path B reads from the live primary's MANIFEST/WAL — if there's no
+    // live primary, the checkpoint is meaningless. Fall back to the
+    // downtime path which can export from a stopped data dir.
+    throw new ApiError(
+      'MAIL_ARCHIVE_NO_LIVE_PRIMARY',
+      'no_downtime archive requires a running Stalwart primary; ' +
+        'either scale Stalwart up first or trigger with mode=downtime',
+      409,
+    );
+  }
 
   const runId = randomUUID();
   await deps.db.execute(sql`
     INSERT INTO mail_archive_runs
-      (id, state, current_step, original_replicas, triggered_by, triggered_by_user_id)
-    VALUES (${runId}, 'queued', 'preflight', ${replicas}, ${'operator'}, ${deps.userId ?? null})
+      (id, state, current_step, mode, original_replicas, triggered_by, triggered_by_user_id)
+    VALUES (${runId}, 'queued', 'preflight', ${mode}, ${replicas}, ${'operator'}, ${deps.userId ?? null})
   `);
 
   // Fire-and-forget. The orchestrator updates DB state as it progresses.
-  // Any uncaught error is captured + the row marked failed. We also ALWAYS
-  // attempt to scale Stalwart back up in the catch block so a half-broken
-  // run doesn't leave mail offline.
-  void runArchiveOrchestrator(runId, replicas, deps).catch(async (err) => {
+  // Any uncaught error is captured + the row marked failed. For the
+  // downtime path we also ALWAYS attempt to scale Stalwart back up in
+  // the catch block so a half-broken run doesn't leave mail offline.
+  // For the no_downtime path there's nothing to scale back — Stalwart
+  // never went down.
+  const orchestrator =
+    mode === 'no_downtime'
+      ? runArchiveOrchestratorNoDowntime(runId, replicas, deps)
+      : runArchiveOrchestrator(runId, replicas, deps);
+
+  void orchestrator.catch(async (err) => {
     const msg = err instanceof Error ? err.message : String(err);
     deps.logger?.warn?.('mail-archive orchestrator failed:', msg);
     await markRunFailed(deps.db, runId, msg).catch(() => undefined);
-    await safeScaleBackUp(deps, replicas).catch(() => undefined);
+    if (mode === 'downtime') {
+      await safeScaleBackUp(deps, replicas).catch(() => undefined);
+    }
   });
 
   return { runId };
@@ -209,10 +266,14 @@ export async function startMailArchiveRestore(
   }
 
   const newRunId = randomUUID();
+  // Restore ALWAYS requires downtime: `stalwart -i` opens the primary
+  // RocksDB data dir in write mode and would conflict with a live
+  // Stalwart's LOCK. Record this on the audit row so the UI can label it
+  // correctly.
   await deps.db.execute(sql`
     INSERT INTO mail_archive_runs
-      (id, state, current_step, original_replicas, triggered_by, triggered_by_user_id)
-    VALUES (${newRunId}, 'queued', 'preflight', ${replicas}, ${'restore'}, ${deps.userId ?? null})
+      (id, state, current_step, mode, original_replicas, triggered_by, triggered_by_user_id)
+    VALUES (${newRunId}, 'queued', 'preflight', ${'downtime'}, ${replicas}, ${'restore'}, ${deps.userId ?? null})
   `);
 
   void runRestoreOrchestrator(
@@ -273,15 +334,19 @@ export async function getMailArchiveStatus(deps: ArchiveDeps): Promise<MailArchi
     storageType = cfg?.storageType ?? null;
   }
 
+  // Once mode='no_downtime' has had production soak time we can flip
+  // scheduledArchivingAvailable to true and surface a cron schedule. For
+  // now the platform supports the no-downtime path but still gates cron
+  // behind operator confirmation.
   return mailArchiveStatusResponseSchema.parse({
     last: lastRow ? rowToRun(lastRow) : null,
     current: currentRow ? rowToRun(currentRow) : null,
     backupTarget: { backupStoreId, backupStoreName, storageType },
     scheduledArchivingAvailable: false,
     scheduledArchivingBlockedBy:
-      'stalwartlabs/stalwart#3175 — stalwart -e takes the RocksDB LOCK, ' +
-      'so it cannot run next to a live primary. Scheduled archiving will ' +
-      'be enabled once upstream ships a --secondary flag.',
+      'no-downtime archives (rocksdb-secondary-checkpoint) are supported ' +
+      'on-demand. Scheduled cron archiving will be enabled once we have ' +
+      'production soak time on the new path.',
   });
 }
 
@@ -389,6 +454,92 @@ async function runRestoreOrchestrator(
   } else {
     await markRunFailed(deps.db, runId, jobResult.error ?? 'restore job failed');
   }
+}
+
+// ── Internal: orchestrator — no_downtime (Path B) ─────────────────────────────
+
+/**
+ * Path B: no-downtime archive via RocksDB OpenAsSecondary + Checkpoint.
+ *
+ * Live Stalwart keeps serving SMTP/IMAP throughout. The Job lands on the
+ * same node as the live Stalwart pod (PVC is node-local; we resolve the
+ * node from the running pod and pin the Job with nodeSelector). It has
+ * three initContainers:
+ *
+ *   1. rocksdb-secondary-checkpoint
+ *      Opens the live primary's data dir as a SECONDARY rocksdb instance
+ *      (no LOCK conflict), calls try_catch_up_with_primary, then writes a
+ *      hard-linked Checkpoint into /tmp/cp. Wall time ≈ 30 ms.
+ *
+ *   2. alt-config-builder
+ *      jq-edits the live stalwart config to point DataStore.path at the
+ *      checkpoint dir. The result is written to /tmp/alt-cfg/config.json.
+ *
+ *   3. stalwart-export
+ *      Runs `stalwart --config /tmp/alt-cfg/config.json -e
+ *      /export/export.lz4`. This opens /tmp/cp in primary mode, which is
+ *      independent of the live primary's LOCK (separate dir, separate
+ *      LOCK file). Live Stalwart keeps serving.
+ *
+ * Then the main `upload` container does the existing restic upload.
+ *
+ * originalReplicas is recorded for audit/symmetry only — we never scale.
+ */
+async function runArchiveOrchestratorNoDowntime(
+  runId: string,
+  _originalReplicas: number,
+  deps: ArchiveDeps,
+): Promise<void> {
+  await deps.db.execute(sql`
+    UPDATE mail_archive_runs SET state = 'exporting', current_step = 'resolving stalwart node'
+    WHERE id = ${runId}
+  `);
+
+  const nodeName = await getLiveStalwartNode(deps.core);
+  if (!nodeName) {
+    throw new Error(
+      'no_downtime archive: no running Stalwart pod found to derive nodeSelector from',
+    );
+  }
+
+  const jobName = `${ARCHIVE_JOB_PREFIX}nd-${runId.slice(0, 8)}-${Math.floor(Date.now() / 1000)}`;
+  await updateRunStep(deps.db, runId, 'submitting checkpoint+export job', { job_name: jobName });
+
+  await createArchiveJobNoDowntime(jobName, nodeName, deps);
+
+  const jobResult = await waitForJobOutcome(jobName, deps);
+
+  if (jobResult.success) {
+    await deps.db.execute(sql`
+      UPDATE mail_archive_runs SET
+        state = 'succeeded',
+        current_step = NULL,
+        restic_snapshot_id = ${jobResult.resticSnapshotId ?? null},
+        export_size_bytes = ${jobResult.exportSizeBytes ?? null},
+        restic_added_bytes = ${jobResult.resticAddedBytes ?? null},
+        finished_at = now()
+      WHERE id = ${runId}
+    `);
+  } else {
+    await markRunFailed(deps.db, runId, jobResult.error ?? 'no-downtime export job failed');
+  }
+}
+
+/** Find the node hosting the (single) live Stalwart pod. PVC is local-path
+ *  so the Job must land on the same node to read the primary's data dir. */
+async function getLiveStalwartNode(core: CoreV1Api): Promise<string | null> {
+  const pods = (await core.listNamespacedPod({
+    namespace: MAIL_NAMESPACE,
+    labelSelector: 'app=stalwart-mail',
+  } as unknown as Parameters<typeof core.listNamespacedPod>[0])) as {
+    items?: { spec?: { nodeName?: string }; status?: { phase?: string } }[];
+  };
+  // Prefer Running pods over Pending/Terminating.
+  const running = (pods.items ?? []).find((p) => p.status?.phase === 'Running' && p.spec?.nodeName);
+  if (running?.spec?.nodeName) return running.spec.nodeName;
+  // Fallback: any pod with a nodeName (e.g. Pending but already scheduled).
+  const anyScheduled = (pods.items ?? []).find((p) => p.spec?.nodeName);
+  return anyScheduled?.spec?.nodeName ?? null;
 }
 
 // ── Internal: scale orchestration ──────────────────────────────────────────────
@@ -626,6 +777,237 @@ async function createArchiveJob(
               persistentVolumeClaim: { claimName: 'stalwart-rocksdb-data' },
             },
             { name: 'stalwart-config', configMap: { name: 'stalwart-config' } },
+            { name: 'export', emptyDir: {} },
+          ],
+        },
+      },
+    },
+  };
+
+  await deps.batch.createNamespacedJob({
+    namespace: MAIL_NAMESPACE,
+    body: body as unknown as object,
+  } as unknown as Parameters<typeof deps.batch.createNamespacedJob>[0]);
+}
+
+/**
+ * No-downtime Job spec:
+ *   initContainer #1 → rocksdb-secondary-checkpoint
+ *                       Opens the live data dir as a SECONDARY rocksdb
+ *                       instance, takes a hard-linked Checkpoint into a
+ *                       fresh subdir of the SAME PVC (must be same
+ *                       filesystem — hard-link doesn't cross mounts).
+ *   initContainer #2 → alt-config-builder
+ *                       Rewrites the Stalwart config's `path` field to
+ *                       point at the checkpoint dir. Stalwart 0.16
+ *                       config is the minimal form
+ *                       `{"@type":"RocksDb","path":"…"}` so the rewrite
+ *                       is a single jq assign.
+ *   initContainer #3 → stalwart-export
+ *                       Runs `stalwart -e` against the alt-config.
+ *                       Always removes the checkpoint dir afterward
+ *                       (regardless of export success) so we don't leak
+ *                       hard-linked SST file names into the live PVC.
+ *   main             → upload (existing archive-export.sh)
+ *
+ * Mount layout:
+ *   stalwart-data PVC → /data  (WRITABLE — needed because the checkpoint
+ *                       dir must live on the same filesystem as the
+ *                       primary's data files for hard-link to succeed;
+ *                       writing to a sibling subdir like
+ *                       `/data/.checkpoint-tmp-<jobName>` is the only
+ *                       portable way to guarantee same-fs).
+ *   scratch (emptyDir) → /scratch  (secondary instance's own MANIFEST/log;
+ *                       this can live anywhere, including a different fs)
+ *   export (emptyDir)  → /export  (LZ4 output, fed to restic upload)
+ *
+ * Job is pinned to the live Stalwart node via nodeSelector — the PVC is
+ * local-path so cross-node access is impossible.
+ */
+async function createArchiveJobNoDowntime(
+  jobName: string,
+  nodeName: string,
+  deps: ArchiveDeps,
+): Promise<void> {
+  const toolsImage =
+    process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
+    'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
+  const stalwartImage =
+    process.env[STALWART_IMAGE_ENV] ??
+    'docker.io/stalwartlabs/stalwart:v0.16.5';
+  const rocksdbSecondaryImage =
+    process.env[ROCKSDB_SECONDARY_IMAGE_ENV] ??
+    'ghcr.io/phoenixtechnam/hosting-platform/rocksdb-secondary-checkpoint:latest';
+
+  // Checkpoint dir lives INSIDE the data PVC (same filesystem as the
+  // primary's SST files — required for hard-link). Name includes the
+  // jobName so concurrent runs (which `rejectIfAnotherRunActive`
+  // prevents anyway) can't collide. Cleaned up by the stalwart-export
+  // initContainer regardless of export exit code.
+  const checkpointDirOnPvc = `/data/.checkpoint-tmp-${jobName}`;
+
+  // Data PVC mounted WRITABLE because checkpoint dir lives inside it.
+  // The secondary instance only READS the primary's SST/MANIFEST files;
+  // RocksDB Checkpoint creates hard-link names in `checkpointDirOnPvc`.
+  // Neither operation writes to the live primary's files. The risk
+  // boundary is a buggy/malicious image — which is exactly what PSS +
+  // image-signing gate on a different axis.
+  const dataVolumeMount = {
+    name: 'stalwart-data',
+    mountPath: '/data',
+  };
+  // emptyDir for secondary's own MANIFEST/log files (NOT the checkpoint).
+  // Cross-fs from /data is fine here — RocksDB doesn't hard-link to it.
+  const scratchVolumeMount = { name: 'scratch', mountPath: '/scratch' };
+  const exportVolumeMount = { name: 'export', mountPath: '/export' };
+  const configVolumeMount = {
+    name: 'stalwart-config',
+    mountPath: '/etc/stalwart',
+    readOnly: true,
+  };
+
+  const archiveEnv = [
+    { name: 'ARCHIVE_MODE', value: 'export' },
+    { name: 'ARCHIVE_RUN_ID', value: jobName.replace(ARCHIVE_JOB_PREFIX, '') },
+  ];
+  const resticEnv = {
+    envFrom: [{ secretRef: { name: 'stalwart-snapshot-restic-repo', optional: false } }],
+  };
+
+  const initContainers = [
+    {
+      // Tiny prep step: emptyDir starts empty, but the distroless
+      // rocksdb-secondary-checkpoint binary cannot mkdir its own
+      // secondary directory (no shell, no /bin/mkdir). The next
+      // container needs /scratch/secondary to exist as a writable dir.
+      // mail-backup-tools is the smallest of our images with sh+mkdir.
+      name: 'scratch-prep',
+      image: toolsImage,
+      imagePullPolicy: 'IfNotPresent',
+      command: ['sh', '-c'],
+      args: ['mkdir -p /scratch/secondary /scratch/alt-cfg'],
+      volumeMounts: [scratchVolumeMount],
+    },
+    {
+      name: 'rocksdb-checkpoint',
+      image: rocksdbSecondaryImage,
+      imagePullPolicy: 'Always',
+      // Three positional args: primary, secondary-dir, checkpoint-dir.
+      // - primary: /data (the live data dir on the PVC, opened as secondary)
+      // - secondary: /scratch/secondary (writable scratch for the
+      //   secondary instance's own MANIFEST/log — created by scratch-prep)
+      // - checkpoint: /data/.checkpoint-tmp-<job> (inside the PVC, same
+      //   filesystem as the primary's SST files — required for
+      //   hard-link). Must NOT exist; the binary refuses to overwrite.
+      command: ['/usr/local/bin/rocksdb-secondary-checkpoint'],
+      args: ['/data', '/scratch/secondary', checkpointDirOnPvc],
+      volumeMounts: [dataVolumeMount, scratchVolumeMount],
+    },
+    {
+      name: 'alt-config',
+      image: toolsImage, // has jq + sh
+      imagePullPolicy: 'IfNotPresent',
+      command: ['sh', '-c'],
+      args: [
+        // Stalwart 0.16's minimal config.json is `{"@type": "RocksDb",
+        // "path": "/var/lib/stalwart/data"}` (verified in
+        // k8s/base/stalwart-mail/stalwart/configmap.yaml). Rewriting
+        // `.path` is a single jq assignment — no array iteration needed.
+        // We also assert `@type == "RocksDb"` so we fail fast if Stalwart
+        // upstream changes the config shape.
+        'set -eu; ' +
+          'mkdir -p /scratch/alt-cfg; ' +
+          // Defensive check: bail loudly if the live config isn't a
+          // RocksDb store. Some future deploy might switch to FoundationDB
+          // and the no_downtime path would silently miss the swap.
+          'TYPE=$(jq -r \'."@type"\' /etc/stalwart/config.json); ' +
+          'if [ "$TYPE" != "RocksDb" ]; then ' +
+          'echo "no_downtime archive requires DataStore type=RocksDb, ' +
+          'got: $TYPE" >&2; exit 1; fi; ' +
+          'jq --arg p "' + checkpointDirOnPvc + '" \'.path = $p\' ' +
+          '/etc/stalwart/config.json > /scratch/alt-cfg/config.json; ' +
+          'echo "alt config written (path → $p):"; ' +
+          'cat /scratch/alt-cfg/config.json',
+      ],
+      volumeMounts: [configVolumeMount, scratchVolumeMount],
+    },
+    {
+      name: 'stalwart-export',
+      image: stalwartImage,
+      imagePullPolicy: 'IfNotPresent',
+      command: ['sh', '-c'],
+      args: [
+        // Run `stalwart -e` against the alt-config (which points
+        // DataStore at the checkpoint dir, not the live primary).
+        // ALWAYS clean up the checkpoint dir afterwards — hard-linked
+        // SST files appear as a 0-byte cost only until the primary
+        // GC-rotates the underlying inode; after that we'd retain real
+        // bytes of dead data.
+        'rc=0; ' +
+          'stalwart --config /scratch/alt-cfg/config.json -e /export/export.lz4 || rc=$?; ' +
+          'rm -rf "' + checkpointDirOnPvc + '" || true; ' +
+          'exit $rc',
+      ],
+      volumeMounts: [dataVolumeMount, scratchVolumeMount, exportVolumeMount],
+    },
+  ];
+
+  const mainContainer = {
+    name: 'upload',
+    image: toolsImage,
+    imagePullPolicy: 'Always',
+    command: ['/usr/local/bin/archive-export.sh'],
+    env: archiveEnv,
+    ...resticEnv,
+    volumeMounts: [exportVolumeMount],
+  };
+
+  // We avoid setting runAsNonRoot to dodge image-uid mismatches across
+  // the three different images (distroless/cc, mail-backup-tools, stalwart).
+  // The mail namespace's PSS policy is baseline (verified pre-merge) so
+  // root-or-nonroot is allowed.
+  const body: Record<string, unknown> = {
+    apiVersion: 'batch/v1',
+    kind: 'Job',
+    metadata: {
+      name: jobName,
+      namespace: MAIL_NAMESPACE,
+      labels: {
+        'app.kubernetes.io/component': 'stalwart-archive',
+        'app.kubernetes.io/managed-by': 'platform-api',
+        'platform.phoenix-host.net/archive-mode': 'no_downtime',
+      },
+      annotations: {
+        'platform.phoenix-host.net/started-by': deps.userId ?? 'system',
+      },
+    },
+    spec: {
+      backoffLimit: 0,
+      ttlSecondsAfterFinished: 3600,
+      template: {
+        metadata: { labels: { 'app.kubernetes.io/component': 'stalwart-archive' } },
+        spec: {
+          restartPolicy: 'Never',
+          // Pin to the same node as the live Stalwart pod — its local-path
+          // PVC is node-local so cross-node read is impossible.
+          nodeSelector: { 'kubernetes.io/hostname': nodeName },
+          initContainers,
+          containers: [mainContainer],
+          volumes: [
+            {
+              name: 'stalwart-data',
+              persistentVolumeClaim: { claimName: 'stalwart-rocksdb-data' },
+            },
+            { name: 'stalwart-config', configMap: { name: 'stalwart-config' } },
+            // scratch holds only /scratch/secondary (the secondary
+            // RocksDB instance's own MANIFEST/log files) and
+            // /scratch/alt-cfg (the rewritten config.json). The
+            // CHECKPOINT itself lives inside the data PVC at
+            // /data/.checkpoint-tmp-<jobName> so the hard-link can
+            // succeed (same filesystem as the primary's SST files).
+            // /export/export.lz4 is a compressed LZ4 — typical mail
+            // dataset 100-500 MB after compression.
+            { name: 'scratch', emptyDir: {} },
             { name: 'export', emptyDir: {} },
           ],
         },
