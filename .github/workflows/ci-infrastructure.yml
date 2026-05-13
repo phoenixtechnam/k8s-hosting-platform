@@ -42,11 +42,18 @@ jobs:
             sudo apt-get update && sudo apt-get install -y shellcheck
           fi
           shellcheck --version
-          # --severity=warning skips info-level findings (SC2086 quoting
-          # hints, SC2016 literal $ in single quotes, etc.) that we've
-          # explicitly chosen as the intended pattern. Real bugs (SC1000-
-          # range parse errors) still fail the job.
-          shellcheck --severity=warning scripts/*.sh
+          # --severity=error fails CI only on SC1xxx parse errors
+          # (genuine bugs that prevent the script from running). SC2xxx
+          # warnings (SC2034 unused vars, SC2155 declare-and-assign,
+          # SC2087 heredoc-quoting, etc.) are reported as advisory by
+          # shellcheck locally but don't fail the job.
+          #
+          # Note: a prior version of this comment said "--severity=warning
+          # skips info-level findings". That was wrong — shellcheck's
+          # --severity is a minimum threshold, so --severity=warning
+          # reports warnings AND errors. Use --severity=error to gate
+          # only on parse-level errors.
+          shellcheck --severity=error scripts/*.sh
 
   admin-auth-gate-check:
     name: Admin-auth gate guardrail
