@@ -7,6 +7,13 @@ kind: Kustomization
 # uses an embedded RocksDB DataStore on a local-path PVC
 # (stalwart-rocksdb-data, 20Gi). See stalwart/pvc.yaml.
 #
+# haproxy/ ships the DaemonSet that fronts mail ports on every
+# server-role node and forwards to Stalwart via PROXY Protocol v2,
+# preserving real client IPs for Stalwart's IP-based rate-limiting.
+# The DaemonSet defaults to a non-matching nodeSelector (disabled);
+# platform-api toggles the selector when mailPortExposureMode flips
+# to 'allServerNodes'. See backend/src/modules/mail-admin/port-exposure.ts.
+#
 # This top-level kustomization is intentionally NOT included in
 # k8s/base/kustomization.yaml yet — it will be uncommented in M10
 # once all manifests are validated end-to-end on local DinD k3s.
@@ -14,6 +21,7 @@ kind: Kustomization
 
 resources:
   - stalwart/
+  - haproxy/
 
 labels:
   - pairs:
