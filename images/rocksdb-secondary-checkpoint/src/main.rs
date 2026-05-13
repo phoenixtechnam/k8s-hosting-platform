@@ -21,7 +21,7 @@
 //!     rocksdb-secondary-checkpoint <primary_path> <secondary_path> <checkpoint_path>
 //!
 //! Exit codes:
-//!     0  — checkpoint created
+//!     0  — checkpoint created (and chmod 0o777)
 //!     1  — argv / preflight failure
 //!     2  — open_as_secondary failed (primary may not exist, perms wrong, etc.)
 //!     3  — try_catch_up_with_primary failed
@@ -29,6 +29,9 @@
 //!     5  — checkpoint create failed (THIS is the load-bearing assertion —
 //!          if this fails on staging, Path B is not viable on the current
 //!          RocksDB version and we fall back to PR #29's scale-down approach)
+//!     6  — chmod 0o777 on the checkpoint dir / files failed (checkpoint
+//!          itself succeeded but the downstream non-root container won't
+//!          be able to write the RocksDB LOG file)
 //!
 //! The secondary directory MUST be writable by this process. RocksDB writes
 //! the secondary instance's own MANIFEST + log files there — the primary's
@@ -37,6 +40,7 @@
 use libc::{c_char, free};
 use librocksdb_sys as ffi;
 use std::ffi::{CStr, CString};
+use std::os::unix::fs::PermissionsExt;
 use std::process::ExitCode;
 use std::ptr;
 use std::time::Instant;
@@ -171,7 +175,51 @@ fn run() -> Result<(), (i32, String)> {
     };
 
     result?;
+
+    // Tier-2 robustness: chmod 777 the checkpoint dir + its contents.
+    //
+    // RocksDB Checkpoint creates the dir + hard-link entries owned by
+    // whatever uid this binary runs as (root in distroless/cc). The
+    // downstream `stalwart -e` runs as the non-root stalwart user from
+    // the upstream image and would otherwise hit "Permission denied"
+    // opening the RocksDB LOG file for append on its primary-mode
+    // open of the checkpoint.
+    //
+    // Doing it here, in the binary that created the dir, avoids
+    // hand-coupling the alt-config sh container — and means the
+    // checkpoint dir is portable to ANY downstream consumer regardless
+    // of its uid.
+    //
+    // Errors are surfaced via exit code 6 (separate from the rocksdb
+    // error space) so operators can distinguish "checkpoint worked,
+    // chmod failed" from "checkpoint itself failed".
+    let t_chmod = Instant::now();
+    chmod_world_writable(&checkpoint).map_err(|e| (6, e))?;
+    eprintln!("chmod world-writable in {:?}", t_chmod.elapsed());
+
     eprintln!("total wall time: {:?}", t0.elapsed());
+    Ok(())
+}
+
+/// chmod 0o777 on `path` and every immediate entry inside it.
+///
+/// A RocksDB checkpoint dir is flat — MANIFEST, CURRENT, OPTIONS-*,
+/// hard-linked SST files. No subdirs. A non-recursive single-level
+/// pass is sufficient. We use 0o777 (not 0o755) because the downstream
+/// container will need to write LOG files into the same dir on its
+/// primary-mode open.
+fn chmod_world_writable(path: &str) -> Result<(), String> {
+    let perm = std::fs::Permissions::from_mode(0o777);
+    std::fs::set_permissions(path, perm.clone())
+        .map_err(|e| format!("set_permissions({path}): {e}"))?;
+    for entry in std::fs::read_dir(path)
+        .map_err(|e| format!("read_dir({path}): {e}"))?
+    {
+        let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
+        let p = entry.path();
+        std::fs::set_permissions(&p, perm.clone())
+            .map_err(|e| format!("set_permissions({}): {e}", p.display()))?;
+    }
     Ok(())
 }
 

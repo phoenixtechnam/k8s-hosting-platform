@@ -946,7 +946,6 @@ async function createArchiveJobNoDowntime(
         // and crash the lexer.
         'set -eu; ' +
           'mkdir -p /scratch/alt-cfg; ' +
-          // Build the alt-config first.
           'python3 -c \'\n' +
           'import json, sys\n' +
           'cfg = json.load(open("/etc/stalwart/config.json"))\n' +
@@ -959,19 +958,16 @@ async function createArchiveJobNoDowntime(
           'json.dump(cfg, open("/scratch/alt-cfg/config.json", "w"))\n' +
           '\' "' + checkpointDirOnPvc + '"; ' +
           'echo "alt config written (path → ' + checkpointDirOnPvc + '):"; ' +
-          'cat /scratch/alt-cfg/config.json; ' +
-          // CHMOD the checkpoint dir + its files so the next container
-          // (stalwart-export, runs as the non-root stalwart user) can
-          // write its LOG/MANIFEST. The rocksdb-secondary-checkpoint
-          // binary runs as root in distroless/cc; without this chmod
-          // the next step hits "Permission denied" opening the
-          // RocksDB LOG file. 777 is fine — checkpoint dir is
-          // transient and removed at the end of this Job (or by
-          // scratch-prep's orphan sweep on the next run).
-          'chmod -R a+rwX "' + checkpointDirOnPvc + '"; ' +
-          'echo "chmod -R a+rwX ' + checkpointDirOnPvc + ' done"',
+          'cat /scratch/alt-cfg/config.json',
+        // Note: the chmod that USED to happen here was moved into
+        // rocksdb-secondary-checkpoint itself — the binary now does
+        // `chmod 0o777` on the checkpoint dir + its entries before
+        // exit. This decouples alt-config from the cross-uid handoff
+        // concern: any downstream consumer of the checkpoint dir
+        // (this Job's stalwart-export OR a future tool) gets a
+        // world-writable dir regardless of its uid.
       ],
-      volumeMounts: [configVolumeMount, scratchVolumeMount, dataVolumeMount],
+      volumeMounts: [configVolumeMount, scratchVolumeMount],
     },
     {
       name: 'stalwart-export',
