@@ -124,13 +124,15 @@ describe('mail-admin/health.getMailHealth', () => {
     expect(r.components.pod.initContainerStatus).toMatch(/init:restore-state:PodInitializing/);
   });
 
-  it('flags missing creds as JMAP unhealthy + carries pod health', async () => {
+  it('skips JMAP probe (healthy:true) when creds absent, matches cert/rocksdb pattern', async () => {
     const deps = buildDeps({ jmapAdminCredentials: null });
     const r = await getMailHealth(deps);
     expect(r.components.pod.healthy).toBe(true);
-    expect(r.components.jmap.healthy).toBe(false);
+    // Skip-when-unconfigured: healthy stays true so a fresh deployment
+    // without admin creds wired up doesn't show globally-broken.
+    expect(r.components.jmap.healthy).toBe(true);
     expect(r.components.jmap.error).toMatch(/admin credentials/);
-    expect(r.healthy).toBe(false);
+    expect(r.healthy).toBe(true);
   });
 
   it('flags 401 from JMAP as unhealthy', async () => {

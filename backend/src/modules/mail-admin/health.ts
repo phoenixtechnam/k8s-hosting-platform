@@ -250,12 +250,18 @@ interface JmapProbeShape {
 
 async function probeJmap(deps: MailHealthDeps): Promise<JmapProbeShape> {
   if (!deps.jmapAdminCredentials) {
+    // Skipped probe → healthy: true matches the cert probe pattern
+    // (returns healthy when mailHostname missing). Code review caught
+    // the asymmetry: a fresh deploy without admin creds wired up
+    // would otherwise show globally-unhealthy even when pod + rocksdb
+    // + tcp all green. The error string makes the cause visible to
+    // an operator looking at the response.
     return {
       durationMs: null,
       serverName: null,
       serverVersion: null,
-      healthy: false,
-      error: 'Stalwart admin credentials not configured.',
+      healthy: true,
+      error: 'Stalwart admin credentials not configured (probe skipped).',
     };
   }
 

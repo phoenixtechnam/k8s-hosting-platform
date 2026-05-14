@@ -26,7 +26,19 @@
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { STRATEGIC_MERGE_PATCH, strategicMergePatch } from '../../shared/k8s-patch.js';
+
+// Field-manager attribution for migration's Deployment patches. Code
+// review found that the original bare STRATEGIC_MERGE_PATCH lets the
+// apiserver attribute writes to the user-agent (e.g. "axios"), which
+// (a) makes managedFields archaeology useless, and (b) leaves
+// migration vulnerable to the same Flux-reversion failure mode that
+// the port-exposure refactor fixed (PR #44 → Phase 7). port-exposure
+// uses `platform-api.port-exposure`; migration uses a distinct name
+// so the apiserver can tell the two actors apart on the same
+// Deployment (port-exposure owns `containers[].ports`, migration
+// owns `template.spec.affinity` + `template.spec.volumes` + `replicas`).
+const MIGRATION_DEPLOYMENT_PATCH = strategicMergePatch('platform-api.migration');
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { triggerMailSnapshot } from './snapshot.js';
@@ -303,7 +315,7 @@ export async function triggerRestoreBasedFailover(
       name: DEPLOYMENT_NAME,
       body: failoverPatchBody,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    STRATEGIC_MERGE_PATCH,
+    MIGRATION_DEPLOYMENT_PATCH,
   );
 
   await db.update(systemSettings)
@@ -418,7 +430,7 @@ async function runMigrationStateMachine(
       name: DEPLOYMENT_NAME,
       body: cutoverPatchBody,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    STRATEGIC_MERGE_PATCH,
+    MIGRATION_DEPLOYMENT_PATCH,
   );
 
   // Step 7: Scale back up
@@ -512,15 +524,19 @@ async function ensureLocalPathPvc(core: CoreV1Api, name: string, nodeName: strin
 }
 
 async function patchDeploymentReplicas(apps: AppsV1Api, replicas: number): Promise<void> {
-  // STRATEGIC_MERGE_PATCH is fine for a single-field spec write; same
-  // semantics as merge-patch for this shape.
+  // Strategic-merge with named fieldManager so migration's writes to
+  // `spec.replicas` show up in `kubectl get deploy --show-managed-
+  // fields` under `platform-api.migration`, NOT the default user-agent
+  // attribution. Same rationale as the per-PR-set port-exposure
+  // refactor — anonymous attribution makes it impossible to reason
+  // about who owns what when conflicts arise.
   await apps.patchNamespacedDeployment(
     {
       namespace: MAIL_NAMESPACE,
       name: DEPLOYMENT_NAME,
       body: { spec: { replicas } },
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    STRATEGIC_MERGE_PATCH,
+    MIGRATION_DEPLOYMENT_PATCH,
   );
 }
 
@@ -688,8 +704,25 @@ if [ -z "$TARGET_PV" ]; then
 fi
 TARGET_PATH="/var/lib/rancher/k3s/storage/$TARGET_PV"
 echo "Target path on ${targetNode}: $TARGET_PATH"
+# SSH host-key verification: prefer pinned known_hosts (mounted from
+# stalwart-migration-known-hosts ConfigMap when operator has wired
+# it). Falls back to StrictHostKeyChecking=accept-new — only on the
+# FIRST connection to an unknown node, NOT 'no' (which silently
+# trusts any host every time). With hostNetwork:true the job pod
+# shares the node's network, so an attacker who already controls
+# DNS/ARP on the source node could MITM. The pinned ConfigMap is the
+# real fix; this fallback narrows the window while operators set it up.
+# SECURITY follow-up: provide a known_hosts ConfigMap on every node
+# and switch to StrictHostKeyChecking=yes.
+SSH_OPTS="-o StrictHostKeyChecking=accept-new -i /etc/migration-ssh/id_rsa"
+if [ -f /etc/migration-ssh/known_hosts ]; then
+  SSH_OPTS="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/migration-ssh/known_hosts -i /etc/migration-ssh/id_rsa"
+  echo "Using pinned known_hosts (StrictHostKeyChecking=yes)"
+else
+  echo "WARN: no /etc/migration-ssh/known_hosts; using StrictHostKeyChecking=accept-new — MITM possible on first connect"
+fi
 rsync -avz --delete --numeric-ids --timeout=60 \\
-  -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /etc/migration-ssh/id_rsa" \\
+  -e "ssh $SSH_OPTS" \\
   /source-data/ \\
   "root@${targetNode}:$TARGET_PATH/"
 echo "=== rsync complete ==="`,

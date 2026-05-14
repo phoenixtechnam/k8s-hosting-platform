@@ -244,7 +244,16 @@ echo ""
 jmap_call() {
   local method="$1" args="$2"
   local netrc="/tmp/.mail-ha-netrc-$$"
-  kctl exec -i -n "$STALWART_NS" "$POD" -c stalwart -- sh -c "
+  # Re-resolve the Stalwart pod every call. $POD is captured at
+  # harness startup; Phase C / Phase E cycle the Deployment, leaving
+  # $POD stale by the time Phase D runs (D1a/D2a then receive empty
+  # responses, triggering false-positive WARN). Looking up the pod
+  # by label-selector each call keeps jmap_call robust to rollovers.
+  local current_pod
+  current_pod="$(kctl -n "$STALWART_NS" get pod \
+    -l app.kubernetes.io/component=stalwart \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "$POD")"
+  kctl exec -i -n "$STALWART_NS" "$current_pod" -c stalwart -- sh -c "
     umask 077; cat > '${netrc}'
     curl -sf --netrc-file '${netrc}' \
       -X POST -H 'Content-Type: application/json' --max-time 15 \

@@ -87,15 +87,50 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // echoing system_settings. See backend/src/modules/mail-admin/health.ts.
   // 30s in-process cache; ?refresh=1 bypasses (super_admin can do this
   // from the "Re-check now" button on the new health banner).
-  app.get('/admin/mail/health', async (req: { query: unknown }) => {
+  // SECURITY: super_admin only. Calls readStalwartCredentials and
+  // dispatches kubectl exec (rocksdb probe) + outbound HTTPS with
+  // admin credentials (jmap probe) + TLS handshakes (cert probe).
+  // `admin`/`support` are excluded from this destructive surface.
+  app.get('/admin/mail/health', { preHandler: requireRole('super_admin') }, async (req: { query: unknown }) => {
     try {
       const cfg = app.config as Record<string, unknown>;
       const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
       const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
       const k8s = createK8sClients(kubeconfigPath);
-      const jmapBaseUrl = (cfg.STALWART_MGMT_URL as string | undefined)
+      const jmapBaseUrlRaw = (cfg.STALWART_MGMT_URL as string | undefined)
         ?? process.env.STALWART_MGMT_URL
         ?? 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
+      // SECURITY: the JMAP probe sends Stalwart admin credentials via
+      // HTTP Basic auth to this URL. If the env var is set to an
+      // external host (misconfiguration / hostile operator), those
+      // credentials are exfiltrated on every health poll. Allow only
+      // in-cluster Service DNS (`.svc.cluster.local`), `localhost`
+      // (in-pod), or RFC-1918 / link-local IPs. Reject anything else.
+      let jmapBaseUrl: string;
+      try {
+        const parsed = new URL(jmapBaseUrlRaw);
+        const host = parsed.hostname;
+        const isInCluster = host.endsWith('.svc.cluster.local') || host.endsWith('.svc');
+        const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+        const isPrivateV4 = /^(?:10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)/.test(host);
+        const isLinkLocalV4 = /^169\.254\./.test(host);
+        const isPrivateV6 = host.toLowerCase().startsWith('fc') || host.toLowerCase().startsWith('fd') || host.toLowerCase().startsWith('fe80');
+        if (!(isInCluster || isLocalhost || isPrivateV4 || isLinkLocalV4 || isPrivateV6)) {
+          throw new ApiError(
+            'STALWART_MGMT_URL_UNSAFE',
+            `STALWART_MGMT_URL host '${host}' is not in-cluster / loopback / RFC-1918. Refusing to send admin credentials there.`,
+            500,
+          );
+        }
+        jmapBaseUrl = jmapBaseUrlRaw;
+      } catch (urlErr) {
+        if (urlErr instanceof ApiError) throw urlErr;
+        throw new ApiError(
+          'STALWART_MGMT_URL_INVALID',
+          `STALWART_MGMT_URL is not a valid URL: ${(urlErr as Error).message ?? String(urlErr)}`,
+          500,
+        );
+      }
       let creds: { user: string; password: string } | null = null;
       try {
         const c = readStalwartCredentials(process.env);
@@ -919,13 +954,24 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/internal/mail/snapshot-last-run',
     async (req: { body: unknown; headers: Record<string, string | string[] | undefined> }) => {
+      // SECURITY: fail closed when PLATFORM_INTERNAL_TOKEN isn't set.
+      // The previous behaviour (skip check when env unset) meant a
+      // fresh / misconfigured deployment silently exposed this write
+      // endpoint to anyone who could reach the platform-api Service.
+      // Now an unset token returns 503 so the operator sees the
+      // misconfiguration immediately instead of silently-open.
       const expectedToken = process.env.PLATFORM_INTERNAL_TOKEN;
-      if (expectedToken) {
-        const auth = req.headers['authorization'] ?? '';
-        const token = Array.isArray(auth) ? auth[0] : auth;
-        if (!token.startsWith('Bearer ') || token.slice(7) !== expectedToken) {
-          throw new ApiError('UNAUTHORIZED', 'Invalid internal token', 401);
-        }
+      if (!expectedToken) {
+        throw new ApiError(
+          'INTERNAL_TOKEN_NOT_CONFIGURED',
+          'PLATFORM_INTERNAL_TOKEN env var must be set for /internal/* endpoints',
+          503,
+        );
+      }
+      const auth = req.headers['authorization'] ?? '';
+      const token = Array.isArray(auth) ? auth[0] : auth;
+      if (!token.startsWith('Bearer ') || token.slice(7) !== expectedToken) {
+        throw new ApiError('UNAUTHORIZED', 'Invalid internal token', 401);
       }
       const body = req.body as { totalSnapshotSizeBytes?: unknown; snapshotCount?: unknown };
       const totalSnapshotSizeBytes = Number(body.totalSnapshotSizeBytes ?? 0);

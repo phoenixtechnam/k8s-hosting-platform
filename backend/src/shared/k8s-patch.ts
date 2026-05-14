@@ -178,3 +178,57 @@ export function applyPatch(fieldManager: string, opts: { force?: boolean } = {})
   );
   return override as unknown as SDKOverride;
 }
+
+/**
+ * Strategic-Merge Patch with explicit field-manager attribution.
+ *
+ * `STRATEGIC_MERGE_PATCH` (the bare constant) doesn't claim SSA
+ * field ownership — the apiserver attributes the patch to whatever
+ * user-agent makes the request, which doesn't help against a
+ * Flux-owned manifest. Use this helper to claim ownership via a
+ * stable fieldManager name. With the target resource carrying
+ * `kustomize.toolkit.fluxcd.io/ssa: merge`, Flux's reconciler then
+ * uses non-force SSA and gets 409 on fields owned by another
+ * fieldManager — leaving the operator's claim intact.
+ *
+ * Used for the Stalwart Deployment `containers[].ports` mutation in
+ * port-exposure.ts. The `$patch: replace` directive (first list
+ * element) tells strategic-merge to wholesale-replace the list
+ * instead of merging by `containerPort` — that's what lets us drop
+ * the `hostPort` sub-field, which `mergeKey=containerPort` semantics
+ * would otherwise preserve.
+ *
+ * Example body for atomic list replacement:
+ *   {
+ *     spec: { template: { spec: { containers: [{
+ *       name: 'stalwart',
+ *       ports: [
+ *         { $patch: 'replace' },        // directive — must be first
+ *         { containerPort: 25, name: 'smtp', protocol: 'TCP' },
+ *         ...
+ *       ],
+ *     }] } } },
+ *   }
+ */
+export function strategicMergePatch(fieldManager: string): SDKOverride {
+  const stub = (ctx: RequestContextLike): ObservableLike<RequestContextLike> => {
+    const promise = Promise.resolve(ctx);
+    return { promise, toPromise: () => promise, pipe: () => undefined };
+  };
+  const mw: Middleware = {
+    pre: (ctx) => {
+      ctx.setHeaderParam('Content-Type', 'application/strategic-merge-patch+json');
+      const c = ctx as unknown as { setQueryParam?: (name: string, value: string) => void };
+      if (typeof c.setQueryParam === 'function') {
+        c.setQueryParam('fieldManager', fieldManager);
+      }
+      return stub(ctx);
+    },
+    post: stub,
+  };
+  const override = withTag(
+    { middleware: [mw] },
+    'application/strategic-merge-patch+json',
+  );
+  return override as unknown as SDKOverride;
+}

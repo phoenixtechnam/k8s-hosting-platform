@@ -40,8 +40,8 @@ vi.mock('@kubernetes/client-node', () => ({
 }));
 
 vi.mock('../../shared/k8s-patch.js', () => ({
-  applyPatch: vi.fn((_fieldManager: string, _opts: { force?: boolean }) => ({
-    headers: { 'Content-Type': 'application/apply-patch+yaml' },
+  strategicMergePatch: vi.fn((_fieldManager: string) => ({
+    headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
   })),
 }));
 
@@ -107,6 +107,27 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     const createArg = mockCreateDs.mock.calls[0][0] as { body: { kind: string; metadata: { name: string } } };
     expect(createArg.body.kind).toBe('DaemonSet');
     expect(createArg.body.metadata.name).toBe('stalwart-haproxy');
+    // The Deployment patch body must include `$patch: replace` as the
+    // FIRST element of the ports list so strategic-merge wholesale-
+    // replaces (instead of merging by containerPort and keeping the
+    // existing hostPort). E2E harness Phase C3/C4 caught this on
+    // runs 2–6 before the directive landed.
+    const patchArg = mockPatchDeployment.mock.calls[0][0] as {
+      body: { spec: { template: { spec: { containers: Array<{
+        name: string;
+        ports: Array<{ $patch?: string; containerPort?: number; hostPort?: number }>;
+      }> } } } };
+    };
+    const containers = patchArg.body.spec.template.spec.containers;
+    expect(containers[0].name).toBe('stalwart');
+    expect(containers[0].ports[0]).toEqual({ $patch: 'replace' });
+    // Mail ports must follow WITHOUT hostPort.
+    const portsAfterDirective = containers[0].ports.slice(1);
+    for (const p of portsAfterDirective) {
+      if (p.containerPort === 25 || p.containerPort === 587) {
+        expect(p.hostPort).toBeUndefined();
+      }
+    }
   });
 
   it('thisNodeOnly → allServerNodes: does NOT re-create when DS already exists', async () => {

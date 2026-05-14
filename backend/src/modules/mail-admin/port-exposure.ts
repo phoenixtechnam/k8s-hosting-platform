@@ -38,7 +38,7 @@
 
 import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { applyPatch } from '../../shared/k8s-patch.js';
+import { strategicMergePatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -60,20 +60,26 @@ const DEPLOYMENT_NAME = 'stalwart-mail';
 // patching the haproxy namespace.
 const MAIL_NS = HAPROXY_DS_NAMESPACE;
 
-// Server-Side Apply field-manager for the Stalwart Deployment's
-// `containers[0].ports` field. Phase 7 streamline E2E caught a
-// regression where Flux's `kustomize-controller` re-owned the ports
-// field on every reconcile (since the manifest in k8s/base specifies
-// the ports list with hostPorts) — undoing platform-api's removal of
-// hostPort within seconds and forcing a second rollout that ended
-// with hostPort RE-PRESENT. Result: haproxy DS on the Stalwart-pod
-// node fails to bind because Stalwart still binds the hostPort.
+// Strategic-Merge Patch with field-manager attribution for the
+// Stalwart Deployment's `containers[].ports` field.
 //
-// `force: true` steals the field on first apply. The subsequent Flux
-// reconcile sees `ports` owned by platform-api and (assuming the
-// Stalwart Deployment carries `kustomize.toolkit.fluxcd.io/ssa: merge`)
-// uses non-force SSA which preserves our claim.
-const STALWART_PORTS_APPLY_PATCH = applyPatch('platform-api.port-exposure', { force: true });
+// Phase 7 streamline E2E caught two failure modes on this field:
+//   1. JSON-Patch without fieldManager: Flux's kustomize-controller
+//      reverts our patch every ~10min reconcile. Caught by harness
+//      Phase C3/C4 (run-2, run-3, run-4, run-5).
+//   2. SSA-apply (apply-patch+yaml) with force-claim: SSA's per-field
+//      ownership semantics CANNOT remove the hostPort sub-field
+//      because we never claim it — Flux retains ownership and the
+//      `hostPort` value persists. Same harness failure (run-6).
+//
+// Strategic-Merge with `$patch: replace` (in port-exposure.ts body)
+// wholesale-replaces the ports list — the merge-by-containerPort
+// semantics that preserved hostPort are bypassed. fieldManager
+// query param claims SSA ownership of the ports field. With
+// Deployment's `kustomize.toolkit.fluxcd.io/ssa: merge` annotation,
+// Flux's non-force reconcile gets 409 on the ports field and leaves
+// our value intact.
+const STALWART_PORTS_PATCH = strategicMergePatch('platform-api.port-exposure');
 
 // Mail ports that Stalwart binds via hostPort in 'thisNodeOnly' mode.
 const MAIL_HOST_PORTS = [25, 465, 587, 143, 993, 4190] as const;
@@ -212,29 +218,37 @@ async function readDeployment(apps: import('@kubernetes/client-node').AppsV1Api)
 /**
  * Replace the Stalwart Deployment's container ports array.
  *
- * Uses Server-Side Apply (NOT JSON-Patch) with fieldManager=
- * `platform-api.port-exposure` and force=true. The streamline E2E
- * harness Phase C3/C4 caught the JSON-Patch regression: Flux's
- * `kustomize-controller` owns the `ports` field via SSA-Apply, and a
- * concurrent JSON-Patch from us doesn't claim ownership — so Flux's
- * next reconcile (typically within 10 min) re-applies the manifest
- * including hostPort. During the streamline tests this happened
- * mid-flight, triggering a SECOND Deployment rollout WITH hostPort
- * restored. End state: haproxy DS on the Stalwart-pod node fails to
- * bind because Stalwart still has hostPort.
+ * Strategic-Merge Patch with `$patch: replace` directive on the
+ * ports list, attributed to fieldManager=`platform-api.port-exposure`.
  *
- * SSA with force-claim re-attributes the `ports` field to
- * platform-api. Flux's subsequent reconciles (assuming the Deployment
- * carries the `kustomize.toolkit.fluxcd.io/ssa: merge` annotation)
- * are non-force and leave our claim intact. See haproxy DS lifecycle
- * (Phase 7) for the matching pattern at the DaemonSet level.
+ * Why this specific shape:
  *
- * Why a full container template (not just ports): SSA replaces the
- * fields we send. To replace the ENTIRE ports list we must send the
- * full new list inside the container's structure. We include the
- * container `name` so SSA's list-map-key (`name` for containers)
- * targets the right entry, and the full ports list as our claimed
- * value.
+ * 1. Strategic-merge for `containers[name=stalwart].ports` defaults
+ *    to merge-by-containerPort. A normal SMP body that sends port
+ *    entries WITHOUT hostPort would MERGE — leaving the existing
+ *    hostPort value untouched. We need WHOLESALE replacement so
+ *    omitted fields are dropped.
+ *
+ * 2. The `{$patch: "replace"}` directive (first element of the
+ *    ports list) tells strategic-merge to wholesale-replace the
+ *    list instead of merging by key.
+ *
+ * 3. fieldManager attribution: a plain strategic-merge-patch is
+ *    attributed to the request's user-agent, which doesn't help
+ *    against Flux. With our `strategicMergePatch(fm)` helper, the
+ *    fieldManager query param claims SSA ownership. Flux's later
+ *    non-force SSA (enabled by `kustomize.toolkit.fluxcd.io/ssa:
+ *    merge` annotation on the Deployment) gets 409 conflict on the
+ *    ports field and leaves our claim intact.
+ *
+ * Earlier attempts (all reverted):
+ *  - JSON-Patch op:replace: works but Flux silently reverts (no SSA claim)
+ *  - SSA apply-patch+yaml force:true: claims fields we send BUT SSA's
+ *    per-field semantics keep hostPort because we never claim that
+ *    sub-field; the existing Flux-owned value persists.
+ *
+ * This SMP + $patch:replace + fieldManager combination is the only
+ * approach that both wholesale-replaces the list AND claims ownership.
  */
 async function replaceStalwartContainerPorts(
   apps: import('@kubernetes/client-node').AppsV1Api,
@@ -267,16 +281,21 @@ async function replaceStalwartContainerPorts(
     return rest;
   });
 
-  // SSA partial Deployment — only the fields we're claiming.
+  // Strategic-Merge Patch body. The container is merged by `name`
+  // (mergeKey); the ports list is replaced wholesale via the
+  // `{$patch: 'replace'}` directive at index 0.
   const body = {
-    apiVersion: 'apps/v1',
-    kind: 'Deployment',
-    metadata: { name: DEPLOYMENT_NAME, namespace: MAIL_NS },
     spec: {
       template: {
         spec: {
           containers: [
-            { name: 'stalwart', ports: newPorts },
+            {
+              name: 'stalwart',
+              ports: [
+                { $patch: 'replace' },
+                ...newPorts,
+              ],
+            },
           ],
         },
       },
@@ -289,7 +308,7 @@ async function replaceStalwartContainerPorts(
       name: DEPLOYMENT_NAME,
       body: body as unknown as object,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    STALWART_PORTS_APPLY_PATCH,
+    STALWART_PORTS_PATCH,
   ).catch((err) => {
     throw new ApiError(
       'MAIL_DEPLOYMENT_PATCH_FAILED',
