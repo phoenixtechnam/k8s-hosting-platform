@@ -197,7 +197,7 @@ async function syncBreakGlassIngress(
         // Named capture avoids the CVE-2026-42945 trigger condition:
         // unnamed $N captures in rewrite-target with a '?' in the
         // replacement string can cause a heap overflow in nginx ≤1.30.0.
-        // Using (?P<rest>.*) + /$rest is semantically identical but safe.
+        // Using (?<rest>.*) + /$rest is semantically identical but safe.
         'nginx.ingress.kubernetes.io/rewrite-target': '/$rest',
         'nginx.ingress.kubernetes.io/proxy-body-size': '64m',
         // Explicitly NO auth annotations — this is the emergency path
