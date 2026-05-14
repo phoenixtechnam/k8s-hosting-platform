@@ -76,7 +76,13 @@ async function getOrCreateResticPassword(
       if (pw) return pw;
     }
   } catch (err) {
-    const code = (err as { statusCode?: number }).statusCode;
+    // @kubernetes/client-node v1 exposes the HTTP status on `.code`
+    // (ApiException). The v0 SDK used `.statusCode`. Check both so the
+    // 404→create-the-Secret fallback fires regardless of SDK version.
+    // Without this, the upstream re-throw propagated as a 500 to the
+    // operator and the backup-target dropdown reverted to NONE.
+    const e = err as { code?: number; statusCode?: number; body?: { code?: number } };
+    const code = e.code ?? e.statusCode ?? e.body?.code;
     if (code !== 404) throw err;
     // 404 → Secret doesn't exist yet; generate and create below.
   }
