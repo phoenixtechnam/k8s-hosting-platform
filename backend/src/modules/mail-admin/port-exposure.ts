@@ -26,7 +26,24 @@
 
 import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { JSON_PATCH } from '../../shared/k8s-patch.js';
+import { JSON_PATCH, applyPatch } from '../../shared/k8s-patch.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
+
+/**
+ * fieldManager string used by the platform-api when SSA-patching the
+ * haproxy DaemonSet's nodeSelector. Must be stable across reconciler
+ * restarts so the apiserver consistently attributes the field claim
+ * to the same actor.
+ *
+ * `force: true` because the haproxy DS ships with Flux owning
+ * `nodeSelector` (the disabled-selector default in
+ * k8s/base/stalwart-mail/haproxy/daemonset.yaml). Without force, our
+ * first apply 409's with "conflict with kustomize-controller". After
+ * the first forced apply, the platform-api permanently owns the
+ * field; Flux's subsequent reconciles use `ssa: merge` (non-force)
+ * and leave our value alone.
+ */
+const APPLY_PATCH_PORT_EXPOSURE = applyPatch('platform-api.port-exposure', { force: true });
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -275,24 +292,34 @@ async function setDaemonSetNodeSelector(
   enable: boolean,
 ): Promise<void> {
   try {
-    const body = [
-      {
-        op: 'add',
-        path: '/spec/template/spec/nodeSelector',
-        value: nodeSelector,
-      },
-    ];
+    // Server-Side Apply with fieldManager=platform-api/port-exposure.
+    // Flux reconciles the DS with fieldManager=kustomize-controller +
+    // ssa:merge (see k8s/base/stalwart-mail/haproxy/daemonset.yaml
+    // annotation). With distinct fieldManagers + ssa:merge, the
+    // apiserver preserves OUR nodeSelector across Flux reconciles
+    // because Flux's apply is non-force and `nodeSelector` is owned
+    // by us.
+    //
+    // Previously this used JSON-Patch, which doesn't go through SSA
+    // at all — Flux still uniquely owned the field, and reverted the
+    // operator patch on every loop. See the SSA-managedFields probe
+    // in the PR #44 commit for the diagnostic trace.
+    const body = {
+      apiVersion: 'apps/v1',
+      kind: 'DaemonSet',
+      metadata: { name: DAEMONSET_NAME, namespace: MAIL_NAMESPACE },
+      spec: { template: { spec: { nodeSelector } } },
+    };
     await apps.patchNamespacedDaemonSet(
       {
         namespace: MAIL_NAMESPACE,
         name: DAEMONSET_NAME,
         body: body as unknown as object,
       } as unknown as Parameters<typeof apps.patchNamespacedDaemonSet>[0],
-      JSON_PATCH,
+      APPLY_PATCH_PORT_EXPOSURE,
     );
   } catch (err) {
-    const code = (err as { statusCode?: number }).statusCode;
-    if (code === 404) {
+    if (isNotFound(err)) {
       if (enable) {
         // Enabling but DaemonSet doesn't exist — operator must apply the haproxy
         // Kustomize component before switching to allServerNodes mode.
