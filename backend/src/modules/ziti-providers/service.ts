@@ -3,7 +3,7 @@
  *
  * Used by the deployment-level Network Access feature (mode A:
  * tunneler). Stores controller URL + enrollment JWT (encrypted at
- * rest using OIDC_ENCRYPTION_KEY for v1) per client. The reconciler
+ * rest using PLATFORM_ENCRYPTION_KEY for v1) per client. The reconciler
  * (Milestone A) consumes these rows when provisioning per-client
  * ziti-edge-tunnel pods.
  */

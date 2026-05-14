@@ -29,7 +29,7 @@
 #   - integration-staging.sh's preflight (admin login, DNS) must pass.
 #   - At least one tenant client exists (CUSTOM_DEPLOY_CLIENT_ID env,
 #     else picked from /clients).
-#   - The platform-api Pod has OIDC_ENCRYPTION_KEY set (PAT scenario).
+#   - The platform-api Pod has PLATFORM_ENCRYPTION_KEY set (PAT scenario).
 #
 # DESIGN NOTES
 #   - Every assertion uses `kubectl get … -o jsonpath`, never just

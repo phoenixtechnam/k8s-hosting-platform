@@ -40,7 +40,7 @@ Table `mail_submit_credentials` (migration 0013):
 | `id` | uuid |
 | `client_id` | FK to `clients.id` ON DELETE CASCADE |
 | `username` | `submit-<client_id>` (deterministic, unique among active) |
-| `password_encrypted` | cleartext encrypted via `OIDC_ENCRYPTION_KEY` |
+| `password_encrypted` | cleartext encrypted via `PLATFORM_ENCRYPTION_KEY` |
 | `password_hash` | bcrypt hash, consumed by Stalwart |
 | `revoked_at` | null for active rows |
 | `created_at` / `last_used_at` | audit trail |
@@ -188,12 +188,12 @@ the DB directly or call rotate and ignore the new password).
 ## Security notes
 
 - The plain password is only ever transmitted once (at rotation
-  response) and stored encrypted at rest via `OIDC_ENCRYPTION_KEY`.
+  response) and stored encrypted at rest via `PLATFORM_ENCRYPTION_KEY`.
 - The bcrypt hash is what Stalwart sees — it cannot recover the
   plain password from the `stalwart.principals` view.
 - The file-manager hides `.platform/` even for admin-scoped access
   because the hide is enforced in the sidecar itself.
-- If `OIDC_ENCRYPTION_KEY` changes, existing encrypted passwords
+- If `PLATFORM_ENCRYPTION_KEY` changes, existing encrypted passwords
   become unreadable — operators must rotate all submit credentials
   to regenerate the PVC files.
 

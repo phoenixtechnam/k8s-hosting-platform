@@ -53,7 +53,7 @@ Bundles are organized by client, containing:
 | `files`    | Daily (03:00 UTC) | Full tenant PVC contents (includes WordPress files, DB datadirs, uploads, file-manager home) |
 | `mailboxes`| Daily (04:00 UTC) | Per-mailbox exports via `stalwart-cli account export` — one `.mbox.tar.gz` per address |
 | `config`   | Daily (03:00 UTC) | All platform-DB rows with `client_id` FK (~29 tables) |
-| `secrets`  | Daily (03:00 UTC) | TLS Secrets in tenant namespace, encrypted at bundle time with `OIDC_ENCRYPTION_KEY` |
+| `secrets`  | Daily (03:00 UTC) | TLS Secrets in tenant namespace, encrypted at bundle time with `PLATFORM_ENCRYPTION_KEY` |
 
 Every daily run produces **one bundle per active client**, directory-structured on the configured backup target. Retention + expiry are enforced by the storage-lifecycle scheduler.
 
@@ -214,7 +214,7 @@ All three initiators (system, admin, client) write to the same bundle format on 
 | `s3` | S3-compatible (AWS, MinIO, Wasabi, Backblaze) | `s3://<bucket>/<prefix>/<backup-id>/` |
 | `ssh` | Remote server via SSH (replaces the legacy SSHFS-mount approach) | `ssh://<user>@<host>:<path>/<backup-id>/` |
 
-**SSH backend (new).** Uses direct `ssh` + `tar` piping or `sftp` batch mode. No filesystem mount is required — the platform's old SSHFS-based approach is removed. The SSH private key is stored encrypted in `platform_settings` under `storage.backup.ssh_private_key` (AES-256-GCM with `OIDC_ENCRYPTION_KEY`). Upload and download work via short-lived platform Jobs, not a persistent mount.
+**SSH backend (new).** Uses direct `ssh` + `tar` piping or `sftp` batch mode. No filesystem mount is required — the platform's old SSHFS-based approach is removed. The SSH private key is stored encrypted in `platform_settings` under `storage.backup.ssh_private_key` (AES-256-GCM with `PLATFORM_ENCRYPTION_KEY`). Upload and download work via short-lived platform Jobs, not a persistent mount.
 
 Each initiator + destination combination is configured separately:
 
@@ -226,7 +226,7 @@ Each initiator + destination combination is configured separately:
 
 ### Encryption
 
-The `secrets` component is encrypted at bundle time with `OIDC_ENCRYPTION_KEY` (AES-256-GCM, `k1:` KID prefix for future rotation). Other components rely on transport (S3 SSE, SSH) and filesystem permissions (hostpath 0700) for at-rest confidentiality.
+The `secrets` component is encrypted at bundle time with `PLATFORM_ENCRYPTION_KEY` (AES-256-GCM, `k1:` KID prefix for future rotation). Other components rely on transport (S3 SSE, SSH) and filesystem permissions (hostpath 0700) for at-rest confidentiality.
 
 For **customer-downloadable bundles** (GDPR Art. 20 export), the entire bundle is additionally encrypted with a one-time passphrase that the client provides at export request time. Lost passphrases mean lost bundles — the platform stores no copy.
 
@@ -241,7 +241,7 @@ Tier 4 runs a fundamentally different pipeline and is **not** accessible through
 - Platform PostgreSQL via `pg_dump` (Velero pre-backup hook)
 - Stalwart's `data` PVC in the `mail` namespace (Velero restic volume backup)
 - Roundcube, Dex, Harbor, cert-manager, Flux state — all k8s resources cluster-wide
-- Cluster-level secrets (`OIDC_ENCRYPTION_KEY` in Vault / External Secrets, `JWT_SECRET`, etc.)
+- Cluster-level secrets (`PLATFORM_ENCRYPTION_KEY` in Vault / External Secrets, `JWT_SECRET`, etc.)
 
 Per-client bundles (Tiers 1-3) are sufficient for single-client recovery. Tier 4 is reserved for "the cluster itself is gone" scenarios. See [ADR-028 decision 9](../07-reference/ADR-028-backup-architecture.md).
 

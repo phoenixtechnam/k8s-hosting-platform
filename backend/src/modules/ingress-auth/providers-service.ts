@@ -2,7 +2,7 @@
  * Per-client OIDC provider CRUD.
  *
  * Providers are reusable across N ingresses for the same client.
- * Secret encryption uses the existing OIDC_ENCRYPTION_KEY (32-byte
+ * Secret encryption uses the existing PLATFORM_ENCRYPTION_KEY (32-byte
  * hex). Secrets are NEVER returned in responses; only a `secretSet`
  * flag exposes presence.
  *

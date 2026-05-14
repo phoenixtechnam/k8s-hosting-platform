@@ -120,10 +120,10 @@ async function runOneScheduledBundle(app: FastifyInstance, clientId: string, ret
   if (!cfg) throw new Error('no active backup target — schedule cannot fire');
 
   const platformVersion = (app.config as Record<string, unknown>).PLATFORM_VERSION as string | undefined ?? '0.0.0';
-  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY;
+  const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
   if (!configuredKey && process.env.NODE_ENV === 'production') {
-    throw new Error('OIDC_ENCRYPTION_KEY required in production for scheduled bundles');
+    throw new Error('PLATFORM_ENCRYPTION_KEY required in production for scheduled bundles');
   }
   const secretsKeyHex = configuredKey ?? '0'.repeat(64);
 

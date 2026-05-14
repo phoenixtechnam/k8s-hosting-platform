@@ -29,7 +29,7 @@ Replace the daily backup path with two primitives, kept inside the existing `ten
 - One repository per `(clientId, component)` at:
   - `<store>/restic-files/<clientId>/`
   - `<store>/restic-mail/<clientId>/`
-- Per-tenant password derived deterministically: `password = HKDF-SHA256(OIDC_ENCRYPTION_KEY, info="restic-tenant-${clientId}")`. No new key material to manage; rotation policy follows ADR-032 §7's KID scheme.
+- Per-tenant password derived deterministically: `password = HKDF-SHA256(PLATFORM_ENCRYPTION_KEY, info="restic-tenant-${clientId}")`. No new key material to manage; rotation policy follows ADR-032 §7's KID scheme.
 - restic process runs on the **platform-api side**. Tenant Job streams the prepared payload (PVC tar, or Maildir tarball) over the existing HMAC-authenticated `internal-upload-route` endpoint; platform-api pipes the request body straight into a `restic backup --stdin` subprocess. **S3 credentials never enter the tenant namespace.**
 - Per-pod concurrency cap `TENANT_BUNDLES_MAX_CONCURRENT_RESTIC` (default 4) enforced by an in-process semaphore in `restic-driver.ts`.
 - Optional cluster-wide cap `tenant_backup_global_max_in_flight` (default 0 = unlimited) implemented via numbered Postgres `pg_try_advisory_lock(N)` slots — pure SQL, no Redis.
@@ -105,13 +105,13 @@ component=files|mailboxes
 
 **DR key derivation (Option A + C — chosen 2026-05-09)**:
 
-Per-tenant restic password used by the source region remains `HKDF(OIDC_ENCRYPTION_KEY, "restic-tenant-" + clientId)` — only the source region can derive it. After the first successful backup for a (clientId, component), the orchestrator runs `restic key add` to attach a SECOND password derived from a separate `DR_RECOVERY_KEY` held in `tenant_backup_v2_settings.dr_recovery_key_encrypted`:
+Per-tenant restic password used by the source region remains `HKDF(PLATFORM_ENCRYPTION_KEY, "restic-tenant-" + clientId)` — only the source region can derive it. After the first successful backup for a (clientId, component), the orchestrator runs `restic key add` to attach a SECOND password derived from a separate `DR_RECOVERY_KEY` held in `tenant_backup_v2_settings.dr_recovery_key_encrypted`:
 
 ```
 dr_password = HKDF(DR_RECOVERY_KEY, "dr-recovery:" + clientId)
 ```
 
-`DR_RECOVERY_KEY` is a 32-byte secret generated once per cluster, stored encrypted at rest under `OIDC_ENCRYPTION_KEY`, shared out-of-band with Region B's operator. Region B reproduces `dr_password` deterministically. Rotation = generate new key, run `restic key add new; restic key remove old` cluster-wide via background sweeper.
+`DR_RECOVERY_KEY` is a 32-byte secret generated once per cluster, stored encrypted at rest under `PLATFORM_ENCRYPTION_KEY`, shared out-of-band with Region B's operator. Region B reproduces `dr_password` deterministically. Rotation = generate new key, run `restic key add new; restic key remove old` cluster-wide via background sweeper.
 
 **Option C (per-migration ad-hoc keys)**: in addition, the admin UI exposes "Generate one-shot migration key" which calls `restic key add` with a freshly random 32-byte password, prints it once, and the operator hands it to Region B for a single migration. Operator's responsibility to revoke after.
 
@@ -178,7 +178,7 @@ Storage at 100 tenants: ~640 GiB total (vs ~18 TiB legacy). At 500 tenants: ~3.2
 - New JMAP client code (`jmap-sync.py`). Pure-stdlib Python keeps the dependency footprint at zero, but it is the first non-trivial JMAP client we own.
 - platform-api now runs subprocesses (restic) per backup. Concurrency cap and process lifecycle become operator-visible concerns. Bounded by the in-process semaphore + the optional cluster-wide pg-advisory-lock cap.
 - Restore of a mailbox via `Email/import` re-issues UIDs server-side. Threading is preserved by `Message-ID`, but operator-runbook entry is needed so a tenant doesn't expect old UIDs.
-- `OIDC_ENCRYPTION_KEY` rotation now requires `restic key add` then `restic key remove` on every per-tenant repo. Documented in the runbook; operator-driven.
+- `PLATFORM_ENCRYPTION_KEY` rotation now requires `restic key add` then `restic key remove` on every per-tenant repo. Documented in the runbook; operator-driven.
 
 ## Cross-tenant isolation
 

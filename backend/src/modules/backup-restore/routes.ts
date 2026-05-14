@@ -603,11 +603,11 @@ async function resolveStoreForBundle(app: FastifyInstance, bundleId: string): Pr
   const job = await loadBundle(app, bundleId);
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, job.targetConfigId!)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
-  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY;
+  const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
   if (!configuredKey && process.env.NODE_ENV === 'production') {
-    app.log.error('tenant-backup-restore: OIDC_ENCRYPTION_KEY is not set in production — refusing to decrypt target credentials with zero-key fallback');
-    throw new ApiError('CONFIG_INVALID', 'OIDC_ENCRYPTION_KEY is not configured; cannot decrypt backup target credentials', 500);
+    app.log.error('tenant-backup-restore: PLATFORM_ENCRYPTION_KEY is not set in production — refusing to decrypt target credentials with zero-key fallback');
+    throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY is not configured; cannot decrypt backup target credentials', 500);
   }
   const encKey = configuredKey ?? '0'.repeat(64);
   if (cfg.storageType === 's3') {

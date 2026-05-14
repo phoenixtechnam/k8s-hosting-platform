@@ -11,7 +11,7 @@ import type { Database } from '../../db/index.js';
  * Persisted in `platform_settings` under keys prefixed with
  * `storage.snapshot.*` and `storage.retention.*`. Secret-bearing fields
  * (`s3_secret_access_key`, `azure_connection_string`) are encrypted at
- * rest with OIDC_ENCRYPTION_KEY before insert — the raw row never
+ * rest with PLATFORM_ENCRYPTION_KEY before insert — the raw row never
  * contains plaintext credentials.
  *
  * A small in-process cache (60s TTL) avoids hammering the DB on every
@@ -118,10 +118,10 @@ function encryptionKey(): string {
   // development-only — production refuses to encrypt secrets with a
   // known key. The boot-time check in config/index.ts logs a warning
   // but doesn't throw; this inline guard is the actual enforcement.
-  const key = process.env.OIDC_ENCRYPTION_KEY;
+  const key = process.env.PLATFORM_ENCRYPTION_KEY;
   if (key) return key;
   if (process.env.NODE_ENV === 'production' || process.env.PLATFORM_ENV === 'production') {
-    throw new Error('storage-lifecycle settings: OIDC_ENCRYPTION_KEY is required in production — refusing to encrypt with a zero key');
+    throw new Error('storage-lifecycle settings: PLATFORM_ENCRYPTION_KEY is required in production — refusing to encrypt with a zero key');
   }
   return '0'.repeat(64);
 }

@@ -171,7 +171,7 @@ export async function resolveSystemStore(
 
   const decryptIfPresent = (s: string | null | undefined): string => {
     if (!s) return '';
-    if (!oidcEncryptionKey) throw new Error('OIDC_ENCRYPTION_KEY required to decrypt backup target credentials');
+    if (!oidcEncryptionKey) throw new Error('PLATFORM_ENCRYPTION_KEY required to decrypt backup target credentials');
     return decrypt(s, oidcEncryptionKey);
   };
 

@@ -3182,7 +3182,7 @@ generate_platform_secrets() {
 
     kctl create secret generic platform-secrets \
       --namespace=platform \
-      --from-literal=oidc-encryption-key="$oidc_key" \
+      --from-literal=platform-encryption-key="$oidc_key" \
       --from-literal=internal-secret="$internal_secret"
     log "Platform secrets created."
   fi
@@ -3261,7 +3261,7 @@ generate_platform_secrets() {
     log "SFTP host keys secret created."
   fi
 
-  # sftp-gateway also references platform-secrets (for OIDC_ENCRYPTION_KEY
+  # sftp-gateway also references platform-secrets (for PLATFORM_ENCRYPTION_KEY
   # used to decrypt mailbox credentials). Mirror the secret to
   # platform-system so the sftp-gateway Deployment can mount it there
   # without cross-namespace secret references (which k8s doesn't support).

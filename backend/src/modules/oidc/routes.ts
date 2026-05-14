@@ -63,10 +63,10 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   }, 300_000);
   app.addHook('onClose', () => clearInterval(pkceCleanupTimer));
   const resolveEncryptionKey = (): string => {
-    const k = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY;
+    const k = app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY;
     if (k && k.length >= 32) return k;
     if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') return '0'.repeat(64);
-    throw new Error('OIDC_ENCRYPTION_KEY is required (oidc routes)');
+    throw new Error('PLATFORM_ENCRYPTION_KEY is required (oidc routes)');
   };
   const encryptionKey = resolveEncryptionKey();
 

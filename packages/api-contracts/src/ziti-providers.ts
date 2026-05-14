@@ -10,7 +10,7 @@
  * The enrollment JWT is a one-shot token issued by the Ziti
  * controller's enrollment endpoint; it mints a long-lived client
  * cert when first consumed by ziti-edge-tunnel. We store the JWT
- * encrypted at rest (using OIDC_ENCRYPTION_KEY for v1) and pass it
+ * encrypted at rest (using PLATFORM_ENCRYPTION_KEY for v1) and pass it
  * to the tunnel pod via mounted Secret.
  */
 import { z } from 'zod';

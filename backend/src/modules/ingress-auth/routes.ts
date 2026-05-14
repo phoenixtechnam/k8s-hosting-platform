@@ -61,8 +61,8 @@ async function assertRouteBelongsToClient(
 }
 
 export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
-  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY
-    ?? process.env.OIDC_ENCRYPTION_KEY
+  const encryptionKey = app.config?.PLATFORM_ENCRYPTION_KEY
+    ?? process.env.PLATFORM_ENCRYPTION_KEY
     ?? '0'.repeat(64);
 
   // Lazily-resolved K8s client — allows the route module to register

@@ -1,6 +1,6 @@
 /**
  * Per-client mTLS provider service. Stores reusable CA cert + optional
- * private key (encrypted at rest using OIDC_ENCRYPTION_KEY for v1).
+ * private key (encrypted at rest using PLATFORM_ENCRYPTION_KEY for v1).
  *
  * As of migration 0097 this module also owns the `client_certificates`
  * lifecycle:

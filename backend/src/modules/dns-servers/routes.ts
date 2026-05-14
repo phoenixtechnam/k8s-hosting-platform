@@ -6,10 +6,10 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
 const encryptionKey = (): string => {
-  const k = process.env.OIDC_ENCRYPTION_KEY;
+  const k = process.env.PLATFORM_ENCRYPTION_KEY;
   if (k && k.length >= 32) return k;
   if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') return '0'.repeat(64);
-  throw new Error('OIDC_ENCRYPTION_KEY is required (dns-servers routes)');
+  throw new Error('PLATFORM_ENCRYPTION_KEY is required (dns-servers routes)');
 };
 
 export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {

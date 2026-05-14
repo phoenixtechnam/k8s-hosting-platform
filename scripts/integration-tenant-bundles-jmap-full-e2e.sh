@@ -94,7 +94,7 @@ S3_SECRET=$(awk '/^Key: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
 
 if [ -z "${PLATFORM_OIDC_KEY:-}" ]; then
   PLATFORM_OIDC_KEY=$(ssh -i "$SSH_KEY" "$STAGING_HOST" \
-    "kubectl -n platform get secret platform-secrets -o jsonpath='{.data.oidc-encryption-key}' | base64 -d" \
+    "kubectl -n platform get secret platform-secrets -o jsonpath='{.data.platform-encryption-key}' | base64 -d" \
     | strip_cr)
 fi
 

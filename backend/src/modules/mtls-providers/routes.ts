@@ -71,11 +71,11 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
   // encryption key is missing. Falling back to a constant key would
   // silently encrypt CA private keys under known plaintext — a
   // DB-leak attacker would recover every CA private key.
-  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY
-    ?? process.env.OIDC_ENCRYPTION_KEY;
+  const encryptionKey = app.config?.PLATFORM_ENCRYPTION_KEY
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
   if (!encryptionKey || encryptionKey.length < 32) {
     throw new Error(
-      'OIDC_ENCRYPTION_KEY is required (≥32 chars) — mTLS providers refuse to start with a null/short encryption key',
+      'PLATFORM_ENCRYPTION_KEY is required (≥32 chars) — mTLS providers refuse to start with a null/short encryption key',
     );
   }
 

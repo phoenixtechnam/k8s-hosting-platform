@@ -104,7 +104,7 @@ export async function deleteNotification(db: Database, userId: string, id: strin
  * unavailable channels are filtered out before this function sees them.
  *
  * Round-2 refactor: `encryptionKey` defaults to
- * `process.env.OIDC_ENCRYPTION_KEY` (the same key used by
+ * `process.env.PLATFORM_ENCRYPTION_KEY` (the same key used by
  * startDkimScheduler in app.ts), so call sites no longer need to
  * thread it through every layer just to get emails sent. Pass an
  * explicit key to override — useful for tests.

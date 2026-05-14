@@ -47,7 +47,7 @@
 #                       Default: https://admin.testing.phoenix-host.net
 #   ADMIN_EMAIL/PW    — admin login.
 #   SERVERS_TXT       — credential source. Default ~/k8s-staging/servers.txt.
-#   PLATFORM_OIDC_KEY — OIDC_ENCRYPTION_KEY hex (64 chars). If unset,
+#   PLATFORM_OIDC_KEY — PLATFORM_ENCRYPTION_KEY hex (64 chars). If unset,
 #                       the script reads it from the testing cluster via
 #                       SSH (kubectl -n platform get secret platform-secrets).
 #                       Required so we can derive the per-tenant restic
@@ -93,14 +93,14 @@ SFTP_KEY="${SFTP_KEY:-$SSH_KEY}"
 [ -n "$S3_ENDPOINT" ] && [ -n "$S3_BUCKET" ] && [ -n "$S3_KEY" ] && [ -n "$S3_SECRET" ] || {
   echo "ERROR: S3 creds missing from $SERVERS_TXT" >&2; exit 2; }
 
-# ── OIDC_ENCRYPTION_KEY (for HKDF deriving the per-tenant restic password) ──
+# ── PLATFORM_ENCRYPTION_KEY (for HKDF deriving the per-tenant restic password) ──
 if [ -z "${PLATFORM_OIDC_KEY:-}" ]; then
-  echo "[1/9] reading OIDC_ENCRYPTION_KEY from testing cluster…"
+  echo "[1/9] reading PLATFORM_ENCRYPTION_KEY from testing cluster…"
   PLATFORM_OIDC_KEY=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "$TESTING_HOST" \
-    "kubectl -n platform get secret platform-secrets -o jsonpath='{.data.OIDC_ENCRYPTION_KEY}' 2>/dev/null | base64 -d" \
+    "kubectl -n platform get secret platform-secrets -o jsonpath='{.data.PLATFORM_ENCRYPTION_KEY}' 2>/dev/null | base64 -d" \
     | strip_cr || true)
   if [ -z "$PLATFORM_OIDC_KEY" ] || [ "${#PLATFORM_OIDC_KEY}" -ne 64 ]; then
-    echo "ERROR: could not retrieve OIDC_ENCRYPTION_KEY (got ${#PLATFORM_OIDC_KEY} chars; expected 64 hex)" >&2
+    echo "ERROR: could not retrieve PLATFORM_ENCRYPTION_KEY (got ${#PLATFORM_OIDC_KEY} chars; expected 64 hex)" >&2
     exit 2
   fi
 fi

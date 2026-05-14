@@ -75,7 +75,7 @@ describe('file-manager routes', () => {
     registerAuth(app);
     app.setErrorHandler(errorHandler);
     app.decorate('db', mockDb);
-    app.decorate('config', { KUBECONFIG_PATH: '/tmp/kubeconfig', OIDC_ENCRYPTION_KEY: '0'.repeat(64) });
+    app.decorate('config', { KUBECONFIG_PATH: '/tmp/kubeconfig', PLATFORM_ENCRYPTION_KEY: '0'.repeat(64) });
     await app.register(fileManagerRoutes, { prefix: '/api/v1' });
     await app.ready();
 

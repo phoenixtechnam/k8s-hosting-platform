@@ -38,7 +38,7 @@ describe('oidc routes', () => {
     registerAuth(app);
     app.setErrorHandler(errorHandler);
     app.decorate('db', {});
-    app.decorate('config', { OIDC_ENCRYPTION_KEY: '0'.repeat(64) });
+    app.decorate('config', { PLATFORM_ENCRYPTION_KEY: '0'.repeat(64) });
     await app.register(oidcRoutes, { prefix: '/api/v1' });
     await app.ready();
 

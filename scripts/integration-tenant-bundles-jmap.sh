@@ -75,12 +75,12 @@ S3_KEY=$(awk '/^Access Key: /{print $3; exit}' "$SERVERS_TXT" | strip_cr)
 S3_SECRET=$(awk '/^Key: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
 
 if [ -z "${PLATFORM_OIDC_KEY:-}" ]; then
-  echo "[2/8] reading oidc-encryption-key from cluster…"
+  echo "[2/8] reading platform-encryption-key from cluster…"
   PLATFORM_OIDC_KEY=$(ssh -i "$SSH_KEY" "$STAGING_HOST" \
-    "kubectl -n platform get secret platform-secrets -o jsonpath='{.data.oidc-encryption-key}' | base64 -d" \
+    "kubectl -n platform get secret platform-secrets -o jsonpath='{.data.platform-encryption-key}' | base64 -d" \
     | strip_cr || true)
   [ "${#PLATFORM_OIDC_KEY}" -eq 64 ] || {
-    echo "ERROR: could not read 64-char oidc-encryption-key (got ${#PLATFORM_OIDC_KEY} chars)" >&2; exit 2; }
+    echo "ERROR: could not read 64-char platform-encryption-key (got ${#PLATFORM_OIDC_KEY} chars)" >&2; exit 2; }
 fi
 
 # HKDF helper (matches restic-driver.deriveResticPassword)

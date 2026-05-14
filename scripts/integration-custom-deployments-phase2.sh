@@ -39,7 +39,7 @@
 # PREREQ
 #   - Phase-1 harness must have returned "0 failed".
 #   - At least one active client (CUSTOM_DEPLOY_CLIENT_ID overrides auto-pick).
-#   - Platform-api has OIDC_ENCRYPTION_KEY (lifecycle + backup scenarios).
+#   - Platform-api has PLATFORM_ENCRYPTION_KEY (lifecycle + backup scenarios).
 
 set -euo pipefail
 

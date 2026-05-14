@@ -10,7 +10,7 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
-  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
+  const encryptionKey = app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
 
   // Phase 3.B.1: reconcile Stalwart outbound config on every relay CRUD.
   let k8s: K8sClients | undefined;

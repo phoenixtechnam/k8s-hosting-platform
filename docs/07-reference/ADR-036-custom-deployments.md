@@ -27,7 +27,7 @@ The operator (and platform-operator role) explicitly REJECTED three controls tha
 
 - **No registry allowlist.** Tenants pull from any registry, including obscure / self-hosted ones.
 - **No image-pin requirement.** `:latest` and missing tags are accepted (an advisory badge surfaces this in the UI; can be silenced via `system_settings.custom_deployments_warn_unpinned_tags`).
-- **Private registries via PAT are supported.** Encrypted at rest with the existing `OIDC_ENCRYPTION_KEY` envelope.
+- **Private registries via PAT are supported.** Encrypted at rest with the existing `PLATFORM_ENCRYPTION_KEY` envelope.
 
 These choices materially raise the threat surface compared to the catalog path. The platform's defense against malicious tenant images is **Pod isolation, not image trust**:
 

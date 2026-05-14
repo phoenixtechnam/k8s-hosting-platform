@@ -355,7 +355,7 @@ export async function verifyAxfrSync(
   db: Database,
   domainName: string,
 ): Promise<VerificationCheck> {
-  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
+  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
   try {
     const activeServers = await getActiveServers(db);
     for (const server of activeServers) {

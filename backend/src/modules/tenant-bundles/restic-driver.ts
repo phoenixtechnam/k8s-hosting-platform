@@ -18,7 +18,7 @@
  *
  * Per-tenant isolation:
  *   - Repo URI is `<store>/restic-{component}/<clientId>/`.
- *   - Repo password is HKDF-SHA256(OIDC_ENCRYPTION_KEY, info=
+ *   - Repo password is HKDF-SHA256(PLATFORM_ENCRYPTION_KEY, info=
  *     `restic-tenant-${clientId}`). Cryptographic isolation: even on
  *     misconfigured repo paths, restic refuses to open with the wrong
  *     password.
@@ -37,7 +37,7 @@
  *   - It does not own the upload HTTP route (see internal-upload-route).
  *   - It does not maintain DB rows (see orchestrator).
  *   - It does not derive the password's source key (the orchestrator
- *     reads `OIDC_ENCRYPTION_KEY` and passes it in).
+ *     reads `PLATFORM_ENCRYPTION_KEY` and passes it in).
  */
 
 import { hkdfSync, randomBytes } from 'node:crypto';
@@ -133,7 +133,7 @@ const DEFAULT_BACKUP_TIMEOUT_MS = 60 * 60 * 1000;
 
 /**
  * Derive a per-tenant restic repo password from the platform
- * OIDC_ENCRYPTION_KEY using HKDF-SHA256.
+ * PLATFORM_ENCRYPTION_KEY using HKDF-SHA256.
  *
  * Lock vector (Phase 0 spike):
  *   key    = 0123…cdef (32 bytes hex)
@@ -149,7 +149,7 @@ export function deriveResticPassword(secretHex: string, clientId: string): strin
 /**
  * Derive the per-tenant DR-recovery password from the cluster's
  * DR_RECOVERY_KEY (a separate 32-byte secret from
- * OIDC_ENCRYPTION_KEY). Phase 1.5 multi-region/DR.
+ * PLATFORM_ENCRYPTION_KEY). Phase 1.5 multi-region/DR.
  *
  * Region B reproduces this deterministically given DR_RECOVERY_KEY +
  * the source-region clientId; that lets it open Region A's restic

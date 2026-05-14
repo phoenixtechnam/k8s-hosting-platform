@@ -608,7 +608,7 @@ cmd_dev() {
   echo "    cd backend && DATABASE_URL=postgresql://platform:local-dev-password@${DOCKER_HOST_NAME}:${PORT_DB}/hosting_platform \\"
   echo "      REDIS_URL=redis://${DOCKER_HOST_NAME}:${PORT_REDIS} \\"
   echo "      JWT_SECRET=local-dev-jwt-secret-not-for-production-use \\"
-  echo "      OIDC_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \\"
+  echo "      PLATFORM_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \\"
   echo "      PLATFORM_INTERNAL_SECRET=local-dev-platform-internal-secret-please-rotate \\"
   echo "      DISABLE_RATE_LIMIT=true \\"
   echo "      npm run dev"

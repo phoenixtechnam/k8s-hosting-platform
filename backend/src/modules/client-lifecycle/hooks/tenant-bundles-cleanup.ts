@@ -11,11 +11,11 @@ import { isHookAuthoritative } from '../registry/feature-flags.js';
 
 let _envKeyMissingLogged = false;
 function resolveEncryptionKey(): string {
-  const k = process.env.OIDC_ENCRYPTION_KEY;
+  const k = process.env.PLATFORM_ENCRYPTION_KEY;
   if (!k) {
     if (!_envKeyMissingLogged) {
       console.warn(
-        '[tenant-bundles-bundle-cleanup] OIDC_ENCRYPTION_KEY not set — falling back to zero key. Backup target credentials will likely fail to decrypt; check the platform deployment.',
+        '[tenant-bundles-bundle-cleanup] PLATFORM_ENCRYPTION_KEY not set — falling back to zero key. Backup target credentials will likely fail to decrypt; check the platform deployment.',
       );
       _envKeyMissingLogged = true;
     }

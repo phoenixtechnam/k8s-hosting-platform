@@ -6,7 +6,7 @@
  * path for customers coming from Gmail / Outlook / legacy hosting.
  *
  * Key design decisions (see plan + 0015 migration):
- *   - Source password encrypted at rest with OIDC_ENCRYPTION_KEY.
+ *   - Source password encrypted at rest with PLATFORM_ENCRYPTION_KEY.
  *   - Per-job Kubernetes Secret holds source + dest passwords as
  *     env vars (envFrom) so they never appear in `args` or in
  *     `kubectl describe pod` output.

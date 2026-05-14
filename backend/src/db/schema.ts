@@ -560,7 +560,7 @@ export const customDeploymentImageCredentials = pgTable('custom_deployment_image
   // 'registry.example.com:5000'.
   registryHost: varchar('registry_host', { length: 253 }).notNull(),
   username: varchar('username', { length: 255 }).notNull(),
-  // Envelope-encrypted token (same OIDC_ENCRYPTION_KEY + 'kid:' prefix
+  // Envelope-encrypted token (same PLATFORM_ENCRYPTION_KEY + 'kid:' prefix
   // shape as oidc_settings + mtls_providers). The cleartext PAT is
   // NEVER returned by the API; only the last 4 chars (token_last_four)
   // are surfaced for operator recognition.

@@ -14,7 +14,7 @@
  * Format:  `<expiresAtUnixMs>.<hex-sha256-mac>`
  *   - expiresAtUnixMs: integer milliseconds since epoch
  *   - mac: HMAC-SHA256 over `<bundleId>|<component>|<artifactName>|<expiresAtUnixMs>`
- *     keyed by `OIDC_ENCRYPTION_KEY` (the same secret the secrets
+ *     keyed by `PLATFORM_ENCRYPTION_KEY` (the same secret the secrets
  *     component uses; this isn't the OIDC use case but the platform
  *     already has the key).
  *

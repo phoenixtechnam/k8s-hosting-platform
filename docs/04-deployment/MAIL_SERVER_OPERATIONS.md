@@ -42,7 +42,7 @@ Configure a commercial SMTP relay via the admin UI:
 
 1. **Admin panel → Email → SMTP Relays → Add SMTP Relay**
 2. Pick Mailgun (EU or US region), Postmark, or "Direct"
-3. Enter credentials — backend encrypts at rest via `OIDC_ENCRYPTION_KEY`
+3. Enter credentials — backend encrypts at rest via `PLATFORM_ENCRYPTION_KEY`
 4. Mark one relay as **Default**
 
 The backend immediately reconciles `stalwart-outbound-config`

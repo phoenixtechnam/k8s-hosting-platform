@@ -11,7 +11,7 @@
  *
  * Required platform env:
  *   DATABASE_URL              from platform-db-credentials Secret
- *   OIDC_ENCRYPTION_KEY       from platform-secrets Secret (optional)
+ *   PLATFORM_ENCRYPTION_KEY       from platform-secrets Secret (optional)
  *
  * NOTE: this CLI does NOT call loadConfig() because the Job pod
  * intentionally does not mount JWT_SECRET (Sec review M3 — pg-dump
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
   const targetConfigId = required('PG_DUMP_TARGET_CONFIG_ID');
   const actorUserId = process.env.PG_DUMP_ACTOR_USER_ID ?? null;
   const databaseUrl = required('DATABASE_URL');
-  const oidcEncryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? null;
+  const oidcEncryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? null;
 
   const db = getDb(databaseUrl);
   const k8s = createK8sClients();

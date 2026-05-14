@@ -87,11 +87,11 @@ spec:
             # in backend/src/shared/redis.ts. Config still accepts the
             # var (zod default) to remain backward-compatible during
             # rolling deploys but it is no longer consumed.
-            - name: OIDC_ENCRYPTION_KEY
+            - name: PLATFORM_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
                   name: platform-secrets
-                  key: oidc-encryption-key
+                  key: platform-encryption-key
             - name: PLATFORM_INTERNAL_SECRET
               valueFrom:
                 secretKeyRef:

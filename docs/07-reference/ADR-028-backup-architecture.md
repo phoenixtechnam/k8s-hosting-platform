@@ -143,7 +143,7 @@ cross-node data migration at restore time.
 
 ### 8. Encrypt the `secrets` component; leave other components unencrypted at rest
 
-TLS Secrets are encrypted with AES-256-GCM using `OIDC_ENCRYPTION_KEY`.
+TLS Secrets are encrypted with AES-256-GCM using `PLATFORM_ENCRYPTION_KEY`.
 Ciphertexts carry a `k1:` KID prefix so a future key rotation can decrypt
 old bundles via a fallback key. Other components rely on transport
 (S3 SSE, SSH) and filesystem permission (hostpath 0700 dirs) for at-rest
@@ -183,7 +183,7 @@ These were explicitly considered and punted:
   or an IMAP-level diff tool. Dropped in favor of whole-mailbox replace.
 - **Incremental backup.** Requires block-level capture (Longhorn / CSI
   snapshots). Will be revisited when a CSI backend replaces local-path.
-- **External Secrets Operator integration.** `OIDC_ENCRYPTION_KEY` stays
+- **External Secrets Operator integration.** `PLATFORM_ENCRYPTION_KEY` stays
   in env vars for now. KID-prefixed ciphertexts make the future migration
   to Vault non-breaking: add `k2:` keys and a fallback lookup.
 - **Cross-cluster migration.** Backup bundles are portable by format, but

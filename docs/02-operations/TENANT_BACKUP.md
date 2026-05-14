@@ -22,7 +22,7 @@ off-cluster on an S3 or SSH target. Bundles are split into four
 | `files`     | Tenant data PVC (`<namespace>-storage`) | Tar.gz produced by capture Job in tenant ns |
 | `mailboxes` | Per-mailbox `stalwart-cli account export` tarballs | Job in `mail` ns using Stalwart image |
 | `config`    | DB rows the client owns (19 tables: clients, users, domains, deployments, etc.) | `SELECT *` via `buildConfigDump` |
-| `secrets`   | TLS Secrets in the tenant ns | AES-256-GCM encrypted with `OIDC_ENCRYPTION_KEY` (KID `k1:`) |
+| `secrets`   | TLS Secrets in the tenant ns | AES-256-GCM encrypted with `PLATFORM_ENCRYPTION_KEY` (KID `k1:`) |
 
 `meta.json` is the **commit marker** — written last, only when every
 enabled component succeeded. Operators recognise a bundle as restorable

@@ -56,7 +56,7 @@ export interface ReconcileOutboundResult {
 export async function renderCurrentOutboundConfig(
   db: Database,
 ): Promise<{ outbound: string; throttle: string }> {
-  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
 
   // Load and decrypt relays
   const relayRows = await db.select().from(smtpRelayConfigs);

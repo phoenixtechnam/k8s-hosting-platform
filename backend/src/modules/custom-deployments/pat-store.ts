@@ -6,7 +6,7 @@
 //   2. Service-side renderer — we build the dockerconfigjson, write
 //      the k8s Secret, and forget the cleartext.
 //
-// At rest the token is AES-256-GCM-encrypted with OIDC_ENCRYPTION_KEY
+// At rest the token is AES-256-GCM-encrypted with PLATFORM_ENCRYPTION_KEY
 // (same envelope shape as oidc/crypto.ts and mtls-providers). It is
 // NEVER returned by the API — `pullCredentialResponseSchema` exposes
 // only `tokenLastFour` plus the non-secret fields. Wherever this

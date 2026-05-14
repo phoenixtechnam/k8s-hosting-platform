@@ -138,7 +138,7 @@ export async function checkQuotaThresholds(
 
       // Fan out to all recipients via notifyUser, which also fires
       // an email through sendNotificationEmail when
-      // OIDC_ENCRYPTION_KEY is configured (see notifications/service.ts).
+      // PLATFORM_ENCRYPTION_KEY is configured (see notifications/service.ts).
       // notifyUser is already fire-and-forget and swallows errors,
       // so one flaky SMTP send cannot starve the loop.
       for (const userId of row.recipient_user_ids) {

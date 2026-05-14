@@ -61,20 +61,20 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   const platformVersion = (app.config as Record<string, unknown>).PLATFORM_VERSION as string | undefined ?? '0.0.0-dev';
-  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY;
+  const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
   const secretsKeyHex = configuredKey ?? '0'.repeat(64);
   if (!configuredKey && process.env.NODE_ENV === 'production') {
-    app.log.error('tenant-bundles: OIDC_ENCRYPTION_KEY is not set in production — using zero-key fallback. Secrets-component bundles encrypted today are trivially decryptable. Set OIDC_ENCRYPTION_KEY now.');
+    app.log.error('tenant-bundles: PLATFORM_ENCRYPTION_KEY is not set in production — using zero-key fallback. Secrets-component bundles encrypted today are trivially decryptable. Set PLATFORM_ENCRYPTION_KEY now.');
   } else if (!configuredKey) {
-    app.log.warn('tenant-bundles: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Secrets bundles produced now will be unencrypted.');
+    app.log.warn('tenant-bundles: PLATFORM_ENCRYPTION_KEY not set — using zero-key dev fallback. Secrets bundles produced now will be unencrypted.');
   }
   // Validate the key is the right shape (32 bytes hex) at registration
   // time so a misconfigured operator gets a clear failure now instead
   // of a confusing "key must be 32 bytes" thrown from inside an
   // export-token request 10 minutes later.
   if (Buffer.from(secretsKeyHex, 'hex').length !== 32) {
-    throw new Error(`tenant-bundles: OIDC_ENCRYPTION_KEY must be 32 bytes hex (got ${secretsKeyHex.length} chars / ${Buffer.from(secretsKeyHex, 'hex').length} bytes)`);
+    throw new Error(`tenant-bundles: PLATFORM_ENCRYPTION_KEY must be 32 bytes hex (got ${secretsKeyHex.length} chars / ${Buffer.from(secretsKeyHex, 'hex').length} bytes)`);
   }
 
   // ── Legacy path redirects (one cycle) ────────────────────────────
@@ -1701,8 +1701,8 @@ async function resolveStore(
       400);
   }
 
-  const encKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY
+  const encKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY
     ?? '0'.repeat(64);
 
   if (cfg.storageType === 's3') {

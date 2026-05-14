@@ -196,7 +196,7 @@ provisioning task history (operational, transient).
 
 **Capture.** List all `type=kubernetes.io/tls` Secrets in the tenant
 namespace. For each, serialize `{name, namespace, labels, data}`, encrypt
-the entire JSON blob with AES-256-GCM using `OIDC_ENCRYPTION_KEY`, and
+the entire JSON blob with AES-256-GCM using `PLATFORM_ENCRYPTION_KEY`, and
 write to `components/secrets/tls.json.gz.enc`.
 
 **Ciphertext format.** `<kid>:<iv-hex>:<tag-hex>:<ciphertext-hex>`. The
@@ -259,7 +259,7 @@ for customer-initiated backups.
 Bundle lives at `ssh://<user>@<host>:<path>/<backup-id>/...`. The
 platform maintains an SSH key pair per storage destination; the private
 key is stored encrypted in `platform_settings` under
-`storage.backup.ssh_private_key` (AES-256-GCM with `OIDC_ENCRYPTION_KEY`).
+`storage.backup.ssh_private_key` (AES-256-GCM with `PLATFORM_ENCRYPTION_KEY`).
 Uploads use `ssh` + `tar` piping or `sftp` batch mode; no SSHFS mount is
 required (the legacy SSHFS approach is dropped).
 
@@ -335,7 +335,7 @@ The `secrets` component is encrypted at write time; every other
 component is written unencrypted (relying on transport-level encryption
 for S3 and SSH, and filesystem permissions for hostpath).
 
-- **At-rest key:** `OIDC_ENCRYPTION_KEY` env var, 32-byte random
+- **At-rest key:** `PLATFORM_ENCRYPTION_KEY` env var, 32-byte random
   (`openssl rand -hex 32`). Today platform-wide and single-purpose; the
   near-term roadmap (post-External-Secrets-Operator) moves this key
   into Vault and emits per-component subkeys.

@@ -74,8 +74,8 @@ export async function createPgDumpJob(
       // still start in dev clusters that don't have the key — the
       // orchestrator will throw a clean error if the chosen backup
       // target has encrypted credentials and the var is missing.
-      name: 'OIDC_ENCRYPTION_KEY',
-      valueFrom: { secretKeyRef: { name: 'platform-secrets', key: 'oidc-encryption-key', optional: true } },
+      name: 'PLATFORM_ENCRYPTION_KEY',
+      valueFrom: { secretKeyRef: { name: 'platform-secrets', key: 'platform-encryption-key', optional: true } },
     },
     { name: 'PG_DUMP_RUN_ID', value: inputs.runId },
     { name: 'PG_DUMP_NAMESPACE', value: inputs.namespace },

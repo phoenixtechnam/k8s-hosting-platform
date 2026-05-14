@@ -25,18 +25,18 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import * as service from './service.js';
 import { writeSendmailAuthFile } from './pvc-writer.js';
 
-// OIDC_ENCRYPTION_KEY is required — the plain dev fallback is only
+// PLATFORM_ENCRYPTION_KEY is required — the plain dev fallback is only
 // tolerated when NODE_ENV is 'development' or 'test', never in
 // production. Failing fast here is better than silently encrypting
 // every submit credential with an all-zero key.
 const encryptionKey = (): string => {
-  const k = process.env.OIDC_ENCRYPTION_KEY;
+  const k = process.env.PLATFORM_ENCRYPTION_KEY;
   if (k && k.length >= 32) return k;
   if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') {
     return '0'.repeat(64);
   }
   throw new Error(
-    'OIDC_ENCRYPTION_KEY is required in non-dev environments (mail-submit routes)',
+    'PLATFORM_ENCRYPTION_KEY is required in non-dev environments (mail-submit routes)',
   );
 };
 

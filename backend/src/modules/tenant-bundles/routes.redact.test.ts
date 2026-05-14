@@ -25,8 +25,8 @@ describe('redactCredentialsForUi', () => {
   });
 
   it('masks 32+ char hex blobs (raw key material)', () => {
-    expect(redactCredentialsForUi('OIDC_ENCRYPTION_KEY=abcdef0123456789abcdef0123456789abcdef0123456789'))
-      .toContain('OIDC_ENCRYPTION_KEY=***');
+    expect(redactCredentialsForUi('PLATFORM_ENCRYPTION_KEY=abcdef0123456789abcdef0123456789abcdef0123456789'))
+      .toContain('PLATFORM_ENCRYPTION_KEY=***');
   });
 
   it('leaves harmless messages alone', () => {

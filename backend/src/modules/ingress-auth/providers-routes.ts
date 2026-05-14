@@ -36,7 +36,7 @@ function zodMessage(err: ZodError): string {
 
 export async function oidcProvidersRoutes(app: FastifyInstance): Promise<void> {
   const encryptionKey =
-    app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+    app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
 
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'client_admin'));

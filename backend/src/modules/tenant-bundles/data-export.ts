@@ -713,7 +713,7 @@ export interface StreamZipExportArgs {
  * Build a Readable that yields a plaintext ZIP archive of meta.json
  * + every component artifact. The ZIP itself is unencrypted; the
  * `secrets` component artifact stays inner-encrypted with the source
- * region's OIDC_ENCRYPTION_KEY (AES-256-GCM) regardless.
+ * region's PLATFORM_ENCRYPTION_KEY (AES-256-GCM) regardless.
  *
  * Async because we lazy-import `archiver` (heavyweight; not loaded
  * on cold paths that don't export).
