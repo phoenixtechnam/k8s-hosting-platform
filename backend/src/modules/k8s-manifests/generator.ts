@@ -137,7 +137,10 @@ export async function generateClientManifests(
     },
   }));
 
-  // 3. NetworkPolicy - deny all ingress except from ingress-nginx namespace
+  // 3. NetworkPolicy — deny all ingress except from the traefik
+  //    controller namespace. Phase 0 of the Traefik migration replaced
+  //    ingress-nginx with Traefik; the namespace name flipped from
+  //    `ingress-nginx` to `traefik`.
   manifests.push(buildManifest('network-policy.yaml', {
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
@@ -154,7 +157,7 @@ export async function generateClientManifests(
             {
               namespaceSelector: {
                 matchLabels: {
-                  'kubernetes.io/metadata.name': 'ingress-nginx',
+                  'kubernetes.io/metadata.name': 'traefik',
                 },
               },
             },
@@ -260,70 +263,80 @@ export async function generateClientManifests(
     }));
   }
 
-  // 6. Ingress (one per client, with rules per domain)
+  // 6. IngressRoute (one per client, one route per domain).
+  // The Traefik migration removed the per-Ingress cert-manager annotation
+  // (the Ingress shim doesn't process IngressRoute CRDs) in favour of
+  // an explicit Certificate CR alongside the IngressRoute.
   if (clientDomains.length > 0) {
-    // Build a map of deploymentId -> deployment name for routing
     const deploymentMap = new Map<string, string>();
     for (const d of clientDeployments) {
       deploymentMap.set(d.id, d.name);
     }
 
-    const rules = clientDomains.map(domain => {
+    const routes = clientDomains.map((domain) => {
       const serviceName = domain.deploymentId
         ? (deploymentMap.get(domain.deploymentId) ?? clientDeployments[0]?.name ?? 'default')
         : (clientDeployments[0]?.name ?? 'default');
-
       return {
-        host: domain.domainName,
-        http: {
-          paths: [
-            {
-              path: '/',
-              pathType: 'Prefix',
-              backend: {
-                service: {
-                  name: serviceName,
-                  port: { number: 80 },
-                },
-              },
-            },
-          ],
-        },
+        match: `Host(\`${domain.domainName}\`)`,
+        kind: 'Rule',
+        services: [{ name: serviceName, port: 80 }],
       };
     });
 
-    // TLS configuration
     const autoTls = await isAutoTlsEnabled(db);
-    const annotations: Record<string, string> = {};
+    const primarySecret = autoTls && clientDomains[0]
+      ? domainToSecretName(clientDomains[0].domainName)
+      : null;
 
-    if (autoTls) {
-      const clusterIssuer = await getClusterIssuerName(db);
-      annotations['cert-manager.io/cluster-issuer'] = clusterIssuer;
-    }
-
-    const ingressSpec: Record<string, unknown> = {
-      ingressClassName: 'nginx',
-      rules,
-    };
-
-    if (autoTls && clientDomains.length > 0) {
-      // Group domains by TLS secret (one secret per domain for individual certs)
-      ingressSpec.tls = clientDomains.map(domain => ({
-        hosts: [domain.domainName],
-        secretName: domainToSecretName(domain.domainName),
-      }));
-    }
-
-    manifests.push(buildManifest('ingress.yaml', {
-      apiVersion: 'networking.k8s.io/v1',
-      kind: 'Ingress',
+    manifests.push(buildManifest('ingressroute.yaml', {
+      apiVersion: 'traefik.io/v1alpha1',
+      kind: 'IngressRoute',
       metadata: {
         name: `${namespace}-ingress`,
         namespace,
-        annotations,
       },
-      spec: ingressSpec,
+      spec: {
+        entryPoints: ['websecure'],
+        routes,
+        ...(primarySecret ? { tls: { secretName: primarySecret } } : {}),
+      },
     }));
+
+    // Pair each domain with an explicit cert-manager Certificate CR.
+    // Traefik's TLSStore is keyed by SNI hostname, so a Certificate per
+    // domain still resolves correctly at request time (the IngressRoute
+    // only needs to reference one primary secret to register the host).
+    if (autoTls) {
+      const clusterIssuer = await getClusterIssuerName(db);
+      for (const domain of clientDomains) {
+        manifests.push(buildManifest(`certificate-${domain.domainName.replace(/\./g, '-')}.yaml`, {
+          apiVersion: 'cert-manager.io/v1',
+          kind: 'Certificate',
+          metadata: {
+            name: domain.domainName.replace(/\./g, '-'),
+            namespace,
+          },
+          spec: {
+            secretName: domainToSecretName(domain.domainName),
+            duration: '2160h',
+            renewBefore: '720h',
+            privateKey: {
+              algorithm: 'ECDSA',
+              size: 256,
+              rotationPolicy: 'Always',
+            },
+            usages: ['digital signature', 'key encipherment', 'server auth'],
+            dnsNames: [domain.domainName],
+            issuerRef: {
+              name: clusterIssuer,
+              kind: 'ClusterIssuer',
+              group: 'cert-manager.io',
+            },
+          },
+        }));
+      }
+    }
   }
 
   // 7. kustomization.yaml

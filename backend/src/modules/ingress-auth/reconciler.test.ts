@@ -161,37 +161,44 @@ function makeMocks(opts: {
   };
 
   const networking = {
-    readNamespacedIngress: vi.fn(async (args: { name: string }) => {
-      calls.read.push({ kind: 'ingress', name: args.name });
-      // Tenant Ingress lookup for TLS secrets.
-      if (args.name === `${NAMESPACE}-ingress`) {
-        if (!opts.tenantTls) throw notFound();
-        return {
-          spec: {
-            tls: Object.entries(opts.tenantTls).map(([secretName, hosts]) => ({
-              secretName,
-              hosts,
-            })),
-          },
-        };
-      }
-      // Passthrough Ingress lookup.
-      if (args.name === 'oauth2-proxy-passthrough') {
+    // Kept for type compatibility; the reconciler no longer touches
+    // Ingress objects (Phase 2 part 5 migrated the passthrough Ingress
+    // to a Traefik IngressRoute on the `custom` API client).
+    readNamespacedIngress: vi.fn(async () => { throw notFound(); }),
+    createNamespacedIngress: vi.fn(),
+    replaceNamespacedIngress: vi.fn(),
+    deleteNamespacedIngress: vi.fn(),
+  };
+
+  // CustomObjectsApi mock — handles IngressRoute create / replace /
+  // delete for the passthrough resource. Existence flagged by
+  // opts.passthroughIngressExists.
+  const custom = {
+    getNamespacedCustomObject: vi.fn(async (args: { plural: string; name: string }) => {
+      calls.read.push({ kind: args.plural, name: args.name });
+      if (args.plural === 'ingressroutes' && args.name === 'oauth2-proxy-passthrough') {
         if (!opts.passthroughIngressExists) throw notFound();
         return { metadata: { resourceVersion: '11' } };
       }
       throw notFound();
     }),
-    createNamespacedIngress: vi.fn(async (args: unknown) => {
-      calls.create.push({ kind: 'ingress', args });
+    createNamespacedCustomObject: vi.fn(async (args: unknown) => {
+      calls.create.push({ kind: 'ingressroute', args });
     }),
-    replaceNamespacedIngress: vi.fn(async (args: unknown) => {
-      calls.replace.push({ kind: 'ingress', args });
+    replaceNamespacedCustomObject: vi.fn(async (args: unknown) => {
+      calls.replace.push({ kind: 'ingressroute', args });
     }),
-    deleteNamespacedIngress: vi.fn(async () => calls.delete.push({ kind: 'ingress' })),
+    deleteNamespacedCustomObject: vi.fn(async () => calls.delete.push({ kind: 'ingressroute' })),
+    listNamespacedCustomObject: vi.fn(async () => ({ items: [] })),
   };
 
-  return { db, k8s: { core, apps, networking }, calls } as never;
+  // Reference opts.tenantTls so the option remains available for tests
+  // that previously relied on it; the value is no longer needed because
+  // Traefik's TLSStore picks up the cert from the tenant IngressRoute
+  // by SNI, not from a per-Ingress lookup.
+  void opts.tenantTls;
+
+  return { db, k8s: { core, apps, networking, custom }, calls } as never;
 }
 
 describe('reconcileClient — provisioning path', () => {
@@ -214,7 +221,7 @@ describe('reconcileClient — provisioning path', () => {
     expect(result.error).toBeNull();
     expect(result.enabledIngresses).toBe(1);
     const creates = (m.calls.create as Array<{ kind: string }>).map((c) => c.kind).sort();
-    expect(creates).toEqual(['configmap', 'deployment', 'ingress', 'secret', 'service']);
+    expect(creates).toEqual(['configmap', 'deployment', 'ingressroute', 'secret', 'service']);
   });
 
   it('updates resources when proxy already provisioned', async () => {
@@ -233,7 +240,7 @@ describe('reconcileClient — provisioning path', () => {
     );
     expect(result.action).toBe('updated');
     const replaces = (m.calls.replace as Array<{ kind: string }>).map((c) => c.kind).sort();
-    expect(replaces).toEqual(['configmap', 'deployment', 'ingress', 'secret', 'service']);
+    expect(replaces).toEqual(['configmap', 'deployment', 'ingressroute', 'secret', 'service']);
   });
 
   it('serialises claim_rules into the rules.json ConfigMap key', async () => {
@@ -296,27 +303,21 @@ describe('reconcileClient — provisioning path', () => {
     const ingressCreate = (
       m.calls.create as Array<{
         kind: string;
-        args: { body: { metadata: { annotations?: Record<string, string> }; spec: { rules: Array<{ host: string; http: { paths: Array<{ path: string; backend: { service: { name: string; port: { number: number } } } }> } }>; tls?: Array<{ hosts: string[]; secretName: string }> } } };
+        args: { body: { spec: { routes: Array<{ match: string; priority?: number; middlewares?: Array<{ name: string }>; services: Array<{ name: string; port: number }> }> } } };
       }>
-    ).find((c) => c.kind === 'ingress')!;
+    ).find((c) => c.kind === 'ingressroute')!;
     expect(ingressCreate).toBeDefined();
-    const annotations = ingressCreate.args.body.metadata.annotations ?? {};
-    // Critical: passthrough Ingress MUST NOT carry the auth-request gate.
-    expect(annotations['nginx.ingress.kubernetes.io/auth-url']).toBeUndefined();
-    expect(annotations['nginx.ingress.kubernetes.io/auth-signin']).toBeUndefined();
-    const rule = ingressCreate.args.body.spec.rules[0]!;
-    expect(rule.host).toBe('app.example.com');
-    const path = rule.http.paths[0]!;
-    expect(path.path).toBe('/oauth2');
-    expect(path.backend.service.name).toBe('oauth2-proxy');
-    expect(path.backend.service.port.number).toBe(4180);
-    // TLS secret copied from tenant Ingress.
-    expect(ingressCreate.args.body.spec.tls).toEqual([
-      { secretName: 'tls-app-example', hosts: ['app.example.com'] },
-    ]);
+    const route = ingressCreate.args.body.spec.routes[0]!;
+    // Critical: passthrough IngressRoute MUST NOT carry the OIDC
+    // ForwardAuth Middleware (it IS oauth2-proxy's own redirect target).
+    expect(route.middlewares).toBeUndefined();
+    expect(route.match).toContain('app.example.com');
+    expect(route.match).toContain('/oauth2');
+    expect(route.priority).toBe(100);
+    expect(route.services[0]).toEqual({ name: 'oauth2-proxy', port: 4180 });
   });
 
-  it('passthrough Ingress lists every protected hostname when client has multiple', async () => {
+  it('passthrough IngressRoute lists every protected hostname when client has multiple', async () => {
     const secondRow = {
       ...ENABLED_ROW,
       cfg: { ...ENABLED_ROW.cfg, id: 'cfg-2', ingressRouteId: 'ir-2' },
@@ -339,15 +340,16 @@ describe('reconcileClient — provisioning path', () => {
     const ingressCreate = (
       m.calls.create as Array<{
         kind: string;
-        args: { body: { spec: { rules: Array<{ host: string }>; tls?: Array<{ secretName: string; hosts: string[] }> } } };
+        args: { body: { spec: { routes: Array<{ match: string }> } } };
       }>
-    ).find((c) => c.kind === 'ingress')!;
-    const hosts = ingressCreate.args.body.spec.rules.map((r) => r.host).sort();
-    expect(hosts).toEqual(['admin.example.com', 'app.example.com']);
-    const tlsSecrets = (ingressCreate.args.body.spec.tls ?? [])
-      .map((t) => t.secretName)
+    ).find((c) => c.kind === 'ingressroute')!;
+    const matchHosts = ingressCreate.args.body.spec.routes
+      .map((r) => {
+        const m = r.match.match(/Host\(`([^`]+)`\)/);
+        return m?.[1] ?? '';
+      })
       .sort();
-    expect(tlsSecrets).toEqual(['tls-admin-example', 'tls-app-example']);
+    expect(matchHosts).toEqual(['admin.example.com', 'app.example.com']);
   });
 
   it('uses scopesOverride when set, falls back to provider defaultScopes otherwise', async () => {
@@ -385,7 +387,7 @@ describe('reconcileClient — teardown path', () => {
     );
     expect(result.action).toBe('torn_down');
     const deletes = (m.calls.delete as Array<{ kind: string }>).map((c) => c.kind).sort();
-    expect(deletes).toEqual(['configmap', 'deployment', 'ingress', 'secret', 'service']);
+    expect(deletes).toEqual(['configmap', 'deployment', 'ingressroute', 'secret', 'service']);
   });
 
   it('is a noop when nothing was provisioned and no enabled rows exist', async () => {

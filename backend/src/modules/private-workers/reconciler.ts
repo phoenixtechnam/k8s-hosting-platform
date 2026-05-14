@@ -18,7 +18,7 @@
  *   - Service `pw-<workerId>` (ClusterIP, one per active worker).
  *   - Deployment `private-worker-server` (1 replica, frps).
  *   - NetworkPolicy `private-worker-server-policy` allowing ingress
- *     from the nginx-ingress namespace and DNS egress only.
+ *     from the Traefik controller namespace and DNS egress only.
  *
  * Idempotent. Errors per step are caught + collected; the function
  * always returns a `ReconcileOutcome` rather than throwing so the
@@ -30,17 +30,35 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { clients, platformSettings, privateWorkers, type PrivateWorker } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import {
+  buildMiddleware,
+  buildIngressRoute,
+  rateLimitSpec,
+  hostMatch,
+  TRAEFIK_GROUP,
+  TRAEFIK_VERSION,
+  INGRESSROUTE_PLURAL,
+} from '../ingress-routes/traefik-types.js';
+import type { MiddlewareBody } from '../ingress-routes/traefik-types.js';
+import {
+  applyMiddleware,
+  applyIngressRoute,
+  deleteIngressRoute,
+  deleteMiddleware,
+  isK8sNotFound,
+} from '../ingress-routes/traefik-apply.js';
 
 const FRPS_DEPLOYMENT_NAME = 'private-worker-server';
 const FRPS_CONFIGMAP_NAME = 'private-worker-server-config';
 const FRPS_NETPOL_NAME = 'private-worker-server-policy';
 const FRPS_SECRET_NAME = 'private-worker-tokens';
 const PLATFORM_SYSTEM_NAMESPACE = 'platform-system';
-// The NGINX-ingress controller's namespace is `ingress-nginx` per the
-// upstream Helm chart default. Operators with a different deployment
-// can override via env (deferred — overlays + bootstrap pin this).
-const NGINX_INGRESS_NAMESPACE =
-  process.env.NGINX_INGRESS_NAMESPACE ?? 'ingress-nginx';
+// The ingress controller namespace, used by the frps NetworkPolicy to
+// allow ingress traffic from Traefik pods. Phase 0 of the Traefik
+// migration flipped the default from `ingress-nginx` to `traefik`.
+// Operators with a different controller deployment can override via env.
+const INGRESS_CONTROLLER_NAMESPACE =
+  process.env.INGRESS_CONTROLLER_NAMESPACE ?? 'traefik';
 
 // platform_settings key for the cluster-issuer used on per-worker tunnel
 // Ingresses. Default is HTTP-01 (works without DNS-API access). Operators
@@ -180,10 +198,10 @@ async function apply(
     () => upsertFrpsDeployment(deps.k8s.apps, namespace),
   );
 
-  // 4. NetworkPolicy. Allow ingress from the nginx-ingress namespace
-  //    (and the same namespace, so the per-worker Services can reach
-  //    the pod). Egress is restricted to kube-DNS — frps doesn't make
-  //    outbound calls.
+  // 4. NetworkPolicy. Allow ingress from the Traefik controller
+  //    namespace (and the same namespace, so the per-worker Services
+  //    can reach the pod). Egress is restricted to kube-DNS — frps
+  //    doesn't make outbound calls.
   await safe(
     errors,
     'networkpolicy',
@@ -204,7 +222,7 @@ async function apply(
     await safe(
       errors,
       `tunnel-ingress:${w.slug}`,
-      () => upsertTunnelIngress(deps.k8s.networking, w.slug, namespace, issuer),
+      () => upsertTunnelIngress(deps.k8s.custom, w.slug, namespace, issuer),
     );
   }
 
@@ -219,7 +237,7 @@ async function apply(
     () =>
       reapStaleTunnels(
         deps.k8s.core,
-        deps.k8s.networking,
+        deps.k8s.custom,
         namespace,
         new Set(workers.map((w) => w.slug)),
       ),
@@ -254,7 +272,7 @@ async function tearDown(
   await safe(errors, 'reap-tunnels-all', () =>
     reapStaleTunnels(
       deps.k8s.core,
-      deps.k8s.networking,
+      deps.k8s.custom,
       namespace,
       new Set(), // empty active set => delete all this client's tunnels
     ),
@@ -611,7 +629,7 @@ async function upsertFrpsNetworkPolicy(
             // tunnel-<slug> Ingress in platform-system.
             {
               namespaceSelector: {
-                matchLabels: { 'kubernetes.io/metadata.name': NGINX_INGRESS_NAMESPACE },
+                matchLabels: { 'kubernetes.io/metadata.name': INGRESS_CONTROLLER_NAMESPACE },
               },
             },
             // Same-namespace pods (the per-worker pw-<id> Services
@@ -715,7 +733,7 @@ async function upsertExternalNameService(
 }
 
 async function upsertTunnelIngress(
-  networking: k8s.NetworkingV1Api,
+  custom: k8s.CustomObjectsApi,
   slug: string,
   clientNamespace: string,
   issuer: string,
@@ -725,115 +743,128 @@ async function upsertTunnelIngress(
   // Per-worker subdomain `<slug>.tunnels.${DOMAIN}`. frp v0.62 hardcodes
   // its WSS path to `/~!frp` so we cannot route by URL path — every
   // worker needs a distinct hostname. cert-manager issues a per-FQDN
-  // HTTP-01 cert (no DNS-API requirement).
+  // certificate referenced by the IngressRoute's tls.secretName.
   const tunnelHost = `${slug}.tunnels.${platformDomain}`;
   const tlsSecret = `${name}-tls`;
+  const rateLimitName = `${name}-ratelimit`;
 
-  const body: k8s.V1Ingress = {
-    apiVersion: 'networking.k8s.io/v1',
-    kind: 'Ingress',
+  // Rate-limit Middleware: caps failed-handshake brute force at ~5/sec
+  // per source IP. frps rejects bad-token connections quickly so this
+  // bounds the auth.token brute-force throughput.
+  const rateLimitMiddleware: MiddlewareBody = buildMiddleware({
+    name: rateLimitName,
+    namespace: PLATFORM_SYSTEM_NAMESPACE,
+    spec: rateLimitSpec({ average: 5, burst: 5 }),
+    labels: {
+      'platform.phoenix-host.net/private-worker-tunnel': 'true',
+      'platform.phoenix-host.net/client-namespace': clientNamespace,
+    },
+  });
+  await applyMiddleware(custom, rateLimitMiddleware);
+
+  // cert-manager Certificate CR. cert-manager's Ingress shim doesn't
+  // process IngressRoute CRDs, so we create the Certificate explicitly.
+  // Operators with DNS-01 wired can patch the issuer at the System
+  // Settings level (kubed via the same `issuer` argument passed in).
+  const certBody: Record<string, unknown> = {
+    apiVersion: 'cert-manager.io/v1',
+    kind: 'Certificate',
     metadata: {
       name,
       namespace: PLATFORM_SYSTEM_NAMESPACE,
       labels: {
         'app.kubernetes.io/managed-by': 'platform-api',
         'platform.phoenix-host.net/private-worker-tunnel': 'true',
-        // CRITICAL: client-namespace scope — reapStaleTunnels filters by
-        // this label so one client's teardown can never delete another
-        // client's live Ingresses.
         'platform.phoenix-host.net/client-namespace': clientNamespace,
-      },
-      annotations: {
-        // cert-manager issues the cert via the operator-configured
-        // ClusterIssuer (System Settings → Private Worker Tunnels).
-        // Default is HTTP-01 (no DNS-API needed). Operators with
-        // DNS-01 wired can flip to letsencrypt-prod-dns01-powerdns
-        // (or equivalent) to get a single wildcard cert instead of
-        // per-FQDN issuance.
-        'cert-manager.io/cluster-issuer': issuer,
-        // WebSocket Upgrade headers are forwarded automatically by
-        // NGINX-ingress when the client requests them and the backend
-        // speaks HTTP/1.1.
-        'nginx.ingress.kubernetes.io/proxy-http-version': '1.1',
-        'nginx.ingress.kubernetes.io/proxy-read-timeout': '3600',
-        'nginx.ingress.kubernetes.io/proxy-send-timeout': '3600',
-        // Rate-limit failed handshakes per source IP. frps rejects
-        // bad-token connections quickly so this caps brute-force
-        // throughput against the auth.token at ~5 attempts/sec/IP.
-        'nginx.ingress.kubernetes.io/limit-rps': '5',
-        'nginx.ingress.kubernetes.io/limit-connections': '5',
       },
     },
     spec: {
-      ingressClassName: 'nginx',
-      tls: [
-        {
-          hosts: [tunnelHost],
-          secretName: tlsSecret,
-        },
-      ],
-      rules: [
-        {
-          host: tunnelHost,
-          http: {
-            paths: [
-              {
-                // No rewrite — frpc dials the default WSS path `/~!frp`.
-                path: '/',
-                pathType: 'Prefix',
-                backend: {
-                  service: {
-                    name,
-                    port: { number: FRPS_BIND_PORT },
-                  },
-                },
-              },
-            ],
-          },
-        },
-      ],
+      secretName: tlsSecret,
+      duration: '2160h',
+      renewBefore: '720h',
+      privateKey: {
+        algorithm: 'ECDSA',
+        size: 256,
+        rotationPolicy: 'Always',
+      },
+      usages: ['digital signature', 'key encipherment', 'server auth'],
+      dnsNames: [tunnelHost],
+      issuerRef: {
+        name: issuer,
+        kind: 'ClusterIssuer',
+        group: 'cert-manager.io',
+      },
     },
   };
-
   try {
-    const existing = await networking.readNamespacedIngress({
-      name,
+    const existing = await custom.getNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
       namespace: PLATFORM_SYSTEM_NAMESPACE,
-    } as never);
-    body.metadata!.resourceVersion = (existing as k8s.V1Ingress).metadata?.resourceVersion;
-    await networking.replaceNamespacedIngress({
+      plural: 'certificates',
       name,
+    });
+    const meta = (existing as { metadata?: { resourceVersion?: string } }).metadata ?? {};
+    (certBody.metadata as Record<string, unknown>).resourceVersion = meta.resourceVersion;
+    await custom.replaceNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
       namespace: PLATFORM_SYSTEM_NAMESPACE,
-      body,
-    } as never);
+      plural: 'certificates',
+      name,
+      body: certBody,
+    });
   } catch (err) {
     if (!isNotFound(err)) throw err;
-    await networking.createNamespacedIngress({
+    await custom.createNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
       namespace: PLATFORM_SYSTEM_NAMESPACE,
-      body,
-    } as never);
+      plural: 'certificates',
+      body: certBody,
+    });
   }
+
+  // IngressRoute on the websecure entrypoint. No path rewrite — frpc
+  // dials the default WSS path `/~!frp`. Traefik forwards HTTP/1.1
+  // Upgrade/Connection headers natively, so no annotation tweaks
+  // needed for the long-lived WSS connection.
+  const ingressRoute = buildIngressRoute({
+    name,
+    namespace: PLATFORM_SYSTEM_NAMESPACE,
+    routes: [
+      {
+        match: hostMatch(tunnelHost),
+        kind: 'Rule',
+        middlewares: [{ name: rateLimitName, namespace: PLATFORM_SYSTEM_NAMESPACE }],
+        services: [{ name, port: FRPS_BIND_PORT }],
+      },
+    ],
+    tls: { secretName: tlsSecret },
+    labels: {
+      'platform.phoenix-host.net/private-worker-tunnel': 'true',
+      'platform.phoenix-host.net/client-namespace': clientNamespace,
+    },
+  });
+  await applyIngressRoute(custom, ingressRoute);
 }
 
 // ─── Reapers ────────────────────────────────────────────────────────────────
 
 async function reapStaleTunnels(
   core: k8s.CoreV1Api,
-  networking: k8s.NetworkingV1Api,
+  custom: k8s.CustomObjectsApi,
   clientNamespace: string,
   activeSlugs: ReadonlySet<string>,
 ): Promise<void> {
-  // Find all tunnel-* Services + Ingresses in platform-system that
-  // belong to this client namespace via the label set in
-  // upsertExternalNameService / upsertTunnelIngress.
-  // BOTH selectors include client-namespace — without it, one client's
-  // teardown (activeSlugs=∅) deletes every other client's live tunnels.
+  // Find all tunnel-* Services + IngressRoutes + Certificates +
+  // rate-limit Middlewares in platform-system that belong to this client
+  // namespace via the labels set during upsert. Without the
+  // client-namespace scope, one client's teardown (activeSlugs=∅) would
+  // delete every other client's live tunnels.
   const labelSelector = `platform.phoenix-host.net/private-worker-tunnel=true,platform.phoenix-host.net/client-namespace=${clientNamespace}`;
-  const ingressSelector = labelSelector;
 
-  // Services carry the client-namespace label, so we can scope by
-  // client. Ingresses don't (the slug-only label keeps them simple),
-  // so we cross-reference by name with the Services we found.
+  // ── Services (ExternalName backing the tunnel) ──────────────────
   let services: k8s.V1ServiceList;
   try {
     services = (await core.listNamespacedService({
@@ -845,17 +876,19 @@ async function reapStaleTunnels(
     throw err;
   }
 
+  const staleSlugs = new Set<string>();
   const staleNames = (services.items ?? [])
     .map((svc) => svc.metadata?.name)
     .filter((n): n is string => typeof n === 'string')
     .filter((n) => {
       if (!n.startsWith('tunnel-')) return false;
       const slug = n.slice('tunnel-'.length);
-      return !activeSlugs.has(slug);
+      if (activeSlugs.has(slug)) return false;
+      staleSlugs.add(slug);
+      return true;
     });
 
   for (const n of staleNames) {
-     
     await deleteIfExists(() =>
       core.deleteNamespacedService({
         name: n,
@@ -864,44 +897,45 @@ async function reapStaleTunnels(
     );
   }
 
-  // For Ingresses we list by the simpler label, then drop any whose
-  // name matches a stale Service (or whose slug is not in
-  // activeSlugs and whose Service was already deleted).
-  let ingresses: k8s.V1IngressList;
+  // ── IngressRoutes (per-tunnel routing) ──────────────────────────
+  // List by the same label set we stamped during upsert. Drop any whose
+  // slug isn't active (covers the case where the Service was already
+  // GC'd in a previous tick but the IngressRoute survived).
+  let ingressItems: Array<{ metadata?: { name?: string } }> = [];
   try {
-    ingresses = (await networking.listNamespacedIngress({
+    const res = await custom.listNamespacedCustomObject({
+      group: TRAEFIK_GROUP,
+      version: TRAEFIK_VERSION,
       namespace: PLATFORM_SYSTEM_NAMESPACE,
-      labelSelector: ingressSelector,
-    } as never)) as k8s.V1IngressList;
+      plural: INGRESSROUTE_PLURAL,
+      labelSelector,
+    });
+    ingressItems = ((res as { items?: Array<{ metadata?: { name?: string } }> }).items) ?? [];
   } catch (err) {
-    if (isNotFound(err)) return;
-    throw err;
+    if (!isK8sNotFound(err)) throw err;
   }
 
-  const staleSet = new Set(staleNames);
-  const ingressNamesToDelete = (ingresses.items ?? [])
-    .map((ing) => ing.metadata?.name)
-    .filter((n): n is string => typeof n === 'string')
-    .filter((n) => {
-      if (!n.startsWith('tunnel-')) return false;
-      if (staleSet.has(n)) return true;
-      // Also drop tunnel-<slug> Ingresses whose ExternalName points
-      // at this client's namespace via the rule's backend service —
-      // that can happen if the Service was already deleted in a
-      // previous tick but the Ingress survived.
-      // Cheap heuristic: drop if not in activeSlugs at all.
-      const slug = n.slice('tunnel-'.length);
-      return !activeSlugs.has(slug);
-    });
-
-  for (const n of ingressNamesToDelete) {
-     
-    await deleteIfExists(() =>
-      networking.deleteNamespacedIngress({
-        name: n,
+  for (const ing of ingressItems) {
+    const n = ing.metadata?.name;
+    if (!n || !n.startsWith('tunnel-')) continue;
+    const slug = n.slice('tunnel-'.length);
+    if (activeSlugs.has(slug)) continue;
+    await deleteIngressRoute(custom, PLATFORM_SYSTEM_NAMESPACE, n);
+    await deleteMiddleware(custom, PLATFORM_SYSTEM_NAMESPACE, `${n}-ratelimit`);
+    // cert-manager Certificate cleanup. Mirror the IngressRoute name.
+    try {
+      await custom.deleteNamespacedCustomObject({
+        group: 'cert-manager.io',
+        version: 'v1',
         namespace: PLATFORM_SYSTEM_NAMESPACE,
-      } as never),
-    );
+        plural: 'certificates',
+        name: n,
+      });
+    } catch (err) {
+      if (!isK8sNotFound(err)) {
+        console.warn(`[private-workers] failed to delete Certificate ${n}:`, err);
+      }
+    }
   }
 }
 

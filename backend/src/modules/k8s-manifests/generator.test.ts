@@ -195,7 +195,7 @@ describe('generateClientManifests', () => {
     });
   });
 
-  it('should generate NetworkPolicy allowing only ingress-nginx', async () => {
+  it('should generate NetworkPolicy allowing only the traefik controller namespace', async () => {
     const db = createMockDb();
     const result = await generateClientManifests(db, 'client-001');
 
@@ -219,7 +219,7 @@ describe('generateClientManifests', () => {
               {
                 namespaceSelector: {
                   matchLabels: {
-                    'kubernetes.io/metadata.name': 'ingress-nginx',
+                    'kubernetes.io/metadata.name': 'traefik',
                   },
                 },
               },
@@ -341,62 +341,47 @@ describe('generateClientManifests', () => {
     });
   });
 
-  it('should generate Ingress with domain rules', async () => {
+  it('should generate IngressRoute with per-domain routes + Certificate CRs', async () => {
     const db = createMockDb();
     const result = await generateClientManifests(db, 'client-001');
 
-    const ingFile = result.find(f => f.filename === 'ingress.yaml');
+    const ingFile = result.find(f => f.filename === 'ingressroute.yaml');
     expect(ingFile).toBeDefined();
 
     const ing = yaml.load(ingFile!.content) as Record<string, unknown>;
     expect(ing).toMatchObject({
-      apiVersion: 'networking.k8s.io/v1',
-      kind: 'Ingress',
+      apiVersion: 'traefik.io/v1alpha1',
+      kind: 'IngressRoute',
       metadata: {
         name: 'acme-corp-ingress',
         namespace: 'acme-corp',
-        annotations: {
-          'cert-manager.io/cluster-issuer': 'local-ca-issuer',
-        },
       },
       spec: {
-        ingressClassName: 'nginx',
-        rules: [
+        entryPoints: ['websecure'],
+        routes: [
           {
-            host: 'example.com',
-            http: {
-              paths: [
-                {
-                  path: '/',
-                  pathType: 'Prefix',
-                  backend: {
-                    service: { name: 'web-app', port: { number: 80 } },
-                  },
-                },
-              ],
-            },
+            match: 'Host(`example.com`)',
+            kind: 'Rule',
+            services: [{ name: 'web-app', port: 80 }],
           },
           {
-            host: 'blog.example.com',
-            http: {
-              paths: [
-                {
-                  path: '/',
-                  pathType: 'Prefix',
-                  backend: {
-                    service: { name: 'web-app', port: { number: 80 } },
-                  },
-                },
-              ],
-            },
+            match: 'Host(`blog.example.com`)',
+            kind: 'Rule',
+            services: [{ name: 'web-app', port: 80 }],
           },
         ],
-        tls: [
-          { hosts: ['example.com'], secretName: 'example-com-tls' },
-          { hosts: ['blog.example.com'], secretName: 'blog-example-com-tls' },
-        ],
+        tls: { secretName: 'example-com-tls' },
       },
     });
+
+    // One Certificate CR per domain.
+    const certFiles = result.filter(f => f.filename.startsWith('certificate-'));
+    expect(certFiles).toHaveLength(2);
+    const certNames = certFiles.map((f) => {
+      const cert = yaml.load(f.content) as { metadata: { name: string } };
+      return cert.metadata.name;
+    }).sort();
+    expect(certNames).toEqual(['blog-example-com', 'example-com']);
   });
 
   it('should generate kustomization.yaml listing all resource files', async () => {
@@ -417,7 +402,7 @@ describe('generateClientManifests', () => {
     expect(resources).toContain('resource-quota.yaml');
     expect(resources).toContain('network-policy.yaml');
     expect(resources).toContain('pvc.yaml');
-    expect(resources).toContain('ingress.yaml');
+    expect(resources).toContain('ingressroute.yaml');
     expect(resources).toContain('deployment-web-app.yaml');
     expect(resources).toContain('deployment-api-server.yaml');
     expect(resources).toContain('service-web-app.yaml');

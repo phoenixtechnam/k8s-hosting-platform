@@ -72,6 +72,7 @@ export interface IngressAuthClients {
   readonly core: k8s.CoreV1Api;
   readonly apps: k8s.AppsV1Api;
   readonly networking: k8s.NetworkingV1Api;
+  readonly custom: k8s.CustomObjectsApi;
 }
 
 export interface ReconcileDeps {
@@ -296,7 +297,7 @@ async function ensureClientProxy(
   // without the auth_request gate, breaking the redirect loop where
   // /oauth2/start would otherwise be gated by oauth2-proxy itself.
   const hostnames = Array.from(new Set(enabled.map((e) => e.hostname)));
-  await upsertPassthroughIngress(deps.k8s.networking, namespace, hostnames);
+  await upsertPassthroughIngress(deps.k8s.custom, namespace, hostnames);
 
   // Mark provisioned in DB.
   await deps.db
@@ -328,12 +329,7 @@ async function tearDownClientProxy(
     .where(eq(clientOauth2ProxyState.clientId, clientId));
   if (!state?.provisioned) return false;
 
-  await deleteIfExists(() =>
-    deps.k8s.networking.deleteNamespacedIngress({
-      name: PASSTHROUGH_INGRESS_NAME,
-      namespace,
-    } as unknown as Parameters<typeof deps.k8s.networking.deleteNamespacedIngress>[0]),
-  );
+  await deleteAuthIngressRoute(deps.k8s.custom, namespace, PASSTHROUGH_INGRESS_NAME);
   await deleteIfExists(() =>
     deps.k8s.apps.deleteNamespacedDeployment({
       name: PROXY_NAME,
@@ -559,65 +555,41 @@ async function upsertDeployment(
 }
 
 /**
- * Build/update the sibling Ingress that exposes `/oauth2/*` without the
- * auth_request gate. NGINX Ingress merges multiple Ingress resources
- * sharing a host into separate location blocks; each location inherits
- * its OWN Ingress's annotations. Because this Ingress has NO `auth-url`
- * annotation, NGINX serves `/oauth2/start`, `/oauth2/callback`, etc.
- * without triggering the gate, so the redirect from oauth2-proxy
- * actually reaches the IdP.
+ * Build/update the sibling IngressRoute that exposes `/oauth2/*` without
+ * the per-route OIDC ForwardAuth Middleware. The main tenant IngressRoute
+ * (built by domains/k8s-ingress.ts) attaches a ForwardAuth Middleware
+ * to every route, which gates `/anything` behind oauth2-proxy. That
+ * same gate would 302-loop on `/oauth2/start` (oauth2-proxy's own
+ * redirect-to-IdP endpoint), so we carve `/oauth2/*` out into a
+ * higher-priority companion IngressRoute that routes straight to
+ * oauth2-proxy WITHOUT the auth Middleware.
  *
- * TLS secrets are looked up from the tenant Ingress (`<ns>-ingress`)
- * so HTTPS works out-of-the-box for already-certified hosts.
+ * TLS: not declared here. Traefik's TLSStore is keyed by SNI hostname;
+ * any IngressRoute for the same host that DOES carry tls.secretName
+ * loads the cert into the store and this IngressRoute serves on the
+ * same EntryPoint with the same cert via SNI matching.
  */
 async function upsertPassthroughIngress(
-  networking: k8s.NetworkingV1Api,
+  custom: k8s.CustomObjectsApi,
   namespace: string,
   hostnames: ReadonlyArray<string>,
 ): Promise<void> {
   if (hostnames.length === 0) {
     // Nothing to gate → nothing to passthrough. Best-effort delete.
-    await deleteIfExists(() =>
-      networking.deleteNamespacedIngress({
-        name: PASSTHROUGH_INGRESS_NAME,
-        namespace,
-      } as unknown as Parameters<typeof networking.deleteNamespacedIngress>[0]),
-    );
+    await deleteAuthIngressRoute(custom, namespace, PASSTHROUGH_INGRESS_NAME);
     return;
   }
 
-  const tlsByHost = await readTenantTlsSecrets(networking, namespace, hostnames);
-  const secretToHosts = new Map<string, Set<string>>();
-  for (const [host, secret] of tlsByHost) {
-    if (!secretToHosts.has(secret)) secretToHosts.set(secret, new Set());
-    secretToHosts.get(secret)!.add(host);
-  }
-  const tls: Array<{ hosts: string[]; secretName: string }> = [];
-  for (const [secretName, hosts] of secretToHosts) {
-    tls.push({ secretName, hosts: Array.from(hosts).sort() });
-  }
-
-  const rules = hostnames.map((host) => ({
-    host,
-    http: {
-      paths: [
-        {
-          path: '/oauth2',
-          pathType: 'Prefix' as const,
-          backend: {
-            service: {
-              name: PROXY_NAME,
-              port: { number: PROXY_PORT },
-            },
-          },
-        },
-      ],
-    },
+  const routes = hostnames.map((host) => ({
+    match: `Host(\`${host}\`) && PathPrefix(\`/oauth2\`)`,
+    kind: 'Rule' as const,
+    priority: 100,
+    services: [{ name: PROXY_NAME, port: PROXY_PORT }],
   }));
 
-  const body: k8s.V1Ingress = {
-    apiVersion: 'networking.k8s.io/v1',
-    kind: 'Ingress',
+  const body = {
+    apiVersion: 'traefik.io/v1alpha1',
+    kind: 'IngressRoute',
     metadata: {
       name: PASSTHROUGH_INGRESS_NAME,
       namespace,
@@ -625,63 +597,33 @@ async function upsertPassthroughIngress(
         'app.kubernetes.io/name': 'oauth2-proxy',
         'app.kubernetes.io/managed-by': 'platform-api',
       },
-      annotations: {
-        // Keep HTTPS-only; do NOT add auth-* annotations here.
-        'nginx.ingress.kubernetes.io/ssl-redirect': 'true',
-      },
     },
     spec: {
-      ingressClassName: 'nginx',
-      rules,
-      ...(tls.length > 0 ? { tls } : {}),
+      entryPoints: ['websecure'],
+      routes,
     },
   };
 
-  try {
-    const existing = await networking.readNamespacedIngress({
-      name: PASSTHROUGH_INGRESS_NAME,
-      namespace,
-    } as never);
-    body.metadata!.resourceVersion = (existing as k8s.V1Ingress).metadata?.resourceVersion;
-    await networking.replaceNamespacedIngress({
-      name: PASSTHROUGH_INGRESS_NAME,
-      namespace,
-      body,
-    } as never);
-  } catch (err) {
-    if (!isNotFound(err)) throw err;
-    await networking.createNamespacedIngress({ namespace, body } as never);
-  }
+  await applyAuthIngressRoute(custom, body);
 }
 
-/**
- * Reads the tenant Ingress and returns a host→secretName map limited
- * to the supplied hostname set. Tenant Ingress missing → empty map
- * (passthrough Ingress is created without TLS, NGINX 308s to HTTPS
- * still works because cert-manager terminates upstream).
- */
-async function readTenantTlsSecrets(
-  networking: k8s.NetworkingV1Api,
+async function applyAuthIngressRoute(
+  custom: k8s.CustomObjectsApi,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const { applyIngressRoute } = await import('../ingress-routes/traefik-apply.js');
+  // applyIngressRoute expects the proper IngressRouteBody shape; cast
+  // here to keep the local body free of structural-type churn.
+  await applyIngressRoute(custom, body as unknown as Parameters<typeof applyIngressRoute>[1]);
+}
+
+async function deleteAuthIngressRoute(
+  custom: k8s.CustomObjectsApi,
   namespace: string,
-  hostnames: ReadonlyArray<string>,
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  const wanted = new Set(hostnames);
-  try {
-    const ing = (await networking.readNamespacedIngress({
-      name: `${namespace}-ingress`,
-      namespace,
-    } as never)) as k8s.V1Ingress;
-    for (const entry of ing.spec?.tls ?? []) {
-      if (!entry.secretName) continue;
-      for (const h of entry.hosts ?? []) {
-        if (wanted.has(h)) out.set(h, entry.secretName);
-      }
-    }
-  } catch (err) {
-    if (!isNotFound(err)) throw err;
-  }
-  return out;
+  name: string,
+): Promise<void> {
+  const { deleteIngressRoute } = await import('../ingress-routes/traefik-apply.js');
+  await deleteIngressRoute(custom, namespace, name);
 }
 
 async function deleteIfExists(op: () => Promise<unknown>): Promise<void> {
