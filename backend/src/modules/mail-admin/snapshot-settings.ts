@@ -24,6 +24,7 @@ import { systemSettings, backupConfigurations } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { decrypt } from '../oidc/crypto.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 import {
   type MailSnapshotScheduleResponse,
   type MailSnapshotScheduleUpdate,
@@ -76,15 +77,10 @@ async function getOrCreateResticPassword(
       if (pw) return pw;
     }
   } catch (err) {
-    // @kubernetes/client-node v1 exposes the HTTP status on `.code`
-    // (ApiException). The v0 SDK used `.statusCode`. Check both so the
-    // 404→create-the-Secret fallback fires regardless of SDK version.
-    // Without this, the upstream re-throw propagated as a 500 to the
-    // operator and the backup-target dropdown reverted to NONE.
-    const e = err as { code?: number; statusCode?: number; body?: { code?: number } };
-    const code = e.code ?? e.statusCode ?? e.body?.code;
-    if (code !== 404) throw err;
     // 404 → Secret doesn't exist yet; generate and create below.
+    // isNotFound() handles both SDK v0 (.statusCode) and v1 (.code)
+    // error shapes (see shared/k8s-errors.ts).
+    if (!isNotFound(err)) throw err;
   }
 
   // Generate a random 32-char password: 4 × 8-char hex segments.
@@ -123,8 +119,7 @@ export async function rotateResticPassword(opts: SnapshotSettingsOptions): Promi
       name: RESTIC_PASSWORD_SECRET,
     });
   } catch (err) {
-    const code = (err as { statusCode?: number }).statusCode;
-    if (code !== 404) throw err;
+    if (!isNotFound(err)) throw err;
     // Already gone — fine.
   }
   return { status: 'password_rotated' };
@@ -410,16 +405,12 @@ async function applyResticSecret(
       body: body as unknown as object,
     });
   } catch (updateErr) {
-    const code = (updateErr as { statusCode?: number }).statusCode;
-    if (code === 404) {
-      // backup-coverage: excluded:cluster-infrastructure
-      await core.createNamespacedSecret({
-        namespace: MAIL_NAMESPACE,
-        body: body as unknown as object,
-      });
-    } else {
-      throw updateErr;
-    }
+    if (!isNotFound(updateErr)) throw updateErr;
+    // backup-coverage: excluded:cluster-infrastructure
+    await core.createNamespacedSecret({
+      namespace: MAIL_NAMESPACE,
+      body: body as unknown as object,
+    });
   }
 }
 
@@ -432,8 +423,7 @@ async function deleteResticSecret(
       name: RESTIC_SECRET_NAME,
     });
   } catch (err) {
-    const code = (err as { statusCode?: number }).statusCode;
-    if (code !== 404) throw err;
+    if (!isNotFound(err)) throw err;
     // Already gone — fine.
   }
 }

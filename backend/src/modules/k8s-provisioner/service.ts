@@ -10,6 +10,7 @@ import type { Database } from '../../db/index.js';
 import { JSON_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { start as startTask, finishByRef } from '../tasks/service.js';
 import { clientStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 
 /**
  * Render a raw provisioning error into either a JSON-stringified
@@ -31,7 +32,7 @@ function isK8s404(err: unknown): boolean {
   // v1.4 HttpException: message starts with "HTTP-Code: 404"
   if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
   // Older client versions used statusCode property
-  if ((err as { statusCode?: number }).statusCode === 404) return true;
+  if (isNotFound(err)) return true;
   return false;
 }
 

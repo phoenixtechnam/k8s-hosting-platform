@@ -16,6 +16,7 @@ import { notifyClientImapsyncTerminal } from '../notifications/events.js';
 import { parseImapsyncProgress } from './progress-parser.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 
 // Round-4 Phase 3: minimum interval between log fetches for the
 // same running job. Caps the K8s API load when many jobs are
@@ -40,7 +41,7 @@ const noopLogger: ReconcilerLogger = {
 
 function isK8s404(err: unknown): boolean {
   if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
-  if ((err as { statusCode?: number }).statusCode === 404) return true;
+  if (isNotFound(err)) return true;
   return false;
 }
 

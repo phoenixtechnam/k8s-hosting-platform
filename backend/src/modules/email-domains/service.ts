@@ -20,6 +20,7 @@ import type { EmailDomainDisablePreview, WebmailStatus } from '@k8s-hosting/api-
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 
 // ── Stalwart JMAP helper ──────────────────────────────────────────────────────
 
@@ -867,13 +868,13 @@ export async function removeWebmailIngress(
     await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
   } catch (err: unknown) {
     const statusCode = (err as { statusCode?: number })?.statusCode;
-    if (statusCode !== 404) throw err;
+    if (!isNotFound(err)) throw err;
   }
 
   try {
     await k8s.core.deleteNamespacedService({ name: externalSvcName, namespace });
   } catch (err: unknown) {
     const statusCode = (err as { statusCode?: number })?.statusCode;
-    if (statusCode !== 404) throw err;
+    if (!isNotFound(err)) throw err;
   }
 }

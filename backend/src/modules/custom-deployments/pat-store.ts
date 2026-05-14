@@ -25,6 +25,7 @@ import { encrypt, decrypt } from '../oidc/crypto.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { ApiError } from '../../shared/errors.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 
 export interface PatSubmission {
   readonly registryHost: string;
@@ -307,7 +308,7 @@ function rowToRecord(row: typeof customDeploymentImageCredentials.$inferSelect):
 
 function is404(err: unknown): boolean {
   if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
-  return (err as { statusCode?: number }).statusCode === 404;
+  return isNotFound(err);
 }
 
 function is409(err: unknown): boolean {

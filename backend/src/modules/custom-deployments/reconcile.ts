@@ -18,6 +18,7 @@ import type { Database } from '../../db/index.js';
 import { deployments } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { recordImageAudit } from './image-audit.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 
 const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 
@@ -177,7 +178,7 @@ async function readDeploymentSafe(
     return (await k8s.apps.readNamespacedDeployment({ name, namespace })) as unknown as K8sDeploymentLike;
   } catch (err) {
     if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return null;
-    if ((err as { statusCode?: number }).statusCode === 404) return null;
+    if (isNotFound(err)) return null;
     throw err;
   }
 }

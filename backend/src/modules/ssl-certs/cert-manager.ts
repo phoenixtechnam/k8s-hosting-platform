@@ -15,12 +15,13 @@
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isK8s404(err: unknown): boolean {
   if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
-  if ((err as { statusCode?: number }).statusCode === 404) return true;
+  if (isNotFound(err)) return true;
   return false;
 }
 

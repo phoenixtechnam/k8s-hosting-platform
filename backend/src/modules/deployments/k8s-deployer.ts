@@ -20,6 +20,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { buildPasswordResetInitContainer } from './password-reset.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { allocateResources, InsufficientResourceBudgetError } from './resource-allocator.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -165,7 +166,7 @@ export interface AggregateDeploymentStatus {
 
 function isK8s404(err: unknown): boolean {
   if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
-  if ((err as { statusCode?: number }).statusCode === 404) return true;
+  if (isNotFound(err)) return true;
   return false;
 }
 

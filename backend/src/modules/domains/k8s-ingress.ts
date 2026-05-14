@@ -24,6 +24,7 @@ import { createRoute } from '../ingress-routes/service.js';
 import { syncAllRouteAnnotations } from '../ingress-routes/annotation-sync.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
+import { isNotFound } from '../../shared/k8s-errors.js';
 
 // ─── Annotations ────────────────────────────────────────────────────────────
 
@@ -139,7 +140,7 @@ export function resolveIngressBackend(
 
 function isK8s404(err: unknown): boolean {
   if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
-  if ((err as { statusCode?: number }).statusCode === 404) return true;
+  if (isNotFound(err)) return true;
   return false;
 }
 
