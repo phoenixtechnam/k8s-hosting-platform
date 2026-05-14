@@ -302,7 +302,15 @@ export function forwardAuthSpec(args: ForwardAuthArgs): Record<string, unknown> 
   return {
     forwardAuth: {
       address: args.address,
-      trustForwardHeader: args.trustForwardHeader ?? true,
+      // Default to FALSE — Traefik's entrypoint-level trustedIPs (set
+      // to 127.0.0.1/32 by bootstrap.sh) already strips attacker-
+      // supplied XFF before any Middleware runs. Trusting incoming
+      // XFF at the ForwardAuth level would re-introduce the spoof
+      // vector. Callers wiring an internal-only ForwardAuth (e.g. a
+      // sidecar reachable only via cluster DNS) can opt into
+      // trusting upstream headers by setting trustForwardHeader: true
+      // explicitly, AFTER auditing the call path.
+      trustForwardHeader: args.trustForwardHeader ?? false,
       ...(args.authResponseHeaders ? { authResponseHeaders: args.authResponseHeaders } : {}),
       ...(args.authRequestHeaders ? { authRequestHeaders: args.authRequestHeaders } : {}),
     },

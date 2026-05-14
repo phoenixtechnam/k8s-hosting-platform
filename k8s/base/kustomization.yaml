@@ -87,6 +87,13 @@ resources:
   # `traefik` namespace alongside the controller (matching the
   # Middleware's `modSecurityUrl` constant).
   - modsecurity-crs/
+  # Tenant custom-error-pages backend. Referenced by per-route `errors`
+  # Middlewares (annotation-sync emits one per ingress_routes row that
+  # has both customErrorCodes AND customErrorPath set). Lives in
+  # platform-system so the cross-namespace ref pins explicitly to a
+  # platform-managed Service — a tenant cannot hijack the error page
+  # by creating their own `tenant-errors` Service.
+  - tenant-errors/
   # CronJob that mirrors live Node ExternalIPs into the Traefik
   # Service.spec.externalIPs every 5 min. Without it the Service has
   # no externalIPs and tenant traffic only works against whichever IP

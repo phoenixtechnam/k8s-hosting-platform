@@ -104,7 +104,7 @@ describe('buildMiddlewaresForRoute — concurrent-connection cap (rateLimitConne
 });
 
 describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', () => {
-  it('emits an errors Middleware pointing at tenant-errors when customErrorCodes is set', () => {
+  it('emits an errors Middleware pointing at the platform-system tenant-errors Service', () => {
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
       { ...baseRoute, customErrorCodes: '404,503', customErrorPath: '/errors/{status}.html' },
       'route-12345678',
@@ -112,9 +112,17 @@ describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', (
     );
     const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-errors');
     expect(mw).toBeDefined();
-    const spec = mw!.spec as { errors: { status: string[]; service: { name: string; port: number }; query: string } };
+    const spec = mw!.spec as { errors: { status: string[]; service: { name: string; port: number; namespace: string }; query: string } };
     expect(spec.errors.status).toEqual(['404', '503']);
-    expect(spec.errors.service).toEqual({ name: 'tenant-errors', port: 80 });
+    // CRITICAL: explicit cross-namespace ref to platform-system —
+    // without it Traefik would resolve `tenant-errors` in the TENANT's
+    // namespace, letting any tenant hijack their own error pages by
+    // standing up a `tenant-errors` Service serving attacker content.
+    expect(spec.errors.service).toEqual({
+      name: 'tenant-errors',
+      port: 80,
+      namespace: 'platform-system',
+    });
     expect(spec.errors.query).toBe('/errors/{status}.html');
     expect(referenceList).toContainEqual({ name: 'r-route-12-errors', namespace: 'client-ns' });
   });

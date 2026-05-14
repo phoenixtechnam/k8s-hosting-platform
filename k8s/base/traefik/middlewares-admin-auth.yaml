@@ -31,7 +31,13 @@ spec:
     # Validates the platform_session cookie set by platform-api on login.
     # Returns 200 on valid session, 401/302 otherwise.
     address: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
-    trustForwardHeader: true
+    # trustForwardHeader: false — Traefik strips attacker-supplied XFF
+    # at the entryPoint level (--entryPoints.*.forwardedHeaders.
+    # trustedIPs=127.0.0.1/32 in bootstrap.sh install_traefik), so we
+    # don't need ForwardAuth to re-trust the headers. If an attacker
+    # could spoof XFF past the entryPoint, this `true` would let them
+    # impersonate any source IP to the verify-admin-session endpoint.
+    trustForwardHeader: false
     authResponseHeaders:
       - X-Platform-Admin-User
       - X-Platform-Admin-Role

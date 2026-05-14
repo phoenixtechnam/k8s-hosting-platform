@@ -16,7 +16,9 @@ metadata:
 spec:
   forwardAuth:
     address: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-email"
-    trustForwardHeader: true
+    # See traefik-types.ts forwardAuthSpec comment block + the
+    # entryPoint trustedIPs gate in bootstrap.sh install_traefik.
+    trustForwardHeader: false
     # Forward the email + user headers that oauth2-proxy injected. Traefik
     # forwards request headers by default; this list is what the BACKEND
     # response headers we want to propagate downstream (e.g. for audit log).
