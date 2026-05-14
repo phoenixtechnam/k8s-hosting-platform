@@ -82,23 +82,22 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments/scale", "statefulsets/scale"]
     verbs: ["get", "update", "patch"]
-  # DaemonSets — get/list/watch for cluster-health (ingress-nginx +
-  # longhorn-manager readiness surfacing), plus patch for the mail-HA
-  # `stalwart-haproxy` DS toggle.
+  # DaemonSets — full CRUD for the mail-HA `stalwart-haproxy` lifecycle.
   #
-  # The mail port-exposure feature (backend/src/modules/mail-admin/
-  # port-exposure.ts) flips the haproxy DaemonSet between disabled
-  # (non-matching nodeSelector) and enabled (server-role nodeSelector)
-  # when an operator changes thisNodeOnly ↔ allServerNodes. Without the
-  # patch verb, the PATCH /admin/mail/port-exposure endpoint returns
-  # MAIL_HAPROXY_DS_PATCH_FAILED with 403 from kube-apiserver.
-  #
-  # We do NOT grant create/delete: the DaemonSet itself is owned by
-  # Flux (k8s/base/stalwart-mail/haproxy/). platform-api only mutates
-  # spec.template.spec.nodeSelector.
+  # 2026-05-14 streamline (Phase 7): the haproxy DaemonSet lifecycle
+  # moved out of Flux into platform-api. The mail port-exposure feature
+  # (backend/src/modules/mail-admin/port-exposure.ts) now CREATES the DS
+  # on flip to allServerNodes and DELETES it on flip to thisNodeOnly.
+  # That ended the SSA-vs-Flux war (PRs #43–#45) but requires create +
+  # delete RBAC. Without these verbs the PATCH /admin/mail/port-exposure
+  # endpoint returns:
+  #   MAIL_HAPROXY_DS_CREATE_FAILED — when flipping to allServerNodes
+  #   MAIL_HAPROXY_DS_DELETE_FAILED — when flipping to thisNodeOnly
+  # both with embedded "forbidden" from kube-apiserver. get/list/watch
+  # are still needed by GET /admin/mail/port-exposure for status reads.
   - apiGroups: ["apps"]
     resources: ["daemonsets"]
-    verbs: ["get", "list", "watch", "patch"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
