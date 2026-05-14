@@ -385,20 +385,20 @@ export function buildMiddlewaresForRoute(
   //   * customErrorPath  (URL path string)    → query (path on backend)
   //
   // IMPORTANT: this Middleware is emitted ONLY when BOTH columns are
-  // set. customErrorCodes alone is insufficient — we'd need to point
-  // the Middleware at a Service that doesn't exist by default, which
-  // would replace tenant 404s with Traefik 500s ("backend Service
-  // unresolvable"). Until per-tenant errors backends are wired (see
-  // future work in the Traefik migration docs), the operator must
-  // also set customErrorPath. The path serves two roles:
-  //   1. Disambiguates intent — the tenant has chosen a real backend.
-  //   2. Encodes the backend Service name via convention: paths
-  //      starting `/tenant-errors/...` use the platform-shared
-  //      `tenant-errors` Service; any other path is interpreted as
-  //      a Service named in the tenant's own namespace via the
-  //      `serviceName:port:path` schema (e.g. `myapp:8080:/errors/`).
-  // The current implementation handles the platform-shared variant
-  // only; per-tenant routing is a future enhancement.
+  // set. customErrorCodes alone is insufficient — Traefik would then
+  // point the route at a Service that doesn't exist, which surfaces
+  // every blocked-upstream 4xx/5xx as a Traefik 500 to the end user.
+  //
+  // The errors backend is the platform-shared `tenant-errors` Service
+  // in the `platform-system` namespace (k8s/base/tenant-errors/) —
+  // explicit cross-namespace reference is required so that a tenant
+  // who happens to deploy their own `tenant-errors` Service into their
+  // namespace cannot hijack the platform-managed error pages with
+  // attacker-controlled content. The reconciler sets
+  // serviceNamespace='platform-system' on every emitted errors
+  // Middleware to make this guarantee explicit. Per-tenant errors
+  // backends (sourceful tenant content) are out of scope for this
+  // phase.
   if (route.customErrorCodes && route.customErrorPath) {
     // Two-stage filter: regex shape (3-digit code, optionally a 3-digit
     // range) AND for ranges, low <= high. The second check stops
@@ -422,6 +422,7 @@ export function buildMiddlewaresForRoute(
         spec: errorsSpec({
           status,
           serviceName: 'tenant-errors',
+          serviceNamespace: 'platform-system',
           servicePort: 80,
           query: route.customErrorPath ?? undefined,
         }),
@@ -770,7 +771,10 @@ async function buildOidcMiddleware(
     namespace,
     spec: forwardAuthSpec({
       address,
-      trustForwardHeader: true,
+      // Inherit forwardAuthSpec's safe default (false). Traefik's
+      // entryPoint trustedIPs=127.0.0.1/32 already strips attacker XFF
+      // upstream; oauth2-proxy / claim-validator don't need the
+      // client IP — they enforce auth via cookie/JWT.
       authResponseHeaders: responseHeaders.length > 0 ? responseHeaders : undefined,
     }),
     labels: {

@@ -105,7 +105,9 @@ export async function syncProxyIngressAnnotations(
       namespace: PLATFORM_NAMESPACE,
       spec: forwardAuthSpec({
         address: `http://${OAUTH2_PROXY_HOST}:${OAUTH2_PROXY_PORT}/oauth2/auth`,
-        trustForwardHeader: true,
+        // Inherit forwardAuthSpec safe default (false). oauth2-proxy's
+        // auth check is cookie-based, doesn't need the client IP.
+        // Entrypoint trustedIPs=127.0.0.1/32 already strips spoofed XFF.
         authResponseHeaders: [
           'X-Auth-Request-User',
           'X-Auth-Request-Email',

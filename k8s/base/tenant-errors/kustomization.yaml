@@ -1,0 +1,10 @@
+# Platform-shared tenant error pages. Lives in the `platform-system`
+# namespace and is referenced via explicit cross-namespace ref from
+# tenant route `errors` Middlewares (set in annotation-sync.ts).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: platform-system
+
+resources:
+  - deployment.yaml

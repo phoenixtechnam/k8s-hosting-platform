@@ -1,0 +1,149 @@
+# tenant-errors — platform-shared custom error pages backend.
+#
+# Tenant ingress_routes rows that set both `customErrorCodes` and
+# `customErrorPath` get an `errors` Traefik Middleware pointing at this
+# Service (cross-namespace ref from the tenant's namespace into
+# `platform-system`, gated by Traefik's allowCrossNamespace=true).
+# Without an explicit cross-namespace ref, Traefik would resolve
+# `tenant-errors` in the TENANT's own namespace — letting any tenant
+# spin up their own Service named `tenant-errors` and serve attacker-
+# controlled error pages back to their own users via Traefik. The
+# annotation-sync emitter pins serviceNamespace=platform-system to
+# close that gap.
+#
+# The Deployment serves a minimal nginx with two routes:
+#   /{status}.html  — generic error page templated with the status code
+#   /errors/...     — operator-supplied custom path (whatever the tenant
+#                     set in customErrorPath)
+# The error templates are wired into a ConfigMap so operators can swap
+# the branded copy without rebuilding the image.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-errors-content
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: tenant-errors
+data:
+  default.conf: |
+    server {
+      listen 80;
+      server_name _;
+      root /usr/share/nginx/html;
+
+      # Generic /{status}.html — the default Traefik query path. Falls
+      # back to a single template that interpolates the status code via
+      # the X-Traefik-Status header (Traefik sends the original upstream
+      # status as a request header when forwarding to the errors
+      # backend). The template is the same regardless of code; operators
+      # who want per-code branded pages override this file via a
+      # platform-system ConfigMap overlay.
+      location ~ "^/\d{3}\.html$" {
+        default_type text/html;
+        return 200 '<!doctype html><html><head><meta charset="utf-8"><title>Error</title></head><body><h1>Service unavailable</h1><p>Please try again later.</p></body></html>';
+      }
+
+      # Any other path — operator-supplied customErrorPath. Serves the
+      # static asset from /usr/share/nginx/html/. Operators ship their
+      # branded pages via the tenant-errors-content ConfigMap.
+      location / {
+        try_files $uri $uri/ /500.html;
+      }
+
+      # Health check for readiness/liveness probes.
+      location = /healthz {
+        access_log off;
+        return 200 "ok";
+        add_header Content-Type text/plain;
+      }
+    }
+  500.html: |
+    <!doctype html><html><head><meta charset="utf-8"><title>Error</title></head>
+    <body><h1>Internal Server Error</h1><p>An unexpected error occurred. Please try again later.</p></body></html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-errors
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: tenant-errors
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: tenant-errors
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tenant-errors
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tenant-errors
+    spec:
+      securityContext:
+        runAsNonRoot: false
+        fsGroup: 0
+      containers:
+        - name: nginx
+          image: nginx:1.30-alpine
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          volumeMounts:
+            - name: content
+              mountPath: /usr/share/nginx/html
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              memory: "64Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+      volumes:
+        - name: content
+          configMap:
+            name: tenant-errors-content
+            items:
+              - key: 500.html
+                path: 500.html
+        - name: conf
+          configMap:
+            name: tenant-errors-content
+            items:
+              - key: default.conf
+                path: default.conf
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: tenant-errors
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tenant-errors
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: tenant-errors
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: tenant-errors
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

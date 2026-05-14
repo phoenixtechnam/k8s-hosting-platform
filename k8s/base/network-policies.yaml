@@ -27,7 +27,7 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
+              kubernetes.io/metadata.name: traefik
 ---
 # Allow platform namespace to access hosting namespace (for management API)
 apiVersion: networking.k8s.io/v1
@@ -99,31 +99,19 @@ spec:
     - Ingress
   ingress:
     - from:
-        # ingress-nginx runs as hostNetwork=true (DaemonSet binding host
-        # :80/443 directly). When it forwards to a pod IP cross-node,
-        # the kernel routes via vxlan.calico — and rewrites the source
-        # IP from the host's wt0 IP (e.g. 100.120.x.x in the NetBird
-        # CGNAT) to vxlan.calico's tunnel IP (in the cluster pod CIDR
-        # 10.42.0.0/16). By the time Felix on the destination node
-        # evaluates this NetworkPolicy, the source is 10.42.x.x — NOT
-        # 100.120.x.x. So an `ipBlock: 100.64.0.0/10` alone never
-        # matches; the packet falls through to default-deny.
-        #
-        # The ipBlock 10.42.0.0/16 below catches host-source packets
-        # *after* the vxlan.calico re-source. It's also redundant with
-        # the namespaceSelector (which only matches non-hostNetwork
-        # pods anyway), so it's the only thing keeping cross-node
-        # admin traffic working when ingress-nginx is hostNetwork=true.
-        #
-        # Verified live on the 4-node staging cluster 2026-04-26 by
-        # bisect: removing this rule reproduces 5s/15s nginx upstream
-        # timeouts on every cross-node combination; adding it brings
-        # TTFB to <1s across all 4 external IPs.
+        # Traefik (replacing nginx-ingress) runs as DaemonSet with
+        # hostPort=80/443, NOT hostNetwork=true. With hostPort, the
+        # source IP seen by the destination pod IS the Traefik pod's
+        # pod-network IP (10.42.x.x), so the namespaceSelector on
+        # `traefik` reliably matches and the ipBlock fallback is no
+        # longer load-bearing for cross-node routing. We keep the
+        # 10.42.0.0/16 ipBlock as defence-in-depth (covers Calico's
+        # vxlan re-source on the rare cross-node tunnel path).
         - ipBlock:
             cidr: 10.42.0.0/16
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
+              kubernetes.io/metadata.name: traefik
       ports:
         - protocol: TCP
           port: 3000  # platform-api
@@ -242,19 +230,16 @@ spec:
         - protocol: TCP
           port: 5432
 ---
-# Allow ingress-nginx → cm-acme-http-solver pods on port 8089.
+# Allow Traefik → cm-acme-http-solver pods on port 8089.
 #
 # cert-manager dynamically creates short-lived solver pods (and a
-# matching Ingress) for each HTTP-01 challenge. Without this rule,
-# default-deny-ingress sinks the LE validator's HTTP request and
-# every challenge stalls / fails with 504 — observed live during the
-# 2026-04-26 staging cluster bring-up: dex.staging.phoenix-host.net
-# challenge invalid because LE hit staging2's nginx but solver pod
-# was on staging3 (kube-proxy load-balanced cross-node) → blocked
-# by default-deny-ingress.
+# matching IngressRoute via the Ingress shim) for each HTTP-01 challenge.
+# Without this rule, default-deny-ingress sinks the LE validator's HTTP
+# request and every challenge stalls / fails with 504.
 #
 # Same ipBlock+namespaceSelector pattern as allow-ingress-to-platform
-# above (hostNetwork ingress-nginx → vxlan.calico re-source rewrite).
+# above — covers both the direct Traefik pod path and any Calico vxlan
+# re-source rewrite on cross-node tunneled traffic.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -274,7 +259,7 @@ spec:
             cidr: 10.42.0.0/16
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
+              kubernetes.io/metadata.name: traefik
       ports:
         - protocol: TCP
           port: 8089
@@ -283,7 +268,7 @@ spec:
 # Allow backups-v2 files-component Jobs (running in tenant
 # namespaces) to POST archive + tree uploads to platform-api over
 # HTTP. Without this rule the existing allow-ingress-to-platform
-# blocks the connection — it only permits ingress-nginx + same-ns
+# blocks the connection — it only permits Traefik + same-ns
 # pods. Scoped by Pod label, not namespace, so it applies to every
 # `client-<id>` namespace without enumeration.
 #
