@@ -858,14 +858,24 @@ phase_e_archive_no_downtime() {
   fi
 
   # E6. Checkpoint dir cleanup — no .checkpoint-tmp-* leftovers.
-  local leftover
-  leftover="$(kctl exec -n "$STALWART_NS" "$POD" -c stalwart -- \
-    sh -c 'ls -1d /var/lib/stalwart/data/.checkpoint-tmp-* 2>/dev/null | wc -l' 2>/dev/null \
-    | tr -d ' \n\r' || echo "?")"
-  if [[ "$leftover" == "0" ]]; then
-    note_pass "E6. checkpoint dir cleaned up (no .checkpoint-tmp-* in live PVC)"
+  # The archive run scales the Deployment down+up, replacing the
+  # Stalwart pod. `$POD` from harness startup is stale at this point,
+  # so re-resolve from the current ReplicaSet.
+  local current_pod leftover
+  current_pod="$(kctl -n "$STALWART_NS" get pod \
+    -l app.kubernetes.io/component=stalwart \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [[ -z "$current_pod" ]]; then
+    note_fail "E6. no Stalwart pod found after archive run — Deployment may not have scaled back up"
   else
-    note_fail "E6. ${leftover} stale .checkpoint-tmp-* dir(s) left in live PVC"
+    leftover="$(kctl exec -n "$STALWART_NS" "$current_pod" -c stalwart -- \
+      sh -c 'ls -1d /var/lib/stalwart/data/.checkpoint-tmp-* 2>/dev/null | wc -l' 2>/dev/null \
+      | tr -d ' \n\r' || echo "?")"
+    if [[ "$leftover" == "0" ]]; then
+      note_pass "E6. checkpoint dir cleaned up (no .checkpoint-tmp-* in live PVC)"
+    else
+      note_fail "E6. ${leftover} stale .checkpoint-tmp-* dir(s) left in live PVC"
+    fi
   fi
 
   # E7. SMTP + IMAP still serving after the run.
