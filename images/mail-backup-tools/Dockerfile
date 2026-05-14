@@ -31,6 +31,15 @@
 #   - coreutils         — sha256sum + standard tools (debian default)
 #   - ca-certificates   — TLS to platform-api + S3
 #   - isync             — mbsync, mailbox component (until Phase 2 JMAP)
+#   - rsync             — mail-migration rsync Job (backend/src/modules/
+#                         mail-admin/migration.ts) copies the live RocksDB
+#                         data between server nodes. Without this the
+#                         migration shell exits with "rsync: not found"
+#                         and the Job hits backoffLimit.
+#   - openssh-client    — provides ssh + ssh-keyscan used by the rsync
+#                         transport in the migration Job. Mirrors the
+#                         "uses ssh -i /etc/migration-ssh/id_rsa" path
+#                         in the Job shell script.
 #
 # Image size budget: <120 MiB (debian:trixie-slim ~80 MiB base + restic
 # ~25 MiB + python3-minimal ~10 MiB). Trivy CRITICAL/HIGH must pass.
@@ -49,6 +58,8 @@ RUN apt-get update \
       gzip \
       coreutils \
       ca-certificates \
+      rsync \
+      openssh-client \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
            /usr/share/doc/* /usr/share/man/*
