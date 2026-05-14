@@ -1,4 +1,4 @@
-# ACME HTTP-01 Ingress for Stalwart-managed TLS certificate.
+# ACME HTTP-01 IngressRoute for Stalwart-managed TLS certificate.
 #
 # URL: http://mail.${DOMAIN}/.well-known/acme-challenge/<token>
 # Backend: stalwart-mail.mail.svc.cluster.local:80 (http-acme port)
@@ -9,28 +9,29 @@
 #   bootstrap-plan-cm.yaml). LE validates ownership by HTTP-GETting
 #   /.well-known/acme-challenge/<token> on port 80 of the mail
 #   hostname. Stalwart serves the response on its own internal HTTP
-#   listener (NetworkListener `http-acme` on [::]:80, no TLS). nginx-
-#   ingress already binds port 80 on every node via hostPort, so this
-#   Ingress route is the bridge: external :80 → nginx → this Ingress
-#   → Stalwart Service:80.
+#   listener (NetworkListener `http-acme` on [::]:80, no TLS). Traefik
+#   already binds port 80 on every node via hostPort, so this
+#   IngressRoute is the bridge: external :80 → traefik (web entrypoint)
+#   → this IngressRoute → Stalwart Service:80.
 #
-# Why HTTP-01 and not TLS-ALPN-01:
-#   TLS-ALPN-01 would need cluster-wide ssl-passthrough on
-#   nginx-ingress + an SNI-routed Ingress claiming the whole
-#   mail.${DOMAIN} on 443. HTTP-01 needs a single path-prefix
-#   route on port 80, which is boringly standard nginx-ingress.
-#
-# Why path-prefix-only (not the full host):
-#   This Ingress claims ONLY /.well-known/acme-challenge/* — anything
-#   else under mail.${DOMAIN} either matches a different
-#   Ingress, returns the nginx-default 404, or falls through to other
-#   listeners. We're not making the mail hostname into a general HTTP
-#   reverse proxy.
-#
-# Why no cert / no TLS:
+# Why the `web` entrypoint and no TLS:
 #   ACME challenges are PLAIN HTTP per RFC 8555 §8.3. No cert needed
 #   here — that's the whole point of the bootstrap (we don't HAVE a
-#   cert until LE issues one, which is what this route is for).
+#   cert until LE issues one). The route is on the `web` entrypoint
+#   only and carries NO redirect-to-https middleware, so plain-HTTP
+#   probes reach Stalwart's http-acme listener unmolested.
+#
+# Why priority: 100:
+#   In Traefik, IngressRoutes are matched by route priority (default
+#   is rule length). We pin a high priority to guarantee this specific
+#   path prefix wins against any catch-all redirect routes that might
+#   later attach to the `web` entrypoint for the same host.
+#
+# Why path-prefix-only (not the full host):
+#   This IngressRoute claims ONLY /.well-known/acme-challenge/* —
+#   anything else under mail.${DOMAIN} either matches a different
+#   route, returns the Traefik 404, or falls through to other listeners.
+#   We're not making the mail hostname into a general HTTP reverse proxy.
 #
 # Why mail.${DOMAIN} hardcoded (and not a variable):
 #   The default mail-server hostname is mail.${DOMAIN}. The platform-
@@ -39,13 +40,13 @@
 #   the platform-api's runtime config (which is the wrong layering —
 #   Flux re-renders manifests on every git change, not on every API
 #   write). When the operator overrides the hostname in admin Email
-#   Settings, the platform-api creates a SECOND Ingress with the
+#   Settings, the platform-api creates a SECOND IngressRoute with the
 #   override hostname (using the same backend/path) and triggers a
 #   Stalwart Bootstrap.serverHostname update. The default mail.${DOMAIN}
 #   route stays as a fallback for clients that haven't migrated.
 ---
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: stalwart-mail-acme
   namespace: mail
@@ -53,22 +54,13 @@ metadata:
     app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
-  annotations:
-    # No cert-manager: this Ingress is HTTP-only (port 80 ACME challenge).
-    # Explicitly disable ssl-redirect so LE's plain-HTTP probe isn't
-    # 308'd to HTTPS.
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    # No auth gate — ACME challenges are public by design.
 spec:
-  ingressClassName: nginx
-  rules:
-    - host: mail.${DOMAIN}
-      http:
-        paths:
-          - path: /.well-known/acme-challenge/
-            pathType: Prefix
-            backend:
-              service:
-                name: stalwart-mail
-                port:
-                  number: 80
+  entryPoints:
+    - web
+  routes:
+    - match: "Host(`mail.${DOMAIN}`) && PathPrefix(`/.well-known/acme-challenge/`)"
+      kind: Rule
+      priority: 100
+      services:
+        - name: stalwart-mail
+          port: 80

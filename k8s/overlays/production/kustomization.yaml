@@ -51,7 +51,11 @@ components:
 
 patches:
   - path: platform-config-patch.yaml
-  - path: ingress-patch.yaml
+  # ingress-patch.yaml was REMOVED in the Traefik migration. platform-ingress
+  # is now reconciler-managed (backend/src/modules/system-settings/
+  # ingress-reconciler.ts creates the IngressRoute from system_settings on
+  # startup). Per-environment TLS settings flow through the reconciler
+  # via the platform-cluster-config ConfigMap (Phase 2).
 
 images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/backend

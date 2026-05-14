@@ -94,32 +94,54 @@ patches:
   # 2026-05-13 — Stalwart 0.16 uses embedded RocksDB on the
   # `stalwart-rocksdb-data` local-path PVC. There is no CNPG cluster.
 
-  # Ingress: dev TLS cert + relaxed SSL settings
+  # IngressRoute + Certificate: dev host + local-CA cert. The base
+  # IngressRoute matches `Host(stalwart.${DOMAIN})` — on dev,
+  # ${DOMAIN}=k8s-platform.test → stalwart.k8s-platform.test. We rebind
+  # to the historical `stalwart16` subdomain so dev users can keep both
+  # the old and new admin UIs reachable side-by-side during cutover.
   - patch: |
-      apiVersion: networking.k8s.io/v1
-      kind: Ingress
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
       metadata:
         name: stalwart-webadmin
         namespace: mail
-        annotations:
-          cert-manager.io/cluster-issuer: local-ca-issuer
-          nginx.ingress.kubernetes.io/ssl-redirect: "false"
       spec:
+        routes:
+          - match: "Host(`stalwart16.k8s-platform.test`)"
+            kind: Rule
+            middlewares:
+              - name: admin-auth-cookie
+                namespace: traefik
+              - name: compress
+                namespace: traefik
+            services:
+              - name: stalwart-mgmt
+                port: 8080
         tls:
-          - hosts:
-              - stalwart16.k8s-platform.test
-            secretName: stalwart-webadmin-dev-tls
-        rules:
-          - host: stalwart16.k8s-platform.test
-            http:
-              paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: stalwart-mgmt
-                      port:
-                        number: 8080
+          secretName: stalwart-webadmin-dev-tls
     target:
-      kind: Ingress
+      group: traefik.io
+      version: v1alpha1
+      kind: IngressRoute
+      name: stalwart-webadmin
+
+  # Pair the IngressRoute with a dev cert from the local-CA issuer.
+  - patch: |
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: stalwart-webadmin
+        namespace: mail
+      spec:
+        secretName: stalwart-webadmin-dev-tls
+        dnsNames:
+          - stalwart16.k8s-platform.test
+        issuerRef:
+          name: local-ca-issuer
+          kind: ClusterIssuer
+          group: cert-manager.io
+    target:
+      group: cert-manager.io
+      version: v1
+      kind: Certificate
       name: stalwart-webadmin

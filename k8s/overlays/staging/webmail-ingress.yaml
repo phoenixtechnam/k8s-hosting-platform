@@ -1,10 +1,5 @@
-# Cut 3 (2026-05-04): public Ingress for Roundcube webmail at
+# Cut 3 (2026-05-04): public IngressRoute for Roundcube webmail at
 # https://webmail.${DOMAIN} on staging.
-#
-# The base k8s/base/roundcube-deployment.yaml ships a dev-only Ingress
-# (local-CA issuer, k8s-platform.test). Staging needs the LE prod
-# cluster issuer + nginx ingressClass. Production overlay carries
-# the same shape with the same hardcoded issuer.
 #
 # Auth: NO admin-auth gate — webmail is end-user-facing. Authentication
 # is handled by Roundcube itself (IMAP LOGIN with Stalwart) and by the
@@ -12,45 +7,65 @@
 #
 # Why letsencrypt-prod-http01 is HARDCODED (not ${CLUSTER_ISSUER_NAME}):
 # Flux's postBuild substituteFrom on staging only resolves DOMAIN from
-# platform-cluster-config — CLUSTER_ISSUER_NAME isn't defined there, so
-# leaving the placeholder caused Flux to render the annotation as the
-# empty string. cert-manager treats `cert-manager.io/cluster-issuer: ""`
-# as "no issuer" → no Cert CR was created → the Secret
-# `platform-webmail-tls` never existed → nginx-ingress fell back to its
-# built-in "Kubernetes Ingress Controller Fake Certificate" self-signed.
-# Same pattern + reasoning as the staging stalwart-mail overlay's
-# inline patch on the webadmin Ingress (k8s/overlays/staging/
-# stalwart-mail/kustomization.yaml).
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# platform-cluster-config — CLUSTER_ISSUER_NAME isn't defined there. With
+# Ingress + cert-manager annotations this caused the cert to never be
+# created; with explicit Certificate CRs (Traefik IngressRoute pattern)
+# the same risk applies → spec.issuerRef.name must be a literal string
+# that resolves on staging at apply time.
+#
+# Note: the previous nginx annotations proxy-body-size: 55m + proxy-
+# read/send-timeout: 120 carried over from when Stalwart's
+# maxSizeAttachmentsPerEmail = 50 MB. In Traefik those limits are
+# governed by the EntryPoint's `transport` section (cluster-default)
+# and per-route `serversTransport`. The default Helm-installed Traefik
+# allows up to maxRequestBodyBytes which is unbounded by default →
+# adequate for 50 MB attachments without further tuning.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: platform-webmail-ingress
   namespace: mail
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: webmail
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    # Webmail attachments can be sizeable; align with Stalwart's
-    # maxSizeAttachmentsPerEmail = 50 MB.
-    nginx.ingress.kubernetes.io/proxy-body-size: "55m"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
 spec:
-  ingressClassName: nginx
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`webmail.${DOMAIN}`)"
+      kind: Rule
+      middlewares:
+        - name: compress
+          namespace: traefik
+      services:
+        - name: roundcube
+          port: 80
   tls:
-    - hosts:
-        - webmail.${DOMAIN}
-      secretName: platform-webmail-tls
-  rules:
-    - host: webmail.${DOMAIN}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: roundcube
-                port:
-                  number: 80
+    secretName: platform-webmail-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: platform-webmail
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+spec:
+  secretName: platform-webmail-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - webmail.${DOMAIN}
+  issuerRef:
+    name: letsencrypt-prod-http01
+    kind: ClusterIssuer
+    group: cert-manager.io

@@ -1,0 +1,37 @@
+# Admin UI authentication Middlewares.
+#
+# These are the canonical named Middlewares that every admin-ui IngressRoute
+# references. Exactly ONE of the two auth-gate Kustomize components must be
+# included per overlay — the chosen component creates (or overrides) the
+# `admin-auth-cookie` Middleware with the appropriate backend address:
+#
+#   components/admin-auth-gate-cookie  → platform_session cookie (default)
+#   components/admin-auth-gate-oauth2  → oauth2-proxy + role-check chain
+#
+# The admin-ui IngressRoutes always reference `admin-auth-cookie@traefik`.
+# The component supplies the concrete implementation. This pattern keeps
+# IngressRoute specs stable across environments while the auth mechanism
+# varies per overlay.
+#
+# IMPORTANT: this base file ships a PLACEHOLDER that points to
+# platform-api's session endpoint (same as the cookie gate). Every overlay
+# that uses admin-auth-gate-cookie gets the same behaviour. Overlays that
+# use admin-auth-gate-oauth2 override this resource via the component.
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: admin-auth-cookie
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: admin-auth-gate
+spec:
+  forwardAuth:
+    # Validates the platform_session cookie set by platform-api on login.
+    # Returns 200 on valid session, 401/302 otherwise.
+    address: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Platform-Admin-User
+      - X-Platform-Admin-Role

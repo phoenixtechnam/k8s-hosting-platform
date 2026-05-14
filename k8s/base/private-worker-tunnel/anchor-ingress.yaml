@@ -1,23 +1,25 @@
-# Anchor Ingress for the Private Worker tunnel feature.
+# Anchor IngressRoute for the Private Worker tunnel feature.
 #
-# Holds the TLS certificate for tunnels.${DOMAIN} and serves a
-# catch-all default backend (the platform suspended page) for
-# unrouted requests.
+# Holds the TLS certificate (via cert-manager Certificate CR below) for
+# tunnels.${DOMAIN} and serves a catch-all default backend (the platform
+# suspended page) for unrouted requests.
 #
-# Per-client Ingresses (tunnel-{slug}) are created at runtime by the
-# backend reconciler on the SAME host (tunnels.${DOMAIN}) with
-# path /c/{slug}/(.*). NGINX-ingress merges path rules across
-# multiple Ingress objects on the same host, so:
-#   - frpc dial-ins on /c/{slug}/* hit the per-client Ingress
-#     (which targets the per-client ExternalName Service)
-#   - anything else falls through to this anchor's catch-all
+# Per-client IngressRoutes (tunnel-{slug}) are created at runtime by the
+# backend reconciler on the SAME host (tunnels.${DOMAIN}) with rule
+# PathPrefix(`/c/{slug}/`) + a higher route priority so they win over
+# the anchor's catch-all `/` match.
 #
-# WebSocket handling is required because frps uses HTTP Upgrade for
-# its WSS transport. The Connection / Upgrade headers are forwarded
-# via configuration-snippet; $connection_upgrade is a `map` defined
-# by ingress-nginx by default. The 1h read/send timeouts give the
-# tunnel control-plane plenty of slack — frps sends keepalives every
-# 30s, but bursty clients may go quiet between reconnects.
+# WebSocket handling: Traefik forwards HTTP/1.1 Upgrade/Connection
+# headers natively — frps uses HTTP Upgrade for its WSS transport,
+# no extra middleware required. The control-plane connection is
+# long-lived, so we override the per-route ResponseForwarding for
+# extended timeouts via the response-forwarding patch in serversTransport
+# (cluster-default ServersTransport applies; tenant routes that need
+# tighter behaviour patch their own).
+#
+# Rate-limit anchor catch-all to defend against scanning. The per-client
+# tunnel-<slug> IngressRoutes created at runtime layer their own tighter
+# RateLimit Middleware on top.
 #
 # ${DOMAIN} is substituted by Flux postBuild.substituteFrom in each
 # overlay. Base must keep ${DOMAIN} literal.
@@ -27,7 +29,9 @@
 # namespaces without duplicating the suspended deployment. If the
 # operator removes the suspended page in their overlay, they should
 # also patch this ExternalName to point at a different backend (e.g.
-# platform-api.platform.svc.cluster.local).
+# platform-api.platform.svc.cluster.local). The Traefik controller is
+# installed with providers.kubernetesCRD.allowExternalNameServices=true,
+# which is required for IngressRoute → ExternalName routing.
 apiVersion: v1
 kind: Service
 metadata:
@@ -45,46 +49,50 @@ spec:
       targetPort: 80
       protocol: TCP
 ---
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# Rate-limit Middleware for the anchor catch-all. 10 req/s steady-state
+# (average), 20 burst (max queued). Per-client tunnel-{slug} routes
+# layer their own tighter limits on top via separate Middlewares.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: tunnel-anchor-ratelimit
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: private-worker-tunnel
+spec:
+  rateLimit:
+    average: 10
+    burst: 20
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: tunnel-anchor
   namespace: platform-system
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: private-worker-tunnel
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    # WebSocket support: NGINX-ingress passes Upgrade/Connection headers
-    # through automatically when the client sends them and the backend
-    # speaks HTTP/1.1. We just need long timeouts for the long-lived
-    # tunnel control-plane connection. (configuration-snippet was
-    # removed because the cluster's ingress-nginx ConfigMap has
-    # allow-snippet-annotations disabled — the snippet was redundant
-    # anyway.)
-    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    # Rate-limit anchor catch-all to defend against scanning. The
-    # per-client tunnel-<slug> Ingresses created at runtime add their
-    # own tighter limits.
-    nginx.ingress.kubernetes.io/limit-rps: "10"
-    nginx.ingress.kubernetes.io/limit-connections: "20"
 spec:
-  ingressClassName: nginx
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`tunnels.${DOMAIN}`)"
+      kind: Rule
+      # Low priority so per-client `PathPrefix(/c/{slug}/)` routes
+      # always win for tunneled traffic.
+      priority: 1
+      middlewares:
+        - name: tunnel-anchor-ratelimit
+          namespace: platform-system
+        - name: compress
+          namespace: traefik
+      services:
+        - name: tunnel-anchor-default
+          port: 80
   tls:
-    - hosts:
-        - tunnels.${DOMAIN}
-      secretName: tunnels-platform-domain-tls
-  rules:
-    - host: tunnels.${DOMAIN}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: tunnel-anchor-default
-                port:
-                  number: 80
+    # The Certificate CR lives in certificate.yaml — cert-manager creates
+    # the Secret independently. IngressRoute references it by name. The
+    # cert-manager Ingress shim does not pick up IngressRoute CRDs, so
+    # an explicit Certificate CR is the only way to provision TLS.
+    secretName: tunnels-platform-domain-tls

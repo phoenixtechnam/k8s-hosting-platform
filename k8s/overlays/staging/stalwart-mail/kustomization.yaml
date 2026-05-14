@@ -53,25 +53,47 @@ patches:
       kind: Service
       name: stalwart-mail
 
-  # Ingress: hardcode cert-issuer (no ${CLUSTER_ISSUER_NAME} substitution
-  # on staging). Match the auth-signin pattern from the v015 webadmin-
-  # ingress so users land on /settings/mail after re-login.
+  # Hardcode cert-issuer + per-environment Secret name on staging. The
+  # base Certificate uses ${CLUSTER_ISSUER_NAME}; staging's platform-
+  # cluster-config does NOT define that variable (only DOMAIN is exposed
+  # via Flux postBuild substituteFrom) so we patch the literal value
+  # here. Auth-signin URL is no longer needed — the admin-auth-cookie
+  # Middleware (chosen by the overlay's admin-auth-gate-cookie component)
+  # carries the verify endpoint; the redirect-to-login flow is owned by
+  # platform-api on a 401 response.
   - patch: |
-      apiVersion: networking.k8s.io/v1
-      kind: Ingress
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
       metadata:
         name: stalwart-webadmin
         namespace: mail
-        annotations:
-          cert-manager.io/cluster-issuer: letsencrypt-prod-http01
-          nginx.ingress.kubernetes.io/auth-signin: "https://admin.${DOMAIN}/login?redirect=/settings/mail"
+      spec:
+        secretName: stalwart-webadmin-prod-tls
+        issuerRef:
+          name: letsencrypt-prod-http01
+          kind: ClusterIssuer
+          group: cert-manager.io
+    target:
+      group: cert-manager.io
+      version: v1
+      kind: Certificate
+      name: stalwart-webadmin
+
+  # Mirror the staging-specific Secret name into the IngressRoute so
+  # it picks up the certificate Cert-Manager creates above.
+  - patch: |
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: stalwart-webadmin
+        namespace: mail
       spec:
         tls:
-          - hosts:
-              - stalwart.${DOMAIN}
-            secretName: stalwart-webadmin-prod-tls
+          secretName: stalwart-webadmin-prod-tls
     target:
-      kind: Ingress
+      group: traefik.io
+      version: v1alpha1
+      kind: IngressRoute
       name: stalwart-webadmin
 
   # Reloader: roll the Deployment when the LE-prod TLS cert is renewed.

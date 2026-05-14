@@ -1,42 +1,39 @@
 # admin-auth-gate-cookie — Kustomize Component
 #
-# Gates every Ingress labelled `platform.phoenix-host.net/admin-ui=true`
-# behind the platform_session cookie via nginx auth_request.
-#
-# Intentionally snippet-free. Most managed nginx-ingress installs ship
-# with `allow-snippet-annotations: "false"` as a hardening default
-# (Longhorn's admission webhook rejects any Ingress that uses
-# auth-snippet / server-snippet / configuration-snippet when that flag
-# is off). This component uses only first-class annotations, so it
-# works on hardened clusters.
-#
-# Two design points that this edit relies on:
-#   1. nginx auth_request forwards the browser's Cookie header to the
-#      subrequest by default — no explicit proxy_set_header needed.
-#   2. The verify-admin-session endpoint ONLY reads the platform_session
-#      cookie; it ignores Authorization entirely. That means we don't
-#      need a snippet to strip Bearer tokens set by a gated SPA — the
-#      backend is already safe against that contamination.
-#
-# The per-environment auth-signin redirect (public admin URL) is set on
-# each overlay's ingress patch, because the apex differs between
-# dev/staging/production.
+# In the Traefik model, admin-ui IngressRoutes always reference the
+# Middleware `admin-auth-cookie@traefik`. The BASE
+# (k8s/base/traefik/middlewares-admin-auth.yaml) ships that Middleware
+# pre-wired to platform-api's verify-admin-session endpoint — which IS
+# the cookie gate. So this component carries only a self-stamping
+# annotation patch that records the operator's choice; the behaviour
+# itself comes from the base middleware unchanged.
 #
 # Pick exactly ONE admin-auth-gate component per overlay:
-#   - components/admin-auth-gate-cookie  → platform_session + local login
+#   - components/admin-auth-gate-cookie  → platform_session + local login (THIS)
 #   - components/admin-auth-gate-oauth2  → oauth2-proxy + Dex OIDC
+#
+# Why an annotation-only stamp is enough: dropping the cookie component
+# from an overlay would silently keep the base middleware AND skip the
+# oauth2 rebind, leaving the cluster on cookie auth without anyone
+# having declared the intent. The ci-admin-auth-check guardrail compares
+# this components: entry against the IngressRoutes labelled admin-ui=true
+# to enforce one explicit choice per overlay; the annotation here is the
+# audit trail (`kubectl describe middleware admin-auth-cookie -n traefik`).
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
 patches:
   - target:
-      kind: Ingress
-      labelSelector: platform.phoenix-host.net/admin-ui=true
+      group: traefik.io
+      version: v1alpha1
+      kind: Middleware
+      name: admin-auth-cookie
+      namespace: traefik
     patch: |-
-      apiVersion: networking.k8s.io/v1
-      kind: Ingress
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
       metadata:
-        name: _  # patched by labelSelector — name placeholder required by SM
+        name: admin-auth-cookie
+        namespace: traefik
         annotations:
-          nginx.ingress.kubernetes.io/auth-url: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
-          platform.phoenix-host.net/auth-gate: "cookie"
+          platform.phoenix-host.net/auth-gate: cookie

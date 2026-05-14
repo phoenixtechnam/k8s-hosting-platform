@@ -2,25 +2,28 @@
 set -euo pipefail
 
 # ci-empty-cluster-issuer-check.sh — fail CI when a rendered overlay
-# contains an Ingress with `cert-manager.io/cluster-issuer: ""` AND a
-# non-empty `tls:` block. That combination guarantees a broken host:
-# nginx-ingress falls back to the built-in fake self-signed cert
-# because the Secret cert-manager would have populated never gets
-# created (no issuer to drive provisioning).
+# contains a cert-manager Certificate CR whose `issuerRef.name` is empty
+# or carries an unresolved `${VAR}` placeholder.
 #
-# How this happens: an overlay uses `${CLUSTER_ISSUER_NAME}` (or any
-# other variable) in the issuer annotation but the Flux postBuild
-# substituteFrom ConfigMap doesn't define that key. Flux's envsubst
-# silently emits the empty string. The ci-flux-envsubst-check.sh
-# script catches MALFORMED `${...` patterns but not unresolved-
-# variable patterns, since unresolved vars are valid envsubst input.
+# In the Traefik model, IngressRoutes do NOT carry the
+# `cert-manager.io/cluster-issuer` annotation — the Ingress shim that
+# read that annotation only sees `kind: Ingress`. Instead every
+# IngressRoute that needs TLS is paired with an explicit `kind:
+# Certificate` (cert-manager.io/v1) CR. This check is repurposed to
+# audit those Certificate CRs.
 #
-# We discovered the gap empirically on 2026-05-07 when
-# webmail.staging.phoenix-host.net ended up serving the
-# nginx-ingress fake cert in production-equivalent staging because
-# the staging overlay used `${CLUSTER_ISSUER_NAME}` without
-# platform-cluster-config defining it. CI was green; humans had to
-# spot the broken cert on the wire.
+# How a broken cert happens: an overlay leaves issuerRef.name as
+# `${CLUSTER_ISSUER_NAME}` but the Flux postBuild substituteFrom
+# ConfigMap doesn't define that key. Flux's envsubst silently emits
+# the empty string. The ci-flux-envsubst-check.sh script catches
+# MALFORMED `${...` patterns but not unresolved-variable patterns,
+# since unresolved vars are valid envsubst input.
+#
+# Discovered empirically on 2026-05-07 (pre-Traefik) when
+# webmail.staging ended up serving the controller's fake cert. The
+# same gotcha applies to the Traefik default cert in v3.7 — if the
+# Secret cert-manager would create never materialises, Traefik's
+# TLSStore falls back to its hard-coded snake-oil cert.
 #
 # Run locally:
 #   ./scripts/ci-empty-cluster-issuer-check.sh
@@ -60,15 +63,6 @@ for overlay in "${OVERLAYS[@]}"; do
     continue
   }
 
-  # Walk every Ingress doc, look for empty cluster-issuer + tls block.
-  # We use python because awk's YAML-doc-aware parsing is painful and
-  # the project already requires python3 for other scripts.
-  #
-  # NB: the python script body lives in a tempfile because mixing a
-  # heredoc-supplied script with stdin-piped data on the same python
-  # invocation conflicts on `<<'PY'` (heredoc redirects stdin → the
-  # piped `rendered` content gets discarded). Tempfile avoids the
-  # ambiguity.
   py_script=$(mktemp)
   trap 'rm -f "$py_script"' EXIT
   cat > "$py_script" <<'PY'
@@ -79,35 +73,39 @@ out = []
 for d in docs:
     if not isinstance(d, dict):
         continue
-    if d.get("kind") != "Ingress":
+    api = str(d.get("apiVersion") or "")
+    if d.get("kind") != "Certificate" or not api.startswith("cert-manager.io/"):
         continue
     md = d.get("metadata") or {}
     name = md.get("name", "<unnamed>")
     ns = md.get("namespace", "<no-ns>")
-    annotations = md.get("annotations") or {}
-    issuer = annotations.get("cert-manager.io/cluster-issuer")
     spec = d.get("spec") or {}
-    tls = spec.get("tls") or []
-    has_tls = bool(tls) and any(
-        (t.get("hosts") and t.get("secretName")) for t in tls
-        if isinstance(t, dict)
-    )
-    issuer_str = "" if issuer is None else str(issuer)
-    # An issuer is "broken" if it's:
-    #   1. literally empty/missing, OR
-    #   2. an unresolved Flux postBuild placeholder like
-    #      `${CLUSTER_ISSUER_NAME}` (Flux's envsubst would render this
-    #      to the empty string at apply time IF the variable isn't
-    #      defined in the substituteFrom ConfigMap, OR pass it through
-    #      verbatim — both forms make cert-manager refuse to issue).
+    issuer_ref = spec.get("issuerRef") or {}
+    issuer_name = issuer_ref.get("name")
+    secret_name = spec.get("secretName")
+    issuer_str = "" if issuer_name is None else str(issuer_name)
+    # Variables Flux postBuild substituteFrom is guaranteed to resolve
+    # (bootstrap.sh seeds the platform-cluster-config ConfigMap with
+    # these keys before Flux ever reconciles).
+    KNOWN_VARS = {"DOMAIN", "ENV", "CLUSTER_ISSUER_NAME"}
+    # Broken if: empty, OR an unresolved Flux postBuild placeholder
+    # for a variable NOT in the known platform-cluster-config keys.
+    # With no resolution Flux emits the empty string OR passes the
+    # literal `${...}` through verbatim — both forms make cert-manager
+    # refuse to issue.
     is_empty = issuer_str == ""
-    has_unresolved_var = "${" in issuer_str
-    if has_tls and (is_empty or has_unresolved_var):
+    has_unresolved_var = False
+    if "${" in issuer_str:
+        import re
+        for var in re.findall(r"\$\{([A-Z_][A-Z0-9_]*)\}", issuer_str):
+            if var not in KNOWN_VARS:
+                has_unresolved_var = True
+                break
+    if secret_name and (is_empty or has_unresolved_var):
         reason = "empty/missing" if is_empty else f"unresolved variable {issuer_str!r}"
-        out.append(f"{overlay}: Ingress/{ns}/{name} has tls.secretName "
-                   f"but cert-manager.io/cluster-issuer is {reason}. "
-                   f"The Secret will never be created and nginx-ingress "
-                   f"will serve its built-in fake cert.")
+        out.append(f"{overlay}: Certificate/{ns}/{name} targets secretName={secret_name!r} "
+                   f"but issuerRef.name is {reason}. The Secret will never be "
+                   f"created and Traefik will fall back to its built-in fake cert.")
 for line in out:
     print(line)
 PY
@@ -122,11 +120,11 @@ done
 
 if (( failures > 0 )); then
   echo
-  echo "ci-empty-cluster-issuer-check FAILED: $failures Ingress(es) with TLS but no cluster-issuer."
-  echo "Fix: hardcode the issuer (e.g. \`letsencrypt-prod-http01\`) in the overlay,"
+  echo "ci-empty-cluster-issuer-check FAILED: $failures Certificate(s) with no resolvable issuerRef."
+  echo "Fix: hardcode the issuer (e.g. \`letsencrypt-prod-http01\`) in the Certificate,"
   echo "     OR add the variable name (e.g. CLUSTER_ISSUER_NAME) to the platform-cluster-config"
   echo "     ConfigMap that Flux postBuild substituteFrom reads."
   exit 1
 fi
 
-echo "ci-empty-cluster-issuer-check PASSED — every TLS-enabled Ingress has a non-empty cluster-issuer."
+echo "ci-empty-cluster-issuer-check PASSED — every Certificate CR has a non-empty issuerRef.name."

@@ -2549,9 +2549,6 @@ install_traefik() {
     --set 'ports.web.hostPort=80' \
     --set 'ports.websecure.hostPort=443' \
     --set service.type=ClusterIP \
-    --set 'ports.web.redirections.entryPoint.to=websecure' \
-    --set 'ports.web.redirections.entryPoint.scheme=https' \
-    --set 'ports.web.redirections.entryPoint.permanent=true' \
     --set providers.kubernetesCRD.enabled=true \
     --set providers.kubernetesCRD.allowCrossNamespace=true \
     --set providers.kubernetesCRD.allowExternalNameServices=true \
@@ -4633,11 +4630,26 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
     fi
   fi
 
-  log "Materialising ConfigMap platform-cluster-config (DOMAIN=${PLATFORM_DOMAIN}, ENV=${PLATFORM_ENV})..."
+  # Resolve the CLUSTER_ISSUER_NAME to pin into the ConfigMap. The
+  # value comes from --cluster-issuer (if passed) or the per-env default
+  # (computed in install_cert_manager_issuers). Adding it here lets Flux
+  # postBuild substituteFrom resolve `${CLUSTER_ISSUER_NAME}` literals
+  # in base manifests (e.g. cert-manager Certificate CRs alongside
+  # Traefik IngressRoutes), so a single base manifest works across
+  # dev/staging/production without per-overlay literal patches.
+  local cluster_issuer_for_cm="${CLUSTER_ISSUER_NAME:-letsencrypt-prod-http01}"
+  if [[ "$PLATFORM_ENV" == "staging" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
+    cluster_issuer_for_cm="letsencrypt-staging-http01"
+  elif [[ "$PLATFORM_ENV" == "dev" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
+    cluster_issuer_for_cm="local-ca-issuer"
+  fi
+
+  log "Materialising ConfigMap platform-cluster-config (DOMAIN=${PLATFORM_DOMAIN}, ENV=${PLATFORM_ENV}, CLUSTER_ISSUER_NAME=${cluster_issuer_for_cm})..."
   kctl create configmap platform-cluster-config \
     -n flux-system \
     --from-literal=DOMAIN="${PLATFORM_DOMAIN}" \
     --from-literal=ENV="${PLATFORM_ENV}" \
+    --from-literal=CLUSTER_ISSUER_NAME="${cluster_issuer_for_cm}" \
     --dry-run=client -o yaml | kctl apply -f -
 
   # Dex config injection — only for overlays that ship Dex (dev/staging).

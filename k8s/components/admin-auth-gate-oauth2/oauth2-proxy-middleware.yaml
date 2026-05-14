@@ -1,0 +1,22 @@
+# ForwardAuth Middleware that delegates session validation to oauth2-proxy.
+# Chained from admin-auth-cookie@traefik (replaced via JSON Patch in the
+# component's kustomization.yaml).
+#
+# oauth2-proxy is started with --set-xauthrequest=true, so its 2xx
+# response carries X-Auth-Request-Email + X-Auth-Request-User headers
+# that the next Chain step (role-check) consumes.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: admin-auth-oauth2-proxy
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: admin-auth-gate
+spec:
+  forwardAuth:
+    address: "http://oauth2-proxy.platform.svc.cluster.local:4180/oauth2/auth"
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-Email
+      - X-Auth-Request-User

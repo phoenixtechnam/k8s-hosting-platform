@@ -1,73 +1,80 @@
-# Dedicated Ingress for the File Manager's streaming upload endpoint.
+# Dedicated IngressRoute for the File Manager's streaming upload endpoint.
 #
-# Lives as a SEPARATE Ingress object from platform-ingress so that the
-# ModSecurity + OWASP CRS that protect every other /api/v1 route can
-# stay on. ingress-nginx merges multiple Ingress objects per host —
-# annotations are applied per-Ingress (== per location block), and a
-# more specific path wins over the catchall `defaultBackend` on
-# platform-ingress.
+# Lives as a SEPARATE IngressRoute from the platform-ingress (which is
+# now reconciler-managed, see backend/src/modules/system-settings/
+# ingress-reconciler.ts) so that the WAF Middleware that protects every
+# other /api/v1 route can stay on. Traefik matches IngressRoutes by
+# priority (default = match-rule length), so the more specific
+# `PathRegexp` here wins over the generic `/` on the platform route.
 #
 # Why carve this one path out of WAF coverage:
-#   - SecRequestBodyAccess (implicit with `enable-modsecurity: true`)
-#     buffers the full request body in controller memory for CRS
-#     inspection. A phase-1 `ctl:requestBodyAccess=Off` SecRule does
-#     NOT prevent that buffering (verified 2026-04-20 — controller
-#     OOMKilled at 2 GiB even with 6 Gi memory limits).
+#   - The Coraza WAF plugin (Phase 3) buffers the full request body for
+#     inspection. Like ingress-nginx's ModSecurity, that buffering is
+#     unbounded by default and OOM-kills the controller on multi-GB
+#     uploads. By splitting the upload path off into a dedicated
+#     IngressRoute that does NOT attach the Coraza Middleware, the
+#     File Manager's streaming endpoint stays free of body inspection.
 #   - `/upload-raw` is JWT-authed on platform-api before it ever hits
-#     the sidecar, and the body is an opaque binary blob — CRS pattern
+#     the sidecar, and the body is an opaque binary blob — pattern
 #     matching on it would be noise anyway.
 #
 # Hosts are pinned to the dev admin/client hostnames; for production
-# the reconciler would need to emit this Ingress per the configured
-# admin/client panel URLs alongside the main platform-ingress.
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# the reconciler will emit this IngressRoute per the configured
+# admin/client panel URLs alongside the main platform-ingress (Phase 2).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: platform-ingress-upload
   namespace: platform
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: file-manager-upload
-  annotations:
-    cert-manager.io/cluster-issuer: local-ca-issuer
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-    # Path below uses a regex that matches every client UUID.
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    # The whole point of this Ingress — no CRS/body inspection for
-    # multi-GB uploads.
-    nginx.ingress.kubernetes.io/enable-modsecurity: "false"
-    nginx.ingress.kubernetes.io/enable-owasp-core-rules: "false"
-    # Upload-specific: stream through instead of buffering; no size cap.
-    nginx.ingress.kubernetes.io/proxy-body-size: "0"
-    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
 spec:
-  ingressClassName: nginx
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`admin.${DOMAIN}`) && PathRegexp(`^/api/v1/clients/[^/]+/files/upload-raw$`)"
+      kind: Rule
+      priority: 100
+      services:
+        - name: admin-panel
+          port: 80
+    - match: "Host(`client.${DOMAIN}`) && PathRegexp(`^/api/v1/clients/[^/]+/files/upload-raw$`)"
+      kind: Rule
+      priority: 100
+      services:
+        - name: client-panel
+          port: 80
   tls:
-    - hosts:
-        - admin.${DOMAIN}
-        - client.${DOMAIN}
-      secretName: platform-dev-tls
-  rules:
-    - host: admin.${DOMAIN}
-      http:
-        paths:
-          - path: /api/v1/clients/[^/]+/files/upload-raw
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: admin-panel
-                port:
-                  number: 80
-    - host: client.${DOMAIN}
-      http:
-        paths:
-          - path: /api/v1/clients/[^/]+/files/upload-raw
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: client-panel
-                port:
-                  number: 80
+    secretName: platform-dev-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: platform-ingress-upload
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: file-manager-upload
+spec:
+  # Shared TLS Secret with the main platform-ingress (admin + client
+  # apex hostnames). cert-manager is fine with two Certificate CRs
+  # converging on the same secretName as long as the SAN list matches.
+  secretName: platform-dev-tls
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - admin.${DOMAIN}
+    - client.${DOMAIN}
+  issuerRef:
+    name: local-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

@@ -1,25 +1,22 @@
-# Management Ingress for Stalwart 0.16 web-admin.
+# Management IngressRoute for Stalwart 0.16 web-admin.
 #
 # URL: https://stalwart.${DOMAIN}/
 # Backend: stalwart-mgmt.mail.svc.cluster.local:8080
 #
-# Access control:
-#   auth_request gate verifies the platform_session cookie against
-#   /api/v1/auth/verify-admin-session. Same pattern as 0.15 webadmin-ingress.
+# Access control: ForwardAuth middleware admin-auth-cookie (supplied by
+# the overlay's admin-auth-gate-cookie or admin-auth-gate-oauth2 component).
 #
-# Admin-UI gate convention (per CLAUDE.md):
-#   The `platform.phoenix-host.net/admin-ui: "true"` label causes the CI
-#   guard (scripts/ci-admin-auth-check.sh) to require one of:
-#     - admin-auth-gate-cookie component annotation, OR
-#     - admin-auth-gate-oauth2 component annotation
-#   The cookie-gate annotation is set here; overlays that use oauth2-proxy
-#   should replace it with the oauth2 variant.
+# TLS: cert-manager Certificate CR below provides the Secret; Traefik
+# references it via tls.secretName. The Certificate uses letsencrypt-
+# prod-http01 by default; overlays can patch it to a DNS-01 issuer.
 #
-# ${DOMAIN} is substituted by Kustomize postBuild.substituteFrom in each
-# overlay (same pattern as all other Ingresses in this repo).
+# The `platform.phoenix-host.net/admin-ui: "true"` label is kept here
+# for CI guard compatibility (scripts/ci-admin-auth-check.sh). The
+# admin-auth-gate component no longer needs to patch this resource —
+# it creates the ForwardAuth Middleware that this route references directly.
 ---
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: stalwart-webadmin
   namespace: mail
@@ -27,51 +24,51 @@ metadata:
     app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
-    # REQUIRED: marks this as an admin-only UI so ci-admin-auth-check.sh
-    # verifies that an auth gate is present. Without this label the script
-    # ignores the Ingress; with it, the gate annotation below is mandatory.
     platform.phoenix-host.net/admin-ui: "true"
   annotations:
-    # Cookie-based auth gate — platform_session validated by platform-api
     platform.phoenix-host.net/admin-auth-gate: cookie
-    cert-manager.io/cluster-issuer: "${CLUSTER_ISSUER_NAME}"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    # auth_request gate — same design as 0.15 webadmin-ingress.yaml
-    nginx.ingress.kubernetes.io/auth-url: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
-    nginx.ingress.kubernetes.io/auth-signin: "https://admin.${DOMAIN}/login?redirect=/settings/mail"
-    # NOTE: auth-snippet + modsecurity-snippet (both used by 0.15) are
-    # NOT used here. ingress-nginx 1.15+ ships with
-    # `allow-snippet-annotations: false` by default — letting any
-    # tenant Ingress inject arbitrary nginx config is a known cluster-
-    # wide privilege-escalation vector. The default Authorization
-    # header pass-through for nginx auth-request works for our
-    # cookie-based platform_session gate without explicit overrides.
-    # If a future Stalwart release reintroduces the
-    # Content-Type: text/plain login form that trips OWASP CRS 920420,
-    # add a per-host ingress-controller `modsecurity-rules` config
-    # entry rather than re-enabling per-Ingress snippets.
-    # WebSocket support for live metrics / log streaming.
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    # Frame-ancestors CSP header is set by overlay-specific patches so
-    # the correct domain is substituted at apply time (nginx would expand
-    # ${DOMAIN} as a variable and fail webhook validation at kustomize
-    # render time). Base leaves this annotation empty; overlays override it.
-    # nginx.ingress.kubernetes.io/configuration-snippet: ""
 spec:
-  ingressClassName: nginx
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`stalwart.${DOMAIN}`)"
+      kind: Rule
+      middlewares:
+        - name: admin-auth-cookie
+          namespace: traefik
+        - name: compress
+          namespace: traefik
+      services:
+        - name: stalwart-mgmt
+          port: 8080
   tls:
-    - hosts:
-        - stalwart.${DOMAIN}
-      secretName: stalwart-webadmin-tls
-  rules:
-    - host: stalwart.${DOMAIN}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: stalwart-mgmt
-                port:
-                  number: 8080
+    secretName: stalwart-webadmin-tls
+---
+# cert-manager Certificate for the Stalwart web-admin TLS endpoint.
+# Overlays can patch issuerRef to use a DNS-01 ClusterIssuer if preferred.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: stalwart-webadmin
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+spec:
+  secretName: stalwart-webadmin-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - stalwart.${DOMAIN}
+  issuerRef:
+    name: "${CLUSTER_ISSUER_NAME}"
+    kind: ClusterIssuer
+    group: cert-manager.io

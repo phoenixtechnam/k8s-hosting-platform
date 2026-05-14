@@ -120,26 +120,23 @@ spec:
   selector:
     app: platform-suspended
 ---
-# Ingress for the centralized suspension page. Tenant Ingresses on
-# suspend get an `nginx.ingress.kubernetes.io/permanent-redirect`
-# annotation pointing here. Overlays override the hostname.
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# IngressRoute for the centralized suspension page. Tenant IngressRoutes
+# on suspend get a RedirectRegex Middleware that sends 30x redirects to
+# this hostname (see backend/src/modules/client-lifecycle/ingress-suspend.ts).
+# Overlays override the hostname via JSON Patch on routes[0].match.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: platform-suspended
   namespace: platform
-  annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
 spec:
-  ingressClassName: nginx
-  rules:
-    - host: suspended.platform.local
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: platform-suspended
-                port:
-                  number: 80
+  entryPoints:
+    - web
+  routes:
+    - match: "Host(`suspended.platform.local`)"
+      kind: Rule
+      services:
+        - name: platform-suspended
+          port: 80

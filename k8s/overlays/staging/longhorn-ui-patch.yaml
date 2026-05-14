@@ -4,42 +4,34 @@
 # staging/kustomization.yaml components: block). Switch to
 # admin-auth-gate-oauth2 when oauth2-proxy is wired into the admin
 # panel's public ingress.
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+#
+# This patch overrides the base Certificate's secretName + issuerRef so
+# staging gets its own per-environment TLS secret. The base IngressRoute
+# already references `longhorn-ui-tls`; we keep the same secretName
+# convention here and just swap the issuer to letsencrypt-prod-http01
+# (Flux postBuild substituteFrom doesn't populate CLUSTER_ISSUER_NAME on
+# staging — same gotcha as the webmail overlay).
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
 metadata:
   name: longhorn-ui
   namespace: longhorn-system
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
-    # Per-overlay auth-signin — the cookie/oauth2 component sets
-    # auth-url + snippet but the redirect URL uses the public admin
-    # apex, which differs across environments.
-    nginx.ingress.kubernetes.io/auth-signin: "https://admin.${DOMAIN}/login?rd=$escaped_request_uri"
-    # Allow the admin panel to embed Longhorn in an iframe on the
-    # Storage Configuration page. Admin-only — the auth-request gate
-    # blocks anyone else. modsecurity-snippet is used instead of
-    # configuration-snippet because the latter is disallowed when
-    # allow-snippet-annotations=false on this cluster; header-override
-    # via enable-real-ip still works through a different path: set the
-    # CSP via the controller's built-in `allowed-response-headers`
-    # annotation instead, but since that isn't standard either, we
-    # rely on Longhorn NOT sending X-Frame-Options (its default) and
-    # the CSP frame-ancestors being enforced at the admin-panel side
-    # (nginx.conf there sends CSP). A future defense-in-depth pass can
-    # add an explicit response-header rewrite when snippets are on.
+spec:
+  secretName: longhorn-ui-staging-tls
+  issuerRef:
+    name: letsencrypt-prod-http01
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# Override the base IngressRoute's tls.secretName so it picks up the
+# staging-specific certificate above. Other fields (entryPoints, routes,
+# middlewares) come from k8s/base/longhorn/ui-ingress.yaml unchanged.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: longhorn-ui
+  namespace: longhorn-system
 spec:
   tls:
-    - hosts:
-        - longhorn.${DOMAIN}
-      secretName: longhorn-ui-staging-tls
-  rules:
-    - host: longhorn.${DOMAIN}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: longhorn-frontend
-                port:
-                  number: 80
+    secretName: longhorn-ui-staging-tls

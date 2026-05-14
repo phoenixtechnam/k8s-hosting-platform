@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - middlewares-global.yaml
+  - middlewares-admin-auth.yaml
 
 labels:
   - pairs:

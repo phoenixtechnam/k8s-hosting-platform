@@ -1,24 +1,63 @@
-# Longhorn dashboard — admin-only web UI.
+# Longhorn dashboard IngressRoute — admin-only web UI.
 #
-# The ingress carries the `admin-ui=true` label so a
-# `k8s/components/admin-auth-gate-*` component applies an auth_request
-# gate. Pick exactly one gate per overlay; CLAUDE.md has the policy.
+# The IngressRoute carries the `admin-ui=true` label so the overlay's
+# admin-auth-gate component provides the `admin-auth-cookie` Middleware.
+# Pick exactly ONE auth-gate component per overlay (see CLAUDE.md).
 #
-# Hostname + TLS secret are set per-overlay since the apex differs
-# between dev/staging/production.
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# Hostname and TLS secret are set by each overlay via the patch below
+# or by a separate IngressRoute in the overlay.
+#
+# Note: tls + routes.match hostname are overlay-specific (set via Flux
+# postBuild ${DOMAIN} substitution). The base wires the service; overlays
+# supply the correct domain.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: longhorn-ui
   namespace: longhorn-system
   labels:
     app.kubernetes.io/part-of: hosting-platform
     platform.phoenix-host.net/admin-ui: "true"
-  annotations:
-    # Overlays set cert-manager.io/cluster-issuer and, via components,
-    # nginx.ingress.kubernetes.io/auth-* annotations.
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 spec:
-  ingressClassName: nginx
-  # tls + rules are filled in by each overlay's patch (host is env-specific)
-  rules: []
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`longhorn.${DOMAIN}`)"
+      kind: Rule
+      middlewares:
+        - name: admin-auth-cookie
+          namespace: traefik
+        - name: compress
+          namespace: traefik
+      services:
+        - name: longhorn-frontend
+          namespace: longhorn-system
+          port: 80
+  tls:
+    secretName: longhorn-ui-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: longhorn-ui
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  secretName: longhorn-ui-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - longhorn.${DOMAIN}
+  issuerRef:
+    name: "${CLUSTER_ISSUER_NAME}"
+    kind: ClusterIssuer
+    group: cert-manager.io

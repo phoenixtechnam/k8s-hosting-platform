@@ -1,5 +1,5 @@
 # Dex OIDC issuer exposed at https://dex.<PLATFORM_BASE_DOMAIN>:2011 (dev) /
-# :443 (prod). Replaces the dind.local:2015 NodePort — Dex now shares the
+# :443 (prod). Replaces the dind.local:2015 NodePort — Dex shares the
 # platform ingress listener on :2011/:443 so the URL works the same in dev
 # and prod (only the port differs).
 #
@@ -8,32 +8,54 @@
 # dex.platform.svc.cluster.local:5556 is still used by oauth2-proxy for
 # token redemption (where the cluster-internal path is faster + skips the
 # self-signed cert in dev).
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+#
+# Dev-only: cert is issued by the local-ca-issuer ClusterIssuer that
+# bootstrap.sh seeds with a self-signed root. Browsers will warn on
+# k8s-platform.test unless the operator imports the CA — that's normal
+# for the dev loop.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: dex-ingress
   namespace: platform
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: identity-provider
-  annotations:
-    cert-manager.io/cluster-issuer: local-ca-issuer
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
 spec:
-  ingressClassName: nginx
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`dex.${DOMAIN}`)"
+      kind: Rule
+      services:
+        - name: dex
+          port: 5556
   tls:
-    - hosts:
-        - dex.${DOMAIN}
-      secretName: dex-dev-tls
-  rules:
-    - host: dex.${DOMAIN}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: dex
-                port:
-                  number: 5556
+    secretName: dex-dev-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: dex
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: identity-provider
+spec:
+  secretName: dex-dev-tls
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - dex.${DOMAIN}
+  issuerRef:
+    name: local-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

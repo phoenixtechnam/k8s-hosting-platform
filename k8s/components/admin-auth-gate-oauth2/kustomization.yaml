@@ -1,74 +1,59 @@
 # admin-auth-gate-oauth2 — Kustomize Component
 #
-# Gates every Ingress labelled `platform.phoenix-host.net/admin-ui=true`
-# behind oauth2-proxy's Dex-OIDC session.
+# Gates every IngressRoute labelled `platform.phoenix-host.net/admin-ui=true`
+# behind oauth2-proxy's Dex-OIDC session AND a backend role-check that
+# maps the OIDC email to an admin role.
 #
-# REQUIRES `allow-snippet-annotations: "true"` on the nginx-ingress
-# controller — the chained role-check is implemented with an auth-snippet
-# (lua ngx.location.capture) and a server-snippet (internal location
-# block). If snippets are disabled cluster-wide, this component's
-# rendered Ingress will be rejected by the admission webhook. The
-# hardening trade-off is documented; flip snippets on only when you
-# intentionally move to oauth2-proxy as the admin-panel front door.
+# How it works in the Traefik model:
+#   1. The base ships a Middleware `admin-auth-cookie@traefik` whose
+#      ForwardAuth address points at platform-api's verify-admin-session
+#      (the cookie gate).
+#   2. This component REPLACES `admin-auth-cookie@traefik` with a Chain
+#      middleware that composes two ForwardAuth steps:
+#        a. `admin-auth-oauth2-proxy@traefik` →
+#           http://oauth2-proxy.platform.svc.cluster.local:4180/oauth2/auth
+#           (oauth2-proxy enforces a valid Dex OIDC session, sets the
+#           X-Auth-Request-Email response header)
+#        b. `admin-auth-role-check@traefik` →
+#           http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-email
+#           (backend looks up email → user row → role ∈ {super_admin,
+#           admin, billing, support})
+#   3. Both steps must return 2xx for the request to pass. 401 from
+#      oauth2-proxy causes Traefik to forward oauth2-proxy's redirect
+#      (Set-Cookie + Location to /oauth2/start) back to the browser.
 #
-# Flow per request:
-#   1. nginx auth_request → oauth2-proxy /oauth2/auth
-#        - 202/200: user has a valid oauth2-proxy cookie
-#        - 401: redirect to auth-signin → oauth2-proxy /oauth2/start → Dex
-#   2. oauth2-proxy is configured with --set-xauthrequest=true so the
-#      subrequest response includes X-Auth-Request-Email
-#   3. auth-snippet forwards that header to an INTERNAL nginx location
-#      that calls the backend's /auth/verify-admin-email — maps email
-#      to user row and checks role ∈ {super_admin, admin, billing, support}
-#
-# The role check is what separates oauth2-proxy-as-auth (Dex user OK) from
-# admin-UI-as-authorization (user is an admin). Both are required.
-#
-# The per-overlay auth-signin URL is set on each ingress patch because
-# the admin-panel apex differs between dev/staging/production.
+# The role check separates auth (Dex user OK) from authorization (user
+# is an admin). Both are required to reach an admin-ui IngressRoute.
 #
 # Pick exactly ONE admin-auth-gate component per overlay:
 #   - components/admin-auth-gate-cookie  → platform_session + local login
-#   - components/admin-auth-gate-oauth2  → oauth2-proxy + Dex OIDC (this)
+#   - components/admin-auth-gate-oauth2  → oauth2-proxy + Dex OIDC (THIS)
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
+resources:
+  - oauth2-proxy-middleware.yaml
+  - role-check-middleware.yaml
+
+# Replace the base admin-auth-cookie Middleware with a Chain that runs
+# oauth2-proxy first, then the backend role-check. The Chain executes
+# its members in declared order — a non-2xx response from any step
+# short-circuits and is returned to the client (which, for oauth2-proxy,
+# means a 302 redirect to Dex via /oauth2/start).
 patches:
   - target:
-      kind: Ingress
-      labelSelector: platform.phoenix-host.net/admin-ui=true
+      group: traefik.io
+      version: v1alpha1
+      kind: Middleware
+      name: admin-auth-cookie
+      namespace: traefik
     patch: |-
-      apiVersion: networking.k8s.io/v1
-      kind: Ingress
-      metadata:
-        name: _  # patched by labelSelector — name placeholder required by SM
-        annotations:
-          nginx.ingress.kubernetes.io/auth-url: "http://oauth2-proxy.platform.svc.cluster.local:4180/oauth2/auth"
-          nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-Email,X-Auth-Request-User"
-          nginx.ingress.kubernetes.io/auth-snippet: |
-            # Chain a second subrequest to the backend role-gate. oauth2-proxy
-            # already confirmed the user has a valid Dex session; this second
-            # step confirms the email maps to an admin role in our DB.
-            auth_request_set $auth_email $upstream_http_x_auth_request_email;
-            access_by_lua_block {
-              local res = ngx.location.capture(
-                "/__platform_role_check__",
-                { method = ngx.HTTP_GET, share_all_vars = true }
-              )
-              if res.status ~= 204 then
-                ngx.exit(res.status == 0 and 502 or res.status)
-              end
-            }
-          nginx.ingress.kubernetes.io/server-snippet: |
-            # Internal-only location used by auth-snippet above to run the
-            # second verification step (oauth2-proxy → email → role lookup).
-            location = /__platform_role_check__ {
-              internal;
-              proxy_pass_request_body off;
-              proxy_set_header Content-Length "";
-              proxy_set_header X-Auth-Request-Email $auth_email;
-              proxy_set_header Authorization "";
-              proxy_set_header Cookie "";
-              proxy_pass http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-email;
-            }
-          platform.phoenix-host.net/auth-gate: "oauth2"
+      - op: replace
+        path: /spec
+        value:
+          chain:
+            middlewares:
+              - name: admin-auth-oauth2-proxy
+                namespace: traefik
+              - name: admin-auth-role-check
+                namespace: traefik

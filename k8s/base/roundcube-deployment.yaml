@@ -63,26 +63,53 @@ spec:
     - port: 9000
       targetPort: 9000
 ---
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# NOTE: This base IngressRoute is dev-only. Staging + production overlays
+# ship their own webmail IngressRoute under k8s/overlays/{staging,
+# production}/webmail-ingress.yaml — those bind to the `mail` namespace
+# (where Roundcube actually runs in those overlays) and use the LE
+# cluster issuer. Keep this resource around so a plain `kubectl apply -k
+# base/` still produces a usable cluster.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: roundcube-ingress
   namespace: platform-system
-  annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
 spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`webmail.${DOMAIN}`)"
+      kind: Rule
+      services:
+        - name: roundcube
+          port: 9000
   tls:
-    - hosts:
-        - webmail.${DOMAIN}
-      secretName: webmail-tls
-  rules:
-    - host: webmail.${DOMAIN}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: roundcube
-                port:
-                  number: 9000
+    secretName: webmail-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: roundcube-webmail
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  secretName: webmail-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - webmail.${DOMAIN}
+  issuerRef:
+    name: "${CLUSTER_ISSUER_NAME}"
+    kind: ClusterIssuer
+    group: cert-manager.io

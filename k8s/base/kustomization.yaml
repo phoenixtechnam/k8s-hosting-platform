@@ -22,7 +22,12 @@ resources:
   - admin-deployment.yaml
   - client-deployment.yaml
   - platform-suspended.yaml
-  - ingress.yaml
+  # k8s/base/ingress.yaml was REMOVED in the Traefik migration. The
+  # platform-ingress is no longer a static placeholder Kustomize resource —
+  # platform-api's ingress-reconciler creates an IngressRoute (traefik.io/
+  # v1alpha1) from scratch on startup using the admin/client panel URLs
+  # stored in system_settings. See backend/src/modules/system-settings/
+  # ingress-reconciler.ts.
   - sftp-gateway.yaml
   - sftp-gateway-netpol.yaml
   # cluster-network — CRDs (ClusterTrustedRange, ClusterPendingPeer)

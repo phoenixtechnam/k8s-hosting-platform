@@ -29,7 +29,12 @@ patches:
   - path: resource-quotas-patch.yaml
   - path: oauth2-proxy-patch.yaml
   - path: platform-config-patch.yaml
-  - path: ingress-patch.yaml
+  # ingress-patch.yaml was REMOVED in the Traefik migration. platform-ingress
+  # is no longer a static resource — platform-api's ingress-reconciler
+  # creates an IngressRoute on startup from system_settings. Dev-specific
+  # WAF rule overrides (CRS 911100 / 920420 exclusions) now live in the
+  # Coraza Middleware config (Phase 3); until that lands the dev cluster
+  # runs without WAF.
   - path: backend-patch.yaml
   - path: frontends-grace-patch.yaml
   # CNPG platform Postgres: longhorn → local-path (DinD has no Longhorn).
