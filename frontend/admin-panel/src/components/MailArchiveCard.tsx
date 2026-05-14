@@ -13,10 +13,16 @@ import {
   useMailArchiveStatus,
   useMailArchiveList,
   useMailArchiveRun,
+  useMailArchiveSchedule,
   useTriggerMailArchive,
+  useUpdateMailArchiveSchedule,
   useRestoreMailArchive,
 } from '@/hooks/use-mail-archive';
-import type { MailArchiveMode, MailArchiveRun } from '@k8s-hosting/api-contracts';
+import type {
+  MailArchiveMode,
+  MailArchiveRun,
+  MailArchiveScheduleInterval,
+} from '@k8s-hosting/api-contracts';
 
 /**
  * Email Management → Mail Archive card.
@@ -266,6 +272,9 @@ export default function MailArchiveCard() {
         </div>
       ) : null}
 
+      {/* ── archive schedule ── */}
+      <ScheduleEditor disabled={Boolean(activeRunId)} />
+
       {/* ── archive list ── */}
       <ArchiveList
         runs={list.data?.data.data ?? []}
@@ -364,6 +373,150 @@ export default function MailArchiveCard() {
 }
 
 // ── sub-components ─────────────────────────────────────────────────────────
+
+function ScheduleEditor({ disabled }: { readonly disabled: boolean }) {
+  const schedule = useMailArchiveSchedule();
+  const updater = useUpdateMailArchiveSchedule();
+
+  const data = schedule.data?.data;
+  const [draftInterval, setDraftInterval] = useState<MailArchiveScheduleInterval | null>(null);
+  const [draftHour, setDraftHour] = useState<number | null>(null);
+  const [draftWeekday, setDraftWeekday] = useState<number | null>(null);
+
+  if (schedule.isLoading || !data) {
+    return (
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">
+        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+          <Loader2 size={12} className="animate-spin" /> Loading schedule…
+        </div>
+      </div>
+    );
+  }
+
+  const interval = draftInterval ?? data.interval;
+  const hourUtc = draftHour ?? data.hourUtc;
+  const weekdayUtc = draftWeekday ?? data.weekdayUtc;
+  const dirty =
+    interval !== data.interval || hourUtc !== data.hourUtc || weekdayUtc !== data.weekdayUtc;
+
+  const save = async () => {
+    try {
+      await updater.mutateAsync({
+        interval,
+        hourUtc: interval === 'hourly' ? undefined : hourUtc,
+        weekdayUtc: interval === 'weekly' ? weekdayUtc : undefined,
+      });
+      setDraftInterval(null);
+      setDraftHour(null);
+      setDraftWeekday(null);
+    } catch {
+      // surfaced via updater.error
+    }
+  };
+
+  const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
+          <Clock size={14} /> Schedule
+        </h3>
+        {data.nextFireAt ? (
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            next: {new Date(data.nextFireAt).toLocaleString()} (UTC: {data.nextFireAt.slice(11, 16)})
+          </span>
+        ) : (
+          <span className="text-xs text-gray-400">disabled</span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <label className="space-y-1">
+          <span className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            Interval
+          </span>
+          <select
+            value={interval}
+            onChange={(e) => setDraftInterval(e.target.value as MailArchiveScheduleInterval)}
+            disabled={disabled}
+            data-testid="mail-archive-schedule-interval"
+            className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+          >
+            <option value="off">Off (manual only)</option>
+            <option value="hourly">Hourly (top of hour)</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+        </label>
+
+        {(interval === 'daily' || interval === 'weekly') ? (
+          <label className="space-y-1">
+            <span className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              Hour (UTC)
+            </span>
+            <select
+              value={hourUtc}
+              onChange={(e) => setDraftHour(Number(e.target.value))}
+              disabled={disabled}
+              data-testid="mail-archive-schedule-hour"
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+            >
+              {Array.from({ length: 24 }, (_, h) => (
+                <option key={h} value={h}>{String(h).padStart(2, '0')}:00 UTC</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+
+        {interval === 'weekly' ? (
+          <label className="space-y-1">
+            <span className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              Weekday
+            </span>
+            <select
+              value={weekdayUtc}
+              onChange={(e) => setDraftWeekday(Number(e.target.value))}
+              disabled={disabled}
+              data-testid="mail-archive-schedule-weekday"
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+            >
+              {weekdays.map((day, idx) => (
+                <option key={day} value={idx}>{day}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={save}
+          disabled={!dirty || disabled || updater.isPending}
+          data-testid="mail-archive-schedule-save"
+          className="inline-flex items-center gap-1.5 rounded-md border border-brand-500 bg-brand-500 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {updater.isPending ? <Loader2 size={10} className="animate-spin" /> : null}
+          Save schedule
+        </button>
+        {data.lastScheduledRunAt ? (
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            last scheduled run: {new Date(data.lastScheduledRunAt).toLocaleString()}
+          </span>
+        ) : (
+          <span className="text-xs text-gray-400">never fired by scheduler</span>
+        )}
+      </div>
+
+      {updater.isError ? (
+        <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+          {updater.error instanceof Error ? updater.error.message : 'Schedule update failed'}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function Stat({ label, children }: { readonly label: string; readonly children: React.ReactNode }) {
   return (

@@ -165,3 +165,35 @@ export const mailArchiveRestoreResponseSchema = z.object({
   runId: z.string(),
 });
 export type MailArchiveRestoreResponse = z.infer<typeof mailArchiveRestoreResponseSchema>;
+
+/**
+ * Archive schedule (minimum-viable fixed-interval cron).
+ *
+ * Why not arbitrary cron strings: archives are by nature low-frequency
+ * (hourly/daily/weekly), so the operator value of "every other Tuesday
+ * at 3:47 AM" is essentially zero. A fixed enum + UTC hour + weekday
+ * picker covers 99% of operator intent without a cron-parser dep + the
+ * surface area of operator-typo'd cron expressions silently breaking
+ * the run.
+ */
+export const mailArchiveScheduleIntervalSchema = z.enum(['off', 'hourly', 'daily', 'weekly']);
+export type MailArchiveScheduleInterval = z.infer<typeof mailArchiveScheduleIntervalSchema>;
+
+export const mailArchiveScheduleResponseSchema = z.object({
+  interval: mailArchiveScheduleIntervalSchema,
+  hourUtc: z.number().int().min(0).max(23),
+  weekdayUtc: z.number().int().min(0).max(6),
+  lastScheduledRunAt: z.string().nullable(),
+  /** Computed: the next time the scheduler will fire, given current
+   *  interval + hourUtc + weekdayUtc + last-fired-at. ISO 8601. Null
+   *  when interval='off'. */
+  nextFireAt: z.string().nullable(),
+});
+export type MailArchiveScheduleResponse = z.infer<typeof mailArchiveScheduleResponseSchema>;
+
+export const mailArchiveScheduleUpdateSchema = z.object({
+  interval: mailArchiveScheduleIntervalSchema,
+  hourUtc: z.number().int().min(0).max(23).optional(),
+  weekdayUtc: z.number().int().min(0).max(6).optional(),
+});
+export type MailArchiveScheduleUpdate = z.infer<typeof mailArchiveScheduleUpdateSchema>;
