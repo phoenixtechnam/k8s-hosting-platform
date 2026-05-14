@@ -60,6 +60,17 @@
 #         (Phase F validates the fallback path. If a no_downtime archive
 #         is running concurrently, Phase F refuses to start.)
 #
+#   Phase H — health-truth (--health-truth, ~10 sec, requires ADMIN_TOKEN)
+#     Catches the "banner says green but reality is broken" class of bug
+#     that motivated the Phase 3a/3b probe rewrite. Calls
+#     /admin/mail/health?refresh=1 and compares its claims against live
+#     kubectl/nc probes. Drift = fail.
+#     H1. banner.pod.healthy == kubectl.containerStatuses.ready
+#     H2. banner.rocksdb.currentFile/lockFile match live `test -f`
+#     H3. banner.tcp[port].reachable matches live nc on 25 + 993
+#     H4. Top-level healthy=true implies all components healthy
+#         (catches Phase-3a-style "lying tile" bugs).
+#
 # Exit code: 0 if everything passed (phases that ran). Non-zero with the
 # count of failures otherwise.
 #
@@ -121,12 +132,14 @@ RUN_MODE_FLIP=false
 RUN_NEGATIVE=false
 RUN_ARCHIVE=false
 RUN_ARCHIVE_DOWNTIME=false
+RUN_HEALTH_TRUTH=false
 for arg in "$@"; do
   case "$arg" in
     --mode-flip)        RUN_MODE_FLIP=true ;;
     --negative)         RUN_NEGATIVE=true ;;
     --archive)          RUN_ARCHIVE=true ;;
     --archive-downtime) RUN_ARCHIVE_DOWNTIME=true ;;
+    --health-truth)     RUN_HEALTH_TRUTH=true ;;
     --help|-h)
       sed -n '2,/^set -euo/p' "$0" | sed -e 's/^# //' -e 's/^#$//' -e '/^set -euo/d'
       exit 0
@@ -976,9 +989,113 @@ phase_f_archive_downtime() {
   echo ""
 }
 
+# ── Phase H — health-truth (/admin/mail/health vs live state) ──────────
+# Streamline 2026-05-14: catches the "banner says green but reality is
+# broken" class of bug that motivated the Phase 3a/3b probe rewrite. The
+# banner is supposed to AGREE with what kubectl/openssl/nc tell us
+# directly. When it doesn't, either the probe is lying (Phase-3 bug) or
+# the cache is stale beyond its TTL — both are fail-class.
+phase_h_health_truth() {
+  echo "## Phase H — health-truth (banner vs live)"
+
+  if [[ -z "$ADMIN_TOKEN" || -z "$PLATFORM_API_URL" ]]; then
+    note_warn "H. SKIP — ADMIN_TOKEN + PLATFORM_API_URL required to call /admin/mail/health"
+    echo ""
+    return
+  fi
+
+  local health
+  health="$(curl -sk --fail --max-time 30 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/health?refresh=1" 2>/dev/null || echo '')"
+  if [[ -z "$health" ]]; then
+    note_fail "H. /admin/mail/health request failed"
+    echo ""
+    return
+  fi
+
+  local banner_healthy banner_pod_healthy banner_jmap_healthy banner_rocksdb_healthy banner_tcp_healthy
+  banner_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['healthy'])" 2>/dev/null || echo 'unknown')"
+  banner_pod_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['pod']['healthy'])" 2>/dev/null || echo 'unknown')"
+  banner_jmap_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['jmap']['healthy'])" 2>/dev/null || echo 'unknown')"
+  banner_rocksdb_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['rocksdb']['healthy'])" 2>/dev/null || echo 'unknown')"
+  banner_tcp_healthy="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['tcp']['healthy'])" 2>/dev/null || echo 'unknown')"
+
+  # H1. Pod-health agreement — banner.pod must match kubectl.containerStatuses.ready.
+  local kubectl_ready
+  kubectl_ready=$(kctl -n "$STALWART_NS" get pod "$POD" \
+    -o jsonpath='{.status.containerStatuses[?(@.name=="stalwart")].ready}' 2>/dev/null || echo '')
+  if [[ "$banner_pod_healthy" == "True" && "$kubectl_ready" == "true" ]]; then
+    note_pass "H1. banner.pod.healthy == kubectl.containerStatuses.ready (both green)"
+  elif [[ "$banner_pod_healthy" == "False" && "$kubectl_ready" != "true" ]]; then
+    note_pass "H1. banner.pod.healthy == kubectl.containerStatuses.ready (both red, consistent)"
+  else
+    note_fail "H1. DRIFT — banner.pod.healthy=${banner_pod_healthy}, kubectl.ready=${kubectl_ready}"
+  fi
+
+  # H2. RocksDB-truth — banner.rocksdb.currentFile must match a live test in the pod.
+  local pod_current pod_lock
+  pod_current=$(kctl -n "$STALWART_NS" exec "$POD" -c stalwart -- \
+    sh -c 'test -f /var/lib/stalwart/data/CURRENT && echo "yes" || echo "no"' 2>/dev/null || echo 'unknown')
+  pod_lock=$(kctl -n "$STALWART_NS" exec "$POD" -c stalwart -- \
+    sh -c 'test -f /var/lib/stalwart/data/LOCK && echo "yes" || echo "no"' 2>/dev/null || echo 'unknown')
+  local banner_current banner_lock
+  banner_current="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['rocksdb']['currentFile'])" 2>/dev/null || echo 'None')"
+  banner_lock="$(echo "$health" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['components']['rocksdb']['lockFile'])" 2>/dev/null || echo 'None')"
+  local expect_current expect_lock
+  [[ "$pod_current" == "yes" ]] && expect_current="True" || expect_current="False"
+  [[ "$pod_lock"    == "yes" ]] && expect_lock="True"    || expect_lock="False"
+  if [[ "$banner_current" == "$expect_current" && "$banner_lock" == "$expect_lock" ]]; then
+    note_pass "H2. banner.rocksdb agrees with live RocksDB sentinels (CURRENT=${pod_current}, LOCK=${pod_lock})"
+  else
+    note_fail "H2. DRIFT — banner.rocksdb {current=${banner_current}, lock=${banner_lock}} vs live {current=${pod_current}, lock=${pod_lock}}"
+  fi
+
+  # H3. TCP-truth — banner.tcp.reachable must match nc from outside the pod
+  #     on at least the SMTP greeting port. We test 25 + 993 (smtps).
+  for port in 25 993; do
+    local banner_port_reachable
+    banner_port_reachable="$(echo "$health" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)['data']
+ports = d['components']['tcp']['ports']
+hit = next((p for p in ports if p['port'] == ${port}), None)
+print(hit['reachable'] if hit else 'missing')" 2>/dev/null || echo 'unknown')"
+
+    local live_reachable
+    if timeout 3 bash -c "</dev/tcp/${PROBE_HOST}/${port}" 2>/dev/null; then
+      live_reachable='True'
+    else
+      live_reachable='False'
+    fi
+
+    if [[ "$banner_port_reachable" == "$live_reachable" ]]; then
+      note_pass "H3/${port}. banner.tcp[${port}].reachable == live nc (${live_reachable})"
+    else
+      note_fail "H3/${port}. DRIFT — banner.reachable=${banner_port_reachable}, live=${live_reachable}"
+    fi
+  done
+
+  # H4. Top-level healthy must NOT be true if any per-component is false.
+  # This is the most important guardrail — Phase 3a's bug was that the
+  # cosmetic tile reported green despite real failures.
+  if [[ "$banner_healthy" == "True" ]]; then
+    if [[ "$banner_pod_healthy" != "True" || "$banner_jmap_healthy" != "True" \
+       || "$banner_rocksdb_healthy" != "True" || "$banner_tcp_healthy" != "True" ]]; then
+      note_fail "H4. INVARIANT VIOLATION — top-level healthy=true but at least one component is unhealthy"
+    else
+      note_pass "H4. Top-level healthy=true and all components agree"
+    fi
+  else
+    note_pass "H4. Top-level healthy=false (will not be considered green)"
+  fi
+  echo ""
+}
+
 # ── Run phases ─────────────────────────────────────────────────────────
 phase_a_health
 phase_b_state
+if $RUN_HEALTH_TRUTH;     then phase_h_health_truth;          fi
 if $RUN_MODE_FLIP;        then phase_c_mode_flip;            fi
 if $RUN_NEGATIVE;         then phase_d_negative;             fi
 if $RUN_ARCHIVE;          then phase_e_archive_no_downtime;  fi
