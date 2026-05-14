@@ -115,14 +115,29 @@ DRY_RUN=false
 #   3. Run `kubectl kustomize` on all overlays + redeploy staging before prod
 # Latest-stable checks done against GitHub releases for each project.
 LONGHORN_VERSION="v1.11.1"               # 2026-03-13
-TRAEFIK_CHART_VERSION="33.4.1"           # app v3.7.x "Langres" 2026-05-11; verify: helm search repo traefik/traefik
-# Coraza WAF Traefik plugin. Loaded via Helm's `experimental.plugins.<name>`
-# block; the plugin's Yaegi-interpreted Go source ships with Coraza's
-# OWASP CRS v4 bundled. annotation-sync emits Middlewares of kind
-# `plugin.coraza` referencing this plugin slug. Verify the latest version
-# in the Traefik plugin catalogue (plugins.traefik.io) before bootstrap.
-CORAZA_PLUGIN_MODULE="github.com/jcchavezs/coraza-http-wasm-traefik"
-CORAZA_PLUGIN_VERSION="v0.4.4"
+TRAEFIK_CHART_VERSION="40.2.0"           # app v3.7.1 "Langres"; verify: helm search repo traefik/traefik
+# WAF plugin slug + version. Empty by default — install_traefik() omits
+# the `--set experimental.plugins.*` flags when this is unset, leaving
+# the controller WAF-free. annotation-sync still emits the WAF Middleware
+# refs (coraza-base@traefik / coraza-platform@traefik / r-<id>-waf),
+# but those Middlewares fail at request time with a "plugin not found"
+# error from Traefik until the plugin is wired here.
+#
+# Smoke test 2026-05-14 found that `github.com/jcchavezs/coraza-http-
+# wasm-traefik` v0.4.4 (initial pin) is NOT published in the Traefik
+# plugin catalog — the catalog 500s on the download. Realistic options:
+#   1. `github.com/madebymode/traefik-modsecurity-plugin` v1.6.0 — works
+#      out of the box but proxies request bodies to an EXTERNAL
+#      ModSecurity service (an extra OWASP/ModSecurity Deployment).
+#      Doesn't support per-route directives — the per-route Middleware
+#      design in annotation-sync.ts collapses to "WAF on/off only".
+#   2. Vendor a Coraza plugin as a Traefik *local plugin* (a `/plugins-
+#      local/src/.../plugin.yml` source tree mounted on the DaemonSet).
+#      Lets us keep per-route directives but adds operational cost
+#      (build + ship plugin source).
+# Operator decision pending; until then ship WITHOUT a WAF plugin.
+CORAZA_PLUGIN_MODULE=""
+CORAZA_PLUGIN_VERSION=""
 CERT_MANAGER_CHART_VERSION="v1.20.2"     # 2026-04-11
 SEALED_SECRETS_CHART_VERSION="2.17.4"    # controller v0.36.6
 CNPG_CHART_VERSION="0.28.0"              # CloudNative-PG operator v1.29.0 (PG 14-18 support; 1.24/1.27 EOL)
@@ -2560,8 +2575,8 @@ install_traefik() {
     --set providers.kubernetesCRD.allowCrossNamespace=true \
     --set providers.kubernetesCRD.allowExternalNameServices=true \
     --set providers.kubernetesIngress.enabled=false \
-    --set "experimental.plugins.coraza.moduleName=${CORAZA_PLUGIN_MODULE}" \
-    --set "experimental.plugins.coraza.version=${CORAZA_PLUGIN_VERSION}" \
+    ${CORAZA_PLUGIN_MODULE:+--set "experimental.plugins.coraza.moduleName=${CORAZA_PLUGIN_MODULE}"} \
+    ${CORAZA_PLUGIN_VERSION:+--set "experimental.plugins.coraza.version=${CORAZA_PLUGIN_VERSION}"} \
     --set resources.requests.cpu=50m \
     --set resources.requests.memory=128Mi \
     --set resources.limits.memory=512Mi \
