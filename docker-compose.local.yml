@@ -130,11 +130,16 @@ services:
         ) &
         CERTMGR_PID=$$!
         (
-          # CNPG 1.24 is the minor that supports Postgres 17 (which our
-          # base/database.yaml pins via imageName). Bump in lockstep when
-          # bumping postgresql image.
+          # CNPG 1.29 — matches bootstrap.sh's operator version (chart
+          # 0.28.0 / app v1.29.0) so the Cluster CR schema accepts
+          # `spec.probes` (added in 1.25). Older 1.24 install was
+          # rejecting our database.yaml with `strict decoding error:
+          # unknown field spec.probes`. Bump in lockstep with
+          # scripts/bootstrap.sh CNPG_CHART_VERSION when upgrading
+          # again, and bump the PG imageName in k8s/base/database.yaml
+          # if the CNPG minor drops compatibility.
           kubectl apply --server-side -f \
-            https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.0.yaml 2>/dev/null \
+            https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.29/releases/cnpg-1.29.1.yaml 2>/dev/null \
             || echo "CNPG operator already installed or network unavailable"
           kubectl rollout status deployment/cnpg-controller-manager -n cnpg-system --timeout=120s 2>/dev/null \
             || echo "CNPG operator not ready — continuing"

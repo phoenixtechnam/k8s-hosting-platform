@@ -29,3 +29,29 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     purpose: platform-services
+---
+# Flux GitOps controller namespace. Declared here so a single-shot
+# kustomize-apply (e.g. `./scripts/local.sh up`) can land the
+# k8s/base/flux/*.yaml manifests without a flux-system-ns-not-found
+# error. scripts/bootstrap.sh's install_flux step also creates this
+# namespace imperatively (idempotent — both work, kustomize apply
+# wins on first call).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flux-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: gitops
+---
+# Valkey (Redis-protocol) coordinator cache namespace. The k8s/base/
+# valkey/ Deployment + Service + Secret + ConfigMap all land here;
+# without this Namespace CR, fresh-cluster kustomize-apply 404s on
+# the valkey/configmap.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: redis-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: coordinator-cache
