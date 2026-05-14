@@ -652,7 +652,7 @@ function RunProgressModal({
       <div className="w-full max-w-xl rounded-xl bg-white dark:bg-gray-800 shadow-xl">
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-3">
           <h3 className="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-gray-100">
-            <Archive size={16} /> Archive run
+            <Archive size={16} /> {run.triggeredBy === 'restore' ? 'Restore run' : 'Archive run'}
           </h3>
           <button
             onClick={onClose}
@@ -677,9 +677,32 @@ function RunProgressModal({
             <div className="flex items-start gap-2 text-sm text-green-700 dark:text-green-400">
               <CheckCircle size={14} className="mt-0.5 shrink-0" />
               <div>
-                Archive complete — restic snapshot{' '}
-                <code className="text-xs">{run.resticSnapshotId ?? '?'}</code>, export size{' '}
-                {formatBytes(run.exportSizeBytes)}
+                {run.triggeredBy === 'restore' ? (
+                  <>
+                    Restore complete — Stalwart now serving from the data
+                    in restic snapshot{' '}
+                    <code className="text-xs">{run.resticSnapshotId ?? '?'}</code>.
+                    Original archive size:{' '}
+                    {formatBytes(run.exportSizeBytes)}.
+                    {run.finishedAt && run.startedAt ? (
+                      <>
+                        {' '}Elapsed:{' '}
+                        {formatElapsedMs(
+                          new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime(),
+                        )}.
+                      </>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    Archive complete — restic snapshot{' '}
+                    <code className="text-xs">{run.resticSnapshotId ?? '?'}</code>, export size{' '}
+                    {formatBytes(run.exportSizeBytes)}.
+                    {run.resticAddedBytes != null && run.resticAddedBytes > 0 ? (
+                      <> {formatBytes(run.resticAddedBytes)} new (deduped against prior snapshots).</>
+                    ) : null}
+                  </>
+                )}
               </div>
             </div>
           ) : null}
@@ -825,6 +848,14 @@ function RestoreConfirmModal({
 }
 
 // ── tiny helpers ─────────────────────────────────────────────────────────────
+
+function formatElapsedMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 60_000) return `${(ms / 1000).toFixed(0)}s`;
+  const min = Math.floor(ms / 60_000);
+  const sec = Math.floor((ms % 60_000) / 1000);
+  return sec === 0 ? `${min}m` : `${min}m ${sec}s`;
+}
 
 function formatBytes(n: number | null | undefined): string {
   if (n == null) return '—';

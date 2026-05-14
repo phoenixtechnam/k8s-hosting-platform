@@ -72,7 +72,9 @@ import {
   mailArchiveListResponseSchema,
   mailArchiveRunSchema,
   mailArchiveStatusResponseSchema,
+  toSafeText,
 } from '@k8s-hosting/api-contracts';
+import * as taskCenter from '../tasks/service.js';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 type AppsV1Api = import('@kubernetes/client-node').AppsV1Api;
@@ -201,6 +203,33 @@ export async function startMailArchive(
     VALUES (${runId}, 'queued', 'preflight', ${mode}, ${replicas}, ${'operator'}, ${deps.userId ?? null})
   `);
 
+  // Register a task-center entry so the operator's task chip surfaces
+  // this long-running op. The mail-archive UI's RunProgressModal IS
+  // the click target (target.type='modal' + modalProps:{runId}).
+  // Best-effort — task-center registration failure must NOT abort the
+  // run. The scheduler-triggered path has no userId; scope='system'
+  // accepts userId=null.
+  if (deps.userId && deps.userId !== 'archive-scheduler') {
+    await taskCenter
+      .start(deps.db, {
+        kind: 'mail.archive',
+        refId: runId,
+        scope: 'admin',
+        userId: deps.userId,
+        label: toSafeText(
+          mode === 'no_downtime'
+            ? 'Create mail archive (no-downtime)'
+            : 'Create mail archive (with downtime)',
+        ),
+        target: { type: 'modal', modal: 'mail-archive-run', modalProps: { runId } },
+      })
+      .catch((err) =>
+        deps.logger?.warn?.(
+          `task-center registration failed (kind=mail.archive runId=${runId}): ${String(err)}`,
+        ),
+      );
+  }
+
   // Fire-and-forget. The orchestrator updates DB state as it progresses.
   // Any uncaught error is captured + the row marked failed. For the
   // downtime path we also ALWAYS attempt to scale Stalwart back up in
@@ -219,6 +248,9 @@ export async function startMailArchive(
     if (mode === 'downtime') {
       await safeScaleBackUp(deps, replicas).catch(() => undefined);
     }
+    await taskCenter
+      .finishByRef(deps.db, 'mail.archive', runId, { status: 'failed', error: msg })
+      .catch(() => undefined);
   });
 
   return { runId };
@@ -276,6 +308,25 @@ export async function startMailArchiveRestore(
     VALUES (${newRunId}, 'queued', 'preflight', ${'downtime'}, ${replicas}, ${'restore'}, ${deps.userId ?? null})
   `);
 
+  // Task-center entry — same modal target as forward archives (the
+  // UI reads run.triggeredBy to render restore-shaped copy).
+  if (deps.userId) {
+    await taskCenter
+      .start(deps.db, {
+        kind: 'mail.archive.restore',
+        refId: newRunId,
+        scope: 'admin',
+        userId: deps.userId,
+        label: toSafeText(`Restore mail from archive ${runId.slice(0, 8)}`),
+        target: { type: 'modal', modal: 'mail-archive-run', modalProps: { runId: newRunId } },
+      })
+      .catch((err) =>
+        deps.logger?.warn?.(
+          `task-center registration failed (kind=mail.archive.restore runId=${newRunId}): ${String(err)}`,
+        ),
+      );
+  }
+
   void runRestoreOrchestrator(
     newRunId,
     replicas,
@@ -286,6 +337,9 @@ export async function startMailArchiveRestore(
     deps.logger?.warn?.('mail-archive restore failed:', msg);
     await markRunFailed(deps.db, newRunId, msg).catch(() => undefined);
     await safeScaleBackUp(deps, replicas).catch(() => undefined);
+    await taskCenter
+      .finishByRef(deps.db, 'mail.archive.restore', newRunId, { status: 'failed', error: msg })
+      .catch(() => undefined);
   });
 
   return { runId: newRunId };
@@ -413,6 +467,7 @@ async function runArchiveOrchestrator(
         finished_at = now()
       WHERE id = ${runId}
     `);
+    await finishArchiveTask(deps.db, runId, 'succeeded');
   } else {
     await markRunFailed(deps.db, runId, jobResult.error ?? 'export job failed');
   }
@@ -448,6 +503,7 @@ async function runRestoreOrchestrator(
         finished_at = now()
       WHERE id = ${runId}
     `);
+    await finishArchiveTask(deps.db, runId, 'succeeded');
   } else {
     await markRunFailed(deps.db, runId, jobResult.error ?? 'restore job failed');
   }
@@ -517,6 +573,7 @@ async function runArchiveOrchestratorNoDowntime(
         finished_at = now()
       WHERE id = ${runId}
     `);
+    await finishArchiveTask(deps.db, runId, 'succeeded');
   } else {
     await markRunFailed(deps.db, runId, jobResult.error ?? 'no-downtime export job failed');
   }
@@ -1177,6 +1234,25 @@ async function updateRunStep(
   await db.execute(sql`UPDATE mail_archive_runs SET current_step = ${step} WHERE id = ${runId}`);
 }
 
+/**
+ * Mark the task-center entry for this archive run as finished. Reads
+ * `triggered_by` off the run row to pick the right TaskKind. Best-
+ * effort — task-center failure must NOT break the orchestrator.
+ */
+async function finishArchiveTask(
+  db: Database,
+  runId: string,
+  status: 'succeeded' | 'failed',
+  error?: string,
+): Promise<void> {
+  const row = await getRunRow(db, runId);
+  if (!row) return;
+  const kind = row.triggered_by === 'restore' ? 'mail.archive.restore' : 'mail.archive';
+  await taskCenter
+    .finishByRef(db, kind, runId, { status, error: error ?? null })
+    .catch(() => undefined);
+}
+
 async function markRunFailed(db: Database, runId: string, errMsg: string): Promise<void> {
   await db.execute(sql`
     UPDATE mail_archive_runs SET
@@ -1186,6 +1262,11 @@ async function markRunFailed(db: Database, runId: string, errMsg: string): Promi
       finished_at = now()
     WHERE id = ${runId}
   `);
+  // Finish the task-center entry too. Idempotent — the outer .catch
+  // in startMailArchive/startMailArchiveRestore also calls this; the
+  // task-center accepts multiple finish() on the same id without
+  // side effects beyond the timestamp.
+  await finishArchiveTask(db, runId, 'failed', errMsg);
 }
 
 // ── Internal: small utilities ─────────────────────────────────────────────────

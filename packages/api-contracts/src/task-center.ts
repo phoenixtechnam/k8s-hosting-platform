@@ -85,6 +85,8 @@ export const TASK_KIND_REGISTRY = [
   'backup.bundle',
   'postgres.pitr',
   'dns.verify',
+  'mail.archive',
+  'mail.archive.restore',
   'mail.rotate',
   'cache.purge',
   'restore.cart',

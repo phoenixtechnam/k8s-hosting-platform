@@ -21,6 +21,7 @@ import MailDrCard from '@/components/MailDrCard';
 import MailPortExposureCard from '@/components/MailPortExposureCard';
 import MailSnapshotHealthCard from '@/components/MailSnapshotHealthCard';
 import MailArchiveCard from '@/components/MailArchiveCard';
+import MailServerStatusTile from '@/components/MailServerStatusTile';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -50,6 +51,9 @@ export default function EmailManagement() {
         <StatCard title="DKIM Configured" value={domainsLoading ? '...' : `${dkimOk}/${domains.length}`} icon={Shield} accent="amber" />
         <StatCard title="Mail Server" value="Stalwart" icon={Server} accent="green" />
       </div>
+
+      {/* At-a-glance runtime tile: pod node + port exposure + storage + SSL pointer */}
+      <MailServerStatusTile />
 
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
         {[
