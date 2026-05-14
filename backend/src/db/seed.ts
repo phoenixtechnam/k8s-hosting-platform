@@ -127,7 +127,7 @@ console.log('  Seeded catalog repositories');
 
 // OIDC Providers (local Dex for development)
 if (process.env.NODE_ENV !== 'production') {
-  const encKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  const encKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
   // Prefer DEX_ISSUER_URL env if explicitly set (useful for staging with
   // a specific Dex URL), otherwise derive from PLATFORM_BASE_DOMAIN →
   // dex.<base>:<ingress-https-port>/dex. Dev default: 2011.

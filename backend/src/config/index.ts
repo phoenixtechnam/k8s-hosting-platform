@@ -7,7 +7,7 @@ const configSchema = z.object({
   JWT_SECRET: z.string().min(16),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   CORS_ORIGINS: z.string().optional(),
-  OIDC_ENCRYPTION_KEY: z.string().min(32).optional(),
+  PLATFORM_ENCRYPTION_KEY: z.string().min(32).optional(),
   KUBECONFIG_PATH: z.string().optional(),
   REDIS_URL: z.string().default('redis://localhost:6379'),
   PLATFORM_ENV: z.enum(['development', 'dev', 'staging', 'production']).default('development'),
@@ -73,8 +73,8 @@ export function loadConfig(): Config {
     throw new Error(`Invalid configuration:\n${message}`);
   }
   const config = result.data;
-  if (config.PLATFORM_ENV === 'production' && !config.OIDC_ENCRYPTION_KEY) {
-    console.error('[config] CRITICAL: OIDC_ENCRYPTION_KEY is not set in production. Stored credentials will use a zero key and are NOT secure.');
+  if (config.PLATFORM_ENV === 'production' && !config.PLATFORM_ENCRYPTION_KEY) {
+    console.error('[config] CRITICAL: PLATFORM_ENCRYPTION_KEY is not set in production. Stored credentials will use a zero key and are NOT secure.');
   }
   return config;
 }

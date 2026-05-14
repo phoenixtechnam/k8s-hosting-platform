@@ -54,15 +54,15 @@ const RESTIC_STREAM_ARTIFACT = 'restic-stream';
 const ALLOWED_STDIN_FILENAMES = /^[A-Za-z0-9._-]{1,64}$/;
 
 export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promise<void> {
-  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY;
+  const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
   if (!configuredKey && process.env.NODE_ENV === 'production') {
     // Hard-fail in production. The HMAC upload tokens are signed
     // with this key — falling back to all-zeros would let any
     // attacker who reads the source forge upload tokens. The
     // tenant-bundles admin route emits a warn-log; this internal route
     // refuses to register at all.
-    throw new Error('backupsV2InternalUploadRoutes: OIDC_ENCRYPTION_KEY is required in production');
+    throw new Error('backupsV2InternalUploadRoutes: PLATFORM_ENCRYPTION_KEY is required in production');
   }
   const secretsKeyHex = configuredKey ?? '0'.repeat(64);
 
@@ -160,7 +160,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
   // BUT NO BACKEND CREDS. Backend creds (S3 access key, SSH private
   // key) materialise only here, decrypted from backup_configurations.
   // The per-tenant restic password is derived from
-  // OIDC_ENCRYPTION_KEY + clientId via HKDF-SHA256 — the same vector
+  // PLATFORM_ENCRYPTION_KEY + clientId via HKDF-SHA256 — the same vector
   // asserted in restic-driver.test.ts and the Phase 0 spike.
   app.put('/internal/bundles/:bundleId/components/:component/restic-stream', {
     schema: {
@@ -413,8 +413,8 @@ async function resolveStoreForUpload(app: FastifyInstance, targetConfigId: strin
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
 
-  const encKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY
+  const encKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY
     ?? '0'.repeat(64);
 
   if (cfg.storageType === 's3') {

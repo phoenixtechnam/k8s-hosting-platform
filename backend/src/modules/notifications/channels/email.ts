@@ -26,19 +26,19 @@ export const emailChannel: NotificationChannel = {
    * existing email-sender silently no-ops; making availability explicit
    * here lets the registry skip the channel cleanly.
    *
-   * Reads `process.env.OIDC_ENCRYPTION_KEY` directly (the established
+   * Reads `process.env.PLATFORM_ENCRYPTION_KEY` directly (the established
    * convention in this codebase — see service.ts pre-refactor and
    * app.ts startDkimScheduler). Tests override via the
    * `encryptionKey` field on DeliveryContext so isAvailable() can
    * return true regardless of process env.
    */
   isAvailable(): boolean {
-    return Boolean(process.env.OIDC_ENCRYPTION_KEY);
+    return Boolean(process.env.PLATFORM_ENCRYPTION_KEY);
   },
   async deliver(ctx: DeliveryContext): Promise<DeliveryResult> {
-    const key = ctx.encryptionKey ?? process.env.OIDC_ENCRYPTION_KEY;
+    const key = ctx.encryptionKey ?? process.env.PLATFORM_ENCRYPTION_KEY;
     if (!key) {
-      return { status: 'skipped', reason: 'OIDC_ENCRYPTION_KEY not set' };
+      return { status: 'skipped', reason: 'PLATFORM_ENCRYPTION_KEY not set' };
     }
     try {
       // sendNotificationEmail itself already silently catches and logs;

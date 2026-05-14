@@ -313,7 +313,7 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
         { field: firstError.path.join('.') },
       );
     }
-    const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '';
+    const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '';
     if (!encryptionKey) {
       throw new ApiError(
         'ENCRYPTION_KEY_MISSING',
@@ -409,7 +409,7 @@ async function loadPatForUpdateCheck(
   app: FastifyInstance,
   deploymentId: string,
 ): Promise<{ username: string; password: string } | undefined> {
-  const key = process.env.OIDC_ENCRYPTION_KEY;
+  const key = process.env.PLATFORM_ENCRYPTION_KEY;
   if (!key) return undefined;
   const decrypted = await loadDecryptedToken(app.db, deploymentId, key);
   if (!decrypted) return undefined;

@@ -122,7 +122,7 @@ export const BUNDLE_COMPONENTS: ReadonlyArray<ComponentOwnership> = [
   {
     name: 'secrets',
     description:
-      'Every kubernetes.io/tls Secret in the tenant namespace, encrypted with AES-256-GCM (KID `k1:` prefix) using OIDC_ENCRYPTION_KEY.',
+      'Every kubernetes.io/tls Secret in the tenant namespace, encrypted with AES-256-GCM (KID `k1:` prefix) using PLATFORM_ENCRYPTION_KEY.',
     tables: [],
     pvcs: [],
     secretTypes: ['kubernetes.io/tls'],

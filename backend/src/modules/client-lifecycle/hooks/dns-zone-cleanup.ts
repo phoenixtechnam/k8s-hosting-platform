@@ -16,11 +16,11 @@ import { isHookAuthoritative } from '../registry/feature-flags.js';
  * (which produces auth failures the operator must root-cause). */
 let _envKeyMissingLogged = false;
 function resolveEncryptionKey(): string {
-  const k = process.env.OIDC_ENCRYPTION_KEY;
+  const k = process.env.PLATFORM_ENCRYPTION_KEY;
   if (!k) {
     if (!_envKeyMissingLogged) {
       console.warn(
-        '[dns-zone-cleanup] OIDC_ENCRYPTION_KEY not set — falling back to zero key. DNS provider credentials will likely fail to decrypt; check the platform deployment.',
+        '[dns-zone-cleanup] PLATFORM_ENCRYPTION_KEY not set — falling back to zero key. DNS provider credentials will likely fail to decrypt; check the platform deployment.',
       );
       _envKeyMissingLogged = true;
     }

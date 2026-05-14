@@ -542,7 +542,7 @@ scenario_reaper() {
 #   - per-component status=completed with sizeBytes>0 in the DB
 #   - verify reports config rowCount(clients)>=1 (round-trip parses)
 #   - verify reports secrets KID=k1 and decryptError=null (round-trip
-#     decrypts under the same OIDC_ENCRYPTION_KEY)
+#     decrypts under the same PLATFORM_ENCRYPTION_KEY)
 #
 # This is a true round-trip: we capture, then read every artefact
 # back via the BackupStore.readComponent path (the same path Phase 4

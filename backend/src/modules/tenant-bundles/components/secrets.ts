@@ -15,7 +15,7 @@
  *     rotation lands as `k2:` etc. without breaking old bundles.
  *   - AES-256-GCM, **96-bit (12-byte) IV** (NIST SP 800-38D / RFC 5116),
  *     16-byte auth tag.
- *   - Key material: process.env.OIDC_ENCRYPTION_KEY (64-char hex
+ *   - Key material: process.env.PLATFORM_ENCRYPTION_KEY (64-char hex
  *     string = 32 bytes = AES-256). Same key the OIDC module uses;
  *     splitting into a separate key is left for ADR-032 follow-up.
  *
@@ -77,7 +77,7 @@ export interface SecretsComponentResult {
 export function encryptSecretsPayload(plaintext: Buffer, keyHex: string): string {
   const keyBuffer = Buffer.from(keyHex, 'hex');
   if (keyBuffer.length !== 32) {
-    throw new Error(`OIDC_ENCRYPTION_KEY must be 32 bytes (64 hex chars); got ${keyBuffer.length} bytes`);
+    throw new Error(`PLATFORM_ENCRYPTION_KEY must be 32 bytes (64 hex chars); got ${keyBuffer.length} bytes`);
   }
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, keyBuffer, iv);
@@ -102,7 +102,7 @@ export function decryptSecretsPayload(envelope: string, keyHex: string): Buffer 
   }
   const keyBuffer = Buffer.from(keyHex, 'hex');
   if (keyBuffer.length !== 32) {
-    throw new Error(`OIDC_ENCRYPTION_KEY must be 32 bytes (64 hex chars); got ${keyBuffer.length} bytes`);
+    throw new Error(`PLATFORM_ENCRYPTION_KEY must be 32 bytes (64 hex chars); got ${keyBuffer.length} bytes`);
   }
   const ivBuffer = Buffer.from(ivHex!, 'hex');
   if (ivBuffer.length !== IV_LENGTH) {

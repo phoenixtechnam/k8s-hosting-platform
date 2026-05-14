@@ -264,17 +264,17 @@ function toComponentInfo(c: typeof backupComponents.$inferSelect): BackupCompone
 async function resolveStore(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
-  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY;
+  const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
   if (!configuredKey && process.env.NODE_ENV === 'production') {
-    throw new ApiError('CONFIG_INVALID', 'OIDC_ENCRYPTION_KEY is not configured', 500);
+    throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY is not configured', 500);
   }
   if (!configuredKey) {
     // Match the admin-side warn-log so operators see the zero-key
     // fallback path on staging the same way they see it on the
     // admin route. Without this, a staging-only reproduction is
     // silent in the client-panel path.
-    app.log.warn('tenant-bundles client: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Decrypted credentials are trivially recoverable in this environment.');
+    app.log.warn('tenant-bundles client: PLATFORM_ENCRYPTION_KEY not set — using zero-key dev fallback. Decrypted credentials are trivially recoverable in this environment.');
   }
   const encKey = configuredKey ?? '0'.repeat(64);
   if (cfg.storageType === 's3') {

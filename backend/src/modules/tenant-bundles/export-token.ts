@@ -29,7 +29,7 @@
  *                                   // doesn't produce identical tokens
  *   }
  *
- * Encryption key: the same `OIDC_ENCRYPTION_KEY` the upload-token
+ * Encryption key: the same `PLATFORM_ENCRYPTION_KEY` the upload-token
  * module uses. Symmetric. The password ciphertext is decrypted
  * server-side at the GET handler — the password never leaves the
  * cluster in plaintext (the URL only carries ciphertext).

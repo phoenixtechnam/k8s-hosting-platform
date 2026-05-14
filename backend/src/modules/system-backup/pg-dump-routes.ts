@@ -248,7 +248,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
 
     if (row.targetConfigId && row.bundleId && row.status === 'succeeded') {
       try {
-        const oidcKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined;
+        const oidcKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined;
         const { store } = await resolveSystemStore(app.db, row.targetConfigId, oidcKey ?? null);
         const handle = await store.open(row.bundleId);
         if (handle) await store.delete(handle);
@@ -410,7 +410,7 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
         `too many concurrent downloads (max ${MAX_CONCURRENT_DOWNLOADS}) — try again shortly`, 429);
     }
 
-    const oidcKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined;
+    const oidcKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined;
     const { store } = await resolveSystemStore(app.db, row.targetConfigId, oidcKey ?? null);
     const handle = await store.open(row.bundleId);
     if (!handle) {

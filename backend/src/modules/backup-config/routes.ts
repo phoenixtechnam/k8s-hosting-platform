@@ -26,7 +26,7 @@ function zodMessage(err: ZodError): string {
 }
 
 export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
-  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
+  const encryptionKey = app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
 
   // K8s client for the Longhorn reconciler. Created once at plugin
   // registration; pattern mirrors webmail-settings/routes.ts. Undefined

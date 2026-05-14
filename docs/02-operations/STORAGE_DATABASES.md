@@ -81,7 +81,7 @@ Automated daily captures of all client data, included in all plans, not counted 
 | Capture tool (files) | Short-lived Kubernetes Job — `tar cf - . \| gzip > archive.tar.gz` + `tree.jsonl.gz` sidecar |
 | Capture tool (mailboxes) | Job running `stalwart-cli account export` per mailbox |
 | Storage backend | One of `hostpath`, `s3`, `ssh` (all mandatory, operator-configured) |
-| Encryption | `secrets` component AES-256-GCM with `OIDC_ENCRYPTION_KEY` (`k1:` KID prefix). Other components rely on backend transport (S3 SSE, SSH) + filesystem permissions (hostpath `0700`). |
+| Encryption | `secrets` component AES-256-GCM with `PLATFORM_ENCRYPTION_KEY` (`k1:` KID prefix). Other components rely on backend transport (S3 SSE, SSH) + filesystem permissions (hostpath `0700`). |
 
 ### Customer-Created Independent Backups
 

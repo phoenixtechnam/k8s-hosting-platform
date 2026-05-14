@@ -4,7 +4,7 @@
  *
  * This is a thin DB→struct converter that:
  *   - decrypts the credential blobs (S3 access key, S3 secret key, SSH
- *     private key) using the platform's OIDC_ENCRYPTION_KEY envelope
+ *     private key) using the platform's PLATFORM_ENCRYPTION_KEY envelope
  *   - validates required fields are present per backend kind
  *   - returns a typed discriminated union that the restic driver can
  *     consume directly (no further coercion needed)

@@ -108,7 +108,7 @@ The `k8s/overlays/staging/` overlay pins ingresses to `letsencrypt-staging-http0
 |---|---|---|
 | DB password | `platform/platform-db-credentials` | Backend ↔ Postgres |
 | JWT signing key | `platform/platform-jwt-secret` | Auth middleware |
-| OIDC encryption key | `platform/platform-secrets` (`oidc-encryption-key`) | Storage-lifecycle + OIDC state encryption |
+| OIDC encryption key | `platform/platform-secrets` (`platform-encryption-key`) | Storage-lifecycle + OIDC state encryption |
 | Platform internal secret | `platform/platform-secrets` (`internal-secret`) | Service-to-service auth |
 | OAuth2 proxy client secret + cookie secret | `platform/oauth2-proxy-config` | oauth2-proxy ↔ Dex |
 | Dex storage credentials | `platform/dex-*` | Dex OIDC provider |

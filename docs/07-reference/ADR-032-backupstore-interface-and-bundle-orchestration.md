@@ -112,7 +112,7 @@ has to re-derive state from the store on every retry.
 |---|---|---|---|
 | `LocalHostPathBackupStore` | absolute path under `${hostpath}/<backupId>/` | filesystem permissions on the platform-data PVC | Reuses patterns from `storage-lifecycle/snapshot-store.ts`. |
 | `S3BackupStore` | `s3://<bucket>/<prefix>/<backupId>/` | `backup_configurations` row (KMS-encrypted access key) | `@aws-sdk/client-s3` + multipart upload streaming. Presigned URLs for client downloads (Phase 5). |
-| `SshBackupStore` | `ssh://<user>@<host>:<port>/<base>/<backupId>/` | encrypted private key in `platform_settings.storage_backup_ssh_private_key` (`OIDC_ENCRYPTION_KEY`) | **Job-based** (see decision 5). |
+| `SshBackupStore` | `ssh://<user>@<host>:<port>/<base>/<backupId>/` | encrypted private key in `platform_settings.storage_backup_ssh_private_key` (`PLATFORM_ENCRYPTION_KEY`) | **Job-based** (see decision 5). |
 
 ### 5. SSH backend: in-process SFTP for Phase 2; Job-based for Phase 3 files
 
@@ -166,7 +166,7 @@ work. Per-component idempotency is the cheapest way to get retries right.
 
 `secrets` component ciphertext is prefixed with `k1:` followed by the
 AES-256-GCM ciphertext (per `BACKUP_COMPONENT_MODEL.md`). The platform
-maintains exactly one active key (`OIDC_ENCRYPTION_KEY` env var). KID
+maintains exactly one active key (`PLATFORM_ENCRYPTION_KEY` env var). KID
 prefix exists so a future ADR can introduce key rotation without breaking
 old bundles.
 

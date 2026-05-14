@@ -29,7 +29,7 @@
  *
  * Authentication: SSH private key is decrypted from
  * `backup_configurations.ssh_key_encrypted` (AES-256-GCM with the
- * platform-wide OIDC_ENCRYPTION_KEY) by the route layer before
+ * platform-wide PLATFORM_ENCRYPTION_KEY) by the route layer before
  * the store is constructed. The plaintext key lives in this
  * module's instance for the duration of one request, then is
  * forgotten when the store reference falls out of scope.

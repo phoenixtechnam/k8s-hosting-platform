@@ -557,7 +557,7 @@ export async function updateEmailDomain(
         // Review HIGH-1: use the caller-supplied key. Fall back to
         // the env var (with dev-only zero-key) so the route handler
         // and tests that do not supply a key still behave.
-        const effectiveKey = encryptionKey ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+        const effectiveKey = encryptionKey ?? process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
         const { publishWebmailDnsRecord, unpublishWebmailDnsRecord } = await import('./dns-provisioning.js');
         if (input.webmail_enabled) {
           await publishWebmailDnsRecord(db, existing.domainId, domainRow.domainName, effectiveKey);

@@ -185,7 +185,7 @@ export async function createDomain(db: Database, clientId: string, input: Create
   const [created] = await db.select().from(domains).where(eq(domains.id, id));
 
   // Auto-provision DNS zone on the domain's group servers (or all active if no group)
-  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
+  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
   try {
     const activeServers = await getActiveServersForDomain(db, id);
     for (const server of activeServers) {
@@ -475,7 +475,7 @@ export async function deleteDomain(
   const domainRow = await getDomainById(db, clientId, domainId);
 
   // Resolve DNS servers BEFORE deleting the domain (need dnsGroupId which is on the domain row)
-  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
   let dnsServersToClean: Awaited<ReturnType<typeof getActiveServersForDomain>> = [];
   try {
     dnsServersToClean = await getActiveServersForDomain(db, domainId);
@@ -671,7 +671,7 @@ export async function migrateDomainDns(
   targetGroupId: string,
 ) {
   const domainRow = await getDomainById(db, clientId, domainId);
-  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
 
   // Validate target group exists
   await getProviderGroupById(db, targetGroupId);

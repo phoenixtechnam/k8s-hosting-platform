@@ -4265,7 +4265,7 @@ When an admin restores a bundle whose `clients.id` no longer exists in the platf
 | **Bundle deletion** | Delete a specific bundle from the backup destination (with confirmation) | 1 |
 | **Retention policy** | View and edit per-customer retention days (within plan limits) | 1 |
 | **Destination configuration** | Configure and test hostpath / S3 / SSH backup destinations | 1 |
-| **Encryption settings** | `OIDC_ENCRYPTION_KEY` status + KID rotation UI (future: Vault integration via ExternalSecrets) | 2 |
+| **Encryption settings** | `PLATFORM_ENCRYPTION_KEY` status + KID rotation UI (future: Vault integration via ExternalSecrets) | 2 |
 | **Storage usage** | Per-customer backup storage breakdown; total offsite usage vs capacity; growth trend | 1 |
 | **Backup verification** | Trigger SHA-256 checksum verification for a specific backup; weekly scheduled verify job status | 1 |
 | **Alert status** | Surface `BackupJobFailed`, `OffsiteBackupFailed`, `OffsiteMountFailed` alerts | 1 |

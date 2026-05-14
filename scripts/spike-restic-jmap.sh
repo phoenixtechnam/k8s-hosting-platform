@@ -96,8 +96,8 @@ hkdf_password() {
   ' "$secret_hex" "$client_id"
 }
 
-# Synthetic OIDC_ENCRYPTION_KEY for spike (NOT a production key).
-# Intentionally NOT reading any OIDC_ENCRYPTION_KEY from the environment —
+# Synthetic PLATFORM_ENCRYPTION_KEY for spike (NOT a production key).
+# Intentionally NOT reading any PLATFORM_ENCRYPTION_KEY from the environment —
 # this spike runs in a sealed key space and must never collide with prod.
 SPIKE_OIDC_KEY=$(openssl rand -hex 32)
 

@@ -2,7 +2,7 @@
  * Per-ingress mTLS access-control service.
  *
  * Mode B of the multi-mode access design. Stores the CA bundle
- * encrypted at rest (re-using OIDC_ENCRYPTION_KEY for v1) and
+ * encrypted at rest (re-using PLATFORM_ENCRYPTION_KEY for v1) and
  * computes a fingerprint + Subject + notAfter on upload for UI
  * display. The CA bundle itself is never returned to the client —
  * the response only flags `caCertSet`.

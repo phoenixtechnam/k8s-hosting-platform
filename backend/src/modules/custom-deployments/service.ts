@@ -626,15 +626,15 @@ async function deployToCluster(
     // with no operator-visible signal. Fail loudly instead — the
     // operator sees `ENCRYPTION_KEY_MISSING` / `PAT_DECRYPT_FAILED`
     // on the deployment row and can act.
-    if (!process.env.OIDC_ENCRYPTION_KEY) {
+    if (!process.env.PLATFORM_ENCRYPTION_KEY) {
       throw new ApiError(
         'ENCRYPTION_KEY_MISSING',
-        'Cannot re-materialise the image-pull Secret without OIDC_ENCRYPTION_KEY; this deployment is configured to use a PAT.',
+        'Cannot re-materialise the image-pull Secret without PLATFORM_ENCRYPTION_KEY; this deployment is configured to use a PAT.',
         500,
         { deployment_id: deploymentId },
       );
     }
-    const decrypted = await loadDecryptedToken(db, deploymentId, process.env.OIDC_ENCRYPTION_KEY);
+    const decrypted = await loadDecryptedToken(db, deploymentId, process.env.PLATFORM_ENCRYPTION_KEY);
     if (!decrypted) {
       // DB row was deleted between the getPullCredential check and the
       // load — shouldn't happen under normal locking, but if it does

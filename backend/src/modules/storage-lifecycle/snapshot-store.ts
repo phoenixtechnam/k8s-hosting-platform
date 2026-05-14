@@ -385,7 +385,7 @@ export async function resolveSnapshotStore(
     // up S3" to mean both cluster backups AND tenant snapshots.
     try {
       const { getActiveBackupConfig } = await import('../backup-config/service.js');
-      const key = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+      const key = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
       const active = await getActiveBackupConfig(db, key);
       if (active && active.kind === 's3') {
         return new S3Store({

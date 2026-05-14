@@ -7,7 +7,7 @@ import type { Database } from '../../db/index.js';
 import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
 import type { DnsRecord as DnsRecordRow } from '../../db/schema.js';
 
-const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
+const encryptionKey = () => process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
 
 export async function syncRecordToProviders(
   db: Database,

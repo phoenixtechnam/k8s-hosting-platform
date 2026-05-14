@@ -92,11 +92,11 @@ spec:
                   name: platform-jwt-secret
                   key: secret
             # REDIS_URL removed M14 (in-memory LRU replaces Redis).
-            - name: OIDC_ENCRYPTION_KEY
+            - name: PLATFORM_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
                   name: platform-secrets
-                  key: oidc-encryption-key
+                  key: platform-encryption-key
             - name: PLATFORM_INTERNAL_SECRET
               valueFrom:
                 secretKeyRef:

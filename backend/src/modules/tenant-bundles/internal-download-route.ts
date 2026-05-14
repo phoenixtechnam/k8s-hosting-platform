@@ -36,13 +36,13 @@ import { verifyUploadToken } from './upload-token.js';
 const ALLOWED_COMPONENTS = new Set(['files', 'mailboxes', 'config', 'secrets'] as const);
 
 export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Promise<void> {
-  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY;
+  const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
   if (!configuredKey && process.env.NODE_ENV === 'production') {
     // Hard-fail in production. The HMAC tokens are signed with this
     // key — falling back to all-zeros would let an attacker who reads
     // the source forge download tokens. Mirror the upload-route policy.
-    throw new Error('backupsV2InternalDownloadRoutes: OIDC_ENCRYPTION_KEY is required in production');
+    throw new Error('backupsV2InternalDownloadRoutes: PLATFORM_ENCRYPTION_KEY is required in production');
   }
   const secretsKeyHex = configuredKey ?? '0'.repeat(64);
 

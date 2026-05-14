@@ -175,12 +175,12 @@ export async function execMailboxesByAddressItem(args: {
   const platformApiUrl = (app.config as Record<string, unknown>).PLATFORM_API_INTERNAL_URL as string | undefined
     ?? process.env.PLATFORM_API_INTERNAL_URL
     ?? 'http://platform-api.platform.svc:3000';
-  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY;
+  const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
   if (!configuredKey) {
     app.log.error(
       { module: 'mailboxes-by-address-restore' },
-      'OIDC_ENCRYPTION_KEY missing — falling back to a zero-key. HMAC tokens for download URLs will be predictable; restore will only succeed if capture-side ran with the same fallback.',
+      'PLATFORM_ENCRYPTION_KEY missing — falling back to a zero-key. HMAC tokens for download URLs will be predictable; restore will only succeed if capture-side ran with the same fallback.',
     );
   }
   const secretsKeyHex = configuredKey ?? '0'.repeat(64);

@@ -15,10 +15,10 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [requireRole('super_admin', 'admin', 'read_only')],
   }, async () => {
     const encKey = (() => {
-      const k = process.env.OIDC_ENCRYPTION_KEY;
+      const k = process.env.PLATFORM_ENCRYPTION_KEY;
       if (k && k.length >= 32) return k;
       if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') return '0'.repeat(64);
-      throw new Error('OIDC_ENCRYPTION_KEY is required (health routes)');
+      throw new Error('PLATFORM_ENCRYPTION_KEY is required (health routes)');
     })();
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     let k8sCore;

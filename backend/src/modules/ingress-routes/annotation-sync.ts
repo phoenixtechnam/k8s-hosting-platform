@@ -677,7 +677,7 @@ export async function deleteProtectedDirIngress(
  * bundle is missing, the Secret is best-effort deleted and an empty
  * annotation map is returned.
  *
- * The encryption key is read from app config / OIDC_ENCRYPTION_KEY
+ * The encryption key is read from app config / PLATFORM_ENCRYPTION_KEY
  * (reused for v1, see migration 0058).
  */
 async function syncMtlsSecretAndBuildAnnotations(
@@ -687,16 +687,16 @@ async function syncMtlsSecretAndBuildAnnotations(
   routeId: string,
 ): Promise<Record<string, string>> {
   const { loadEnabledForRoute } = await import('../ingress-mtls/service.js');
-  // OIDC_ENCRYPTION_KEY is required to decrypt the CA cert + key from
+  // PLATFORM_ENCRYPTION_KEY is required to decrypt the CA cert + key from
   // the providers table. The legacy fallback to '0'.repeat(64) was a
   // silent-failure footgun — DB-leak attackers could decrypt every CA
   // private key. Fail closed: when the key is missing we return no
   // annotations (mTLS effectively disabled for this route) so the
   // reconciler keeps making progress on the rest of the Ingress while
   // operators get a clear log line to act on.
-  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY;
+  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY;
   if (!encryptionKey || encryptionKey.length < 32) {
-    console.error('[annotation-sync] OIDC_ENCRYPTION_KEY missing — mTLS annotations skipped for route', routeId);
+    console.error('[annotation-sync] PLATFORM_ENCRYPTION_KEY missing — mTLS annotations skipped for route', routeId);
     return {};
   }
   const secretName = `route-mtls-${routeId.slice(0, 8)}`;
