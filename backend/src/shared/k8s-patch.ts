@@ -132,49 +132,31 @@ export const JSON_PATCH = withTag(
  * merge` (non-force apply) will preserve those fields instead of
  * reverting them to the manifest.
  *
+ * IMPORTANT: this constant only fixes the Content-Type header. The
+ * apiserver also needs `fieldManager` and `force` URL query params,
+ * but the SDK's ObjectParamAPI wrapper accepts those as FIRST-CLASS
+ * named fields on the request-args object — NOT via the middleware
+ * query-param hook. Caller is responsible for passing them on the
+ * request object:
+ *
+ *   await apps.patchNamespacedDaemonSet({
+ *     namespace, name, body,
+ *     fieldManager: 'platform-api.port-exposure',
+ *     force: true,
+ *   } as Parameters<typeof apps.patchNamespacedDaemonSet>[0], APPLY_PATCH);
+ *
+ * A prior implementation here tried to set fieldManager via ctx.
+ * setQueryParam() inside the middleware — the SDK silently dropped
+ * the override because the named fields take precedence. Burned 90
+ * minutes on that diagnosis; documented here so the next reader
+ * doesn't repeat.
+ *
  * Body shape: a *partial* object containing only the fields you want
  * to own (e.g. `{ spec: { template: { spec: { nodeSelector: {...} } } } }`).
  * Apply-patch is declarative — anything you omit is NOT cleared from
  * the live object (that's what makes it co-ownership-friendly).
- *
- * The `fieldManager` query parameter MUST be set on the request — the
- * apiserver uses it to attribute ownership.
- *
- * `force` parameter:
- *   false (default) — co-ownership only; conflicts with other managers
- *                     reject the apply with 409.
- *   true            — steal ownership of the fields from whichever
- *                     manager(s) currently own them. Use for the FIRST
- *                     operator-patch against a Flux-shipped resource
- *                     where Flux ships the field with a default value
- *                     it owns; after the steal, Flux's ssa:merge will
- *                     respect the new owner. Use sparingly — every
- *                     `force=true` field becomes an operator's
- *                     permanent responsibility to manage.
  */
-export function applyPatch(fieldManager: string, opts: { force?: boolean } = {}): SDKOverride {
-  const force = opts.force ?? false;
-  const stub = (ctx: RequestContextLike): ObservableLike<RequestContextLike> => {
-    const promise = Promise.resolve(ctx);
-    return { promise, toPromise: () => promise, pipe: () => undefined };
-  };
-  const mw: Middleware = {
-    pre: (ctx) => {
-      ctx.setHeaderParam('Content-Type', 'application/apply-patch+yaml');
-      // The SDK exposes setQueryParam via the same context interface
-      // when it exists; gracefully no-op when it doesn't (test harness).
-      const c = ctx as unknown as { setQueryParam?: (name: string, value: string) => void };
-      if (typeof c.setQueryParam === 'function') {
-        c.setQueryParam('fieldManager', fieldManager);
-        c.setQueryParam('force', force ? 'true' : 'false');
-      }
-      return stub(ctx);
-    },
-    post: stub,
-  };
-  const override = withTag(
-    { middleware: [mw] },
-    'application/apply-patch+yaml',
-  );
-  return override as unknown as SDKOverride;
-}
+export const APPLY_PATCH = withTag(
+  buildContentTypeOverride('application/apply-patch+yaml'),
+  'application/apply-patch+yaml',
+) as unknown as SDKOverride;
