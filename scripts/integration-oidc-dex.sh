@@ -745,6 +745,22 @@ ORIG_BG_PATH=$(echo "$ORIG_SETTINGS" | jq -r '.data.breakGlassPath // ""')
 
 BG_TEST_PATH="e2e-bg-test-$(date +%s)"
 
+# Define restore function and register trap BEFORE any curl call that can fail,
+# so the EXIT trap always has restore_proxy_settings available — even if the
+# first curl errors and fail() increments the counter before we reach here.
+restore_proxy_settings() {
+  curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -nc \
+      --argjson pa "$ORIG_PROTECT_ADMIN" \
+      --argjson pc "$ORIG_PROTECT_CLIENT" \
+      --arg bgp "$ORIG_BG_PATH" \
+      '{protect_admin_via_proxy:$pa, protect_client_via_proxy:$pc, break_glass_path:$bgp}')" \
+    "$ADMIN_HOST/api/v1/admin/oidc/settings" >/dev/null 2>&1 || true
+}
+# Extend EXIT trap so the panel stays accessible even if the scenario errors.
+trap 'restore_proxy_settings; cleanup_providers; rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-dex-*.headers 2>/dev/null' EXIT
+
 # Enable proxy protection with a known break-glass path so the Ingress is
 # created and we can inspect its annotations.
 ENABLE_RES=$(curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
@@ -760,19 +776,6 @@ if [[ -z "$ENABLE_BG" ]]; then
 else
   ok "proxy enabled with break-glass path=$ENABLE_BG"
 fi
-
-restore_proxy_settings() {
-  curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
-    -H "Content-Type: application/json" \
-    -d "$(jq -nc \
-      --argjson pa "$ORIG_PROTECT_ADMIN" \
-      --argjson pc "$ORIG_PROTECT_CLIENT" \
-      --arg bgp "$ORIG_BG_PATH" \
-      '{protect_admin_via_proxy:$pa, protect_client_via_proxy:$pc, break_glass_path:$bgp}')" \
-    "$ADMIN_HOST/api/v1/admin/oidc/settings" >/dev/null 2>&1 || true
-}
-# Extend EXIT trap so the panel stays accessible even if the scenario errors.
-trap 'restore_proxy_settings; cleanup_providers; rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-dex-*.headers 2>/dev/null' EXIT
 
 # Verify the Ingress in the cluster via SSH + kubectl.
 local_ssh_host="${SSH_HOST:-root@89.167.3.56}"

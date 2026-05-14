@@ -61,8 +61,8 @@ describe('syncProxyIngressAnnotations — break-glass ingress path', () => {
     const path: string = body.spec.rules[0].http.paths[0].path;
     const rewriteTarget: string = body.metadata.annotations['nginx.ingress.kubernetes.io/rewrite-target'];
 
-    // Must use named captures (?<name>...), not positional $1/$2 (CVE-2026-42945)
-    expect(path).toMatch(/\(\?</);
+    // Must use the specific named capture (?<rest>...) — not positional $1/$2 (CVE-2026-42945)
+    expect(path).toContain('(?<rest>');
     expect(path).not.toMatch(/\(\?P</);  // avoid Python-only syntax; use JS/PCRE (?<name>)
 
     // rewrite-target must reference a named capture, not $1 or $2
