@@ -1,6 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
-import { reconcileIngressHosts, extractHost } from './ingress-reconciler.js';
-import type { IngressReconcileDeps } from './ingress-reconciler.js';
+import {
+  reconcileIngressHosts,
+  extractHost,
+  buildDesiredRoutes,
+  buildIngressRouteBody,
+  buildCertificateBody,
+} from './ingress-reconciler.js';
+import type {
+  IngressReconcileDeps,
+  IngressRouteCurrentSpec,
+  CertificateCurrentSpec,
+} from './ingress-reconciler.js';
 
 describe('extractHost', () => {
   it('extracts host from standard https URL', () => {
@@ -47,62 +57,109 @@ describe('extractHost', () => {
   });
 });
 
-function mockDeps(currentSpec?: {
-  rules: Array<{ host: string; serviceName: string }>;
-  tlsHosts: string[];
-  tlsSecret: string;
-}): IngressReconcileDeps {
+describe('buildDesiredRoutes', () => {
+  it('emits an admin + client route in order', () => {
+    const routes = buildDesiredRoutes({
+      adminPanelUrl: 'https://admin.example.com',
+      clientPanelUrl: 'https://my.example.com',
+      tlsSecretName: 'platform-tls',
+    });
+    expect(routes).toEqual([
+      { host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false },
+      { host: 'my.example.com', serviceName: 'client-panel', oauth2: false },
+    ]);
+  });
+  it('omits a route when its URL is missing', () => {
+    const routes = buildDesiredRoutes({
+      adminPanelUrl: 'https://admin.example.com',
+      clientPanelUrl: null,
+      tlsSecretName: 'platform-tls',
+    });
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({ host: 'admin.example.com', serviceName: 'admin-panel' });
+  });
+  it('sets oauth2 flag when protectAdminViaProxy is true', () => {
+    const routes = buildDesiredRoutes({
+      adminPanelUrl: 'https://admin.example.com',
+      clientPanelUrl: 'https://my.example.com',
+      tlsSecretName: 'platform-tls',
+      protectAdminViaProxy: true,
+    });
+    expect(routes[0].oauth2).toBe(true);
+    expect(routes[1].oauth2).toBe(false);
+  });
+});
+
+describe('buildIngressRouteBody', () => {
+  it('emits a Host-matching rule for each route on websecure entryPoint', () => {
+    const body = buildIngressRouteBody(
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
+      { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
+    );
+    expect(body.apiVersion).toBe('traefik.io/v1alpha1');
+    expect(body.kind).toBe('IngressRoute');
+    const spec = body.spec as Record<string, unknown>;
+    expect(spec.entryPoints).toEqual(['websecure']);
+    const routes = spec.routes as Array<Record<string, unknown>>;
+    expect(routes).toHaveLength(1);
+    expect(routes[0].match).toBe('Host(`admin.example.com`)');
+    expect(routes[0].kind).toBe('Rule');
+    const services = routes[0].services as Array<Record<string, unknown>>;
+    expect(services[0]).toEqual({ name: 'admin-panel', port: 80 });
+    expect(spec.tls).toEqual({ secretName: 'platform-tls' });
+  });
+  it('adds a priority-100 /oauth2 prefix route on top of the panel route', () => {
+    const body = buildIngressRouteBody(
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: true }],
+      { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
+    );
+    const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
+    expect(routes).toHaveLength(2);
+    expect(routes[0].match).toBe('Host(`admin.example.com`) && PathPrefix(`/oauth2`)');
+    expect(routes[0].priority).toBe(100);
+    expect((routes[0].services as Array<Record<string, unknown>>)[0]).toEqual({
+      name: 'oauth2-proxy',
+      port: 4180,
+    });
+    expect(routes[1].match).toBe('Host(`admin.example.com`)');
+  });
+});
+
+describe('buildCertificateBody', () => {
+  it('emits a cert-manager Certificate with the desired hostnames + issuer', () => {
+    const body = buildCertificateBody(['admin.example.com', 'my.example.com'], {
+      namespace: 'platform',
+      name: 'platform-ingress',
+      secretName: 'platform-tls',
+      issuerName: 'letsencrypt-prod-http01',
+    });
+    expect(body.apiVersion).toBe('cert-manager.io/v1');
+    expect(body.kind).toBe('Certificate');
+    const spec = body.spec as Record<string, unknown>;
+    expect(spec.dnsNames).toEqual(['admin.example.com', 'my.example.com']);
+    expect(spec.secretName).toBe('platform-tls');
+    expect(spec.issuerRef).toEqual({
+      name: 'letsencrypt-prod-http01',
+      kind: 'ClusterIssuer',
+      group: 'cert-manager.io',
+    });
+  });
+});
+
+function mockDeps(
+  currentIngress?: IngressRouteCurrentSpec | null,
+  currentCert?: CertificateCurrentSpec | null,
+): IngressReconcileDeps {
   return {
-    readCurrent: vi.fn().mockResolvedValue(currentSpec ?? null),
-    serverSideApply: vi.fn().mockResolvedValue(undefined),
+    readIngressRoute: vi.fn().mockResolvedValue(currentIngress ?? null),
+    readCertificate: vi.fn().mockResolvedValue(currentCert ?? null),
+    applyIngressRoute: vi.fn().mockResolvedValue(undefined),
+    applyCertificate: vi.fn().mockResolvedValue(undefined),
   };
 }
 
 describe('reconcileIngressHosts', () => {
-  it('applies fresh rules when both panel URLs are set and Ingress exists with different hosts', async () => {
-    const deps = mockDeps({
-      rules: [
-        { host: 'old-admin.example.com', serviceName: 'admin-panel' },
-        { host: 'old-client.example.com', serviceName: 'client-panel' },
-      ],
-      tlsHosts: ['old-admin.example.com', 'old-client.example.com'],
-      tlsSecret: 'platform-tls',
-    });
-    const result = await reconcileIngressHosts({
-      adminPanelUrl: 'https://admin.new.example.com',
-      clientPanelUrl: 'https://my.new.example.com',
-      tlsSecretName: 'platform-tls',
-    }, deps);
-    expect(result.changed).toBe(true);
-    expect(deps.serverSideApply).toHaveBeenCalledTimes(1);
-    const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(applied.spec.rules).toEqual([
-      expect.objectContaining({ host: 'admin.new.example.com' }),
-      expect.objectContaining({ host: 'my.new.example.com' }),
-    ]);
-    expect(applied.spec.tls[0].hosts).toEqual(['admin.new.example.com', 'my.new.example.com']);
-    expect(applied.spec.tls[0].secretName).toBe('platform-tls');
-  });
-
-  it('is a no-op when desired hosts match the live Ingress', async () => {
-    const deps = mockDeps({
-      rules: [
-        { host: 'admin.example.com', serviceName: 'admin-panel' },
-        { host: 'my.example.com', serviceName: 'client-panel' },
-      ],
-      tlsHosts: ['admin.example.com', 'my.example.com'],
-      tlsSecret: 'platform-tls',
-    });
-    const result = await reconcileIngressHosts({
-      adminPanelUrl: 'https://admin.example.com',
-      clientPanelUrl: 'https://my.example.com',
-      tlsSecretName: 'platform-tls',
-    }, deps);
-    expect(result.changed).toBe(false);
-    expect(deps.serverSideApply).not.toHaveBeenCalled();
-  });
-
-  it('bootstraps the Ingress when it does not exist yet', async () => {
+  it('applies fresh routes + cert when neither resource exists yet', async () => {
     const deps = mockDeps();
     const result = await reconcileIngressHosts({
       adminPanelUrl: 'https://admin.example.com',
@@ -110,51 +167,78 @@ describe('reconcileIngressHosts', () => {
       tlsSecretName: 'platform-tls',
     }, deps);
     expect(result.changed).toBe(true);
-    expect(deps.serverSideApply).toHaveBeenCalledTimes(1);
+    expect(deps.applyCertificate).toHaveBeenCalledTimes(1);
+    expect(deps.applyIngressRoute).toHaveBeenCalledTimes(1);
+    const certApplied = (deps.applyCertificate as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(certApplied.spec.dnsNames).toEqual(['admin.example.com', 'my.example.com']);
+    expect(ingressApplied.spec.routes).toHaveLength(2);
   });
 
-  it('skips reconcile if neither URL is set — never produces an empty-rules Ingress', async () => {
-    const deps = mockDeps({
-      rules: [{ host: 'admin.example.com', serviceName: 'admin-panel' }],
-      tlsHosts: ['admin.example.com'],
-      tlsSecret: 'platform-tls',
-    });
+  it('is a no-op when desired routes + cert match the live resources', async () => {
+    const deps = mockDeps(
+      {
+        routes: [
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null },
+          { host: 'my.example.com', serviceName: 'client-panel', oauth2Backend: null },
+        ],
+        tlsSecret: 'platform-tls',
+      },
+      {
+        dnsNames: ['admin.example.com', 'my.example.com'],
+        secretName: 'platform-tls',
+        issuerName: 'letsencrypt-prod-http01',
+      },
+    );
+    const result = await reconcileIngressHosts({
+      adminPanelUrl: 'https://admin.example.com',
+      clientPanelUrl: 'https://my.example.com',
+      tlsSecretName: 'platform-tls',
+    }, deps);
+    expect(result.changed).toBe(false);
+    expect(deps.applyIngressRoute).not.toHaveBeenCalled();
+    expect(deps.applyCertificate).not.toHaveBeenCalled();
+  });
+
+  it('skips reconcile if neither URL is set — never produces an empty IngressRoute', async () => {
+    const deps = mockDeps();
     const result = await reconcileIngressHosts({
       adminPanelUrl: null,
       clientPanelUrl: null,
       tlsSecretName: 'platform-tls',
     }, deps);
     expect(result.changed).toBe(false);
-    expect(deps.serverSideApply).not.toHaveBeenCalled();
+    expect(deps.applyIngressRoute).not.toHaveBeenCalled();
   });
 
-  it('omits a rule (and its TLS host) if only one URL is set', async () => {
+  it('omits a route + dnsName if only one URL is set', async () => {
     const deps = mockDeps();
     await reconcileIngressHosts({
       adminPanelUrl: 'https://admin.example.com',
       clientPanelUrl: null,
       tlsSecretName: 'platform-tls',
     }, deps);
-    const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(applied.spec.rules).toHaveLength(1);
-    expect(applied.spec.rules[0].host).toBe('admin.example.com');
-    expect(applied.spec.tls[0].hosts).toEqual(['admin.example.com']);
+    const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ingressApplied.spec.routes).toHaveLength(1);
+    expect(ingressApplied.spec.routes[0].match).toBe('Host(`admin.example.com`)');
+    const certApplied = (deps.applyCertificate as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(certApplied.spec.dnsNames).toEqual(['admin.example.com']);
   });
 
-  it('ignores a malformed URL instead of producing a host-less rule', async () => {
+  it('ignores a malformed URL instead of producing a host-less route', async () => {
     const deps = mockDeps();
     await reconcileIngressHosts({
       adminPanelUrl: 'not-a-url',
       clientPanelUrl: 'https://my.example.com',
       tlsSecretName: 'platform-tls',
     }, deps);
-    const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(applied.spec.rules).toHaveLength(1);
-    expect(applied.spec.rules[0].host).toBe('my.example.com');
+    const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ingressApplied.spec.routes).toHaveLength(1);
+    expect(ingressApplied.spec.routes[0].match).toBe('Host(`my.example.com`)');
   });
 
   describe('oauth2-proxy /oauth2 path routing', () => {
-    it('adds a /oauth2 path rule to the admin host when protectAdminViaProxy is true', async () => {
+    it('emits a /oauth2 prefix route on the admin host when protectAdminViaProxy is true', async () => {
       const deps = mockDeps();
       await reconcileIngressHosts({
         adminPanelUrl: 'https://admin.example.com',
@@ -162,20 +246,15 @@ describe('reconcileIngressHosts', () => {
         tlsSecretName: 'platform-tls',
         protectAdminViaProxy: true,
       }, deps);
-      const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      const adminRule = applied.spec.rules.find((r: { host: string }) => r.host === 'admin.example.com');
-      expect(adminRule).toBeDefined();
-      // Expect TWO paths on the admin rule: /oauth2 (for oauth2-proxy) + /
-      // (for the admin panel). Order matters — nginx-ingress uses longest
-      // prefix match, but explicit /oauth2 first makes the intent clear.
-      expect(adminRule.http.paths).toHaveLength(2);
-      const oauth2Path = adminRule.http.paths.find((p: { path: string }) => p.path === '/oauth2');
-      expect(oauth2Path).toBeDefined();
-      expect(oauth2Path.pathType).toBe('Prefix');
-      expect(oauth2Path.backend.service.name).toBe('oauth2-proxy');
-      expect(oauth2Path.backend.service.port.number).toBe(4180);
-      const rootPath = adminRule.http.paths.find((p: { path: string }) => p.path === '/');
-      expect(rootPath.backend.service.name).toBe('admin-panel');
+      const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      // 3 routes: admin /oauth2 + admin /, client /
+      expect(ingressApplied.spec.routes).toHaveLength(3);
+      const oauth2Route = ingressApplied.spec.routes.find(
+        (r: { match: string }) => r.match === 'Host(`admin.example.com`) && PathPrefix(`/oauth2`)',
+      );
+      expect(oauth2Route).toBeDefined();
+      expect(oauth2Route.priority).toBe(100);
+      expect(oauth2Route.services[0]).toEqual({ name: 'oauth2-proxy', port: 4180 });
     });
 
     it('adds /oauth2 to the client host when protectClientViaProxy is true (admin unchanged)', async () => {
@@ -186,13 +265,12 @@ describe('reconcileIngressHosts', () => {
         tlsSecretName: 'platform-tls',
         protectClientViaProxy: true,
       }, deps);
-      const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      const adminRule = applied.spec.rules.find((r: { host: string }) => r.host === 'admin.example.com');
-      const clientRule = applied.spec.rules.find((r: { host: string }) => r.host === 'my.example.com');
-      expect(adminRule.http.paths).toHaveLength(1); // admin has no /oauth2 — not protected
-      expect(clientRule.http.paths).toHaveLength(2);
-      const oauth2Path = clientRule.http.paths.find((p: { path: string }) => p.path === '/oauth2');
-      expect(oauth2Path.backend.service.name).toBe('oauth2-proxy');
+      const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const oauth2Routes = ingressApplied.spec.routes.filter(
+        (r: { match: string }) => /PathPrefix\(`\/oauth2`\)/.test(r.match),
+      );
+      expect(oauth2Routes).toHaveLength(1);
+      expect(oauth2Routes[0].match).toBe('Host(`my.example.com`) && PathPrefix(`/oauth2`)');
     });
 
     it('emits /oauth2 on both hosts when both panels are protected', async () => {
@@ -204,45 +282,36 @@ describe('reconcileIngressHosts', () => {
         protectAdminViaProxy: true,
         protectClientViaProxy: true,
       }, deps);
-      const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      for (const rule of applied.spec.rules) {
-        expect(rule.http.paths.some((p: { path: string }) => p.path === '/oauth2')).toBe(true);
-      }
+      const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const oauth2Routes = ingressApplied.spec.routes.filter(
+        (r: { match: string }) => /PathPrefix\(`\/oauth2`\)/.test(r.match),
+      );
+      expect(oauth2Routes).toHaveLength(2);
     });
 
-    it('does not add /oauth2 when neither flag is set (default behaviour unchanged)', async () => {
-      const deps = mockDeps();
-      await reconcileIngressHosts({
-        adminPanelUrl: 'https://admin.example.com',
-        clientPanelUrl: 'https://my.example.com',
-        tlsSecretName: 'platform-tls',
-      }, deps);
-      const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      for (const rule of applied.spec.rules) {
-        expect(rule.http.paths).toHaveLength(1);
-        expect(rule.http.paths[0].path).toBe('/');
-      }
-    });
-
-    it('reconciles when toggling protection (current has /oauth2, desired does not)', async () => {
-      const deps = mockDeps({
-        rules: [
-          { host: 'admin.example.com', serviceName: 'admin-panel' },
-          { host: 'my.example.com', serviceName: 'client-panel' },
-        ],
-        tlsHosts: ['admin.example.com', 'my.example.com'],
-        tlsSecret: 'platform-tls',
-      });
+    it('reconciles when toggling protection (current has no /oauth2, desired does)', async () => {
+      const deps = mockDeps(
+        {
+          routes: [
+            { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null },
+            { host: 'my.example.com', serviceName: 'client-panel', oauth2Backend: null },
+          ],
+          tlsSecret: 'platform-tls',
+        },
+        {
+          dnsNames: ['admin.example.com', 'my.example.com'],
+          secretName: 'platform-tls',
+          issuerName: 'letsencrypt-prod-http01',
+        },
+      );
       const result = await reconcileIngressHosts({
         adminPanelUrl: 'https://admin.example.com',
         clientPanelUrl: 'https://my.example.com',
         tlsSecretName: 'platform-tls',
         protectAdminViaProxy: true,
       }, deps);
-      // Hosts are the same but protection flag added → the reconciler
-      // MUST call serverSideApply to add the /oauth2 path rule.
       expect(result.changed).toBe(true);
-      expect(deps.serverSideApply).toHaveBeenCalled();
+      expect(deps.applyIngressRoute).toHaveBeenCalled();
     });
   });
 });
