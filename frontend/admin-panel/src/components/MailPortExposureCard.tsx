@@ -110,28 +110,50 @@ export default function MailPortExposureCard() {
         </label>
       </div>
 
-      {selected === 'allServerNodes' && current.daemonSetStatus && (
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-4 py-3 text-sm">
-          <span className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-            haproxy DaemonSet
-          </span>
-          <div className="mt-1 flex items-center gap-2">
-            <span
-              className={`inline-block w-2 h-2 rounded-full ${
-                current.daemonSetStatus.ready === current.daemonSetStatus.desired
-                  ? 'bg-green-500'
-                  : 'bg-amber-500'
-              }`}
-            />
-            <span
-              data-testid="mail-port-exposure-ds-status"
-              className="font-mono text-gray-900 dark:text-gray-100"
-            >
-              {current.daemonSetStatus.ready}/{current.daemonSetStatus.desired} pods ready
+      {current.mode === 'allServerNodes' && current.daemonSetStatus && (() => {
+        const ready = current.daemonSetStatus.ready;
+        const desired = current.daemonSetStatus.desired;
+        // Health logic:
+        //   desired === 0 in allServerNodes mode = misconfiguration —
+        //     the DS exists but its nodeSelector matches no nodes (e.g.
+        //     the activate-haproxy patch didn't take effect, or no
+        //     node carries the server-role label). Red.
+        //   ready === desired > 0 = healthy. Green.
+        //   0 < ready < desired = rolling. Amber.
+        //   ready === 0 < desired = pods stuck pending / failing. Red.
+        let dotColor: string;
+        let detail: string;
+        if (desired === 0) {
+          dotColor = 'bg-red-500';
+          detail = 'no nodes match — activation did not take effect (DS nodeSelector mismatch)';
+        } else if (ready === desired) {
+          dotColor = 'bg-green-500';
+          detail = 'all pods ready';
+        } else if (ready === 0) {
+          dotColor = 'bg-red-500';
+          detail = 'no pods ready — check pod events';
+        } else {
+          dotColor = 'bg-amber-500';
+          detail = 'rolling out';
+        }
+        return (
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-4 py-3 text-sm">
+            <span className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              haproxy DaemonSet
             </span>
+            <div className="mt-1 flex items-center gap-2">
+              <span className={`inline-block w-2 h-2 rounded-full ${dotColor}`} />
+              <span
+                data-testid="mail-port-exposure-ds-status"
+                className="font-mono text-gray-900 dark:text-gray-100"
+              >
+                {ready}/{desired} pods ready
+              </span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">— {detail}</span>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {hasChange && selected === 'allServerNodes' && (
         <div className="flex items-start gap-2.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200">
