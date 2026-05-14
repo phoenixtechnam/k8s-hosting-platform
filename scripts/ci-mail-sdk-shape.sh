@@ -29,54 +29,70 @@
 #       object args.
 # Anywhere a positional-style cast `... as { method: (name: string, ns: string) => ...`
 # appears, fail.
+#
+# Implementation: Python multi-line scanner (file-by-file). Earlier
+# single-line grep missed casts that broke across lines for readability;
+# multi-line is required to catch them.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# v1 SDK methods we care about. Two forms:
-#   (a) Inside a cast — `{ readNode: (name: string, ...`
-#   (b) At a call site — `.readNode(name, ...)`
-# This script targets form (a) — that's the explicit "I'm forcing the
-# v0 signature" marker. Form (b) is much harder to lint statically
-# because it doesn't distinguish positional-string-arg from
-# object-arg without parsing the AST. We accept the (b) false-negative
-# risk because if a developer cast to the v0 signature, they meant it.
-METHOD_NAMES_RE='(read|patch|delete|create|list|replace)(Namespaced[A-Za-z]+|Node)'
-
-mapfile -t HITS < <(
-  grep -rnE "as unknown as \{[[:space:]]*${METHOD_NAMES_RE}: \(" \
-    backend/src/modules/mail-admin \
-    --include='*.ts' --exclude='*.test.ts' \
-    2>/dev/null \
-    | sort -u
-)
-
-# Match the explicit v0 shape: `as { method: (name: string` — that's
-# the smoking-gun pattern. v1 casts look like
-# `as Parameters<typeof obj.method>[0]` — those don't match.
-
-FAIL=0
-for hit in "${HITS[@]}"; do
-  # Skip lines that are the v1 Parameters<typeof ...> form even after match.
-  if echo "$hit" | grep -qE 'Parameters<typeof'; then
-    continue
-  fi
-  FAIL=1
-  echo "  $hit"
-done
-
-if [ "$FAIL" -eq 1 ]; then
-  echo
-  echo "❌ ci-mail-sdk-shape: v0-positional @kubernetes/client-node call(s) in mail-admin/"
-  echo
-  echo "  Switch to v1 object-args:"
-  echo "    BEFORE:  await (core as unknown as { readNode: (name: string) => ... }).readNode(name)"
-  echo "    AFTER:   await core.readNode({ name })"
-  echo
-  echo "  See ~/.claude/projects/-workspace-k8s-hosting-platform/memory/project_mail_architecture_streamline_2026_05_14.md"
-  exit 1
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "❌ ci-mail-sdk-shape: python3 is required (multi-line cast detection)" >&2
+  exit 2
 fi
 
-echo "✅ ci-mail-sdk-shape: all mail-admin K8s API calls use v1 object-args."
+# Two forms of v0 cast we detect:
+#
+#   (a) Single-line cast:
+#       as unknown as { readNode: (name: string) => ... }
+#
+#   (b) Multi-line cast (broken across lines for readability):
+#       as unknown as {
+#         readNamespacedPersistentVolumeClaim: (name: string, ns: string) => ...
+#       }
+#
+# Both are caught with the same multi-line regex. The give-away is a
+# positional first arg typed as `name: string` — v1 object-args never
+# take a bare `name: string` as their first parameter (always a
+# `{ name, namespace, ... }` request object).
+
+python3 - <<'PY'
+import re, sys, pathlib
+
+SCAN_DIR = pathlib.Path("backend/src/modules/mail-admin")
+PATTERN = re.compile(
+    r"as unknown as\s*\{\s*"
+    r"(?:read|patch|delete|create|list|replace)"
+    r"(?:Namespaced[A-Za-z]+|Node)"
+    r"\s*:\s*\(name: string",
+    flags=re.DOTALL,
+)
+
+hits = []
+for p in sorted(SCAN_DIR.rglob("*.ts")):
+    if p.name.endswith(".test.ts"):
+        continue
+    text = p.read_text()
+    for m in PATTERN.finditer(text):
+        line_no = text.count("\n", 0, m.start()) + 1
+        snippet = text[m.start():m.end()].splitlines()[0]
+        hits.append(f"{p}:{line_no}: {snippet[:120]}")
+
+if hits:
+    for h in hits:
+        print(f"  {h}")
+    print()
+    print("❌ ci-mail-sdk-shape: v0-positional @kubernetes/client-node call(s) in mail-admin/")
+    print()
+    print("  Switch to v1 object-args:")
+    print("    BEFORE:  await (core as unknown as { readNode: (name: string) => ... }).readNode(name)")
+    print("    AFTER:   await core.readNode({ name })")
+    print()
+    print("  See ~/.claude/projects/-workspace-k8s-hosting-platform/memory/project_mail_architecture_streamline_2026_05_14.md")
+    sys.exit(1)
+
+print("✅ ci-mail-sdk-shape: all mail-admin K8s API calls use v1 object-args.")
+PY

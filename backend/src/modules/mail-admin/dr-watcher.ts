@@ -146,16 +146,10 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
 
 async function isNodeReady(core: CoreV1Api, nodeName: string): Promise<boolean> {
   try {
-    const node = await (core as unknown as {
-      readNode: (name: string) => Promise<{
-        body?: { status?: { conditions?: Array<{ type: string; status: string }> } };
-        status?: { conditions?: Array<{ type: string; status: string }> };
-      }>
-    }).readNode(nodeName);
-    const nodeObj = (node as { body?: unknown }).body ?? node;
-    const conditions = (nodeObj as {
-      status?: { conditions?: Array<{ type: string; status: string }> }
-    }).status?.conditions ?? [];
+    const node = await core.readNode({ name: nodeName }) as {
+      status?: { conditions?: Array<{ type: string; status: string }> };
+    };
+    const conditions = node.status?.conditions ?? [];
     const readyCond = conditions.find((c) => c.type === 'Ready');
     return readyCond?.status === 'True';
   } catch {
