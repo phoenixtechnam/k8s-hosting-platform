@@ -126,7 +126,7 @@ export default function Settings() {
         read-only "coming soon" panel until a real backend endpoint
         exists. All notifications currently ship to the notifications
         dropdown — email delivery is enabled globally via
-        OIDC_ENCRYPTION_KEY + the SMTP relay config on the platform.
+        PLATFORM_ENCRYPTION_KEY + the SMTP relay config on the platform.
       */}
       <div
         className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"

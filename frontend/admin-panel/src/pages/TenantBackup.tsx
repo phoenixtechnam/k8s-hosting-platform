@@ -738,7 +738,7 @@ function ExportBundleModal({ bundleId, onClose }: { bundleId: string; onClose: (
             <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
               <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
               The platform never stores this password. If you lose it the export is unrecoverable.
-              The secrets component remains encrypted with the source region's <code className="font-mono">OIDC_ENCRYPTION_KEY</code> — for full cross-region restore the target region needs the same KEK or the bundle will surface a decrypt error on the secrets component only.
+              The secrets component remains encrypted with the source region's <code className="font-mono">PLATFORM_ENCRYPTION_KEY</code> — for full cross-region restore the target region needs the same KEK or the bundle will surface a decrypt error on the secrets component only.
             </p>
           )}
           {passwordAllowed && !wantsEncryption && (
