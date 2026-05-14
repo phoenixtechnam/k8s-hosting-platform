@@ -94,6 +94,7 @@ export async function getMailPlacement(
     status?: {
       conditions?: Array<{ type: string; status: string }>;
       allocatable?: Record<string, string>;
+      capacity?: Record<string, string>;
     };
   };
   let candidates: NodeCandidate[] = [];
@@ -112,9 +113,20 @@ export async function getMailPlacement(
         const ready = readyCondition?.status === 'True';
         const memStr = n.status?.allocatable?.['memory'] ?? '0';
         const freeMemoryBytes = parseMemQuantity(memStr);
-        // Live disk space is not available from the node API — report 0.
-        // Phase 5 can enhance this with a per-node df Job or metrics.
-        return { hostname, freeMemoryBytes, freeDiskBytes: 0, role, ready };
+        // Use ephemeral-storage as the disk-capacity proxy. The kubelet
+        // reports allocatable.ephemeral-storage = total minus reserved-
+        // for-system pods — which is the headroom available to schedule
+        // new workloads (incl. a relocated Stalwart). It's a static
+        // capacity-level number (not "live free bytes used right now")
+        // but matches operator intent for "can this node host
+        // Stalwart?" better than the previous hardcoded 0. Falls back
+        // to capacity.ephemeral-storage if allocatable isn't set.
+        const diskStr =
+          n.status?.allocatable?.['ephemeral-storage']
+          ?? n.status?.capacity?.['ephemeral-storage']
+          ?? '0';
+        const freeDiskBytes = parseMemQuantity(diskStr);
+        return { hostname, freeMemoryBytes, freeDiskBytes, role, ready };
       })
       .filter((c): c is NodeCandidate => c !== null);
   } catch {

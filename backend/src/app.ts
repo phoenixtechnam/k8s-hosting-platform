@@ -600,6 +600,34 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // chain re-arms itself.
       app.addHook('onClose', () => stopMailStatsScheduler(mailStatsTimer));
 
+      // Mail archive scheduler — ticks every 60s, fires
+      // startMailArchive({ mode: 'no_downtime' }) when the
+      // operator-configured interval (system_settings.mail_archive_
+      // schedule_interval) is due. Conditional-claim UPDATE on
+      // mail_archive_last_scheduled_run_at ensures only one of the
+      // 3 platform-api replicas fires each scheduled run.
+      const mailArchiveTimer = setInterval(async () => {
+        try {
+          const { maybeFireArchiveSchedule } = await import('./modules/mail-admin/archive-schedule.js');
+          const { startMailArchive } = await import('./modules/mail-admin/archive.js');
+          const cfg = app.config as Record<string, unknown>;
+          const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const k8s = createK8sClients(kubeconfigPath);
+          await maybeFireArchiveSchedule(
+            app.db,
+            () => startMailArchive(
+              { ...k8s, db: app.db, kubeconfigPath, userId: 'archive-scheduler' },
+              { mode: 'no_downtime' },
+            ),
+            { info: (m) => app.log.info(m), warn: (m) => app.log.warn(m) },
+          );
+        } catch (err) {
+          app.log.warn({ err }, '[archive-scheduler] tick error');
+        }
+      }, 60_000);
+      app.addHook('onClose', () => clearInterval(mailArchiveTimer));
+
       // Storage lifecycle: snapshot expiry + weekly audit report.
       // Needs a K8sClients handle for the audit path (`du -sb` exec
       // into each tenant's file-manager sidecar).

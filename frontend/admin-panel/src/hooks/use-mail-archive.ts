@@ -8,10 +8,13 @@ import type {
   MailArchiveTriggerResponse,
   MailArchiveRestoreRequest,
   MailArchiveRestoreResponse,
+  MailArchiveScheduleResponse,
+  MailArchiveScheduleUpdate,
 } from '@k8s-hosting/api-contracts';
 
 const STATUS_KEY = ['mail', 'archive', 'status'] as const;
 const LIST_KEY = ['mail', 'archive', 'list'] as const;
+const SCHEDULE_KEY = ['mail', 'archive', 'schedule'] as const;
 const RUN_KEY = (id: string) => ['mail', 'archive', 'run', id] as const;
 
 interface Envelope<T> {
@@ -87,6 +90,36 @@ export function useTriggerMailArchive() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: STATUS_KEY });
       void qc.invalidateQueries({ queryKey: LIST_KEY });
+    },
+  });
+}
+
+/**
+ * Read the operator-configured archive schedule + computed next-fire-at.
+ * Refreshes every 30s so the "next fire" countdown stays roughly current.
+ */
+export function useMailArchiveSchedule() {
+  return useQuery({
+    queryKey: SCHEDULE_KEY,
+    queryFn: () =>
+      apiFetch<Envelope<MailArchiveScheduleResponse>>('/api/v1/admin/mail/archive/schedule'),
+    refetchInterval: 30_000,
+    retry: false,
+  });
+}
+
+/** Patch the archive schedule. */
+export function useUpdateMailArchiveSchedule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: MailArchiveScheduleUpdate) =>
+      apiFetch<Envelope<MailArchiveScheduleResponse>>('/api/v1/admin/mail/archive/schedule', {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: SCHEDULE_KEY });
+      void qc.invalidateQueries({ queryKey: STATUS_KEY });
     },
   });
 }

@@ -334,19 +334,16 @@ export async function getMailArchiveStatus(deps: ArchiveDeps): Promise<MailArchi
     storageType = cfg?.storageType ?? null;
   }
 
-  // Once mode='no_downtime' has had production soak time we can flip
-  // scheduledArchivingAvailable to true and surface a cron schedule. For
-  // now the platform supports the no-downtime path but still gates cron
-  // behind operator confirmation.
+  // Scheduled archiving is available — the in-process scheduler in
+  // archive-schedule.ts ticks every 60s and fires startMailArchive()
+  // when the operator's configured interval is due. See
+  // /admin/mail/archive/schedule for the configuration endpoint.
   return mailArchiveStatusResponseSchema.parse({
     last: lastRow ? rowToRun(lastRow) : null,
     current: currentRow ? rowToRun(currentRow) : null,
     backupTarget: { backupStoreId, backupStoreName, storageType },
-    scheduledArchivingAvailable: false,
-    scheduledArchivingBlockedBy:
-      'no-downtime archives (rocksdb-secondary-checkpoint) are supported ' +
-      'on-demand. Scheduled cron archiving will be enabled once we have ' +
-      'production soak time on the new path.',
+    scheduledArchivingAvailable: true,
+    scheduledArchivingBlockedBy: null,
   });
 }
 

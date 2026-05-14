@@ -2050,6 +2050,18 @@ export const systemSettings = pgTable('system_settings', {
   mailLastFailoverAt: timestamp('mail_last_failover_at', { withTimezone: true }),
   mailPortExposureMode: varchar('mail_port_exposure_mode', { length: 32 }).notNull().default('thisNodeOnly'),
   mailDatastorePvcSizeGi: integer('mail_datastore_pvc_size_gi').notNull().default(20),
+  // 0107: mail archive scheduler (minimum-viable fixed-interval cron).
+  // mailArchiveScheduleInterval: 'off' | 'hourly' | 'daily' | 'weekly' — fires
+  //   startMailArchive({ mode: 'no_downtime' }) on the in-process timer.
+  // mailArchiveScheduleHourUtc: 0..23, used for daily + weekly.
+  // mailArchiveScheduleWeekdayUtc: 0..6 (Sun..Sat), weekly only.
+  // mailArchiveLastScheduledRunAt: when the scheduler last fired. Manual
+  //   triggers do NOT update this (keeps cadence honest).
+  mailArchiveScheduleInterval: varchar('mail_archive_schedule_interval', { length: 16 })
+    .notNull().default('off'),
+  mailArchiveScheduleHourUtc: integer('mail_archive_schedule_hour_utc').notNull().default(2),
+  mailArchiveScheduleWeekdayUtc: integer('mail_archive_schedule_weekday_utc').notNull().default(0),
+  mailArchiveLastScheduledRunAt: timestamp('mail_archive_last_scheduled_run_at', { withTimezone: true }),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
