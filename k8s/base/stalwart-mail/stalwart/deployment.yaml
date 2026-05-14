@@ -192,41 +192,48 @@ spec:
           # The upstream image ENTRYPOINT passes --config /etc/stalwart/config.json.
           # The ConfigMap is mounted directly at /etc/stalwart so Stalwart
           # picks up the fully-resolved config without any initContainer.
-          # Mail ports use hostPort so external mail traffic to ANY node
-          # IP lands directly on a local Stalwart process — bypasses
-          # kube-proxy DNAT (which doesn't work for the externalIPs
-          # path when DNS round-robin sends traffic to a node whose
-          # Service spec has no externalIP for that hostname).
-          # Combined with topologySpreadConstraints (one pod per node)
-          # this gives true cross-node mail HA. The mgmt-http port is
-          # cluster-internal only, so no hostPort there.
-          # CAP_NET_BIND_SERVICE: the container runs as root (see
-          # securityContext.runAsNonRoot=false above) so ports <1024
-          # bind without an explicit capability grant.
+          # Mail ports — NO hostPort here. Phase 7 streamline (2026-05-14)
+          # moved hostPort to a runtime-managed concern owned by
+          # `platform-api.port-exposure`:
+          #
+          #   mode=thisNodeOnly  → platform-api SSA-applies hostPort=<port>
+          #                        on every mail port (Stalwart binds the
+          #                        node's external IP directly)
+          #   mode=allServerNodes → platform-api SSA leaves hostPort unset
+          #                        (haproxy DaemonSet on every server-node
+          #                        binds the host ports + forwards to the
+          #                        Stalwart Service via PROXY Protocol v2)
+          #
+          # The manifest must NOT declare hostPort because SSA can claim
+          # fields but cannot UNSET fields owned by another manager.
+          # If hostPort were here, kustomize-controller would re-claim it
+          # on every reconcile (1-minute interval on staging), forcing
+          # an unwanted Stalwart pod rollover and binding hostPort —
+          # which conflicts with haproxy on the Stalwart-pod node in
+          # allServerNodes mode. Live E2E (harness Phase C3/C4) caught
+          # this on runs 2–8 before the manifest was rewritten.
+          #
+          # The mgmt-http (:8080) and http-acme (:80) container ports
+          # remain in the manifest because they're cluster-internal —
+          # no hostPort and no mode-flip needed.
           ports:
             - name: smtp
               containerPort: 25
-              hostPort: 25
               protocol: TCP
             - name: submissions
               containerPort: 465
-              hostPort: 465
               protocol: TCP
             - name: submission
               containerPort: 587
-              hostPort: 587
               protocol: TCP
             - name: imap
               containerPort: 143
-              hostPort: 143
               protocol: TCP
             - name: imaps
               containerPort: 993
-              hostPort: 993
               protocol: TCP
             - name: sieve
               containerPort: 4190
-              hostPort: 4190
               protocol: TCP
             - name: mgmt-http
               containerPort: 8080

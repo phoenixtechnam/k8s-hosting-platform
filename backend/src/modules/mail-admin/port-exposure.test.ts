@@ -40,8 +40,8 @@ vi.mock('@kubernetes/client-node', () => ({
 }));
 
 vi.mock('../../shared/k8s-patch.js', () => ({
-  strategicMergePatch: vi.fn((_fieldManager: string) => ({
-    headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
+  applyPatch: vi.fn((_fieldManager: string, _opts: { force?: boolean }) => ({
+    headers: { 'Content-Type': 'application/apply-patch+yaml' },
   })),
 }));
 
@@ -120,20 +120,15 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     };
     const containers = patchArg.body.spec.template.spec.containers as Array<{
       name: string;
-      ports: Array<{ $retainKeys?: string[]; containerPort?: number; hostPort?: number }>;
+      ports: Array<{ containerPort: number; hostPort?: number; name: string; protocol: string }>;
     }>;
     expect(containers[0].name).toBe('stalwart');
-    // Each port entry must carry $retainKeys so the apiserver drops
-    // unlisted fields (including hostPort when we omit it).
-    for (const p of containers[0].ports) {
-      expect(p.$retainKeys).toBeDefined();
-      expect(Array.isArray(p.$retainKeys)).toBe(true);
-      // Mail ports we patched must NOT include hostPort in retainKeys
-      // when flipping to allServerNodes — that's how the field gets dropped.
-      if (p.containerPort === 25 || p.containerPort === 587) {
-        expect(p.hostPort).toBeUndefined();
-        expect(p.$retainKeys).not.toContain('hostPort');
-      }
+    // SSA-apply with NO hostPort on mail ports — the apiserver leaves
+    // the field unset since neither the manifest nor we claim it.
+    const mailPorts = containers[0].ports.filter((p) => [25, 465, 587, 143, 993, 4190].includes(p.containerPort));
+    expect(mailPorts.length).toBe(6);
+    for (const p of mailPorts) {
+      expect(p.hostPort).toBeUndefined();
     }
   });
 
@@ -166,6 +161,20 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
     expect(deleteArg.propagationPolicy).toBe('Foreground');
     expect(mockCreateDs).not.toHaveBeenCalled();
     expect(mockPatchDeployment).toHaveBeenCalledTimes(1);
+    // SSA body must INCLUDE hostPort on every mail port — thisNodeOnly
+    // mode binds Stalwart's container to the node's IP directly.
+    const patchArg = mockPatchDeployment.mock.calls[0][0] as {
+      body: { spec: { template: { spec: { containers: Array<{
+        name: string;
+        ports: Array<{ containerPort: number; hostPort?: number }>;
+      }> } } } };
+    };
+    const mailPorts = patchArg.body.spec.template.spec.containers[0].ports
+      .filter((p) => [25, 465, 587, 143, 993, 4190].includes(p.containerPort));
+    expect(mailPorts.length).toBe(6);
+    for (const p of mailPorts) {
+      expect(p.hostPort).toBe(p.containerPort);
+    }
   }, 30_000);
 
   it('waits for the Deployment rollout to complete before creating the haproxy DS', async () => {
@@ -187,21 +196,9 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
       // subsequent calls are the rollout-status polls.
       callOrder.push('read');
       pollCount++;
-      if (pollCount === 1) {
-        // spec read for hostPort patching — full shape needed
-        return {
-          metadata: { generation: 5 },
-          spec: {
-            replicas: 1,
-            template: { spec: { containers: [{ name: 'stalwart', ports: [
-              { containerPort: 25, hostPort: 25, name: 'smtp', protocol: 'TCP' },
-            ] }] } },
-          },
-          status: {},
-        };
-      }
-      if (pollCount === 2 || pollCount === 3) {
-        // rollout in progress
+      if (pollCount === 1 || pollCount === 2) {
+        // rollout in progress (first two polls show updatedReplicas
+        // still behind)
         return {
           metadata: { generation: 6 },
           spec: { replicas: 1 },
@@ -235,14 +232,15 @@ describe('mail-admin/port-exposure.updateMailPortExposure', () => {
       buildDb(),
       { kubeconfigPath: undefined },
     );
-    // Read happens before patch; patch happens before create-ds.
-    // Critically: the rollout polling (additional reads) happens
-    // BETWEEN patch and create-ds.
-    expect(callOrder[0]).toBe('read');           // initial spec read
-    expect(callOrder[1]).toBe('patch');          // hostPort patch
-    expect(callOrder[2]).toBe('read');           // rollout poll 1 (still rolling)
-    expect(callOrder[3]).toBe('read');           // rollout poll 2 (still rolling)
-    expect(callOrder[4]).toBe('read');           // rollout poll 3 (complete)
+    // Post-Phase-7 (SSA-apply): replaceStalwartContainerPorts no
+    // longer reads the Deployment before patching — the manifest no
+    // longer declares hostPort, so we don't need to know existing
+    // ports; we send the canonical mail-port list directly via SSA.
+    // Order is: patch → rollout polls (reads) → create-ds.
+    expect(callOrder[0]).toBe('patch');          // SSA hostPort apply
+    expect(callOrder[1]).toBe('read');           // rollout poll 1 (still rolling)
+    expect(callOrder[2]).toBe('read');           // rollout poll 2 (still rolling)
+    expect(callOrder[3]).toBe('read');           // rollout poll 3 (complete)
     expect(callOrder[callOrder.length - 1]).toBe('create-ds');
   }, 30_000);
 
