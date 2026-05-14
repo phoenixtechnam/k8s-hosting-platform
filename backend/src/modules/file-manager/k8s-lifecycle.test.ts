@@ -44,10 +44,12 @@ describe('File Manager K8s Lifecycle', () => {
     });
 
     it('should skip recreation if deployment exists with correct spec and >=1 replica', async () => {
+      // ADR-037: deployBody has memory limit 128Mi but NO cpu limit.
+      // Match that here so the mismatch check produces resourcesMismatch=false.
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
         spec: { replicas: 1, template: { spec: {
           volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }],
-          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } }, imagePullPolicy: 'Always', resources: { limits: { cpu: '500m', memory: '128Mi' } } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
@@ -64,7 +66,7 @@ describe('File Manager K8s Lifecycle', () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
         spec: { replicas: 0, template: { spec: {
           volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }],
-          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } }, imagePullPolicy: 'Always', resources: { limits: { cpu: '500m', memory: '128Mi' } } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
@@ -81,6 +83,29 @@ describe('File Manager K8s Lifecycle', () => {
         }),
         expect.anything(),
       );
+    });
+
+    it('should recreate if existing deployment carries a stale cpu limit (pre-ADR-037 migration)', async () => {
+      // Pre-ADR-037 spec had `cpu: '500m'` limit. ADR-037 removed the
+      // cpu limit (asymmetric QoS — cpu request only). Existing
+      // deployments with a leftover cpu limit must recreate so they
+      // converge to the new spec. Caught 2026-05-14 (lifecycle-e2e):
+      // the old mismatch check was `existingCpuLim !== '500m'`, which
+      // wrongly fired on every fresh ADR-037-compliant deployment
+      // (cpuLim='') causing infinite recreate-at-replicas-0 loops,
+      // i.e. /files/start was permanently a no-op.
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { replicas: 1, template: { spec: {
+          volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } }, imagePullPolicy: 'Always', resources: { limits: { cpu: '500m', memory: '128Mi' } } }],
+        } } },
+      });
+      (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager:latest');
+      // Stale cpu limit present → delete + recreate.
+      expect(mockK8s.apps.deleteNamespacedDeployment).toHaveBeenCalled();
+      expect(mockK8s.apps.createNamespacedDeployment).toHaveBeenCalled();
     });
 
     it('should delete and recreate deployment if PVC claim is wrong', async () => {

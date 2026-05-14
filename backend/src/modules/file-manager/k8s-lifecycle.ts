@@ -241,11 +241,21 @@ export async function ensureFileManagerRunning(
     // (server.mjs) to propagate to existing tenants without manual pod
     // deletion or reprovision.
     const pullPolicyMismatch = existingPullPolicy !== 'Always';
-    // Detect old FM deployments that still carry the original 100m CPU
-    // limit so they get recreated with the new 500m on next /files/start.
-    // Memory limit unchanged (128Mi) but check anyway in case it ever
-    // shifts. We compare the literal string to keep the check trivial.
-    const resourcesMismatch = existingCpuLim !== '500m' || existingMemLim !== '128Mi';
+    // ADR-037 (commit b17bf547): asymmetric QoS — deployBody has
+    // memory request==limit (128Mi) and NO cpu limit (cpu request
+    // only). The mismatch check must therefore detect:
+    //   - memory limit drift from 128Mi (mismatch)
+    //   - presence of ANY cpu limit (mismatch — we want none)
+    //
+    // History note: an earlier version expected cpu limit '500m' to
+    // detect/migrate old 100m deployments. After ADR-037 removed the
+    // cpu limit from the spec but left this check at '500m', every
+    // fresh deployment had `existingCpuLim === ''` which compared
+    // unequal to '500m' → mismatch every call → delete+recreate at
+    // replicas=initialReplicas (0) → scale-to-1 branch never fires
+    // → /files/start permanently no-op (caught by lifecycle-e2e
+    // 2026-05-14: "FM did not become ready").
+    const resourcesMismatch = existingMemLim !== '128Mi' || existingCpuLim !== '';
 
     if (pvcMismatch || capsMismatch || imageMismatch || resourcesMismatch || pullPolicyMismatch) {
       // Spec mismatch — delete and recreate (K8s doesn't allow spec.selector changes)
