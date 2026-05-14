@@ -52,9 +52,10 @@ spec:
       containers:
         - name: modsec
           # OWASP CRS pre-loaded nginx + libmodsecurity image. The
-          # `-alpine` variant is tiny (~150MB final image). Pinned;
-          # bump via PR after running the live block-test smoke.
-          image: docker.io/owasp/modsecurity-crs:4.7.0-nginx-alpine-202507142308
+          # `-alpine` variant is tiny (~150MB final image). Pinned to
+          # the canonical 4.25.0 LTS tag (CRS 4.x stream). Bump via PR
+          # after running the live block-test smoke.
+          image: docker.io/owasp/modsecurity-crs:4.25.0-nginx-alpine-202604040104
           imagePullPolicy: IfNotPresent
           env:
             - name: BACKEND
@@ -80,7 +81,11 @@ spec:
               value: "4"
           ports:
             - name: http
-              containerPort: 80
+              # OWASP CRS nginx-alpine image's default nginx config
+              # listens on :8080 (NOT :80) — confirmed in DinD smoke
+              # test 2026-05-14. Operators using a different base
+              # image must adjust here AND in the Service below.
+              containerPort: 8080
               protocol: TCP
           resources:
             requests:
@@ -124,6 +129,10 @@ spec:
     app.kubernetes.io/name: modsec-crs
   ports:
     - name: http
+      # Service Port stays 80 (the modsecurity-crs@traefik Middleware's
+      # modSecurityUrl uses the bare hostname, which resolves to
+      # Service:80). targetPort=8080 maps to the container's listen
+      # port (see Deployment containerPort above).
       port: 80
       targetPort: http
       protocol: TCP
