@@ -26,20 +26,38 @@
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { STRATEGIC_MERGE_PATCH, strategicMergePatch } from '../../shared/k8s-patch.js';
+import { STRATEGIC_MERGE_PATCH, applyPatch, strategicMergePatch } from '../../shared/k8s-patch.js';
 import { waitForStalwartReplicaCount } from './rollout-wait.js';
 
-// Field-manager attribution for migration's Deployment patches. Code
-// review found that the original bare STRATEGIC_MERGE_PATCH lets the
-// apiserver attribute writes to the user-agent (e.g. "axios"), which
-// (a) makes managedFields archaeology useless, and (b) leaves
-// migration vulnerable to the same Flux-reversion failure mode that
-// the port-exposure refactor fixed (PR #44 → Phase 7). port-exposure
-// uses `platform-api.port-exposure`; migration uses a distinct name
-// so the apiserver can tell the two actors apart on the same
-// Deployment (port-exposure owns `containers[].ports`, migration
-// owns `template.spec.affinity` + `template.spec.volumes` + `replicas`).
+// Field-manager attribution for migration's Deployment patches. Two
+// patch shapes used:
+//   - `MIGRATION_REPLICAS_PATCH` (strategic-merge-patch + named
+//     fieldManager): for plain `spec.replicas` updates. Replicas
+//     don't conflict with Flux's apply because Flux owns spec.replicas
+//     only when it's declared in git (which it is at 1) — but the
+//     SSA-merge annotation on the Deployment downgrades Flux to
+//     non-force, so any rival manager that claims spec.replicas first
+//     wins. A merge-patch with fieldManager qualifies for that claim.
+//   - `MIGRATION_CUTOVER_PATCH` (SSA-apply + force=true): for the
+//     `template.spec.affinity` and `template.spec.volumes` swaps
+//     that change WHERE the pod runs and WHICH PVC it mounts.
+//     Strategic-merge-patch *with* fieldManager LOOKS like an SSA
+//     claim but the apiserver applies it as an Update, and Flux's
+//     non-force SSA-reconcile then reverts our fields within a
+//     minute. The first live migration on staging on 2026-05-14
+//     hit exactly this: rsync completed, cutover patched, then
+//     Flux reverted Deployment.template.spec.volumes back to the
+//     manifest's `stalwart-rocksdb-data` PVC and the pod returned
+//     to its original node. Same root cause as the port-exposure
+//     C3/C4 incident that Phase-7 fixed.
+//
+// port-exposure uses `platform-api.port-exposure`; migration uses
+// `platform-api.migration` so the apiserver attributes the two
+// actors separately on the same Deployment (port-exposure owns
+// `containers[].ports`, migration owns `template.spec.affinity`
+// + `template.spec.volumes`).
 const MIGRATION_DEPLOYMENT_PATCH = strategicMergePatch('platform-api.migration');
+const MIGRATION_CUTOVER_PATCH = applyPatch('platform-api.migration', { force: true });
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { triggerMailSnapshot } from './snapshot.js';
@@ -295,9 +313,17 @@ export async function triggerRestoreBasedFailover(
   }
 
   // Patch Deployment: new node affinity + new PVC + allow-restore annotation.
-  // STRATEGIC_MERGE_PATCH for Deployment spec merge semantics.
+  // SSA-apply with fieldManager=platform-api.migration so Flux's
+  // non-force reconcile leaves our fields alone — see the comment
+  // on MIGRATION_CUTOVER_PATCH for the failure mode this fixes.
   const failoverPatchBody = {
-    metadata: { annotations: { 'mail.platform/allow-restore': 'true' } },
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    metadata: {
+      name: DEPLOYMENT_NAME,
+      namespace: MAIL_NAMESPACE,
+      annotations: { 'mail.platform/allow-restore': 'true' },
+    },
     spec: {
       template: {
         spec: {
@@ -326,9 +352,9 @@ export async function triggerRestoreBasedFailover(
     {
       namespace: MAIL_NAMESPACE,
       name: DEPLOYMENT_NAME,
-      body: failoverPatchBody,
+      body: failoverPatchBody as unknown as object,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    MIGRATION_DEPLOYMENT_PATCH,
+    MIGRATION_CUTOVER_PATCH,
   );
 
   await db.update(systemSettings)
@@ -430,9 +456,23 @@ async function runMigrationStateMachine(
   await waitForJobCompletion(batch, rsyncJobName, 1800); // 30 min timeout
 
   // Step 6: Swap PVC claim in Deployment to point at new PVC.
-  // STRATEGIC_MERGE_PATCH for Deployment-spec merge semantics.
+  // SSA-apply with force=true, fieldManager=platform-api.migration.
+  // The previous strategic-merge-patch lost a race with Flux's
+  // reconcile loop on the first staging E2E (2026-05-14): rsync
+  // completed, the patch landed, Flux reconciled within 60s and
+  // reverted Deployment.template.spec.volumes back to the
+  // manifest's claim. Pod returned to the original node. The
+  // migration silently became a no-op. SSA-apply with
+  // fieldManager claims ownership of `volumes` + `affinity` AND
+  // the Deployment's `kustomize.toolkit.fluxcd.io/ssa: merge`
+  // annotation tells Flux to skip fields owned by another
+  // Apply-manager. Same fix-pattern as port-exposure's Phase-7
+  // SSA-claim of `containers[].ports`.
   await setStep(db, runId, 'cutover');
   const cutoverPatchBody = {
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    metadata: { name: DEPLOYMENT_NAME, namespace: MAIL_NAMESPACE },
     spec: {
       template: {
         spec: {
@@ -461,9 +501,9 @@ async function runMigrationStateMachine(
     {
       namespace: MAIL_NAMESPACE,
       name: DEPLOYMENT_NAME,
-      body: cutoverPatchBody,
+      body: cutoverPatchBody as unknown as object,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    MIGRATION_DEPLOYMENT_PATCH,
+    MIGRATION_CUTOVER_PATCH,
   );
 
   // Step 7: Scale back up
