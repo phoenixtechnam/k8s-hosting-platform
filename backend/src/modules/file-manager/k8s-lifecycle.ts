@@ -231,10 +231,23 @@ export async function ensureFileManagerRunning(
     const existingMemLim = templateSpec?.containers?.[0]?.resources?.limits?.memory ?? '';
 
     const expectedPvcClaim = `${namespace}-storage`;
-    const expectedCaps = ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'];
+    // SYS_ADMIN was removed from the deployBody (the SFTP jail moved
+    // to an emptyDir — no bind mount needed — and SYS_ADMIN violates
+    // PSS baseline). The mismatch check must catch BOTH:
+    //   - a missing expected cap (downgrade)
+    //   - an extra unexpected cap like SYS_ADMIN (upgrade migration
+    //     from a pre-emptyDir deployment)
+    // Caught 2026-05-14 alongside the resourcesMismatch bug: the
+    // previous `expectedCaps.some(c => !existingCaps.includes(c))`
+    // check still listed SYS_ADMIN, so every fresh deployment had
+    // capsMismatch=true → delete+recreate at replicas=0 → /files/start
+    // permanently no-op.
+    const allowedCaps = ['DAC_OVERRIDE', 'FOWNER', 'CHOWN'];
 
     const pvcMismatch = existingPvcClaim !== expectedPvcClaim;
-    const capsMismatch = expectedCaps.some(c => !existingCaps.includes(c));
+    const capsMissingExpected = allowedCaps.some(c => !existingCaps.includes(c));
+    const capsHasUnexpected = existingCaps.some(c => !allowedCaps.includes(c));
+    const capsMismatch = capsMissingExpected || capsHasUnexpected;
     const imageMismatch = image && existingImage !== image;
     // Detect old FM deployments still carrying imagePullPolicy: IfNotPresent
     // so they recreate with Always — required for sidecar code changes
