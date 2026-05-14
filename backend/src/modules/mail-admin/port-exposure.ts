@@ -38,7 +38,7 @@
 
 import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { JSON_PATCH } from '../../shared/k8s-patch.js';
+import { applyPatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -59,6 +59,21 @@ const DEPLOYMENT_NAME = 'stalwart-mail';
 // patches the Stalwart Deployment shouldn't read as if it were
 // patching the haproxy namespace.
 const MAIL_NS = HAPROXY_DS_NAMESPACE;
+
+// Server-Side Apply field-manager for the Stalwart Deployment's
+// `containers[0].ports` field. Phase 7 streamline E2E caught a
+// regression where Flux's `kustomize-controller` re-owned the ports
+// field on every reconcile (since the manifest in k8s/base specifies
+// the ports list with hostPorts) — undoing platform-api's removal of
+// hostPort within seconds and forcing a second rollout that ended
+// with hostPort RE-PRESENT. Result: haproxy DS on the Stalwart-pod
+// node fails to bind because Stalwart still binds the hostPort.
+//
+// `force: true` steals the field on first apply. The subsequent Flux
+// reconcile sees `ports` owned by platform-api and (assuming the
+// Stalwart Deployment carries `kustomize.toolkit.fluxcd.io/ssa: merge`)
+// uses non-force SSA which preserves our claim.
+const STALWART_PORTS_APPLY_PATCH = applyPatch('platform-api.port-exposure', { force: true });
 
 // Mail ports that Stalwart binds via hostPort in 'thisNodeOnly' mode.
 const MAIL_HOST_PORTS = [25, 465, 587, 143, 993, 4190] as const;
@@ -197,12 +212,29 @@ async function readDeployment(apps: import('@kubernetes/client-node').AppsV1Api)
 /**
  * Replace the Stalwart Deployment's container ports array.
  *
- * We use JSON-Patch (`replace` on the whole ports array) rather than
- * strategic-merge-patch because strategic-merge merges port entries by
- * `containerPort`, which means omitting `hostPort` from a port entry does
- * NOT remove the existing hostPort — it just leaves the existing value
- * in place. To toggle hostPort on/off reliably we have to replace the
- * array wholesale.
+ * Uses Server-Side Apply (NOT JSON-Patch) with fieldManager=
+ * `platform-api.port-exposure` and force=true. The streamline E2E
+ * harness Phase C3/C4 caught the JSON-Patch regression: Flux's
+ * `kustomize-controller` owns the `ports` field via SSA-Apply, and a
+ * concurrent JSON-Patch from us doesn't claim ownership — so Flux's
+ * next reconcile (typically within 10 min) re-applies the manifest
+ * including hostPort. During the streamline tests this happened
+ * mid-flight, triggering a SECOND Deployment rollout WITH hostPort
+ * restored. End state: haproxy DS on the Stalwart-pod node fails to
+ * bind because Stalwart still has hostPort.
+ *
+ * SSA with force-claim re-attributes the `ports` field to
+ * platform-api. Flux's subsequent reconciles (assuming the Deployment
+ * carries the `kustomize.toolkit.fluxcd.io/ssa: merge` annotation)
+ * are non-force and leave our claim intact. See haproxy DS lifecycle
+ * (Phase 7) for the matching pattern at the DaemonSet level.
+ *
+ * Why a full container template (not just ports): SSA replaces the
+ * fields we send. To replace the ENTIRE ports list we must send the
+ * full new list inside the container's structure. We include the
+ * container `name` so SSA's list-map-key (`name` for containers)
+ * targets the right entry, and the full ports list as our claimed
+ * value.
  */
 async function replaceStalwartContainerPorts(
   apps: import('@kubernetes/client-node').AppsV1Api,
@@ -235,13 +267,21 @@ async function replaceStalwartContainerPorts(
     return rest;
   });
 
-  const body = [
-    {
-      op: 'replace',
-      path: `/spec/template/spec/containers/${stalwartIdx}/ports`,
-      value: newPorts,
+  // SSA partial Deployment — only the fields we're claiming.
+  const body = {
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    metadata: { name: DEPLOYMENT_NAME, namespace: MAIL_NS },
+    spec: {
+      template: {
+        spec: {
+          containers: [
+            { name: 'stalwart', ports: newPorts },
+          ],
+        },
+      },
     },
-  ];
+  };
 
   await apps.patchNamespacedDeployment(
     {
@@ -249,7 +289,7 @@ async function replaceStalwartContainerPorts(
       name: DEPLOYMENT_NAME,
       body: body as unknown as object,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    JSON_PATCH,
+    STALWART_PORTS_APPLY_PATCH,
   ).catch((err) => {
     throw new ApiError(
       'MAIL_DEPLOYMENT_PATCH_FAILED',

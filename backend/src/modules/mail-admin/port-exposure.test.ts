@@ -40,7 +40,9 @@ vi.mock('@kubernetes/client-node', () => ({
 }));
 
 vi.mock('../../shared/k8s-patch.js', () => ({
-  JSON_PATCH: { headers: { 'Content-Type': 'application/json-patch+json' } },
+  applyPatch: vi.fn((_fieldManager: string, _opts: { force?: boolean }) => ({
+    headers: { 'Content-Type': 'application/apply-patch+yaml' },
+  })),
 }));
 
 // Minimal Database stub — drizzle queries are mocked away.

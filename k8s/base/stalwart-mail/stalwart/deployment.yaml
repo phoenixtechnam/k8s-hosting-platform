@@ -41,9 +41,15 @@ metadata:
     # ensures restore-state on next pod start picks up new credentials.
     configmap.reloader.stakater.com/reload: "stalwart-config"
     secret.reloader.stakater.com/reload: "stalwart-admin-creds,stalwart-snapshot-restic-repo"
-    # replicas: 1 is intentional (RocksDB local-path PVC constraint).
-    # ssa: merge no longer needed since platform-storage-policy no longer
-    # manages this Deployment's replica count.
+    # Tell Flux to use non-force SSA when reconciling this Deployment.
+    # Phase 7 streamline E2E (Phase C3/C4) caught: platform-api's port-
+    # exposure mode flip SSA-applies `spec.template.spec.containers[].
+    # ports` with fieldManager=platform-api.port-exposure force=true.
+    # Without ssa:merge, Flux's kustomize-controller would use force-
+    # claim on every reconcile (typically every ~10min), undoing the
+    # operator's claim. With ssa:merge, Flux preserves whatever owner
+    # other actors have on a field — exactly the behaviour we want.
+    kustomize.toolkit.fluxcd.io/ssa: merge
 spec:
   # Rolling-update strategy: kill the old pod BEFORE scheduling the new
   # one. Stalwart binds 6 hostPorts (25/465/587/143/993/4190); k8s default
