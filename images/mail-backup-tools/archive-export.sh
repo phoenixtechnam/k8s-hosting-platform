@@ -69,7 +69,12 @@ if [ "$MODE" = "export" ]; then
   log "export tree: ${subspace_count} subspace file(s), ${export_size} bytes total"
 
   log "initialising or checking restic repo"
-  if ! restic snapshots --quiet >/dev/null 2>&1; then
+  # `restic cat config` is a SINGLE small GET (the repo's config blob).
+  # The previous `restic snapshots --quiet` reads + decodes EVERY
+  # snapshot in the repo to render the table; on a busy repo with
+  # many archives this single liveness probe took >5 minutes against
+  # the Hetzner S3 backend and starved the orchestrator's 15-min cap.
+  if ! restic cat config >/dev/null 2>&1; then
     log "restic init"
     restic init || die "restic init failed"
   fi
