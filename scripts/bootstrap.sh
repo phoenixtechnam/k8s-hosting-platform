@@ -273,7 +273,7 @@ DRY_RUN=false
 #   3. Run `kubectl kustomize` on all overlays + redeploy staging before prod
 # Latest-stable checks done against GitHub releases for each project.
 LONGHORN_VERSION="v1.11.1"               # 2026-03-13
-INGRESS_NGINX_CHART_VERSION="4.15.1"     # controller v1.15.1, 2026-03-19
+TRAEFIK_CHART_VERSION="33.4.1"           # app v3.7.x "Langres" 2026-05-11; verify: helm search repo traefik/traefik
 CERT_MANAGER_CHART_VERSION="v1.20.2"     # 2026-04-11
 SEALED_SECRETS_CHART_VERSION="2.17.4"    # controller v0.36.6
 CNPG_CHART_VERSION="0.28.0"              # CloudNative-PG operator v1.29.0 (PG 14-18 support; 1.24/1.27 EOL)
@@ -1721,9 +1721,9 @@ pin_system_components_to_servers() {
   # Runs on every node (DaemonSets) — needs toleration only so it
   # schedules onto tainted servers. Without this, a server that opts
   # into server-only (host-client-workloads=false) would lose
-  # ingress-nginx and break public traffic to tenants on other nodes.
+  # the Traefik DaemonSet and break public traffic to tenants on other nodes.
   for ns_name in \
-      "ingress-nginx:ingress-nginx-controller" \
+      "traefik:traefik" \
       "longhorn-system:longhorn-manager" \
       "longhorn-system:longhorn-driver-deployer" \
       "longhorn-system:longhorn-ui" \
@@ -1734,7 +1734,7 @@ pin_system_components_to_servers() {
     local ns="${ns_name%%:*}"
     local name="${ns_name#*:}"
     # Try Deployment first, then DaemonSet — some are DaemonSets
-    # (ingress-nginx, longhorn-manager), others Deployments (csi-*, UI).
+    # (traefik, longhorn-manager), others Deployments (csi-*, UI).
     kubectl patch deployment "$name" -n "$ns" \
       --type=strategic \
       --patch="$toleration_only_patch" 2>/dev/null \
@@ -2705,61 +2705,69 @@ kctl() {
   kubectl --kubeconfig="$KUBECONFIG" "$@"
 }
 
-install_nginx_ingress() {
-  # The chart deploys the controller as a DaemonSet (controller.kind=DaemonSet
-  # set below), NOT a Deployment — checking for a Deployment always misses
-  # and re-runs `helm upgrade --install`, which on bootstrap re-runs
-  # re-creates the admission Job. That Job lacks the server-only toleration
-  # and gets stuck Pending behind the platform.phoenix-host.net/server-only
-  # NoSchedule taint, blocking the whole bootstrap on `helm --wait`.
-  if kctl get daemonset -n ingress-nginx ingress-nginx-controller &>/dev/null 2>&1; then
-    log "NGINX Ingress already installed, skipping."
+install_traefik() {
+  # Idempotency: check for the DaemonSet, not a Deployment or the chart.
+  if kctl get daemonset -n traefik traefik &>/dev/null 2>&1; then
+    log "Traefik already installed, skipping."
     return 0
   fi
 
-  log "Installing NGINX Ingress Controller..."
-  helm_cmd repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
+  log "Installing Traefik v3 Ingress Controller..."
+  helm_cmd repo add traefik https://traefik.github.io/charts 2>/dev/null || true
   helm_cmd repo update
 
-  # M-NS-1: nodeAffinity excludes nodes carrying
-  # platform.phoenix-host.net/ingress-mode=none. Operators set that
-  # label via the Nodes & Storage admin UI when a node should host
-  # workloads but defer all public-traffic ingress to system servers.
-  # Nodes without the label (the common case) match because the
-  # NotIn expression is true for any value other than "none".
-  helm_cmd upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-    --namespace ingress-nginx \
+  # DaemonSet + hostPort: one pod per eligible node binds directly on
+  # host ports 80 and 443. hostPort without hostNetwork means Traefik's
+  # entrypoints listen on container ports 8000/8443 and the kernel
+  # DNAT rule maps those to host 80/443 — no root required (Traefik
+  # runs as UID 65532 by default), and client source IPs are preserved
+  # (DNAT changes destination only).
+  #
+  # HTTP→HTTPS redirect is handled at the EntryPoint level (permanent=true),
+  # replacing the per-Ingress ssl-redirect annotation pattern. Per-route
+  # overrides are still possible via a RedirectScheme Middleware.
+  #
+  # Providers: kubernetesCRD only (IngressRoute + Middleware + TLSOption CRDs).
+  # kubernetesIngress is explicitly disabled so stale Ingress objects in the
+  # cluster don't get silently processed.
+  #
+  # allowCrossNamespace lets IngressRoutes in tenant namespaces reference
+  # shared Middleware CRs in the traefik/platform namespace (rate-limit
+  # tiers, WAF config, ForwardAuth, etc.).
+  #
+  # allowExternalNameServices is required by the private-worker-tunnel
+  # feature whose per-client routes point at ExternalName Services.
+  #
+  # nodeAffinity excludes nodes where the operator has opted them out of
+  # ingress traffic (ingress-mode=none) or marked them private-only.
+  helm_cmd upgrade --install traefik traefik/traefik \
+    --namespace traefik \
     --create-namespace \
-    --version "${INGRESS_NGINX_CHART_VERSION}" \
-    --set controller.kind=DaemonSet \
-    --set controller.hostPort.enabled=true \
-    --set controller.service.type=ClusterIP \
-    --set controller.hostNetwork=true \
-    --set controller.dnsPolicy=ClusterFirstWithHostNet \
-    --set controller.config.ssl-redirect=false \
-    --set controller.config.force-ssl-redirect=false \
-    --set controller.config.hsts=false \
-    --set controller.metrics.enabled=true \
-    --set controller.allowSnippetAnnotations=false \
-    --set controller.config.use-gzip=true \
-    --set controller.config.gzip-level=5 \
-    --set controller.config.gzip-min-length=256 \
-    --set controller.config.enable-brotli=true \
-    --set controller.config.brotli-level=6 \
-    --set controller.config.brotli-min-length=256 \
-    --set controller.resources.requests.cpu=50m \
-    --set controller.resources.requests.memory=128Mi \
-    --set controller.resources.limits.memory=512Mi \
-    --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=platform.phoenix-host.net/ingress-mode' \
-    --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=NotIn' \
-    --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0]=none' \
-    --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].key=platform.phoenix-host.net/exposure' \
-    --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].operator=NotIn' \
-    --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].values[0]=private' \
+    --version "${TRAEFIK_CHART_VERSION}" \
+    --set deployment.kind=DaemonSet \
+    --set 'ports.web.hostPort=80' \
+    --set 'ports.websecure.hostPort=443' \
+    --set service.type=ClusterIP \
+    --set 'ports.web.redirections.entryPoint.to=websecure' \
+    --set 'ports.web.redirections.entryPoint.scheme=https' \
+    --set 'ports.web.redirections.entryPoint.permanent=true' \
+    --set providers.kubernetesCRD.enabled=true \
+    --set providers.kubernetesCRD.allowCrossNamespace=true \
+    --set providers.kubernetesCRD.allowExternalNameServices=true \
+    --set providers.kubernetesIngress.enabled=false \
+    --set resources.requests.cpu=50m \
+    --set resources.requests.memory=128Mi \
+    --set resources.limits.memory=512Mi \
+    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=platform.phoenix-host.net/ingress-mode' \
+    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=NotIn' \
+    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0]=none' \
+    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].key=platform.phoenix-host.net/exposure' \
+    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].operator=NotIn' \
+    --set 'affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[1].values[0]=private' \
     --wait \
     --timeout 300s
 
-  log "NGINX Ingress Controller installed."
+  log "Traefik v3 Ingress Controller installed."
 }
 
 install_cert_manager() {
@@ -4988,7 +4996,8 @@ verify() {
 
   log ""
   log "── Ingress Controller ──"
-  kctl get svc -n ingress-nginx 2>/dev/null || echo "  (not found)"
+  kctl get svc -n traefik 2>/dev/null || echo "  (not found)"
+  kctl get daemonset -n traefik traefik 2>/dev/null || echo "  (traefik daemonset not found)"
 
   log ""
   log "── Certificates ──"
@@ -5503,7 +5512,7 @@ main() {
     log "── Phase 3: Platform Components ──"
     install_helm
     install_flux_cli
-    install_nginx_ingress
+    install_traefik
     install_cert_manager
     install_sealed_secrets
     install_longhorn

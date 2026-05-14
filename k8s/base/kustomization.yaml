@@ -64,7 +64,13 @@ resources:
   # time by ci-job-ttl-check); catches Jobs we don't control directly
   # — Longhorn snapshot jobs, third-party operators, ad-hoc kubectl.
   - job-gc-cronjob.yaml
-  # CronJob that mirrors live Node ExternalIPs into ingress-nginx
+  # Traefik v3 controller — IngressRoute + Middleware CRDs.
+  # Installed imperatively by bootstrap.sh (helm upgrade --install traefik).
+  # This directory holds the Kustomize-managed companion resources:
+  # global Middleware CRs (compress, etc.) that IngressRoutes in any
+  # namespace can reference via allowCrossNamespace.
+  - traefik/
+  # CronJob that mirrors live Node ExternalIPs into the Traefik
   # Service.spec.externalIPs every 5 min. Without it the Service has
   # no externalIPs and tenant traffic only works against whichever IP
   # public DNS happens to point to. This makes the platform survive

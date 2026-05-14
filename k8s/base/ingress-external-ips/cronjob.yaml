@@ -1,15 +1,16 @@
-# Reconcile ingress-nginx-controller .spec.externalIPs from live Node
+# Reconcile traefik .spec.externalIPs from live Node
 # .status.addresses[type=ExternalIP]. Runs every 5 min on the control
 # plane via Flux. Re-runs are idempotent (kubectl patch with the same
 # value is a no-op on Service).
 #
-# Why this exists: ingress-nginx is configured with hostNetwork=true so
-# every node's controller pod binds 0.0.0.0:80/443 directly. Routing
-# tenant Ingress traffic to a particular pod still requires the Service
-# to advertise externalIPs — kube-proxy then steers cluster-local
-# traffic to whichever node is up. Without this list, only the IP that
-# DNS happens to point at can serve traffic; if that node is down, the
-# whole platform is unreachable until DNS is updated.
+# Why this exists: Traefik is deployed as a DaemonSet with hostPort=80/443
+# so each pod binds directly on the node's port. Tenant DNS uses multi-A
+# records (one per node). If a node is lost, DNS TTL handles failover for
+# external traffic. The Service's externalIPs mirror the live node IPs
+# for internal cluster routing so any component that routes via the
+# ClusterIP Service (health probes, monitoring) continues to work after
+# a node change. Without this list, only the first IP in the Service
+# spec would be reachable internally.
 #
 # Hard-coding IPs in YAML would fail when nodes get re-imaged (Hetzner
 # changes the public IP). The Node objects already carry the canonical
@@ -18,7 +19,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: ingress-external-ips-reconciler
-  namespace: ingress-nginx
+  namespace: traefik
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: ingress-external-ips
@@ -94,11 +95,11 @@ spec:
                   IP_LIST=$(echo "$IPS" | awk 'BEGIN{ORS=""} {if(NR>1) printf ","; printf "\""$0"\""}')
                   echo "Ready ExternalIPs: $(echo "$IPS" | tr '\n' ' ')"
                   PATCH="{\"spec\":{\"externalIPs\":[$${IP_LIST}]}}"
-                  CURRENT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
+                  CURRENT=$(kubectl get svc -n traefik traefik \
                     -o jsonpath='{.spec.externalIPs}')
                   echo "current: $${CURRENT}"
                   echo "desired: [$${IP_LIST}]"
-                  kubectl patch svc -n ingress-nginx ingress-nginx-controller \
+                  kubectl patch svc -n traefik traefik \
                     --type=merge --patch "$PATCH"
                   echo "ok"
               resources:

@@ -1,0 +1,27 @@
+# Global Traefik Middleware CRs — shared by all namespaces via
+# providers.kubernetesCRD.allowCrossNamespace=true.
+#
+# Reference from an IngressRoute in another namespace using:
+#   middlewares:
+#     - name: compress
+#       namespace: traefik
+#
+# compress — replaces ingress-nginx's gzip + brotli ConfigMap directives.
+# Traefik v3 supports brotli natively; encodings are tried in listed order
+# and the first one the client accepts wins.
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: compress
+  namespace: traefik
+spec:
+  compress:
+    # Match nginx's gzip-min-length=256 / brotli-min-length=256.
+    minResponseBodyBytes: 256
+    # Prefer brotli > gzip > zstd (zstd for modern clients).
+    # Traefik picks the first encoding the client's Accept-Encoding supports.
+    encodings:
+      - br
+      - gzip
+      - zstd
