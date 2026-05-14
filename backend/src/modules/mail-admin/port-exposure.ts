@@ -54,6 +54,11 @@ import {
 
 const SETTINGS_ID = 'system';
 const DEPLOYMENT_NAME = 'stalwart-mail';
+// Stalwart Deployment + haproxy DaemonSet both live in the `mail`
+// namespace; aliasing this constant here for readability — code that
+// patches the Stalwart Deployment shouldn't read as if it were
+// patching the haproxy namespace.
+const MAIL_NS = HAPROXY_DS_NAMESPACE;
 
 // Mail ports that Stalwart binds via hostPort in 'thisNodeOnly' mode.
 const MAIL_HOST_PORTS = [25, 465, 587, 143, 993, 4190] as const;
@@ -177,7 +182,7 @@ type DeploymentShape = {
 async function readDeployment(apps: import('@kubernetes/client-node').AppsV1Api): Promise<DeploymentShape> {
   try {
     return await apps.readNamespacedDeployment({
-      namespace: HAPROXY_DS_NAMESPACE,
+      namespace: MAIL_NS,
       name: DEPLOYMENT_NAME,
     }) as DeploymentShape;
   } catch (err) {
@@ -240,7 +245,7 @@ async function replaceStalwartContainerPorts(
 
   await apps.patchNamespacedDeployment(
     {
-      namespace: HAPROXY_DS_NAMESPACE,
+      namespace: MAIL_NS,
       name: DEPLOYMENT_NAME,
       body: body as unknown as object,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
@@ -252,6 +257,25 @@ async function replaceStalwartContainerPorts(
       500,
     );
   });
+
+  // CRITICAL: wait for the rollout to actually complete before
+  // returning. The streamline E2E harness Phase C3/C4 caught the
+  // race: patchNamespacedDeployment returns as soon as the apiserver
+  // accepts the patch, but the existing Stalwart pod KEEPS binding
+  // its hostPorts until the rollout terminates it. If
+  // ensureHaproxyDaemonSetExists creates the haproxy DS in that
+  // window, haproxy on the Stalwart-pod node fails to bind the
+  // hostPort (already taken by the old Stalwart pod) and either
+  // CrashLoopBacks or schedules without serving traffic. By waiting
+  // for the rollout we guarantee:
+  //   - withHostPorts=false (flip to allServerNodes) → old pod gone
+  //     before haproxy DS is created
+  //   - withHostPorts=true  (flip to thisNodeOnly)  → new pod ready
+  //     before mode flip returns (operator sees consistent state in
+  //     the response)
+  // 90s budget: a typical Stalwart pod restart is ~25s; 90s covers
+  // local-path PVC re-attach + restore-state initContainer.
+  await waitForDeploymentRollout(apps, 90_000);
 }
 
 async function removeHostPortsFromDeployment(
@@ -264,6 +288,105 @@ async function addHostPortsToDeployment(
   apps: import('@kubernetes/client-node').AppsV1Api,
 ): Promise<void> {
   await replaceStalwartContainerPorts(apps, /* withHostPorts= */ true);
+}
+
+/**
+ * Poll the Stalwart Deployment until its rollout completes (or
+ * `timeoutMs` elapses).
+ *
+ * "Rollout complete" means the apiserver has observed the latest
+ * generation AND all replicas reflect the new template AND no
+ * unavailable replicas remain. K8s expresses this in
+ * `Deployment.status` fields:
+ *   - observedGeneration == spec.generation  (apiserver caught up)
+ *   - updatedReplicas    == spec.replicas    (rollout finished)
+ *   - readyReplicas      == spec.replicas    (new pods are ready)
+ *   - unavailableReplicas absent or 0
+ *
+ * This mirrors what `kubectl rollout status deployment/stalwart-mail`
+ * checks. On timeout we throw MAIL_DEPLOYMENT_ROLLOUT_TIMEOUT — the
+ * port-exposure mode flip cannot safely proceed if the old pod is
+ * still binding its hostPorts.
+ */
+async function waitForDeploymentRollout(
+  apps: import('@kubernetes/client-node').AppsV1Api,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastObservedGen = -1;
+  let lastUpdatedReplicas = -1;
+  let lastUnavailable = -1;
+  // Poll every 2s — Deployment status updates aren't faster than
+  // kubelet's pod-status refresh (typically ~1s) so faster polling
+  // just adds apiserver load.
+  while (Date.now() < deadline) {
+    let dep: DeploymentRolloutShape;
+    try {
+      dep = await apps.readNamespacedDeployment({
+        namespace: MAIL_NS,
+        name: DEPLOYMENT_NAME,
+      }) as DeploymentRolloutShape;
+    } catch (err) {
+      throw new ApiError(
+        'MAIL_DEPLOYMENT_ROLLOUT_READ_FAILED',
+        `Could not read Stalwart Deployment during rollout wait: ${(err as Error).message ?? String(err)}`,
+        500,
+      );
+    }
+    const generation = dep.metadata?.generation ?? 0;
+    const observedGeneration = dep.status?.observedGeneration ?? -1;
+    const replicas = dep.spec?.replicas ?? 0;
+    const updatedReplicas = dep.status?.updatedReplicas ?? 0;
+    const readyReplicas = dep.status?.readyReplicas ?? 0;
+    const unavailableReplicas = dep.status?.unavailableReplicas ?? 0;
+    lastObservedGen = observedGeneration;
+    lastUpdatedReplicas = updatedReplicas;
+    lastUnavailable = unavailableReplicas;
+    // Guard against replicas=0: an archive downtime run (archive.ts
+    // patchDeploymentReplicas(0)) or a DR scale-down can leave the
+    // Deployment at 0 replicas. A naive `updatedReplicas==replicas`
+    // check is then trivially satisfied (0==0), so the rollout waiter
+    // would return immediately and let the caller proceed before the
+    // old pod is actually gone. Refuse to flip in that state — the
+    // operator must wait for the concurrent op to finish, then retry.
+    if (replicas === 0) {
+      throw new ApiError(
+        'MAIL_DEPLOYMENT_SCALED_TO_ZERO',
+        'Stalwart Deployment has replicas=0 — another operation (archive downtime / DR failover) is in progress. Wait for it to complete before flipping port-exposure mode.',
+        409,
+      );
+    }
+    if (
+      observedGeneration >= generation
+      && updatedReplicas === replicas
+      && readyReplicas === replicas
+      && unavailableReplicas === 0
+    ) {
+      return;
+    }
+    await sleepMs(2_000);
+  }
+  throw new ApiError(
+    'MAIL_DEPLOYMENT_ROLLOUT_TIMEOUT',
+    `Stalwart Deployment rollout did not complete within ${Math.floor(timeoutMs / 1000)}s `
+    + `(observedGen=${lastObservedGen}, updatedReplicas=${lastUpdatedReplicas}, unavailable=${lastUnavailable})`,
+    504,
+  );
+}
+
+interface DeploymentRolloutShape {
+  metadata?: { generation?: number };
+  spec?: { replicas?: number };
+  status?: {
+    observedGeneration?: number;
+    updatedReplicas?: number;
+    readyReplicas?: number;
+    unavailableReplicas?: number;
+  };
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -316,6 +439,22 @@ async function ensureHaproxyDaemonSetExists(
 
 /**
  * Delete the haproxy DaemonSet. Idempotent — 404 is treated as success.
+ *
+ * Uses propagationPolicy=Foreground so the apiserver blocks the
+ * delete-call until child pods are gone. Without this, the default
+ * Background GC returns immediately and haproxy pods can keep binding
+ * hostPorts 25/465/587/143/993/4190 for their grace period (~10s
+ * normally; can be longer). If the symmetric flip to thisNodeOnly
+ * then patches the Stalwart Deployment to RE-ADD hostPorts, the new
+ * Stalwart pod lands on a node where haproxy is still alive and
+ * fails to bind those ports.
+ *
+ * Foreground GC is exactly what `kubectl delete ds --wait=true`
+ * does, and what the symmetric streamline-fix path needs.
+ *
+ * After the delete returns we poll once to confirm pods are truly
+ * gone (Foreground guarantees this, but the SDK won't throw on
+ * timeout — we set a 60s cap and surface MAIL_HAPROXY_DS_DELETE_TIMEOUT).
  */
 async function ensureHaproxyDaemonSetAbsent(
   apps: import('@kubernetes/client-node').AppsV1Api,
@@ -324,6 +463,7 @@ async function ensureHaproxyDaemonSetAbsent(
     await apps.deleteNamespacedDaemonSet({
       namespace: HAPROXY_DS_NAMESPACE,
       name: HAPROXY_DS_NAME,
+      propagationPolicy: 'Foreground',
     });
   } catch (err) {
     if (isNotFound(err)) return;
@@ -333,6 +473,41 @@ async function ensureHaproxyDaemonSetAbsent(
       500,
     );
   }
+  // Belt-and-suspenders: poll until the DaemonSet is fully gone.
+  // Foreground propagation makes the delete-call wait for child pods,
+  // but client-side cancellation or apiserver hiccups could short-cut
+  // that. Verify empirically.
+  await waitForHaproxyDaemonSetGone(apps, 60_000);
+}
+
+async function waitForHaproxyDaemonSetGone(
+  apps: import('@kubernetes/client-node').AppsV1Api,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await apps.readNamespacedDaemonSet({
+        namespace: HAPROXY_DS_NAMESPACE,
+        name: HAPROXY_DS_NAME,
+      });
+      // Still present — wait and retry.
+      await sleepMs(2_000);
+      continue;
+    } catch (err) {
+      if (isNotFound(err)) return; // gone — success
+      throw new ApiError(
+        'MAIL_HAPROXY_DS_DELETE_VERIFY_FAILED',
+        `Could not verify haproxy DaemonSet deletion: ${(err as Error).message ?? String(err)}`,
+        500,
+      );
+    }
+  }
+  throw new ApiError(
+    'MAIL_HAPROXY_DS_DELETE_TIMEOUT',
+    `haproxy DaemonSet did not finish deleting within ${Math.floor(timeoutMs / 1000)}s — some pods may still be binding hostPorts`,
+    504,
+  );
 }
 
 function isConflict(err: unknown): boolean {

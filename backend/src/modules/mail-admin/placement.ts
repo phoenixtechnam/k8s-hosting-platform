@@ -42,6 +42,12 @@ const ELIGIBLE_NODE_ROLES = new Set(['server', 'worker']);
 
 export interface PlacementOptions {
   readonly kubeconfigPath: string | undefined;
+  /**
+   * Optional logger surface for non-fatal warnings (e.g. self-heal
+   * pod-query falling back to stored value). Fastify provides one;
+   * tests can omit it.
+   */
+  readonly logger?: { warn?: (...args: unknown[]) => void };
 }
 
 interface K8sCoreBundle {
@@ -97,6 +103,57 @@ export async function getMailPlacement(
       capacity?: Record<string, string>;
     };
   };
+  // Self-heal activeNode from the live Stalwart pod's spec.nodeName.
+  // E2E harness Phase G4 caught the drift: mailActiveNode is only
+  // persisted on migration runs (migration.ts:310 + 464), so if the
+  // pod is rescheduled by k8s without a migration (node drain, manual
+  // delete, image update, etc.) the DB column goes stale. Resolving
+  // from kubectl on every read makes this endpoint the source of
+  // truth and lazily-updates the DB so consuming code paths
+  // (migration source-node check, DR watcher) see consistent state.
+  //
+  // Best-effort: if the live pod query fails, fall back to the DB
+  // value. If both are null, activeNode is null in the response
+  // (which is still a legitimate state — operator hasn't set
+  // placement yet).
+  let liveActiveNode: string | null = null;
+  try {
+    const podList = await core.listNamespacedPod({
+      namespace: MAIL_NAMESPACE,
+      labelSelector: 'app=stalwart-mail',
+    }) as { items?: Array<{
+      metadata?: { name?: string; deletionTimestamp?: string };
+      spec?: { nodeName?: string };
+      status?: { phase?: string };
+    }> };
+    // Exclude pods that are mid-termination: `metadata.deletionTimestamp`
+    // is set while `status.phase` may still be 'Running' for the entire
+    // graceful shutdown window. Picking such a pod during a rollover
+    // would make liveActiveNode race-flip between the old and new node.
+    const runningPod = (podList.items ?? []).find(
+      (p) => p.status?.phase === 'Running' && !p.metadata?.deletionTimestamp,
+    );
+    liveActiveNode = runningPod?.spec?.nodeName ?? null;
+  } catch (err) {
+    // K8s API unreachable / RBAC denied / quota error → fall back to
+    // the stored value but emit a warn so the operator can see that
+    // the self-heal is silently no-oping. A persistent 403 from a
+    // missing pods:list RBAC verb otherwise looks identical to a
+    // healthy-but-stable cluster from the response.
+    opts.logger?.warn?.(
+      { err: (err as Error).message ?? String(err) },
+      'placement: live pod query failed; falling back to stored mailActiveNode',
+    );
+  }
+  const persistedActiveNode = (row?.mailActiveNode ?? null) as string | null;
+  if (liveActiveNode !== null && liveActiveNode !== persistedActiveNode) {
+    await db.update(systemSettings)
+      .set({ mailActiveNode: liveActiveNode })
+      .where(eq(systemSettings.id, SETTINGS_ID))
+      .catch(() => { /* best-effort lazy update */ });
+  }
+  const effectiveActiveNode = liveActiveNode ?? persistedActiveNode;
+
   let candidates: NodeCandidate[] = [];
   try {
     const nodeList = await core.listNode({}) as { items?: NodeShape[] };
@@ -138,7 +195,7 @@ export async function getMailPlacement(
     primaryNode: row?.mailPrimaryNode ?? null,
     secondaryNode: row?.mailSecondaryNode ?? null,
     tertiaryNode: row?.mailTertiaryNode ?? null,
-    activeNode: row?.mailActiveNode ?? null,
+    activeNode: effectiveActiveNode,
     drState: row?.mailDrState ?? 'healthy',
     autoFailoverEnabled: row?.mailAutoFailoverEnabled ?? false,
     failoverThresholdSeconds: row?.mailFailoverThresholdSeconds ?? 300,

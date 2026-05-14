@@ -1027,18 +1027,28 @@ async function createArchiveJobNoDowntime(
       name: 'stalwart-export',
       image: stalwartImage,
       imagePullPolicy: 'IfNotPresent',
+      // Run as root so the `rm -rf` in the EXIT trap can remove the
+      // checkpoint dir even though the rocksdb-checkpoint init
+      // container (distroless/cc, uid=0) owns the hard-linked SST
+      // files. Without runAsUser=0 here, the trap's rm silently
+      // skips root-owned files and orphans accumulate in the live
+      // PVC — caught by the streamline E2E harness Phase E6.
+      securityContext: { runAsUser: 0, runAsGroup: 0 },
       command: ['sh', '-c'],
       args: [
-        // Run `stalwart -e` against the alt-config (which points
-        // DataStore at the checkpoint dir, not the live primary).
-        // ALWAYS clean up the checkpoint dir afterwards — hard-linked
-        // SST files appear as a 0-byte cost only until the primary
-        // GC-rotates the underlying inode; after that we'd retain real
-        // bytes of dead data.
-        'rc=0; ' +
-          'stalwart --config /scratch/alt-cfg/config.json -e /export/export.lz4 || rc=$?; ' +
-          'rm -rf "' + checkpointDirOnPvc + '" || true; ' +
-          'exit $rc',
+        // Use `trap '...' EXIT` so the checkpoint cleanup runs
+        // UNCONDITIONALLY — including when stalwart-exits non-zero,
+        // which would otherwise leave the dir orphaned (Job has
+        // backoffLimit:0 + restartPolicy:Never, so no subsequent
+        // init container runs on failure). Also sweeps all
+        // `.checkpoint-tmp-*` siblings to catch orphans from prior
+        // runs that aborted between scratch-prep and this step.
+        'cleanup() { ' +
+          'rm -rf "' + checkpointDirOnPvc + '" 2>/dev/null || true; ' +
+          'rm -rf /data/.checkpoint-tmp-* 2>/dev/null || true; ' +
+        '}; ' +
+        'trap cleanup EXIT; ' +
+        'stalwart --config /scratch/alt-cfg/config.json -e /export/export.lz4',
       ],
       volumeMounts: [dataVolumeMount, scratchVolumeMount, exportVolumeMount],
     },
