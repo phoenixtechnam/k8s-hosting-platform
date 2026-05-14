@@ -438,6 +438,20 @@ function SecurityTab({ clientId, routeId, route }: {
           data-testid="waf-form"
         >
 
+        {/* Architecture note — per-route directives are inert today;
+            see ADR-038. Kept visible so tenants/operators understand
+            why the three lower fields don't change behaviour. */}
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-200" data-testid="waf-architecture-note">
+          <p>
+            <strong>Note:</strong> WAF runs as a shared OWASP CRS sidecar (ModSecurity).
+            The toggle below enables WAF for this route. Per-route customisations
+            (OWASP Core Rules, anomaly threshold, excluded rule IDs) are recorded
+            here for future use but do <em>not</em> change the live config — the
+            sidecar honours a single platform-wide CRS profile. See ADR-038 for
+            the trade-off + the re-enable path when in-process WAF stabilises.
+          </p>
+        </div>
+
         <div>
           <label className="flex items-center justify-between">
             <span className="text-sm text-gray-700 dark:text-gray-300">Enabled</span>
@@ -463,16 +477,22 @@ function SecurityTab({ clientId, routeId, route }: {
           </p>
         </div>
 
-        <div>
-          <label className="flex items-center justify-between">
+        {/* Per-route WAF directives — inert today, kept for forwards-
+            compat. Inputs are disabled with `title` tooltips explaining
+            why. Values persist to the DB; when the in-process WAF re-
+            enable lands these controls become live again with no
+            schema change. */}
+        <div title="Inert: shared sidecar honours its own CRS bundle config. See ADR-038." aria-disabled="true">
+          <label className="flex items-center justify-between opacity-60">
             <span className="text-sm text-gray-700 dark:text-gray-300">OWASP Core Rules</span>
             <button
               type="button"
               role="switch"
               aria-checked={wafOwaspCoreRules}
+              disabled
               onClick={() => { setWafOwaspCoreRules(!wafOwaspCoreRules); markWafDirty(); }}
               className={clsx(
-                'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                'relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed rounded-full border-2 border-transparent transition-colors',
                 wafOwaspCoreRules ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
               )}
               data-testid="waf-owasp-toggle"
@@ -483,12 +503,12 @@ function SecurityTab({ clientId, routeId, route }: {
               )} />
             </button>
           </label>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            OWASP Core Rule Set provides pre-configured rules for common attack patterns. Disable only if causing false positives.
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 opacity-60">
+            Setting persists but has no runtime effect — the shared ModSecurity sidecar always uses the OWASP CRS bundle.
           </p>
         </div>
 
-        <div>
+        <div title="Inert: shared sidecar honours its own anomaly threshold env var. See ADR-038." aria-disabled="true" className="opacity-60">
           <label htmlFor="waf-anomaly-threshold" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Anomaly Threshold: {wafAnomalyThreshold}
           </label>
@@ -498,30 +518,32 @@ function SecurityTab({ clientId, routeId, route }: {
             min="1"
             max="50"
             value={wafAnomalyThreshold}
+            disabled
             onChange={(e) => { setWafAnomalyThreshold(Number(e.target.value)); markWafDirty(); }}
-            className="mt-2 w-full max-w-sm accent-blue-600"
+            className="mt-2 w-full max-w-sm accent-blue-600 cursor-not-allowed"
             data-testid="waf-anomaly-threshold-slider"
           />
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Lower values are stricter (more blocking). Default 10 is a good balance. Set higher (20-50) for applications with complex forms that trigger false positives.
+            Setting persists but has no runtime effect — the shared sidecar enforces a platform-wide threshold.
           </p>
         </div>
 
-        <div>
+        <div title="Inert: per-route excluded rules require in-process WAF (not available today). See ADR-038." aria-disabled="true" className="opacity-60">
           <label htmlFor="waf-excluded-rules" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Excluded Rule IDs
           </label>
           <input
             id="waf-excluded-rules"
             type="text"
-            className={INPUT_CLASS + ' mt-1'}
+            className={INPUT_CLASS + ' mt-1 cursor-not-allowed'}
             placeholder="942100, 942200"
             value={wafExcludedRuleIds}
+            disabled
             onChange={(e) => { setWafExcludedRuleIds(e.target.value); markWafDirty(); }}
             data-testid="waf-excluded-rules-input"
           />
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Comma-separated ModSecurity rule IDs to skip. Use the WAF log below to identify rules causing false positives. Example: 942100, 941100
+            Setting persists but has no runtime effect — the shared sidecar uses a platform-wide ruleset.
           </p>
         </div>
 
