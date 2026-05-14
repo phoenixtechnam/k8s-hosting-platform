@@ -14,7 +14,6 @@ import {
 } from '@/hooks/use-email';
 import StalwartAdminPanel from '@/components/StalwartAdminPanel';
 import MailServerSettings from '@/components/MailServerSettings';
-import MailSslStatusCard from '@/components/MailSslStatusCard';
 import MailStorageCard from '@/components/MailStorageCard';
 import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
 import MailDrCard from '@/components/MailDrCard';
@@ -72,8 +71,6 @@ export default function EmailManagement() {
       {tab === 'relays' && <SmtpRelaysSection />}
 
       <MailServerSettings />
-
-      <MailSslStatusCard />
 
       <StalwartAdminPanel />
 

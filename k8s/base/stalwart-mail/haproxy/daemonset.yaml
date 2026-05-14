@@ -36,6 +36,16 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
   annotations:
     configmap.reloader.stakater.com/reload: "stalwart-haproxy-config"
+    # The platform-api patches spec.template.spec.nodeSelector at
+    # runtime when the operator toggles mail port exposure mode
+    # (port-exposure.ts:setDaemonSetNodeSelector). Without ssa:merge
+    # Flux's reconciler uses force-conflicts SSA and reverts the
+    # operator patch on every loop, so the DS bounces between
+    # disabled (in git) and enabled (operator-patched) on each
+    # reconcile. With ssa:merge, fields managed by other actors
+    # (here: spec.template.spec.nodeSelector under fieldManager
+    # platform-api) are preserved across reconciles.
+    kustomize.toolkit.fluxcd.io/ssa: merge
 spec:
   selector:
     matchLabels:

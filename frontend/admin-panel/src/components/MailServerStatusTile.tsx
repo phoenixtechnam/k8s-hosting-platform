@@ -8,9 +8,10 @@
  *   • Port-exposure mode + haproxy DS health (mirrors MailPortExposureCard's
  *     decision tree so the indicator semantics match across the page)
  *   • PVC storage usage vs capacity (color-coded against thresholds)
- *   • SSL is intentionally NOT here — it's a 6-handshake probe that runs
- *     ~1s and is gated behind operator click in MailSslStatusCard. A
- *     placeholder pill points the operator there.
+ *   • SSL/TLS cell is a clickable pill — opens MailSslStatusModal
+ *     where the on-demand 6-handshake probe runs. The probe is
+ *     gated behind operator click because it's ~1s and noisy to
+ *     fire on every page mount.
  *
  * Failure modes:
  *   Any underlying query may fail (RBAC mismatch, k8s API hiccup, etc.).
@@ -18,15 +19,18 @@
  *   doesn't blank the whole tile, only its own cell.
  */
 
+import { useState } from 'react';
 import { Server, Network, HardDrive, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { useMailPlacement } from '@/hooks/use-mail-placement';
 import { useMailPortExposure } from '@/hooks/use-mail-port-exposure';
 import { useMailPvcStorage } from '@/hooks/use-mail-storage';
+import MailSslStatusModal from './MailSslStatusModal';
 
 export default function MailServerStatusTile() {
   const placement = useMailPlacement();
   const portExposure = useMailPortExposure();
   const storage = useMailPvcStorage();
+  const [sslModalOpen, setSslModalOpen] = useState(false);
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5">
@@ -41,8 +45,12 @@ export default function MailServerStatusTile() {
         <PodCell placement={placement} />
         <PortExposureCell portExposure={portExposure} />
         <StorageCell storage={storage} />
-        <SslCell />
+        <SslCell onOpen={() => setSslModalOpen(true)} />
       </div>
+
+      {sslModalOpen ? (
+        <MailSslStatusModal onClose={() => setSslModalOpen(false)} />
+      ) : null}
     </div>
   );
 }
@@ -164,19 +172,28 @@ function StorageCell({ storage }: { storage: ReturnType<typeof useMailPvcStorage
   );
 }
 
-function SslCell() {
-  // SSL is the lazy-loaded card below — surfacing a clickable
-  // pointer here keeps the tile fast and avoids a 6-handshake
-  // probe on every page mount.
+function SslCell({ onOpen }: { readonly onOpen: () => void }) {
+  // The probe is on-demand (~1s, 6 parallel TCP+TLS handshakes) — we
+  // don't auto-fire it on page mount. Click the cell to open the
+  // detail modal which is where the probe actually runs.
   return (
-    <Cell icon={ShieldCheck} label="TLS / SSL">
+    <button
+      type="button"
+      onClick={onOpen}
+      data-testid="mail-status-tile-ssl-open"
+      className="text-left rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer"
+    >
+      <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">
+        <ShieldCheck size={12} />
+        <span>TLS / SSL</span>
+      </div>
       <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-        Click "Check now" below
+        Click to check
       </div>
       <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-        Per-listener handshake probe — on-demand
+        Per-listener TLS handshake probe
       </div>
-    </Cell>
+    </button>
   );
 }
 
