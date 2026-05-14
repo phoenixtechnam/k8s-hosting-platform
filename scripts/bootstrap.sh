@@ -2555,12 +2555,30 @@ install_traefik() {
   # kubernetesIngress is explicitly disabled so stale Ingress objects in the
   # cluster don't get silently processed.
   #
-  # allowCrossNamespace lets IngressRoutes in tenant namespaces reference
-  # shared Middleware CRs in the traefik/platform namespace (rate-limit
-  # tiers, WAF config, ForwardAuth, etc.).
+  # allowCrossNamespace=true lets IngressRoutes in tenant namespaces
+  # reference shared Middleware CRs in the traefik/platform namespace
+  # (crowdsec, modsecurity-crs, compress, admin-auth-cookie, …).
   #
-  # allowExternalNameServices is required by the private-worker-tunnel
-  # feature whose per-client routes point at ExternalName Services.
+  # SECURITY BOUNDARY: this flag ALSO permits cross-namespace Service
+  # refs in routes[].services[] — i.e. an actor who could write
+  # IngressRoute CRDs could route a tenant hostname at platform-api or
+  # another tenant's Service. We accept this because:
+  #   1. Tenants have NO kubectl access — only the platform-api SA
+  #      writes IngressRoutes (backend/src/modules/ingress-routes/
+  #      traefik-apply.ts).
+  #   2. The platform-api code path NEVER sets services[].namespace;
+  #      the omitted-namespace default is the IngressRoute's own ns
+  #      (= the tenant namespace).
+  #   3. Defence-in-depth: traefik-types.ts buildIngressRoute() throws
+  #      at build time if any service ref carries a non-empty
+  #      namespace that doesn't match the route's namespace, catching
+  #      future programming errors before they reach Traefik.
+  # Revisit this comment if any of those three invariants change.
+  #
+  # allowExternalNameServices=true is required by the private-worker-
+  # tunnel feature whose per-client routes point at ExternalName
+  # Services in platform-system. Same cross-namespace concerns +
+  # same mitigations as above.
   #
   # nodeAffinity excludes nodes where the operator has opted them out of
   # ingress traffic (ingress-mode=none) or marked them private-only.

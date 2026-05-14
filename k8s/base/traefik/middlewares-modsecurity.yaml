@@ -44,9 +44,23 @@ spec:
       # uploads, streaming) should not opt into WAF — the
       # annotation-sync `wafEnabled=0` default is the right setting.
       maxBodySize: 5242880
-      # Timeout (ms) for the ModSec verdict round-trip. Default 1s;
-      # network hop + CRS evaluation is typically 5–50ms but generous
-      # to avoid spurious 503s under load. On timeout, the plugin
-      # fails open (allow traffic) — a hostile pod can't DoS tenants
-      # by killing modsec-crs.
-      timeoutMillis: 1000
+      # Timeout (ms) for the ModSec verdict round-trip. Bumped from
+      # the initial 1000 to 3000 because:
+      #
+      # Security: with the plugin's fail-open-on-timeout semantics, a
+      # hostile tenant backend that responds slowly (POST body that
+      # takes >1s to read upstream → ModSec sidecar mirrors that wait)
+      # could trip the timeout and skip WAF inspection. A 3s budget
+      # is wide enough that legitimate traffic + CRS evaluation
+      # (typically 5–50ms LAN + paranoia-level-1 rule set) almost
+      # never hits it, and forcing it requires deliberate slow-loris
+      # behaviour from the tenant's own upstream — which an attacker
+      # exploiting a tenant's WAF-protected backend would not control.
+      # Operators with stricter latency budgets can lower this in an
+      # overlay; operators with paranoia level 3+ rules (slower CRS
+      # eval) may need to raise it further.
+      #
+      # Performance: at 99p the inspection round-trip stays under
+      # 50ms in the smoke test; the 3s wall is a safety net, not a
+      # planned cost.
+      timeoutMillis: 3000

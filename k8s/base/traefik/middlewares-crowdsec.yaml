@@ -49,11 +49,31 @@ spec:
       # Refresh decision cache every 60s. Lower = faster reaction to
       # new bans, higher = less LAPI traffic. 60s is the plugin default.
       updateIntervalSeconds: 60
-      # Fail-open: if the LAPI is unreachable, allow traffic rather
-      # than 503'ing every request. The CrowdSec layer is a defence-
-      # in-depth — other Middlewares (auth, ModSec, rate-limit) still
-      # apply. Operators who want fail-closed semantics can patch this
-      # to `false` in their overlay.
+      # ACCEPTED TRADE-OFF — Fail-open semantics + single-replica LAPI:
+      # If the CrowdSec LAPI is unreachable (pod drain, PVC fault,
+      # api.crowdsec.net blocked at egress), the plugin allows traffic
+      # rather than 503'ing every request. The compounded-failure
+      # window matters because:
+      #   * CrowdSec runs as a single replica with Recreate strategy +
+      #     SQLite (single-writer constraint). A node drain or pod
+      #     restart leaves a brief unprotected window until the new
+      #     pod is Ready AND the plugin's local cache refreshes.
+      #   * DISABLE_AGENT=true means we DON'T run the log-acquisition
+      #     parser — only the community blocklist is consumed. A LAPI
+      #     outage means known-bad IPs from the community blocklist
+      #     get a free pass during the window.
+      # Why we accept this: the CrowdSec layer is defence-in-depth.
+      # Other Middlewares (oauth2-proxy ForwardAuth, basic-auth,
+      # ModSec when enabled, rate-limit, ipAllowList) still apply
+      # during a CrowdSec outage. Operators wanting fail-closed
+      # semantics can flip the plugin config's defaultDecision to
+      # `ban` in an overlay — at the cost of full site outage during
+      # LAPI pod restarts. We chose latency-over-strictness for the
+      # IP-reputation layer because false positives there are louder
+      # than false negatives (the WAF + auth gate catches what
+      # IP-reputation misses).
+      # Operator runbook: monitor `crowdsec` Deployment availability +
+      # the LAPI's /metrics endpoint; alert on >5min unavailability.
       forwardedHeadersTrustedIPs:
         # Trust ONLY the in-cluster RFC-1918 + link-local ranges to
         # set X-Forwarded-For. A wider list (e.g. 0.0.0.0/0) would let

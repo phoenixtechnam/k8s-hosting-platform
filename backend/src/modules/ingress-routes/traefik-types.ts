@@ -141,6 +141,33 @@ export function buildIngressRoute(args: {
   labels?: Record<string, string>;
   annotations?: Record<string, string>;
 }): IngressRouteBody {
+  // Defence-in-depth: refuse to emit a tenant-namespace IngressRoute
+  // that points at a Service in a DIFFERENT namespace. Traefik's
+  // controller is installed with allowCrossNamespace=true (required
+  // so tenant routes can reference shared Middlewares in `traefik`),
+  // which by itself ALSO allows cross-namespace Service refs in
+  // routes[].services[]. The platform's own code paths never set an
+  // explicit `services[].namespace`, so any non-empty namespace here
+  // signals a future programming error (a hostile tenant whose route
+  // was somehow allowed to point at platform-api would lift the
+  // boundary). We assert at build time rather than rely on Traefik's
+  // (permissive) validation.
+  //
+  // Exception: routes that DELIBERATELY cross namespaces (e.g. the
+  // tunnel-anchor in platform-system referencing a tenant-namespace
+  // Service via ExternalName) must opt out by setting
+  // `services[].namespace` equal to the route's expected target.
+  // The current codebase has no such case, so we treat any cross-ns
+  // service ref as a bug.
+  for (const route of args.routes) {
+    for (const svc of route.services) {
+      if (svc.namespace && svc.namespace !== args.namespace) {
+        throw new Error(
+          `IngressRoute ${args.namespace}/${args.name}: route service ${svc.name} declares cross-namespace ref (services[].namespace=${svc.namespace}), which is rejected by buildIngressRoute. Cross-namespace traffic should go through ExternalName Services or a Middleware ref instead.`,
+        );
+      }
+    }
+  }
   return {
     apiVersion: 'traefik.io/v1alpha1',
     kind: 'IngressRoute',

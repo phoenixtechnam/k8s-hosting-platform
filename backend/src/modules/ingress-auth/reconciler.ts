@@ -41,6 +41,7 @@ import {
   type EnabledIngressAuthRow,
 } from './service.js';
 import { decryptProviderSecret } from './providers-service.js';
+import { hostAndPathMatch } from '../ingress-routes/traefik-types.js';
 import type { Database } from '../../db/index.js';
 import type { IngressAuthConfig, IngressClaimRule } from '../../db/schema.js';
 
@@ -580,8 +581,15 @@ async function upsertPassthroughIngress(
     return;
   }
 
+  // hostAndPathMatch runs the hostname through encodeMatchLiteral —
+  // a backtick in `host` (which Traefik uses as the match-rule
+  // delimiter) would let an attacker break out of the literal and
+  // inject arbitrary match-rule fragments. DB hostname validation
+  // already rejects backticks today, but defence-in-depth keeps the
+  // guard local to the match-rule builder so any future validation
+  // gap doesn't reach Traefik.
   const routes = hostnames.map((host) => ({
-    match: `Host(\`${host}\`) && PathPrefix(\`/oauth2\`)`,
+    match: hostAndPathMatch(host, '/oauth2'),
     kind: 'Rule' as const,
     priority: 100,
     services: [{ name: PROXY_NAME, port: PROXY_PORT }],
