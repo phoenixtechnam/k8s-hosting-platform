@@ -23,6 +23,10 @@
 #      client-panel-only route; client JWT cannot call /admin/clients.
 #   9. Cleanup: delete both providers — assert /auth/oidc/status returns
 #      empty arrays again so the next harness run starts clean.
+#  10. CVE-2026-42945 guard: enable proxy protection, verify the
+#      platform-break-glass-ingress carries named PCRE captures
+#      (?<rest>.*) and rewrite-target=/$rest (not /$2). Restores
+#      original settings on completion or error.
 #
 # USAGE: ADMIN_PASSWORD=<…> ./scripts/integration-oidc-dex.sh
 #
@@ -728,6 +732,97 @@ ADMIN_REMAINING=$(echo "$STATUS_ADMIN" | jq -r --arg id "$ADMIN_PROVIDER_ID" '.d
 CLIENT_REMAINING=$(echo "$STATUS_CLIENT" | jq -r --arg id "$CLIENT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
 [[ "$ADMIN_REMAINING" == "0" ]] && ok "admin provider deleted" || fail "admin provider still listed"
 [[ "$CLIENT_REMAINING" == "0" ]] && ok "client provider deleted" || fail "client provider still listed"
+
+# ─── Scenario 10: break-glass ingress uses named PCRE captures (CVE-2026-42945) ─
+
+log "Scenario 10: break-glass Ingress annotation — named PCRE captures (CVE-2026-42945)"
+
+# Read current proxy settings so we can restore them afterwards.
+ORIG_SETTINGS=$(curl -sk --max-time 10 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/admin/oidc/settings")
+ORIG_PROTECT_ADMIN=$(echo "$ORIG_SETTINGS" | jq -r '.data.protectAdminViaProxy // false')
+ORIG_PROTECT_CLIENT=$(echo "$ORIG_SETTINGS" | jq -r '.data.protectClientViaProxy // false')
+ORIG_BG_PATH=$(echo "$ORIG_SETTINGS" | jq -r '.data.breakGlassPath // ""')
+
+BG_TEST_PATH="e2e-bg-test-$(date +%s)"
+
+# Enable proxy protection with a known break-glass path so the Ingress is
+# created and we can inspect its annotations.
+ENABLE_RES=$(curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nc \
+    --arg bgp "$BG_TEST_PATH" \
+    '{protect_admin_via_proxy:true, protect_client_via_proxy:false, break_glass_path:$bgp}')" \
+  "$ADMIN_HOST/api/v1/admin/oidc/settings")
+ENABLE_BG=$(echo "$ENABLE_RES" | jq -r '.data.breakGlassPath // empty')
+
+if [[ -z "$ENABLE_BG" ]]; then
+  fail "PUT /admin/oidc/settings did not return breakGlassPath: $ENABLE_RES"
+else
+  ok "proxy enabled with break-glass path=$ENABLE_BG"
+fi
+
+restore_proxy_settings() {
+  curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -nc \
+      --argjson pa "$ORIG_PROTECT_ADMIN" \
+      --argjson pc "$ORIG_PROTECT_CLIENT" \
+      --arg bgp "$ORIG_BG_PATH" \
+      '{protect_admin_via_proxy:$pa, protect_client_via_proxy:$pc, break_glass_path:$bgp}')" \
+    "$ADMIN_HOST/api/v1/admin/oidc/settings" >/dev/null 2>&1 || true
+}
+# Extend EXIT trap so the panel stays accessible even if the scenario errors.
+trap 'restore_proxy_settings; cleanup_providers; rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-dex-*.headers 2>/dev/null' EXIT
+
+# Verify the Ingress in the cluster via SSH + kubectl.
+local_ssh_host="${SSH_HOST:-root@89.167.3.56}"
+local_ssh_key="${SSH_KEY:-$HOME/hosting-platform.key}"
+if [[ -r "$local_ssh_key" ]]; then
+  # Reconcile is async — poll up to 15 s.
+  BG_INGRESS_JSON=""
+  for attempt in 1 2 3; do
+    BG_INGRESS_JSON=$(ssh -i "$local_ssh_key" \
+      -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q \
+      "$local_ssh_host" \
+      "KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get ingress platform-break-glass-ingress -n platform -o json 2>/dev/null" \
+      2>/dev/null || true)
+    [[ -n "$BG_INGRESS_JSON" ]] && break
+    sleep 5
+  done
+
+  if [[ -z "$BG_INGRESS_JSON" ]]; then
+    fail "platform-break-glass-ingress not found in cluster after 15s"
+  else
+    BG_PATH=$(echo "$BG_INGRESS_JSON" | jq -r '.spec.rules[0].http.paths[0].path // empty')
+    BG_REWRITE=$(echo "$BG_INGRESS_JSON" | jq -r '.metadata.annotations["nginx.ingress.kubernetes.io/rewrite-target"] // empty')
+
+    # CVE-2026-42945 mitigation: must use named capture (?<name>...)
+    if echo "$BG_PATH" | grep -qF '(?<'; then
+      ok "break-glass path uses named PCRE capture: $BG_PATH"
+    else
+      fail "break-glass path uses unnamed capture (CVE-2026-42945 not mitigated): $BG_PATH"
+    fi
+
+    # Rewrite target must reference named capture \$rest, not positional \$2
+    if [[ "$BG_REWRITE" == '/$rest' ]]; then
+      ok "rewrite-target=/\$rest (named capture reference)"
+    else
+      fail "rewrite-target=$BG_REWRITE — expected /\$rest (named capture)"
+    fi
+
+    # Path must still embed the configured break-glass path segment
+    if echo "$BG_PATH" | grep -qF "$BG_TEST_PATH"; then
+      ok "break-glass path embeds the configured path segment"
+    else
+      fail "break-glass path '$BG_PATH' does not contain '$BG_TEST_PATH'"
+    fi
+  fi
+else
+  warn "skipping cluster Ingress annotation check — SSH key not readable (${local_ssh_key})"
+fi
+
+# Restore original settings (trap also fires on exit — belt-and-suspenders).
+restore_proxy_settings
 
 # ─── Final summary ────────────────────────────────────────────────────────────
 
