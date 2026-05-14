@@ -2816,10 +2816,10 @@ generate_crowdsec_bouncer_key() {
   # Reuse existing key from either namespace if present.
   if kctl get secret -n crowdsec "${secret_name}" >/dev/null 2>&1; then
     log "CrowdSec bouncer key already exists in crowdsec namespace, reusing."
-    key_value=$(kctl get secret -n crowdsec "${secret_name}" -o jsonpath='{.data.traefik-bouncer-key}' | base64 -d)
+    key_value=$(kctl get secret -n crowdsec "${secret_name}" -o jsonpath='{.data.bouncer-key}' | base64 -d)
   elif kctl get secret -n traefik "${secret_name}" >/dev/null 2>&1; then
     log "CrowdSec bouncer key found in traefik namespace, copying to crowdsec."
-    key_value=$(kctl get secret -n traefik "${secret_name}" -o jsonpath='{.data.traefik-bouncer-key}' | base64 -d)
+    key_value=$(kctl get secret -n traefik "${secret_name}" -o jsonpath='{.data.bouncer-key}' | base64 -d)
   else
     log "Generating new CrowdSec bouncer key..."
     # 32-byte URL-safe random — same shape CrowdSec's `cscli bouncers
@@ -2834,9 +2834,16 @@ generate_crowdsec_bouncer_key() {
     if ! kctl get ns "${ns}" >/dev/null 2>&1; then
       kctl create namespace "${ns}" >/dev/null
     fi
+    # CRITICAL: key name is `bouncer-key` (not `traefik-bouncer-key`).
+    # Traefik's chart mounts the Secret with no `items:` projection, so
+    # files inside /var/run/secrets/crowdsec/ are named after the Secret
+    # data key. The Middleware spec's crowdsecLapiKeyFile reads
+    # `/var/run/secrets/crowdsec/bouncer-key` — they MUST match exactly,
+    # otherwise the bouncer fails to load its key at startup and the
+    # plugin fails open (silent CrowdSec bypass).
     kctl create secret generic "${secret_name}" \
       --namespace "${ns}" \
-      --from-literal=traefik-bouncer-key="${key_value}" \
+      --from-literal=bouncer-key="${key_value}" \
       --dry-run=client -o yaml | kctl apply -f -
   done
   log "CrowdSec bouncer key Secret applied to crowdsec + traefik namespaces."

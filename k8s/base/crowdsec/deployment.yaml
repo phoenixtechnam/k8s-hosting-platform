@@ -75,10 +75,14 @@ spec:
               # startup. Same key value lives in the Traefik plugin
               # config (Middleware spec.plugin.crowdsec.crowdsecLapiKey)
               # — see bootstrap.sh generate_crowdsec_bouncer_key().
+              # Secret data key is `bouncer-key` (NOT `traefik-bouncer-
+              # key`) so the file projection in the Traefik pod at
+              # /var/run/secrets/crowdsec/bouncer-key matches the
+              # Middleware's crowdsecLapiKeyFile path.
               valueFrom:
                 secretKeyRef:
                   name: crowdsec-bouncer-key
-                  key: traefik-bouncer-key
+                  key: bouncer-key
           ports:
             - name: lapi
               containerPort: 8080
@@ -131,6 +135,24 @@ spec:
   resources:
     requests:
       storage: 1Gi
+---
+# PodDisruptionBudget — explicit minAvailable=0 (Recreate strategy +
+# SQLite single-writer means the pod will go down during node drains
+# regardless). Documents intent: operators upgrading to multi-replica
+# (Postgres backend) can flip this to minAvailable: 1.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: crowdsec
+  namespace: crowdsec
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crowdsec
 ---
 apiVersion: v1
 kind: Service

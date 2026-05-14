@@ -55,7 +55,17 @@ spec:
       # apply. Operators who want fail-closed semantics can patch this
       # to `false` in their overlay.
       forwardedHeadersTrustedIPs:
-        # Trust the Traefik LB IPs to set X-Forwarded-For so the
-        # bouncer sees real client IPs, not the LB. Operators with a
-        # specific L4 LB CIDR can narrow this in an overlay.
-        - 0.0.0.0/0
+        # Trust ONLY the in-cluster RFC-1918 + link-local ranges to
+        # set X-Forwarded-For. A wider list (e.g. 0.0.0.0/0) would let
+        # an attacker who reaches Traefik directly spoof any source IP
+        # by prepending it to XFF — bypassing the IP-reputation gate.
+        # Operators whose loadbalancer sits OUTSIDE these ranges (e.g.
+        # a cloud LB with a fixed public CIDR) must patch this list in
+        # their overlay to add the LB's IP range; otherwise the bouncer
+        # sees the LB as the source IP, not the real client.
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+        - fc00::/7
+        - fe80::/10

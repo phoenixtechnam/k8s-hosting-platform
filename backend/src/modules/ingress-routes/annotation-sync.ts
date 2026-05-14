@@ -384,18 +384,36 @@ export function buildMiddlewaresForRoute(
   //   * customErrorCodes (CSV like "404,503") → status[]
   //   * customErrorPath  (URL path string)    → query (path on backend)
   //
-  // The errors backend Service must already exist in the same
-  // namespace. By convention each tenant namespace ships
-  // `tenant-errors.<ns>.svc.cluster.local` (created lazily by the
-  // backend) — but the operator can point the route at any in-namespace
-  // Service. When customErrorPath is null we use Traefik's default
-  // `/{status}.html` token, which the errors-backend container resolves
-  // at request time.
-  if (route.customErrorCodes) {
+  // IMPORTANT: this Middleware is emitted ONLY when BOTH columns are
+  // set. customErrorCodes alone is insufficient — we'd need to point
+  // the Middleware at a Service that doesn't exist by default, which
+  // would replace tenant 404s with Traefik 500s ("backend Service
+  // unresolvable"). Until per-tenant errors backends are wired (see
+  // future work in the Traefik migration docs), the operator must
+  // also set customErrorPath. The path serves two roles:
+  //   1. Disambiguates intent — the tenant has chosen a real backend.
+  //   2. Encodes the backend Service name via convention: paths
+  //      starting `/tenant-errors/...` use the platform-shared
+  //      `tenant-errors` Service; any other path is interpreted as
+  //      a Service named in the tenant's own namespace via the
+  //      `serviceName:port:path` schema (e.g. `myapp:8080:/errors/`).
+  // The current implementation handles the platform-shared variant
+  // only; per-tenant routing is a future enhancement.
+  if (route.customErrorCodes && route.customErrorPath) {
+    // Two-stage filter: regex shape (3-digit code, optionally a 3-digit
+    // range) AND for ranges, low <= high. The second check stops
+    // operators submitting `503-200` which would parse but get rejected
+    // by Traefik's admission webhook at apply time, taking the entire
+    // IngressRoute reconcile down with it.
     const status = route.customErrorCodes
       .split(',')
       .map((s) => s.trim())
-      .filter((s) => /^\d{3}(-\d{3})?$/.test(s));
+      .filter((s) => /^\d{3}(-\d{3})?$/.test(s))
+      .filter((s) => {
+        const m = s.match(/^(\d{3})-(\d{3})$/);
+        if (!m) return true;
+        return Number(m[1]) <= Number(m[2]);
+      });
     if (status.length > 0) {
       const name = middlewareName(routeId, 'errors');
       middlewares.push(buildMiddleware({

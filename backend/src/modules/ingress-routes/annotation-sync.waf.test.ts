@@ -119,31 +119,34 @@ describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', (
     expect(referenceList).toContainEqual({ name: 'r-route-12-errors', namespace: 'client-ns' });
   });
 
-  it('falls back to the default /{status}.html query when customErrorPath is null', () => {
+  it('does NOT emit the errors Middleware when customErrorPath is unset (avoids 500 from unresolvable backend)', () => {
     const { middlewares } = buildMiddlewaresForRoute(
       { ...baseRoute, customErrorCodes: '500-599', customErrorPath: null },
       'route-12345678',
       'client-ns',
     );
-    const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-errors');
-    const spec = mw!.spec as { errors: { query: string; status: string[] } };
-    expect(spec.errors.query).toBe('/{status}.html');
-    expect(spec.errors.status).toEqual(['500-599']);
+    expect(middlewares.find((m) => m.metadata.name === 'r-route-12-errors')).toBeUndefined();
   });
 
-  it('drops malformed status codes from customErrorCodes (defence against injection)', () => {
+  it('drops malformed status codes from customErrorCodes (defence against injection + admission rejection)', () => {
     const { middlewares } = buildMiddlewaresForRoute(
-      { ...baseRoute, customErrorCodes: '404, not-a-code, 503-200, 503' },
+      {
+        ...baseRoute,
+        customErrorCodes: '404, not-a-code, 503-200, 500-599, 503',
+        customErrorPath: '/errors/{status}.html',
+      },
       'route-12345678',
       'client-ns',
     );
     const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-errors');
     expect(mw).toBeDefined();
     const spec = mw!.spec as { errors: { status: string[] } };
-    // "not-a-code" rejected; "503-200" is a malformed range but matches
-    // /^\d{3}(-\d{3})?$/ — Traefik will then reject it at runtime. We
-    // accept the regex shape, no further semantic validation here.
-    expect(spec.errors.status).toEqual(['404', '503-200', '503']);
+    // "not-a-code" rejected by the regex.
+    // "503-200" rejected because low > high (would crash Traefik
+    //   admission webhook and take the whole IngressRoute down).
+    // "500-599" kept (valid range).
+    // "404" + "503" kept (single codes).
+    expect(spec.errors.status).toEqual(['404', '500-599', '503']);
   });
 
   it('emits NO errors Middleware when customErrorCodes is null', () => {
