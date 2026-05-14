@@ -198,6 +198,57 @@ export function rateLimitSpec(args: RateLimitArgs): Record<string, unknown> {
   };
 }
 
+/**
+ * Concurrent-connection cap. Traefik's `inFlightReq` Middleware throttles
+ * based on the number of simultaneous requests from one source IP. Maps
+ * to the nginx `limit-connections` annotation we used to emit.
+ */
+export function inFlightReqSpec(amount: number): Record<string, unknown> {
+  return {
+    inFlightReq: {
+      amount,
+      // ipStrategy with no depth defaults to the immediate remote
+      // address — matches nginx limit_conn's `$binary_remote_addr`
+      // bucket key. Operators behind a known L4 LB can patch this to
+      // `ipStrategy: { depth: 1 }` to read the X-Forwarded-For chain.
+      sourceCriterion: { ipStrategy: {} },
+    },
+  };
+}
+
+export interface ErrorsArgs {
+  /** HTTP status codes to intercept (e.g. ['404', '503'] or ['500-599']). */
+  status: string[];
+  /** Backend Service name to serve the error page. */
+  serviceName: string;
+  /** Service port. Default 80. */
+  servicePort?: number;
+  /** Cross-namespace ref override. Defaults to the IngressRoute's namespace. */
+  serviceNamespace?: string;
+  /** Path on the backend (Traefik's `query`). Default `/{status}.html`. */
+  query?: string;
+}
+
+/**
+ * `errors` Middleware — intercept upstream responses with status codes
+ * matching `status` and serve content from a different Service instead.
+ * Replaces the nginx `custom-http-errors` annotation + default-backend
+ * pattern.
+ */
+export function errorsSpec(args: ErrorsArgs): Record<string, unknown> {
+  return {
+    errors: {
+      status: args.status,
+      service: {
+        name: args.serviceName,
+        port: args.servicePort ?? 80,
+        ...(args.serviceNamespace ? { namespace: args.serviceNamespace } : {}),
+      },
+      query: args.query ?? '/{status}.html',
+    },
+  };
+}
+
 export function ipAllowListSpec(cidrs: string[]): Record<string, unknown> {
   return {
     ipAllowList: {

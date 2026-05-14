@@ -91,7 +91,7 @@ describe('buildDesiredRoutes', () => {
 });
 
 describe('buildIngressRouteBody', () => {
-  it('emits a Host-matching rule for each route on websecure entryPoint + Coraza platform WAF', () => {
+  it('emits a Host-matching rule + crowdsec + ModSecurity WAF on the panel route', () => {
     const body = buildIngressRouteBody(
       [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
@@ -106,14 +106,17 @@ describe('buildIngressRouteBody', () => {
     expect(routes[0].kind).toBe('Rule');
     const services = routes[0].services as Array<Record<string, unknown>>;
     expect(services[0]).toEqual({ name: 'admin-panel', port: 80 });
-    // Panel route always carries the Coraza platform WAF Middleware.
+    // Middleware chain — crowdsec runs FIRST so known-bad IPs short-
+    // circuit before any other processing. WAF (ModSec) is platform-
+    // wide on panel routes regardless of tenant wafEnabled.
     const middlewares = routes[0].middlewares as Array<{ name: string; namespace: string }>;
     expect(middlewares).toEqual([
-      { name: 'coraza-platform', namespace: 'traefik' },
+      { name: 'crowdsec', namespace: 'traefik' },
+      { name: 'modsecurity-crs', namespace: 'traefik' },
     ]);
     expect(spec.tls).toEqual({ secretName: 'platform-tls' });
   });
-  it('adds a priority-100 /oauth2 prefix route + ForwardAuth + WAF on the panel route when oauth2 is enabled', () => {
+  it('adds a priority-100 /oauth2 prefix route + crowdsec → ForwardAuth → WAF chain on the panel route when oauth2 is enabled', () => {
     const body = buildIngressRouteBody(
       [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: true }],
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
@@ -127,12 +130,13 @@ describe('buildIngressRouteBody', () => {
       name: 'oauth2-proxy',
       port: 4180,
     });
-    // Panel route — ForwardAuth first, WAF second.
+    // Panel route — crowdsec → ForwardAuth → WAF (in that order).
     expect(routes[1].match).toBe('Host(`admin.example.com`)');
     const panelMiddlewares = routes[1].middlewares as Array<{ name: string; namespace: string }>;
     expect(panelMiddlewares).toEqual([
+      { name: 'crowdsec', namespace: 'traefik' },
       { name: 'platform-oauth2-proxy-auth', namespace: 'platform' },
-      { name: 'coraza-platform', namespace: 'traefik' },
+      { name: 'modsecurity-crs', namespace: 'traefik' },
     ]);
   });
 });

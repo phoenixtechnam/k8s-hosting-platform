@@ -41,10 +41,11 @@ import {
   redirectRegexSpec,
   ipAllowListSpec,
   rateLimitSpec,
+  inFlightReqSpec,
+  errorsSpec,
   basicAuthSpec,
   forwardAuthSpec,
   headersSpec,
-  corazaSpec,
 } from './traefik-types.js';
 import type {
   MiddlewareBody,
@@ -285,6 +286,29 @@ export function buildMiddlewaresForRoute(
     refs.push({ name, namespace });
   }
 
+  // ── Concurrent-Connection Cap (rateLimitConnections) ───────────────
+  // Maps the old nginx `limit-connections` annotation. Distinct from
+  // request-rate (above) — `inFlightReq` throttles the count of
+  // simultaneous in-flight requests per source IP. Used to protect
+  // backends that fork-per-request (PHP-FPM child pools, single-
+  // threaded apps) from connection storms even when the request rate
+  // is acceptable. nginx's `limit-connections` was previously emitted
+  // here but the Phase-2 rewrite silently dropped it; this restores
+  // parity.
+  if (route.rateLimitConnections && route.rateLimitConnections > 0) {
+    const name = middlewareName(routeId, 'inflight');
+    middlewares.push(buildMiddleware({
+      name,
+      namespace,
+      spec: inFlightReqSpec(route.rateLimitConnections),
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/middleware-kind': 'inflight',
+      },
+    }));
+    refs.push({ name, namespace });
+  }
+
   // ── Additional response headers ─────────────────────────────────────
   if (route.additionalHeaders) {
     const cleaned = sanitiseHeaderMap(route.additionalHeaders);
@@ -324,50 +348,68 @@ export function buildMiddlewaresForRoute(
     refs.push({ name, namespace });
   }
 
-  // ── WAF (Coraza) ────────────────────────────────────────────────────
-  // Three modes (option-C hybrid from project_traefik_migration_progress):
-  //   wafEnabled=0                         → no WAF Middleware (default).
-  //   wafEnabled=1 + no overrides           → reference shared
-  //                                            `coraza-base@traefik`.
-  //                                            One engine instance per
-  //                                            Traefik pod covers every
-  //                                            uncustomised route.
-  //   wafEnabled=1 + customisations         → emit per-route
-  //                                            `coraza-r-<id>` Middleware
-  //                                            with the route's
-  //                                            SecRuleRemoveById /
-  //                                            threshold overrides baked
-  //                                            in. Costs one extra Coraza
-  //                                            engine per customised route.
+  // ── WAF (ModSecurity-CRS sidecar) ───────────────────────────────────
+  // The 2026-05-14 smoke test established that the per-route Coraza
+  // model (option-C hybrid) is not viable: vendored Yaegi plugins fail
+  // because Coraza imports `unsafe`, and the WASM build path crashes
+  // Traefik with a split-stack-overflow during startup. The working
+  // alternative is `github.com/madebymode/traefik-modsecurity-plugin`,
+  // a Yaegi plugin that proxies request bodies to an EXTERNAL
+  // ModSecurity-CRS service for verdict.
   //
-  // "Customisations" means any of:
-  //   * wafExcludedRules non-empty
-  //   * wafAnomalyThreshold != 10
-  //   * wafOwaspCrs=0 (operator opted out of CRS — rare; needs a
-  //     dedicated Middleware with `SecRuleEngine On` but no Include of
-  //     the @owasp_crs bundle)
+  // Trade-off: the external-service architecture doesn't support
+  // per-route directives. Every wafEnabled route attaches the SAME
+  // shared `modsecurity-crs@traefik` Middleware backed by the
+  // `modsec-crs.traefik.svc.cluster.local` Deployment. Per-route
+  // `wafExcludedRules` / `wafAnomalyThreshold` / `wafOwaspCrs` columns
+  // are read for forwards-compat but currently have no runtime effect —
+  // the shared sidecar honours its own config baked into the OWASP CRS
+  // image. Schema fields stay so the panel UI keeps working and a
+  // future plugin choice (Coraza when upstream stabilises) can read
+  // them again without a migration.
+  //
+  // The k8s/base/traefik/middlewares-waf.yaml Coraza scaffold is kept
+  // in tree as documented dead code — see its header comment.
   if (route.wafEnabled) {
-    const isDefault =
-      route.wafAnomalyThreshold === 10
-      && !route.wafExcludedRules
-      && route.wafOwaspCrs === 1;
-    if (isDefault) {
-      refs.push({ name: 'coraza-base', namespace: 'traefik' });
-    } else {
-      const name = middlewareName(routeId, 'waf');
+    refs.push({ name: 'modsecurity-crs', namespace: 'traefik' });
+  }
+
+  // ── Custom Error Pages ─────────────────────────────────────────────
+  // Traefik's `errors` Middleware intercepts upstream responses with
+  // the listed status codes and serves them from a different Service.
+  // Restores the nginx `custom-http-errors` + default-backend behaviour
+  // dropped by the Phase-2 rewrite.
+  //
+  // Behaviour mapping:
+  //   * customErrorCodes (CSV like "404,503") → status[]
+  //   * customErrorPath  (URL path string)    → query (path on backend)
+  //
+  // The errors backend Service must already exist in the same
+  // namespace. By convention each tenant namespace ships
+  // `tenant-errors.<ns>.svc.cluster.local` (created lazily by the
+  // backend) — but the operator can point the route at any in-namespace
+  // Service. When customErrorPath is null we use Traefik's default
+  // `/{status}.html` token, which the errors-backend container resolves
+  // at request time.
+  if (route.customErrorCodes) {
+    const status = route.customErrorCodes
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => /^\d{3}(-\d{3})?$/.test(s));
+    if (status.length > 0) {
+      const name = middlewareName(routeId, 'errors');
       middlewares.push(buildMiddleware({
         name,
         namespace,
-        spec: corazaSpec({
-          owaspCrs: route.wafOwaspCrs === 1,
-          anomalyThreshold: route.wafAnomalyThreshold,
-          excludedRules: route.wafExcludedRules
-            ? route.wafExcludedRules.split(',').map((s) => s.trim()).filter(Boolean)
-            : [],
+        spec: errorsSpec({
+          status,
+          serviceName: 'tenant-errors',
+          servicePort: 80,
+          query: route.customErrorPath ?? undefined,
         }),
         labels: {
           'hosting-platform/route-id': routeId,
-          'hosting-platform/middleware-kind': 'waf',
+          'hosting-platform/middleware-kind': 'errors',
         },
       }));
       refs.push({ name, namespace });
@@ -474,9 +516,33 @@ export async function buildRouteSpec(
   //    encodes ?route=<id> for the claim-validator sidecar).
   const oidcRefs = await buildOidcMiddleware(db, namespace, routeId, route.hostname);
 
+  // Platform-wide CrowdSec bouncer — every tenant route attaches it as
+  // the FIRST middleware so known-bad IPs short-circuit before any
+  // per-route processing (rate-limit, auth, WAF, …). Cross-namespace
+  // ref into `traefik` namespace; the controller's
+  // allowCrossNamespace=true flag (set by bootstrap.sh) permits it.
+  const platformRefs: Array<{ name: string; namespace: string }> = [
+    { name: 'crowdsec', namespace: 'traefik' },
+  ];
+
+  // Combined ref order (left-to-right execution):
+  //   1. crowdsec (platform-wide IP gate)
+  //   2. settings (forceHttps, ipAllow, rate-limit, in-flight, headers,
+  //      redirect, WAF when wafEnabled=1, errors)
+  //   3. mTLS forward-cert
+  //   4. OIDC ForwardAuth
+  const combinedRefs = [
+    ...platformRefs,
+    ...settingsRefs,
+    ...mtlsResult.refs,
+    ...oidcRefs.refs,
+  ];
+
   // 5. Protected-directory child routes — one TraefikRoute per
   //    enabled dir with users. Each child route references its own
   //    basicAuth Middleware (pointing at the route-auth-<dirId> Secret).
+  //    `combinedRefs` flows into the child routes too, so crowdsec
+  //    gates the protected-dir paths as well.
   const childRoutes = await buildProtectedDirChildRoutes(
     db,
     routeId,
@@ -484,7 +550,7 @@ export async function buildRouteSpec(
     namespace,
     serviceName,
     servicePort,
-    [...settingsRefs, ...mtlsResult.refs, ...oidcRefs.refs],
+    combinedRefs,
   );
 
   return {
@@ -494,11 +560,7 @@ export async function buildRouteSpec(
       ...oidcRefs.middlewares,
       ...childRoutes.basicAuthMiddlewares,
     ],
-    middlewareRefs: [
-      ...settingsRefs,
-      ...mtlsResult.refs,
-      ...oidcRefs.refs,
-    ],
+    middlewareRefs: combinedRefs,
     childRoutes: childRoutes.routes,
   };
 }

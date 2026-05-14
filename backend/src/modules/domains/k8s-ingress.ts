@@ -366,8 +366,12 @@ export async function reconcileIngress(
     tlsHostnames.add(canonicalHost);
 
     // Primary route: matches the canonical hostname (no path prefix
-    // unless explicitly set in route.path). Middlewares are attached in
-    // the order annotation-sync emitted them.
+    // unless explicitly set in route.path).
+    //
+    // Middleware ordering (left-to-right execution): annotation-sync
+    // already prepended the platform-wide `crowdsec@traefik` ref to
+    // spec.middlewareRefs, so the same list flows into both the
+    // primary route AND every protected-dir child route below.
     traefikRoutes.push({
       match: route.path && route.path !== '/'
         ? `${hostMatch(canonicalHost)} && PathPrefix(\`${route.path}\`)`
@@ -377,7 +381,8 @@ export async function reconcileIngress(
       services: [{ name: backend.serviceName, port: backend.port }],
     });
     // Protected-directory child routes (higher priority — set by
-    // buildProtectedDirChildRoutes).
+    // buildProtectedDirChildRoutes; they reuse parentMiddlewareRefs
+    // which already carries crowdsec at slot 0).
     for (const child of spec.childRoutes) traefikRoutes.push(child);
   }
 

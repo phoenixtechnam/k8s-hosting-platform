@@ -17,104 +17,141 @@ const baseRoute: RouteSettingsLike = {
   customErrorPath: null,
 };
 
-describe('buildMiddlewaresForRoute — WAF (Coraza, option-C hybrid)', () => {
-  it('emits NO Middleware and NO ref when WAF is disabled', () => {
+describe('buildMiddlewaresForRoute — WAF (ModSecurity-CRS shared sidecar)', () => {
+  it('emits NO WAF ref when wafEnabled=0', () => {
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
       { ...baseRoute, wafEnabled: 0 },
       'route-12345678',
       'client-ns',
     );
+    // No per-route WAF Middleware emitted, no reference to the shared sidecar.
     expect(middlewares.find((m) => m.metadata.name.endsWith('-waf'))).toBeUndefined();
-    expect(referenceList.find((r) => r.name.endsWith('-waf') || r.name === 'coraza-base')).toBeUndefined();
+    expect(referenceList.find((r) => r.name === 'modsecurity-crs')).toBeUndefined();
+    expect(referenceList.find((r) => r.name === 'coraza-base')).toBeUndefined();
   });
 
-  it('attaches the shared coraza-base@traefik Middleware when WAF is on with default settings', () => {
+  it('attaches the shared modsecurity-crs@traefik Middleware ref when wafEnabled=1', () => {
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
       { ...baseRoute, wafEnabled: 1, wafOwaspCrs: 1 },
       'route-12345678',
       'client-ns',
     );
-    // No per-route WAF Middleware emitted.
+    // No per-route WAF Middleware emitted — single shared sidecar.
     expect(middlewares.find((m) => m.metadata.name.endsWith('-waf'))).toBeUndefined();
-    // Reference to the shared base Middleware in the traefik namespace.
-    const wafRef = referenceList.find((r) => r.name === 'coraza-base');
-    expect(wafRef).toEqual({ name: 'coraza-base', namespace: 'traefik' });
+    const wafRef = referenceList.find((r) => r.name === 'modsecurity-crs');
+    expect(wafRef).toEqual({ name: 'modsecurity-crs', namespace: 'traefik' });
   });
 
-  it('emits a per-route Coraza Middleware when wafExcludedRules is set', () => {
+  it('attaches modsecurity-crs even when route would have had per-route overrides (madebymode does not support them)', () => {
+    // wafExcludedRules / wafAnomalyThreshold / wafOwaspCrs=0 are read
+    // for forwards-compat but have no runtime effect under the current
+    // ModSecurity sidecar architecture. The shared sidecar honours its
+    // own image config; the schema fields stay so the panel UI keeps
+    // working and a future in-process Coraza plugin can read them again
+    // without a migration.
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
-      { ...baseRoute, wafEnabled: 1, wafOwaspCrs: 1, wafExcludedRules: '911100,920420' },
-      'route-12345678',
-      'client-ns',
-    );
-    const wafMw = middlewares.find((m) => m.metadata.name === 'r-route-12-waf');
-    expect(wafMw).toBeDefined();
-    const directives = (wafMw!.spec.plugin as { coraza: { directives: string } }).coraza.directives;
-    expect(directives).toContain('SecRuleRemoveById 911100');
-    expect(directives).toContain('SecRuleRemoveById 920420');
-    // Reference points at the per-route Middleware, NOT coraza-base.
-    expect(referenceList.find((r) => r.name === 'coraza-base')).toBeUndefined();
-    expect(referenceList.find((r) => r.name === 'r-route-12-waf')).toEqual({
-      name: 'r-route-12-waf',
-      namespace: 'client-ns',
-    });
-  });
-
-  it('emits a per-route Coraza Middleware when wafAnomalyThreshold differs from default (10)', () => {
-    const { middlewares, referenceList } = buildMiddlewaresForRoute(
-      { ...baseRoute, wafEnabled: 1, wafOwaspCrs: 1, wafAnomalyThreshold: 5 },
-      'route-12345678',
-      'client-ns',
-    );
-    const wafMw = middlewares.find((m) => m.metadata.name === 'r-route-12-waf');
-    expect(wafMw).toBeDefined();
-    const directives = (wafMw!.spec.plugin as { coraza: { directives: string } }).coraza.directives;
-    expect(directives).toContain('inbound_anomaly_score_threshold=5');
-    expect(referenceList.find((r) => r.name === 'coraza-base')).toBeUndefined();
-  });
-
-  it('emits a per-route Coraza Middleware when wafOwaspCrs is off (opt-out of CRS)', () => {
-    const { middlewares, referenceList } = buildMiddlewaresForRoute(
-      { ...baseRoute, wafEnabled: 1, wafOwaspCrs: 0 },
-      'route-12345678',
-      'client-ns',
-    );
-    const wafMw = middlewares.find((m) => m.metadata.name === 'r-route-12-waf');
-    expect(wafMw).toBeDefined();
-    const directives = (wafMw!.spec.plugin as { coraza: { directives: string } }).coraza.directives;
-    // Without OWASP CRS, the directive block must not include the
-    // @owasp_crs bundle.
-    expect(directives).not.toContain('@owasp_crs');
-    expect(directives).toContain('SecRuleEngine On');
-    expect(referenceList.find((r) => r.name === 'coraza-base')).toBeUndefined();
-  });
-
-  it('rejects garbage / non-numeric rule IDs from wafExcludedRules (defence against directive injection)', () => {
-    // Note: any comma-segment with non-digit characters is dropped
-    // whole — `920420; SecRuleEngine Off` doesn't get split further on
-    // semicolons, so the whole segment is rejected. That's the safer
-    // posture: tenants must comma-separate clean rule IDs.
-    const { middlewares } = buildMiddlewaresForRoute(
       {
         ...baseRoute,
         wafEnabled: 1,
         wafOwaspCrs: 1,
-        wafExcludedRules: '911100,not-a-rule-id,920420; SecRuleEngine Off',
+        wafExcludedRules: '911100,920420',
+        wafAnomalyThreshold: 5,
       },
       'route-12345678',
       'client-ns',
     );
-    const wafMw = middlewares.find((m) => m.metadata.name === 'r-route-12-waf');
-    const directives = (wafMw!.spec.plugin as { coraza: { directives: string } }).coraza.directives;
-    // The lone numeric segment is kept.
-    expect(directives).toContain('SecRuleRemoveById 911100');
-    // Garbage segments — including the one with attempted directive
-    // injection — are silently dropped. No rogue SecRuleEngine Off
-    // appears in the rendered directive block.
-    expect(directives).not.toContain('not-a-rule-id');
-    expect(directives).not.toContain('SecRuleEngine Off');
-    // The trailing segment is rejected whole because it doesn't match
-    // /^\d{3,7}$/.
-    expect(directives).not.toContain('SecRuleRemoveById 920420');
+    expect(middlewares.find((m) => m.metadata.name.endsWith('-waf'))).toBeUndefined();
+    expect(referenceList.find((r) => r.name === 'modsecurity-crs')).toBeDefined();
+    // Coraza scaffold is dead code; nothing referencing it should leak through.
+    expect(referenceList.find((r) => r.name === 'coraza-base')).toBeUndefined();
+    expect(referenceList.find((r) => /^r-.*-waf$/.test(r.name))).toBeUndefined();
+  });
+});
+
+describe('buildMiddlewaresForRoute — concurrent-connection cap (rateLimitConnections)', () => {
+  it('emits an inFlightReq Middleware when rateLimitConnections is set', () => {
+    const { middlewares, referenceList } = buildMiddlewaresForRoute(
+      { ...baseRoute, rateLimitConnections: 50 },
+      'route-12345678',
+      'client-ns',
+    );
+    const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-inflight');
+    expect(mw).toBeDefined();
+    expect((mw!.spec as { inFlightReq: { amount: number } }).inFlightReq.amount).toBe(50);
+    expect(referenceList).toContainEqual({ name: 'r-route-12-inflight', namespace: 'client-ns' });
+  });
+
+  it('emits NO inFlightReq Middleware when rateLimitConnections is null or 0', () => {
+    for (const value of [null, 0]) {
+      const { middlewares } = buildMiddlewaresForRoute(
+        { ...baseRoute, rateLimitConnections: value as number | null },
+        'route-12345678',
+        'client-ns',
+      );
+      expect(middlewares.find((m) => m.metadata.name.endsWith('-inflight'))).toBeUndefined();
+    }
+  });
+
+  it('rateLimitRps and rateLimitConnections both emit independently', () => {
+    const { middlewares } = buildMiddlewaresForRoute(
+      { ...baseRoute, rateLimitRps: 10, rateLimitConnections: 50 },
+      'route-12345678',
+      'client-ns',
+    );
+    expect(middlewares.find((m) => m.metadata.name.endsWith('-ratelimit'))).toBeDefined();
+    expect(middlewares.find((m) => m.metadata.name.endsWith('-inflight'))).toBeDefined();
+  });
+});
+
+describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', () => {
+  it('emits an errors Middleware pointing at tenant-errors when customErrorCodes is set', () => {
+    const { middlewares, referenceList } = buildMiddlewaresForRoute(
+      { ...baseRoute, customErrorCodes: '404,503', customErrorPath: '/errors/{status}.html' },
+      'route-12345678',
+      'client-ns',
+    );
+    const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-errors');
+    expect(mw).toBeDefined();
+    const spec = mw!.spec as { errors: { status: string[]; service: { name: string; port: number }; query: string } };
+    expect(spec.errors.status).toEqual(['404', '503']);
+    expect(spec.errors.service).toEqual({ name: 'tenant-errors', port: 80 });
+    expect(spec.errors.query).toBe('/errors/{status}.html');
+    expect(referenceList).toContainEqual({ name: 'r-route-12-errors', namespace: 'client-ns' });
+  });
+
+  it('falls back to the default /{status}.html query when customErrorPath is null', () => {
+    const { middlewares } = buildMiddlewaresForRoute(
+      { ...baseRoute, customErrorCodes: '500-599', customErrorPath: null },
+      'route-12345678',
+      'client-ns',
+    );
+    const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-errors');
+    const spec = mw!.spec as { errors: { query: string; status: string[] } };
+    expect(spec.errors.query).toBe('/{status}.html');
+    expect(spec.errors.status).toEqual(['500-599']);
+  });
+
+  it('drops malformed status codes from customErrorCodes (defence against injection)', () => {
+    const { middlewares } = buildMiddlewaresForRoute(
+      { ...baseRoute, customErrorCodes: '404, not-a-code, 503-200, 503' },
+      'route-12345678',
+      'client-ns',
+    );
+    const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-errors');
+    expect(mw).toBeDefined();
+    const spec = mw!.spec as { errors: { status: string[] } };
+    // "not-a-code" rejected; "503-200" is a malformed range but matches
+    // /^\d{3}(-\d{3})?$/ — Traefik will then reject it at runtime. We
+    // accept the regex shape, no further semantic validation here.
+    expect(spec.errors.status).toEqual(['404', '503-200', '503']);
+  });
+
+  it('emits NO errors Middleware when customErrorCodes is null', () => {
+    const { middlewares } = buildMiddlewaresForRoute(
+      { ...baseRoute, customErrorCodes: null },
+      'route-12345678',
+      'client-ns',
+    );
+    expect(middlewares.find((m) => m.metadata.name.endsWith('-errors'))).toBeUndefined();
   });
 });

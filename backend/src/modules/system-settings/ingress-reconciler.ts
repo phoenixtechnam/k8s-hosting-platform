@@ -100,12 +100,23 @@ const OAUTH2_PROXY_PORT = 4180;
 const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
 
 /**
- * Coraza WAF Middleware for the platform-ingress (admin / client panel).
- * Lives in k8s/base/traefik/middlewares-waf.yaml. The platform variant
- * bakes in the admin-API-specific CRS exclusions (911100 + 920420);
- * tenant routes use `coraza-base@traefik` instead.
+ * WAF Middleware attached to platform-ingress panel routes. Currently
+ * `modsecurity-crs` (the ModSecurity-CRS sidecar Deployment in the
+ * traefik namespace, fronted by the madebymode plugin). The Coraza
+ * scaffolding under k8s/base/traefik/middlewares-waf.yaml remains
+ * documented dead code; when a working in-process Coraza plugin lands
+ * upstream this flips back to `coraza-platform` with no schema change.
  */
-const PLATFORM_WAF_MIDDLEWARE_NAME = 'coraza-platform';
+const PLATFORM_WAF_MIDDLEWARE_NAME = 'modsecurity-crs';
+
+/**
+ * CrowdSec bouncer Middleware — platform-wide IP-reputation gate
+ * attached to EVERY route the platform ingresses (admin/client panels
+ * here, tenant routes via the buildAllRouteSpecs path). Runs first in
+ * the middleware chain so known-bad IPs short-circuit before any other
+ * processing.
+ */
+const PLATFORM_CROWDSEC_MIDDLEWARE_NAME = 'crowdsec';
 
 // ─── Pure helpers (exported for testability) ─────────────────────────────
 
@@ -201,11 +212,15 @@ export function buildIngressRouteBody(
       });
     }
     // Panel route middlewares — in order of execution:
-    //   1. ForwardAuth (oauth2-proxy) when protect* is on.
-    //   2. Coraza WAF (`coraza-platform@traefik`) always — admin /
-    //      client panels are sensitive surfaces; the platform variant
-    //      ships with admin-API CRS exclusions baked in.
-    const panelMiddlewares: Array<{ name: string; namespace: string }> = [];
+    //   1. CrowdSec bouncer — short-circuit known-bad IPs before any
+    //      downstream processing. Always-on, platform-wide.
+    //   2. ForwardAuth (oauth2-proxy) when protect* is on.
+    //   3. WAF (`modsecurity-crs@traefik`) — admin / client panels are
+    //      sensitive surfaces, so WAF is always-on here regardless of
+    //      tenant-level wafEnabled (which only controls tenant routes).
+    const panelMiddlewares: Array<{ name: string; namespace: string }> = [
+      { name: PLATFORM_CROWDSEC_MIDDLEWARE_NAME, namespace: 'traefik' },
+    ];
     if (r.oauth2) {
       panelMiddlewares.push({ name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' });
     }
