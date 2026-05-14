@@ -63,6 +63,7 @@ import {
   startMailMigration,
   getMailMigrationStatus,
 } from './migration.js';
+import { getMailHealth } from './health.js';
 import { getMailPortExposure, updateMailPortExposure } from './port-exposure.js';
 import {
   blobStoreUpdateRequestSchema,
@@ -81,6 +82,42 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // Note: routes that expose the cleartext Stalwart admin password
   // (`/admin/mail/stalwart-credentials` and `/admin/mail/rotate-*`) carry
   // their own narrower preHandler — see below.
+
+  // Real mail health endpoint — actually probes pod + JMAP rather than
+  // echoing system_settings. See backend/src/modules/mail-admin/health.ts.
+  // 30s in-process cache; ?refresh=1 bypasses (super_admin can do this
+  // from the "Re-check now" button on the new health banner).
+  app.get('/admin/mail/health', async (req: { query: unknown }) => {
+    try {
+      const cfg = app.config as Record<string, unknown>;
+      const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+      const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+      const k8s = createK8sClients(kubeconfigPath);
+      const jmapBaseUrl = (cfg.STALWART_MGMT_URL as string | undefined)
+        ?? process.env.STALWART_MGMT_URL
+        ?? 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
+      let creds: { user: string; password: string } | null = null;
+      try {
+        const c = readStalwartCredentials(process.env);
+        creds = { user: c.username, password: c.password };
+      } catch {
+        creds = null;
+      }
+      const refresh = ((req.query as { refresh?: string } | undefined)?.refresh ?? '') === '1';
+      const result = await getMailHealth(
+        { k8s, jmapBaseUrl, jmapAdminCredentials: creds },
+        { refresh },
+      );
+      return success(result);
+    } catch (err) {
+      app.log.warn({ err }, 'mail-admin: /admin/mail/health failed');
+      throw new ApiError(
+        'MAIL_HEALTH_UNAVAILABLE',
+        'Could not assess mail-server health — see server logs',
+        503,
+      );
+    }
+  });
 
   app.get('/admin/mail/metrics', async () => {
     try {
