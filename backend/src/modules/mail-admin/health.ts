@@ -348,10 +348,12 @@ async function defaultJmapExec(
   else kc.loadFromCluster();
   const exec = new k8s.Exec(kc);
 
-  // curl with -w "%{http_code}" writes the status code to stdout for
-  // parsing. -o /dev/null discards the body. -s silent. -m bounds time.
+  // curl with -w "%{http_code}" writes the FINAL status code to stdout
+  // for parsing. -o /dev/null discards the body. -s silent. -L follows
+  // redirects (Stalwart serves /.well-known/jmap as a 307 → /jmap/session
+  // which is the actual JMAP endpoint). -m bounds time.
   const cmd = [
-    'curl', '-s', '-o', '/dev/null',
+    'curl', '-sL', '-o', '/dev/null',
     '-w', '%{http_code}',
     '-m', String(Math.floor(PROBE_TIMEOUT_MS / 1000)),
     '-H', `Authorization: ${authHeader}`,
