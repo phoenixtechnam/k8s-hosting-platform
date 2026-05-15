@@ -133,7 +133,28 @@ export async function runProxyNetworksReconcilerTick(
   // the suffix on storage), so we write what we'll read back. Wider CIDRs
   // would be preserved verbatim, but server-role node InternalIPs are
   // always individual hosts.
-  const expectedProxyNetworks: Record<string, boolean> = {};
+  //
+  // Trust list includes:
+  //   1. Server-role node external IPs — haproxy DS runs `hostNetwork:true`
+  //      on each server-role node, so its outbound source is the node IP.
+  //   2. Cluster pod CIDR (10.42.0.0/16) — kube-proxy SNATs ClusterIP
+  //      traffic to the source pod's CNI subnet when it can't preserve
+  //      the host IP across nodes. Stalwart sees `remoteIp` from this
+  //      range and refuses to parse PROXY-v2 unless the sender is
+  //      trusted. Without this, every TLS handshake on submissions/imaps
+  //      fails with `received corrupt message of type InvalidContentType`
+  //      because Stalwart treats the PROXY-v2 binary header as TLS.
+  //   3. Cluster service CIDR (10.43.0.0/16) — defense-in-depth for
+  //      hairpin / NodePort routing variants that could surface a
+  //      different source CIDR.
+  //
+  // The two cluster CIDRs are hardcoded for k3s defaults. Operators
+  // running on non-default CIDRs need a knob; see the
+  // `STALWART_CLUSTER_TRUSTED_CIDRS` env (PR-TBD).
+  const expectedProxyNetworks: Record<string, boolean> = {
+    '10.42.0.0/16': true,
+    '10.43.0.0/16': true,
+  };
   for (const node of serverNodes) {
     expectedProxyNetworks[node.ip] = true;
   }
