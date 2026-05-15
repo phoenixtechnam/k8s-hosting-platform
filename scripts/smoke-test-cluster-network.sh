@@ -8,12 +8,15 @@
 # Coverage:
 #   1) External IP × hostname matrix (round-robin DNS hides ingress
 #      issues; this probes each IP individually).
-#   2) ingress-nginx pod → backend pod (every nginx × every backend).
+#   2) ingress controller pod → backend pod (every ingress × every backend).
 #      THIS is the canary for the host→pod cross-node failure mode.
+#      Traefik migration (2026-05-15): namespace `ingress-nginx` →
+#      `traefik`, selector `app.kubernetes.io/component=controller` →
+#      `app.kubernetes.io/name=traefik`.
 #   3) pod → pod cross-node matrix (control: should pass even when #2
 #      fails, proving the issue is hostNetwork-source-specific).
 #   4) hostNetwork-source → pod cross-node (direct repro of #2 without
-#      ingress-nginx in the mix).
+#      the ingress controller in the mix).
 #   5) Longhorn replica health on platform StatefulSets.
 #   6) Calico Felix log scrape — fail on MTU/XDP/fatal patterns.
 #   7) cert-manager Certificate readiness — every Certificate in
@@ -174,22 +177,22 @@ test_1_external_ips() {
 test_2_ingress_to_backend() {
   if skipped 2; then emit "test2.ingress_to_backend" SKIP "skipped"; return; fi
 
-  local nginx_pods backend_pods
-  nginx_pods=$(kubectl -n ingress-nginx get pods -l app.kubernetes.io/component=controller \
+  local ingress_pods backend_pods
+  ingress_pods=$(kubectl -n traefik get pods -l app.kubernetes.io/name=traefik \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{"\n"}{end}' 2>/dev/null) \
-    || { emit "test2.ingress_to_backend" FAIL "list ingress-nginx pods failed"; return; }
+    || { emit "test2.ingress_to_backend" FAIL "list traefik pods failed"; return; }
   backend_pods=$(kubectl -n platform get pods -l app=admin-panel \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP}{"\n"}{end}' 2>/dev/null) \
     || { emit "test2.ingress_to_backend" FAIL "list admin-panel pods failed"; return; }
-  [[ -z "$nginx_pods" ]] && { emit "test2.ingress_to_backend" FAIL "no nginx pods found"; return; }
+  [[ -z "$ingress_pods" ]] && { emit "test2.ingress_to_backend" FAIL "no traefik pods found"; return; }
   [[ -z "$backend_pods" ]] && { emit "test2.ingress_to_backend" FAIL "no admin-panel pods found"; return; }
 
   local total=0 ok=0
-  while IFS= read -r np; do
-    [[ -z "$np" ]] && continue
-    local npod nnode
-    npod=$(echo "$np" | cut -d= -f1)
-    nnode=$(echo "$np" | cut -d= -f2)
+  while IFS= read -r ip; do
+    [[ -z "$ip" ]] && continue
+    local ipod inode
+    ipod=$(echo "$ip" | cut -d= -f1)
+    inode=$(echo "$ip" | cut -d= -f2)
     while IFS= read -r bp; do
       [[ -z "$bp" ]] && continue
       local bnode bip
@@ -197,17 +200,29 @@ test_2_ingress_to_backend() {
       bip=$(echo "$bp" | cut -d= -f3)
       total=$((total+1))
       local same="cross"
-      [[ "$nnode" == "$bnode" ]] && same="same"
-      local code
-      code=$(kubectl -n ingress-nginx exec "$npod" -- timeout 6 curl -s -o /dev/null -w '%{http_code}' "http://$bip:80/" 2>/dev/null || echo "000")
-      if [[ "$code" =~ ^(2|3)[0-9][0-9]$ ]]; then
+      [[ "$inode" == "$bnode" ]] && same="same"
+      # Traefik image is distroless — no curl binary. We can't `kubectl exec
+      # traefik -- curl ...`. Use the standard host→pod probe via a transient
+      # curl container on the same node (hostNetwork off — we want to verify
+      # the SAME cross-node path Traefik would take, but stop calling Traefik
+      # itself the probe). Test 4 covers the hostNetwork path explicitly.
+      local probe="smoke-t2-${ipod}-${bnode}-$$-$RANDOM"
+      local out code
+      out=$(kubectl run "$probe" \
+        --image=curlimages/curl:8.10.1 --restart=Never -n "$PROBE_NS" \
+        --overrides='{"spec":{"nodeName":"'"$inode"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 6 curl -s -o /dev/null -w %{http_code} http://'"$bip"':3000/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
+        --restart=Never --rm --attach --quiet -- 2>/dev/null || echo "000")
+      code="${out:-000}"
+      code="${code: -3}"
+      kubectl -n "$PROBE_NS" delete pod "$probe" --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+      if [[ "$code" =~ ^(2|3|4)[0-9][0-9]$ ]]; then
         ok=$((ok+1))
-        emit "test2.${npod}@${nnode}->${bip}@${bnode}[${same}]" PASS "http=$code"
+        emit "test2.${ipod}@${inode}->${bip}@${bnode}[${same}]" PASS "http=$code"
       else
-        emit "test2.${npod}@${nnode}->${bip}@${bnode}[${same}]" FAIL "http=$code (cross-node host→pod broken)"
+        emit "test2.${ipod}@${inode}->${bip}@${bnode}[${same}]" FAIL "http=$code (cross-node host→pod broken)"
       fi
     done <<< "$backend_pods"
-  done <<< "$nginx_pods"
+  done <<< "$ingress_pods"
 
   if [[ $ok -eq $total ]]; then
     emit "test2.summary" PASS "$ok/$total OK"

@@ -2781,6 +2781,23 @@ install_traefik() {
   #
   # nodeAffinity excludes nodes where the operator has opted them out of
   # ingress traffic (ingress-mode=none) or marked them private-only.
+  #
+  # additionalArguments[0..1] — entryPoint.forwardedHeaders.trustedIPs —
+  # list of CIDRs Traefik TRUSTS to set X-Forwarded-* on incoming
+  # connections. With our DaemonSet+hostPort layout Traefik IS the
+  # perimeter (no LB in front); external clients connect directly to
+  # the node's :80/:443 via DNAT and Traefik's connection-remote-addr
+  # reflects the real client IP. We therefore set trustedIPs to
+  # 127.0.0.1/32 (loopback only) to strip any attacker-supplied XFF
+  # before it reaches ForwardAuth Middlewares — operators behind an
+  # external L4/L7 load balancer must add their LB CIDR in an overlay
+  # or the LB would be misidentified as the source IP by CrowdSec.
+  #
+  # NOTE: inline `# ...` comments INSIDE the backslash-continued helm
+  # command silently truncate it (the comment terminates the logical
+  # statement and every flag after it leaks out as a separate top-level
+  # command, e.g. `--set: command not found`). All design commentary
+  # belongs above this block, not interleaved between --set flags.
   helm_cmd upgrade --install traefik traefik/traefik \
     --namespace traefik \
     --create-namespace \
@@ -2802,16 +2819,6 @@ install_traefik() {
     --set 'volumes[0].name=crowdsec-bouncer-key' \
     --set 'volumes[0].mountPath=/var/run/secrets/crowdsec' \
     --set 'volumes[0].type=secret' \
-    # entryPoint.forwardedHeaders.trustedIPs — list of CIDRs Traefik
-    # TRUSTS to set X-Forwarded-* on incoming connections. With our
-    # DaemonSet+hostPort layout Traefik IS the perimeter (no LB in
-    # front); external clients connect directly to the node's :80/:443
-    # via DNAT and Traefik's connection-remote-addr reflects the real
-    # client IP. We therefore set trustedIPs to 127.0.0.1/32 (loopback
-    # only) to strip any attacker-supplied XFF before it reaches
-    # ForwardAuth Middlewares — operators behind an external L4/L7
-    # load balancer must add their LB CIDR in an overlay or the LB
-    # would be misidentified as the source IP by CrowdSec.
     --set 'additionalArguments[0]=--entryPoints.web.forwardedHeaders.trustedIPs=127.0.0.1/32' \
     --set 'additionalArguments[1]=--entryPoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32' \
     --set resources.requests.cpu=50m \
