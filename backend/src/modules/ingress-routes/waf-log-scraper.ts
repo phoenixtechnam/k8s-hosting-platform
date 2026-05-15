@@ -1,7 +1,6 @@
 /**
  * WAF log scraper — lightweight scheduler that reads ModSecurity
- * events from the NGINX Ingress Controller logs and inserts them
- * into the waf_logs table.
+ * events from the WAF stack and inserts them into the waf_logs table.
  *
  * Runs every 30 seconds. Reads `kubectl logs --since=35s` to get
  * recent entries with 5s overlap for safety. Deduplicates via
@@ -9,6 +8,19 @@
  *
  * No sidecar, no extra pods, no file mounts — just K8s API calls
  * from the existing backend process.
+ *
+ * Source pods (Traefik migration, 2026-05-15): the legacy nginx-ingress
+ * embedded ModSecurity in the controller itself and emitted "ModSecurity"-
+ * prefixed lines. Post-migration the WAF stack is two separate pods in
+ * the `traefik` namespace:
+ *   - `traefik` DS (entrypoint, modsecurity plugin proxies request bodies)
+ *   - `modsec-crs` Deployment (OWASP CRS rule engine, emits the actual
+ *     ModSec audit log lines that this scraper parses).
+ * We point the scraper at `modsec-crs` because the audit log lives there.
+ * If modsec-crs isn't running (single-node clusters where the anti-
+ * affinity replicas=2 doesn't satisfy) the scraper returns the SKIP
+ * sentinel and emits one info-level log per cycle instead of spamming
+ * "No ingress controller pod found" 60x/minute.
  */
 
 import { eq, and, inArray, desc, notInArray, sql } from 'drizzle-orm';
@@ -20,8 +32,8 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 const SCRAPE_INTERVAL_MS = 30_000;
 const LOG_SINCE_SECONDS = 35;
 const MAX_LOGS_PER_ROUTE = 50;
-const INGRESS_NAMESPACE = 'ingress-nginx';
-const INGRESS_LABEL = 'app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller';
+const INGRESS_NAMESPACE = 'traefik';
+const INGRESS_LABEL = 'app=modsec-crs';
 
 interface ParsedWafEvent {
   readonly uniqueId: string;
@@ -102,7 +114,10 @@ export async function scrapeWafLogs(
     });
 
     const podName = pods.items?.[0]?.metadata?.name;
-    if (!podName) return { scraped: 0, inserted: 0, errors: ['No ingress controller pod found'] };
+    // SKIP path: modsec-crs not running (e.g. single-node cluster where the
+    // anti-affinity replicas=2 doesn't satisfy). Don't spam errors — the
+    // scheduler caller treats this as a no-op cycle.
+    if (!podName) return { scraped: 0, inserted: 0, errors: [] };
 
     logOutput = await (k8s.core as unknown as {
       readNamespacedPodLog: (args: {

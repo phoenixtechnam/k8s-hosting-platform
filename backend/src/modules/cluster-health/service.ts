@@ -25,7 +25,7 @@ const TRACKED: ReadonlyArray<{ ns: string; name: string; kind: 'Deployment' | 'D
   { ns: 'cnpg-system', name: 'cnpg-controller-manager', kind: 'Deployment', optional: true },
   { ns: 'cert-manager', name: 'cert-manager', kind: 'Deployment' },
   { ns: 'cert-manager', name: 'cert-manager-webhook', kind: 'Deployment' },
-  { ns: 'ingress-nginx', name: 'ingress-nginx-controller', kind: 'DaemonSet' },
+  { ns: 'traefik', name: 'traefik', kind: 'DaemonSet' },
   { ns: 'longhorn-system', name: 'longhorn-manager', kind: 'DaemonSet', optional: true },
   { ns: 'flux-system', name: 'kustomize-controller', kind: 'Deployment' },
   { ns: 'flux-system', name: 'source-controller', kind: 'Deployment' },

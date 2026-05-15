@@ -193,6 +193,15 @@ test_2_ingress_to_backend() {
     local ipod inode
     ipod=$(echo "$ip" | cut -d= -f1)
     inode=$(echo "$ip" | cut -d= -f2)
+    # Pending Traefik DS pods have no nodeName yet (typical mid-rollout
+    # state: new pod is Pending until the old pod releases hostPort 80/443).
+    # Skip them — the probe nodeName='' would fail with a runtime error,
+    # and a not-yet-scheduled pod is by definition not part of the live
+    # ingress path.
+    if [[ -z "$inode" ]]; then
+      emit "test2.${ipod}@unscheduled" SKIP "Traefik pod not yet scheduled (Pending — hostPort race during DS rollout?)"
+      continue
+    fi
     while IFS= read -r bp; do
       [[ -z "$bp" ]] && continue
       local bnode bip
@@ -327,12 +336,17 @@ test_4_hostnetwork_to_pod() {
       local out
       out=$(kubectl run "$probe" \
         --image=curlimages/curl:8.10.1 --restart=Never -n "$PROBE_NS" \
-        --overrides='{"spec":{"hostNetwork":true,"nodeName":"'"$node"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 6 curl -s -o /dev/null -w %{http_code} http://'"$bip"':80/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
+        --overrides='{"spec":{"hostNetwork":true,"nodeName":"'"$node"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 6 curl -s -o /dev/null -w %{http_code} http://'"$bip"':3000/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
         --restart=Never --rm --attach --quiet -- 2>/dev/null || echo "000")
       local code="${out:-000}"
       code="${code: -3}"
       kubectl -n "$PROBE_NS" delete pod "$probe" --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
-      if [[ "$code" =~ ^(2|3)[0-9][0-9]$ ]]; then
+      # admin-panel listens on :3000 with no auth gate on /, returns 200 from /
+      # routes that don't require auth. Any HTTP response (2|3|4xx) proves the
+      # hostNetwork→pod cross-node path works at L7 — what 4xx really proves
+      # is that the L7 connection completed and the backend returned a status.
+      # The smoke check here is connectivity, not authorization.
+      if [[ "$code" =~ ^(2|3|4)[0-9][0-9]$ ]]; then
         ok=$((ok+1))
         emit "test4.host@${node}->${bip}@${bnode}[${same}]" PASS "http=$code"
       else
