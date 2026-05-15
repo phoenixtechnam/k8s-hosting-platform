@@ -15,6 +15,19 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
+  # Traefik migration 2026-05-15: the system-settings/ingress-reconciler,
+  # ingress-routes/traefik-apply helpers, mtls-providers, oidc/ingress-
+  # proxy-manager, tenant-provisioner, client-lifecycle/ingress-suspend,
+  # private-workers/reconciler, domains/k8s-ingress, and ingress-auth/
+  # reconciler create / get / replace IngressRoute + Middleware CRDs via
+  # the kubernetes-client CustomObjectsApi. Without this rule the
+  # reconcilers 403 on every call and no admin/client/api/tenant
+  # IngressRoute is ever created — the cluster bootstraps but every
+  # route 404s through Traefik. Phase 2 of the migration added the
+  # emission code; the matching RBAC slipped through.
+  - apiGroups: ["traefik.io"]
+    resources: ["ingressroutes", "middlewares"]
+    verbs: ["*"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
     verbs: ["*"]
@@ -100,6 +113,19 @@ rules:
     verbs: ["get", "list", "watch", "create", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
+    verbs: ["*"]
+  # Traefik migration 2026-05-15: the system-settings/ingress-reconciler,
+  # ingress-routes/traefik-apply helpers, mtls-providers, oidc/ingress-
+  # proxy-manager, tenant-provisioner, client-lifecycle/ingress-suspend,
+  # private-workers/reconciler, domains/k8s-ingress, and ingress-auth/
+  # reconciler create / get / replace IngressRoute + Middleware CRDs via
+  # the kubernetes-client CustomObjectsApi. Without this rule the
+  # reconcilers 403 on every call and no admin/client/api/tenant
+  # IngressRoute is ever created — the cluster bootstraps but every
+  # route 404s through Traefik. Phase 2 of the migration added the
+  # emission code; the matching RBAC slipped through.
+  - apiGroups: ["traefik.io"]
+    resources: ["ingressroutes", "middlewares"]
     verbs: ["*"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
