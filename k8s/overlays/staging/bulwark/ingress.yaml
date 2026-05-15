@@ -1,0 +1,41 @@
+# Bulwark webmail IngressRoute for staging/production.
+#
+# Routes through the bulwark-impersonator sidecar (lives in the
+# Bulwark Pod) so /_impersonate handoffs from client-panel work.
+# The cert is issued via Let's Encrypt prod by cert-manager.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: bulwark-ingress
+  namespace: mail
+  labels:
+    app: bulwark
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`bulwark.${DOMAIN}`)
+      services:
+        - name: bulwark-impersonator
+          port: 80
+  tls:
+    secretName: bulwark-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bulwark-tls
+  namespace: mail
+  labels:
+    app: bulwark
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  secretName: bulwark-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - bulwark.${DOMAIN}

@@ -1,0 +1,26 @@
+# Staging Bulwark overlay (ADR-039).
+#
+# Bulwark deploys alongside Roundcube as a second webmail engine.
+# `platform_settings.default_webmail_engine` chooses which one new
+# tenants get; super_admin flips via the platform admin UI.
+#
+# Secrets (operator-bootstrapped by scripts/bootstrap.sh):
+#   bulwark-secrets               — ADMIN_PASSWORD + SESSION_SECRET
+#   bulwark-impersonator-secrets  — JWT_SECRET + STALWART_MASTER_USER
+#                                   + STALWART_MASTER_PASSWORD
+#                                   + IMPERSONATOR_ADMIN_TOKEN
+#
+# Production wiring differences from dev/bulwark:
+#   - Real Let's Encrypt cert via cert-manager (no local-ca)
+#   - No URL-rewriter sidecar (Stalwart's defaultHostname seeded by
+#     bootstrap + usePermissiveCors=true emit proper URLs)
+#   - No socat bridge (cluster DNS resolves the public hostnames)
+#   - No NodePort patch (cluster has real LoadBalancer / Traefik LB)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/bulwark
+  - ingress.yaml

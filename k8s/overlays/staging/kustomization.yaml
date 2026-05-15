@@ -30,6 +30,13 @@ resources:
   # the Roundcube pod fails to start (CrashLoopBackOff on PG connect /
   # IMAP master-auth handshake).
   - roundcube/
+  # ADR-039 — Bulwark webmail (JMAP-native) coexists with Roundcube.
+  # `platform_settings.default_webmail_engine` selects which engine
+  # new tenants get. Existing tenants keep their current engine.
+  # Secrets (bulwark-secrets + bulwark-impersonator-secrets)
+  # operator-provisioned by scripts/bootstrap.sh:generate_bulwark_secrets.
+  - bulwark/
+  - bulwark-impersonator/
   # Cross-namespace NetworkPolicy so Stalwart (mail ns) can reach
   # Postgres (platform ns). Lives at the overlay root, not under
   # stalwart/, because it targets the platform namespace and the
