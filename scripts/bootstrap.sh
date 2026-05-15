@@ -4855,13 +4855,14 @@ spec:
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
               methodCalls:[["x:AcmeProvider/get",{accountId:\$a,ids:null},"c0"]]}')" | \
             jq -r '.methodResponses[0][1].list[].id // empty' 2>/dev/null | tr '\n' ',')
-          if echo ",\${EXISTING_ACME}," | grep -q ',letsencrypt,'; then
-            echo "AcmeProvider letsencrypt already exists — skipping"
+          ACME_PROVIDER_ID="letsencrypt"
+          if echo ",\${EXISTING_ACME}," | grep -q ",\${ACME_PROVIDER_ID},"; then
+            echo "AcmeProvider \${ACME_PROVIDER_ID} already exists — skipping"
           else
-            jmap_call "\$(jq -n --arg a "\$ACCT" --arg d "\${STALWART_DOMAIN}" \
+            jmap_call "\$(jq -n --arg a "\$ACCT" --arg d "\${STALWART_DOMAIN}" --arg pid "\${ACME_PROVIDER_ID}" \
               '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
                 methodCalls:[["x:AcmeProvider/set",
-                  {accountId:\$a,create:{letsencrypt:{
+                  {accountId:\$a,create:{(\$pid):{
                     directory:"https://acme-v02.api.letsencrypt.org/directory",
                     challengeType:"Http01",
                     contact:{("hostmaster@" + \$d): true}
@@ -4869,6 +4870,48 @@ spec:
                   "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
             echo "AcmeProvider created"
           fi
+
+          # 5b. Wire Domain.certificateManagement = Automatic with the
+          # AcmeProvider + the mail-hostname SAN. This is the canonical
+          # Stalwart 0.16 native-ACME path. The acme provider is keyed by
+          # ID (\$ACME_PROVIDER_ID = 'letsencrypt'); the SAN key is the
+          # leading subdomain ('mail' for 'mail.example.com').
+          #
+          # WHY: with certificateManagement set to Manual (the default
+          # after x:Domain/set create), Stalwart never tries to acquire
+          # certificates — the operator has to PATCH the Domain manually
+          # via JMAP. Setting it here at bootstrap means a fresh install
+          # gets a real LE cert automatically when step 5c fires.
+          SAN_KEY=\$(echo "\${STALWART_HOSTNAME}" | sed 's/\\..*//')
+          jmap_call "\$(jq -n --arg a "\$ACCT" --arg did "\$DOMAIN_ID" --arg pid "\${ACME_PROVIDER_ID}" --arg sk "\${SAN_KEY}" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Domain/set",
+                {accountId:\$a,update:{(\$did):{
+                  certificateManagement:{
+                    "@type":"Automatic",
+                    acmeProviderId:\$pid,
+                    subjectAlternativeNames:{(\$sk):true}
+                  }
+                }}},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "Domain.certificateManagement = Automatic (acme=\${ACME_PROVIDER_ID}, san=\${SAN_KEY})"
+
+          # 5c. Fire x:Task/set create AcmeRenewal — the JMAP-canonical
+          # trigger for ACME cert acquisition in Stalwart 0.16.
+          #
+          # NOT stalwart-cli (deprecated in 0.16). NOT
+          # x:Bootstrap/set requestTlsCertificate=true (forbidden post-
+          # bootstrap). NOT x:Action/set ReloadTlsCertificates (no-op).
+          #
+          # Idempotent in practice: AcmeRenewal checks whether the cert
+          # exists and is near expiry before contacting Let's Encrypt,
+          # so re-firing on every bootstrap re-run is safe.
+          jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Task/set",
+                {accountId:\$a,create:{r:{"@type":"AcmeRenewal"}}},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "AcmeRenewal task fired"
 
           # 6. AllowedIp — create missing entries
           EXISTING_IPS=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
