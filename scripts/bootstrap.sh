@@ -296,6 +296,20 @@ FORCE_ROTATE_OPERATOR_KEY=false # regenerate + overwrite ConfigMap even if it ex
 FORCE_DOMAIN_CHANGE=false
 SECRETS_BUNDLE_PATH=""         # --secrets-bundle <path|http(s) URL> — pre-Flux import
 SECRETS_BUNDLE_KEY=""          # --age-key <path> to operator-private.key for decrypt
+# --backup-target-s3-*: optional post-install configuration of the
+# Longhorn + DR cluster backup-target. Credentials are NEVER accepted
+# on the command line — they MUST come from the env vars
+# BACKUP_TARGET_S3_ACCESS_KEY and BACKUP_TARGET_S3_SECRET_KEY. Passing
+# them via flags would leak them into `ps`, /proc/<pid>/cmdline, and
+# the operator's shell history. When the endpoint flag is empty,
+# bootstrap leaves the backup-target unset (admin can configure later
+# via the admin panel — same flow used to reach this point before
+# these flags existed).
+BACKUP_TARGET_S3_ENDPOINT=""    # --backup-target-s3-endpoint  https://...
+BACKUP_TARGET_S3_BUCKET=""      # --backup-target-s3-bucket    <name>
+BACKUP_TARGET_S3_REGION=""      # --backup-target-s3-region    <region>
+BACKUP_TARGET_S3_PREFIX=""      # --backup-target-s3-prefix    <prefix>  (optional)
+BACKUP_TARGET_NAME="primary"    # --backup-target-name         <name>    (defaults primary)
 MARKER_DIR="/var/lib/hosting-platform"
 KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 REPO_URL="https://github.com/phoenixtechnam/k8s-hosting-platform.git"
@@ -394,6 +408,28 @@ OPTIONS:
                          Required if --secrets-bundle is set. The key
                          is read once at import time and never copied
                          to the cluster.
+
+  --backup-target-s3-endpoint <url>
+                         If set, configures the Longhorn + DR cluster
+                         backup-target via the admin API after install.
+                         Required together: --backup-target-s3-bucket,
+                         --backup-target-s3-region, and the env vars
+                         BACKUP_TARGET_S3_ACCESS_KEY +
+                         BACKUP_TARGET_S3_SECRET_KEY (credentials are
+                         NEVER accepted via flags so they don't leak
+                         into `ps`/cmdline/shell history).
+                         Optional: --backup-target-s3-prefix <path>
+                                   --backup-target-name <name>
+                         Example:
+                           export BACKUP_TARGET_S3_ACCESS_KEY=...
+                           export BACKUP_TARGET_S3_SECRET_KEY=...
+                           bootstrap.sh ... \
+                             --backup-target-s3-endpoint https://s3.example.com \
+                             --backup-target-s3-bucket my-backups \
+                             --backup-target-s3-region eu-central
+                         When the endpoint is unset, bootstrap.sh skips
+                         this step and the operator can configure the
+                         backup-target via the admin panel later.
 
 JOINING (server #2+ or worker):
   --server <ip>          Existing control-plane IP. When --cluster-network-
@@ -630,6 +666,11 @@ parse_args() {
       --force-domain-change) FORCE_DOMAIN_CHANGE=true; shift ;;
       --secrets-bundle)  SECRETS_BUNDLE_PATH="$2"; shift 2 ;;
       --age-key)         SECRETS_BUNDLE_KEY="$2"; shift 2 ;;
+      --backup-target-s3-endpoint) BACKUP_TARGET_S3_ENDPOINT="$2"; shift 2 ;;
+      --backup-target-s3-bucket)   BACKUP_TARGET_S3_BUCKET="$2"; shift 2 ;;
+      --backup-target-s3-region)   BACKUP_TARGET_S3_REGION="$2"; shift 2 ;;
+      --backup-target-s3-prefix)   BACKUP_TARGET_S3_PREFIX="$2"; shift 2 ;;
+      --backup-target-name)        BACKUP_TARGET_NAME="$2"; shift 2 ;;
       --help|-h)         usage ;;
       *)                 error "Unknown option: $1" ;;
     esac
@@ -4961,6 +5002,220 @@ verify() {
   log "════════════════════════════════════════════════"
 }
 
+# Configure the Longhorn + DR backup-target via the admin API, if the
+# operator passed --backup-target-s3-endpoint. Credentials come from
+# env vars BACKUP_TARGET_S3_ACCESS_KEY + BACKUP_TARGET_S3_SECRET_KEY
+# — never accepted on the command line. Bootstrap log redacts both
+# values (we only print the trailing 4 chars of the access key for
+# diagnostics).
+#
+# Flow: test-draft → create → activate. Test-draft probes S3 connectivity
+# before persisting the row, so a typo in endpoint/key fails fast rather
+# than leaving a broken row + half-applied Longhorn settings.
+#
+# Non-fatal: a backup-target misconfig is operationally annoying (DR
+# cron jobs warn) but doesn't break the cluster. The operator can edit
+# or replace the config via the admin panel.
+configure_backup_target_s3() {
+  if [[ -z "$BACKUP_TARGET_S3_ENDPOINT" ]]; then
+    return 0
+  fi
+
+  log ""
+  log "── Configuring S3 backup-target ──"
+
+  # Required flag tuple — fail loudly if half-set.
+  if [[ -z "$BACKUP_TARGET_S3_BUCKET" || -z "$BACKUP_TARGET_S3_REGION" ]]; then
+    warn "  --backup-target-s3-endpoint set but bucket/region missing — skipping."
+    warn "  Need: --backup-target-s3-bucket <name> --backup-target-s3-region <region>"
+    return 0
+  fi
+
+  # Credentials MUST come from env vars. Refuse to proceed if either is
+  # missing (rather than silently posting an empty key — the API would
+  # accept it and then S3 PUTs would fail later in obscure ways).
+  if [[ -z "${BACKUP_TARGET_S3_ACCESS_KEY:-}" || -z "${BACKUP_TARGET_S3_SECRET_KEY:-}" ]]; then
+    warn "  --backup-target-s3-endpoint set but env vars BACKUP_TARGET_S3_ACCESS_KEY"
+    warn "  and BACKUP_TARGET_S3_SECRET_KEY are not both set — skipping."
+    warn "  (Credentials must come from env, never flags, to avoid /proc leak.)"
+    return 0
+  fi
+
+  local admin_host="admin.${PLATFORM_DOMAIN}"
+  local creds_file="/etc/platform/admin-credentials"
+  if [[ ! -r "$creds_file" ]]; then
+    warn "  ${creds_file} missing/unreadable — backup-target needs admin login."
+    return 0
+  fi
+  local admin_email admin_pw
+  admin_email=$(grep '^ADMIN_EMAIL=' "$creds_file" 2>/dev/null | head -1 | cut -d= -f2-)
+  admin_pw=$(grep '^ADMIN_PASSWORD=' "$creds_file" 2>/dev/null | head -1 | cut -d= -f2-)
+  # First-run creds use a different format — fall back.
+  admin_email="${admin_email:-admin@${PLATFORM_DOMAIN}}"
+  if [[ -z "$admin_pw" ]]; then
+    admin_pw=$(grep -E 'Password' "$creds_file" 2>/dev/null | head -1 | awk '{print $NF}')
+  fi
+  if [[ -z "$admin_pw" ]]; then
+    warn "  Could not extract admin password from ${creds_file} — skipping."
+    return 0
+  fi
+
+  local ak_tail="${BACKUP_TARGET_S3_ACCESS_KEY: -4}"
+  log "  Endpoint: ${BACKUP_TARGET_S3_ENDPOINT}"
+  log "  Bucket:   ${BACKUP_TARGET_S3_BUCKET}"
+  log "  Region:   ${BACKUP_TARGET_S3_REGION}"
+  log "  Prefix:   ${BACKUP_TARGET_S3_PREFIX:-(none)}"
+  log "  AccessKey: ...${ak_tail} (length=${#BACKUP_TARGET_S3_ACCESS_KEY})"
+
+  # Build temp files for both the login and config-create JSON
+  # bodies. Setting the trap BEFORE mktemp so SIGINT/SIGTERM between
+  # mktemp and chmod can't leak a temp file. RETURN trap fires on
+  # both normal returns and `return N` exits (bash 4.0+).
+  local login_body body
+  trap '[[ -n "${login_body:-}" ]] && rm -f "$login_body"; [[ -n "${body:-}" ]] && rm -f "$body"' RETURN INT TERM
+  login_body=$(mktemp)
+  chmod 600 "$login_body"
+  body=$(mktemp)
+  chmod 600 "$body"
+
+  # Build the login body via python so passwords with special JSON
+  # characters (", \, control chars) don't break the request. The
+  # admin password comes from a generated openssl-rand secret and
+  # rarely contains these, but the operator may have rotated the
+  # creds file before bootstrap.sh re-runs.
+  ADMIN_EMAIL_FOR_PY="$admin_email" ADMIN_PW_FOR_PY="$admin_pw" \
+  python3 - "$login_body" <<'PY' || { warn "  failed to build login body"; return 0; }
+import json, os, sys
+try:
+  out = {"email": os.environ["ADMIN_EMAIL_FOR_PY"], "password": os.environ["ADMIN_PW_FOR_PY"]}
+except KeyError as e:
+  sys.exit(f"missing required env var: {e}")
+with open(sys.argv[1], "w") as f:
+  json.dump(out, f)
+PY
+
+  # Acquire admin token via /api/v1/auth/login. -k because LE-staging
+  # cert is the bootstrap default and may not be browser-trusted yet.
+  # Single 15-second retry: the platform-api Pod might be Ready but
+  # the DB connection pool still warming up, returning 5xx on the
+  # very first request after the Deployment rolled. One retry covers
+  # the typical 10-15s warmup window without burning bootstrap time
+  # on a genuinely-broken cluster.
+  local token attempt
+  token=""
+  for attempt in 1 2; do
+    token=$(curl -sk -m 15 -X POST -H 'Content-Type: application/json' \
+      --data-binary "@${login_body}" \
+      "https://${admin_host}/api/v1/auth/login" 2>/dev/null \
+      | python3 -c 'import json,sys
+try:
+  print(json.load(sys.stdin)["data"]["token"])
+except Exception:
+  pass' 2>/dev/null)
+    if [[ -n "$token" ]]; then
+      break
+    fi
+    if [[ $attempt -lt 2 ]]; then
+      log "  /api/v1/auth/login: empty token on attempt 1 — retrying in 15s..."
+      sleep 15
+    fi
+  done
+  if [[ -z "$token" ]]; then
+    warn "  /api/v1/auth/login failed after retry — skipping backup-target config."
+    return 0
+  fi
+
+  # Build the create-config JSON body. Same pattern: temp file, never
+  # on the command line, so credentials don't appear in `ps`/cmdline.
+  #
+  # The script-global flag vars (BACKUP_TARGET_S3_ENDPOINT, etc.) are
+  # set by the CLI parser as plain bash vars, not env. Export them
+  # explicitly for the python child process below — but only within
+  # this function's scope so they don't leak to other commands.
+  BACKUP_TARGET_S3_ENDPOINT="$BACKUP_TARGET_S3_ENDPOINT" \
+  BACKUP_TARGET_S3_BUCKET="$BACKUP_TARGET_S3_BUCKET" \
+  BACKUP_TARGET_S3_REGION="$BACKUP_TARGET_S3_REGION" \
+  BACKUP_TARGET_S3_PREFIX="${BACKUP_TARGET_S3_PREFIX:-}" \
+  BACKUP_TARGET_NAME="$BACKUP_TARGET_NAME" \
+  BACKUP_TARGET_S3_ACCESS_KEY="$BACKUP_TARGET_S3_ACCESS_KEY" \
+  BACKUP_TARGET_S3_SECRET_KEY="$BACKUP_TARGET_S3_SECRET_KEY" \
+  python3 - "$body" <<'PY' || { warn "  failed to build config body"; return 0; }
+import json, os, sys
+try:
+  out = {
+    "storage_type": "s3",
+    "name": os.environ.get("BACKUP_TARGET_NAME", "primary"),
+    "s3_endpoint": os.environ["BACKUP_TARGET_S3_ENDPOINT"],
+    "s3_bucket": os.environ["BACKUP_TARGET_S3_BUCKET"],
+    "s3_region": os.environ["BACKUP_TARGET_S3_REGION"],
+    "s3_access_key": os.environ["BACKUP_TARGET_S3_ACCESS_KEY"],
+    "s3_secret_key": os.environ["BACKUP_TARGET_S3_SECRET_KEY"],
+  }
+except KeyError as e:
+  sys.exit(f"missing required env var: {e}")
+prefix = os.environ.get("BACKUP_TARGET_S3_PREFIX", "")
+if prefix:
+  out["s3_prefix"] = prefix
+with open(sys.argv[1], "w") as f:
+  json.dump(out, f)
+PY
+
+  # 1. test-draft — probe S3 reachability before persisting.
+  log "  Probing S3 connectivity..."
+  local draft_resp draft_ok
+  draft_resp=$(curl -sk -m 30 -X POST \
+    -H "Authorization: Bearer ${token}" \
+    -H 'Content-Type: application/json' \
+    --data-binary "@${body}" \
+    "https://${admin_host}/api/v1/admin/backup-configs/test-draft" 2>/dev/null)
+  draft_ok=$(printf '%s' "$draft_resp" | python3 -c 'import json,sys
+try:
+  print("yes" if json.load(sys.stdin)["data"]["ok"] else "no")
+except Exception:
+  print("no")' 2>/dev/null)
+  if [[ "$draft_ok" != "yes" ]]; then
+    warn "  test-draft failed — S3 endpoint/bucket/creds may be wrong. Response:"
+    printf '    %s\n' "$(printf '%s' "$draft_resp" | head -c 400)" | sed 's/^/  /'
+    return 0
+  fi
+  log "  Connectivity OK."
+
+  # 2. create — persists the encrypted row.
+  log "  Creating backup-config..."
+  local create_resp cfg_id
+  create_resp=$(curl -sk -m 30 -X POST \
+    -H "Authorization: Bearer ${token}" \
+    -H 'Content-Type: application/json' \
+    --data-binary "@${body}" \
+    "https://${admin_host}/api/v1/admin/backup-configs" 2>/dev/null)
+  cfg_id=$(printf '%s' "$create_resp" | python3 -c 'import json,sys
+try:
+  print(json.load(sys.stdin)["data"]["id"])
+except Exception:
+  pass' 2>/dev/null)
+  if [[ -z "$cfg_id" ]]; then
+    warn "  create failed:"
+    printf '    %s\n' "$(printf '%s' "$create_resp" | head -c 400)" | sed 's/^/  /'
+    return 0
+  fi
+  log "  Created backup-config id=${cfg_id}"
+
+  # 3. activate — triggers the Longhorn reconciler so Longhorn picks
+  #    up the URL + creds Secret and tenant snapshots can flow to S3.
+  log "  Activating backup-config (reconciles Longhorn BackupTarget)..."
+  local activate_rc
+  activate_rc=$(curl -sk -m 60 -o /dev/null -w '%{http_code}' \
+    -X POST -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' \
+    -d '{}' \
+    "https://${admin_host}/api/v1/admin/backup-configs/${cfg_id}/activate" 2>/dev/null)
+  if [[ "$activate_rc" != "200" ]]; then
+    warn "  activate returned ${activate_rc} — backup-config is created but inactive."
+    warn "  Activate via the admin panel: Backups → ${BACKUP_TARGET_NAME} → Activate"
+    return 0
+  fi
+  log "  Backup-target activated."
+}
+
 # Real install verification — moves beyond "kubectl get nodes shows
 # Ready". Probes the admin-panel HTTPS endpoint at the operator's
 # --domain, hits /api/v1/healthz on platform-api, and logs in via the
@@ -5332,6 +5587,13 @@ main() {
     # Non-fatal (warn only) so a transient cert-manager / DNS issue
     # doesn't fail bootstrap; operator gets a clear message either way.
     verify_install || true
+    # Optional: configure the Longhorn + DR backup-target if the
+    # operator passed --backup-target-s3-endpoint. Requires the API to
+    # be reachable (verify_install just confirmed it). No-op if the
+    # endpoint flag is empty. Non-fatal — bootstrap.sh stays a one-shot
+    # green path; a misconfigured backup target is a warning the
+    # operator handles via the admin panel.
+    configure_backup_target_s3 || true
     print_summary
 
     # Phase 5: post-install cluster-network smoke. Advisory by default;
