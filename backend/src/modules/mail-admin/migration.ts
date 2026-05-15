@@ -85,6 +85,13 @@ export interface MigrationDeps {
   readonly logger?: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void };
 }
 
+// Build-trigger anchor: the Build Backend job in build-deploy.yml
+// only fires when files under `backend/` change. The chmod fix in
+// 622f278f only touched `scripts/*.sh` mode bits, so the new image
+// was never built and staging stayed on the previous image without
+// the raw-fetch SSA helper. Touching this comment shifts the file's
+// content so the next run builds. (No effect on runtime behavior.)
+
 /**
  * Build a KubeConfig for the raw-fetch SSA apply paths in this file.
  *
