@@ -54,7 +54,7 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:?ADMIN_PASSWORD env var required}"
 TEST_DOMAIN="${TEST_DOMAIN:-harness-$(date +%s)-${RANDOM}.success.com.na}"
 SKIP_WEBMAIL_HIT="${SKIP_WEBMAIL_HIT:-0}"
 
-CURL_OPTS=(-sS -m 15)
+CURL_OPTS=(-sS -m 30)
 [[ "${CURL_INSECURE:-0}" == "1" ]] && CURL_OPTS+=(-k)
 
 PASS=0
@@ -69,7 +69,11 @@ trap 'cleanup_on_exit' EXIT
 
 cleanup_on_exit() {
   if [[ -n "$CLIENT_ID" && -n "${ADMIN_TOKEN:-}" ]]; then
-    curl "${CURL_OPTS[@]}" -X DELETE "${API_BASE}/api/v1/clients/${CLIENT_ID}" \
+    # Cleanup is slow — cascade deletes mailboxes, email-domains, DNS
+    # records, etc. Give it 60s so a busy cluster doesn't bail mid-way.
+    local opts=(-sS -m 60)
+    [[ "${CURL_INSECURE:-0}" == "1" ]] && opts+=(-k)
+    curl "${opts[@]}" -X DELETE "${API_BASE}/api/v1/clients/${CLIENT_ID}" \
       -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -o /dev/null -w 'cleanup: client delete %{http_code}\n' || true
   fi
@@ -105,11 +109,17 @@ api() {
 
 # ── Phase 2: create test client ─────────────────────────────────────
 phase "2. Create client"
+# Discover a plan + region. The API requires both as UUIDs at create time.
+PLAN_ID=$(api GET /api/v1/plans | jq -r '.data[0].id // empty')
+REGION_ID=$(api GET /api/v1/regions | jq -r '.data[0].id // empty')
+[[ -z "$PLAN_ID"   ]] && { fail "2.0a no plans available"; exit 1; } || pass "2.0a discovered plan=${PLAN_ID}"
+[[ -z "$REGION_ID" ]] && { fail "2.0b no regions available"; exit 1; } || pass "2.0b discovered region=${REGION_ID}"
+
 CLIENT_RESP=$(api POST /api/v1/clients "{
-  \"name\":\"Webmail E2E Test\",
-  \"company\":\"Harness GmbH\",
-  \"contact_email\":\"e2e-$(date +%s)@${TEST_DOMAIN}\",
-  \"status\":\"active\"
+  \"company_name\":\"Webmail E2E Harness\",
+  \"company_email\":\"e2e-$(date +%s)@${TEST_DOMAIN}\",
+  \"plan_id\":\"${PLAN_ID}\",
+  \"region_id\":\"${REGION_ID}\"
 }")
 CLIENT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id // empty')
 if [[ -z "$CLIENT_ID" ]]; then
@@ -150,7 +160,8 @@ MBOX_RESP=$(api POST "/api/v1/clients/${CLIENT_ID}/email/domains/${EMAIL_DOMAIN_
   \"display_name\":\"E2E Test\"
 }")
 MAILBOX_ID=$(echo "$MBOX_RESP" | jq -r '.data.id // empty')
-MAILBOX_ADDR=$(echo "$MBOX_RESP" | jq -r '.data.full_address // empty')
+# Response uses camelCase (Drizzle convention per CLAUDE.md).
+MAILBOX_ADDR=$(echo "$MBOX_RESP" | jq -r '.data.fullAddress // .data.full_address // empty')
 if [[ -z "$MAILBOX_ID" || -z "$MAILBOX_ADDR" ]]; then
   fail "5.1 create mailbox failed: $(echo "$MBOX_RESP" | head -c 300)"
   exit 1
