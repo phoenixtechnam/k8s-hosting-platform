@@ -1,5 +1,9 @@
 import { useState } from 'react';
-import { Mail, Globe, Server, Shield, Loader2, CheckCircle, XCircle, Plus, Trash2, TestTube, X, Key, Copy, ExternalLink } from 'lucide-react';
+import {
+  Mail, Globe, Server, Shield, Loader2, CheckCircle, XCircle, Plus, Trash2,
+  TestTube, X, Key, Copy, ExternalLink, HardDrive, Network, Archive as ArchiveIcon,
+  Settings,
+} from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import StatCard from '@/components/ui/StatCard';
 import {
@@ -20,7 +24,8 @@ import MailDrCard from '@/components/MailDrCard';
 import MailPortExposureCard from '@/components/MailPortExposureCard';
 import MailSnapshotHealthCard from '@/components/MailSnapshotHealthCard';
 import MailArchiveCard from '@/components/MailArchiveCard';
-import MailServerStatusTile from '@/components/MailServerStatusTile';
+import MailHealthBanner from '@/components/MailHealthBanner';
+import MailSectionCard from '@/components/MailSectionCard';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -28,9 +33,11 @@ import SortableHeader from '@/components/ui/SortableHeader';
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 type Tab = 'domains' | 'relays';
+type BackupTab = 'snapshot' | 'archive';
 
 export default function EmailManagement() {
   const [tab, setTab] = useState<Tab>('domains');
+  const [backupTab, setBackupTab] = useState<BackupTab>('snapshot');
   const { data: domainsRes, isLoading: domainsLoading } = useAdminEmailDomains();
   const domains = domainsRes?.data ?? [];
 
@@ -51,55 +58,131 @@ export default function EmailManagement() {
         <StatCard title="Mail Server" value="Stalwart" icon={Server} accent="green" />
       </div>
 
-      {/* At-a-glance runtime tile: pod node + port exposure + storage + SSL pointer */}
-      <MailServerStatusTile />
+      {/* Live mail-server health banner — replaces the cosmetic
+          MailServerStatusTile. Drills down into pod + JMAP + (future)
+          RocksDB / cert / TCP probes. See MailHealthBanner.tsx.
+          Always visible at the top — the "is anything broken?" question
+          is answered before anything else. */}
+      <MailHealthBanner />
 
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
-        {[
-          { key: 'domains' as Tab, label: 'Email Domains' },
-          { key: 'relays' as Tab, label: 'SMTP Relays' },
-        ].map(t => (
-          <button key={t.key} type="button" onClick={() => setTab(t.key)}
-            className={`border-b-2 px-4 py-2.5 text-sm font-medium ${tab === t.key ? 'border-brand-500 text-brand-600 dark:text-brand-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
-            data-testid={`tab-${t.key}`}>
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* ─── Section 1: Domains & Relays (default-open daily-driver) ── */}
+      <MailSectionCard
+        icon={Mail}
+        title="Domains & Relays"
+        summary={
+          domainsLoading
+            ? 'Loading…'
+            : `${domains.length} domain${domains.length === 1 ? '' : 's'} • ${totalMailboxes} mailbox${totalMailboxes === 1 ? '' : 'es'}`
+        }
+        dataTestId="mail-section-domains"
+        defaultOpen
+        storageKey="domains-and-relays"
+      >
+        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+          {[
+            { key: 'domains' as Tab, label: 'Email Domains' },
+            { key: 'relays' as Tab, label: 'SMTP Relays' },
+          ].map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTab(t.key)}
+              className={`border-b-2 px-4 py-2.5 text-sm font-medium ${tab === t.key ? 'border-brand-500 text-brand-600 dark:text-brand-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+              data-testid={`tab-${t.key}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {tab === 'domains' && <EmailDomainsTable domains={domains} isLoading={domainsLoading} />}
+        {tab === 'relays' && <SmtpRelaysSection />}
+      </MailSectionCard>
 
-      {tab === 'domains' && <EmailDomainsTable domains={domains} isLoading={domainsLoading} />}
-      {tab === 'relays' && <SmtpRelaysSection />}
+      {/* ─── Section 2: Server settings (hostname + webmail URL) ─── */}
+      <MailSectionCard
+        icon={Settings}
+        title="Mail server settings"
+        summary="Hostname, webmail URL, ACME-driven cert"
+        dataTestId="mail-section-server-settings"
+        storageKey="server-settings"
+      >
+        <MailServerSettings />
+      </MailSectionCard>
 
-      <MailServerSettings />
-
-      <StalwartAdminPanel />
-
-      {/* ─── Placement & DR section ──────────────────────────────── */}
-      <div className="space-y-4">
-        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
-          Placement &amp; Disaster Recovery
-        </h2>
+      {/* ─── Section 3: Placement & DR ─────────────────────────────── */}
+      <MailSectionCard
+        icon={Network}
+        title="Placement & Disaster Recovery"
+        summary="Active node, pinning, auto-failover, live migration"
+        dataTestId="mail-section-placement"
+        storageKey="placement"
+      >
         <MailDrCard />
-        <MailPortExposureCard />
-      </div>
+      </MailSectionCard>
 
-      {/* ─── Storage section ─────────────────────────────────────── */}
-      <div className="space-y-4">
-        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
-          Storage
-        </h2>
+      {/* ─── Section 4: Port exposure ──────────────────────────────── */}
+      <MailSectionCard
+        icon={Server}
+        title="Port exposure"
+        summary="thisNodeOnly vs allServerNodes (haproxy DaemonSet)"
+        dataTestId="mail-section-ports"
+        storageKey="port-exposure"
+      >
+        <MailPortExposureCard />
+      </MailSectionCard>
+
+      {/* ─── Section 5: Backups (snapshot + archive sub-tabs) ──────── */}
+      <MailSectionCard
+        icon={ArchiveIcon}
+        title="Backups"
+        summary="Snapshot (restic, 2-min interval) + Archive (stalwart -e, clean exports)"
+        dataTestId="mail-section-backups"
+        storageKey="backups"
+      >
+        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+          {[
+            { key: 'snapshot' as BackupTab, label: 'Snapshot (restic)' },
+            { key: 'archive' as BackupTab, label: 'Archive (stalwart -e)' },
+          ].map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setBackupTab(t.key)}
+              className={`border-b-2 px-4 py-2 text-sm font-medium ${backupTab === t.key
+                ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+              data-testid={`backup-tab-${t.key}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {backupTab === 'snapshot' && <MailSnapshotHealthCard />}
+        {backupTab === 'archive' && <MailArchiveCard />}
+      </MailSectionCard>
+
+      {/* ─── Section 6: Storage & Blob ─────────────────────────────── */}
+      <MailSectionCard
+        icon={HardDrive}
+        title="Storage & Blob store"
+        summary="RocksDB DataStore PVC (local-path) + S3-compatible BlobStore"
+        dataTestId="mail-section-storage"
+        storageKey="storage"
+      >
         <MailStorageCard />
         <StalwartBlobStoreCard />
-      </div>
+      </MailSectionCard>
 
-      {/* ─── Backup & Snapshots section ───────────────────────────── */}
-      <div className="space-y-4">
-        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 pb-2">
-          Backup
-        </h2>
-        <MailSnapshotHealthCard />
-        <MailArchiveCard />
-      </div>
+      {/* ─── Section 7: Stalwart admin embed ───────────────────────── */}
+      <MailSectionCard
+        icon={Shield}
+        title="Stalwart admin panel"
+        summary="Direct access to the Stalwart web admin UI (advanced)"
+        dataTestId="mail-section-stalwart-admin"
+        storageKey="stalwart-admin"
+      >
+        <StalwartAdminPanel />
+      </MailSectionCard>
     </div>
   );
 }

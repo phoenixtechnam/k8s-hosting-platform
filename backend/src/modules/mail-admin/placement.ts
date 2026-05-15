@@ -42,6 +42,12 @@ const ELIGIBLE_NODE_ROLES = new Set(['server', 'worker']);
 
 export interface PlacementOptions {
   readonly kubeconfigPath: string | undefined;
+  /**
+   * Optional logger surface for non-fatal warnings (e.g. self-heal
+   * pod-query falling back to stored value). Fastify provides one;
+   * tests can omit it.
+   */
+  readonly logger?: { warn?: (...args: unknown[]) => void };
 }
 
 interface K8sCoreBundle {
@@ -57,6 +63,37 @@ async function loadK8sCoreClient(kubeconfigPath: string | undefined): Promise<K8
 }
 
 // Parse K8s memory quantity strings like "16296Mi", "2Gi", "1024Ki" to bytes.
+/**
+ * Process-local cache of the last self-heal write — module-scoped so
+ * concurrent GET /admin/mail/placement calls served by the same
+ * platform-api pod can short-circuit instead of writing the same
+ * value to the DB on every poll during a rollover window.
+ *
+ * Per-replica caches diverge across the 3 platform-api pods, which is
+ * fine: in the worst case 3 writes land in 10s instead of N×3, still
+ * a meaningful reduction vs the original "one write per request"
+ * behaviour.
+ */
+const SELF_HEAL_DEBOUNCE_MS = 10_000;
+let lastSelfHealNode: string | null = null;
+let lastSelfHealAt = 0;
+
+function shouldWriteActiveNode(liveActiveNode: string): boolean {
+  const now = Date.now();
+  if (liveActiveNode === lastSelfHealNode && (now - lastSelfHealAt) < SELF_HEAL_DEBOUNCE_MS) {
+    return false;
+  }
+  lastSelfHealNode = liveActiveNode;
+  lastSelfHealAt = now;
+  return true;
+}
+
+/** Visible for tests. */
+export function _resetPlacementSelfHealCache(): void {
+  lastSelfHealNode = null;
+  lastSelfHealAt = 0;
+}
+
 function parseMemQuantity(q: string): number {
   const m = q.match(/^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|K|M|G|T)?$/);
   if (!m) return 0;
@@ -97,6 +134,66 @@ export async function getMailPlacement(
       capacity?: Record<string, string>;
     };
   };
+  // Self-heal activeNode from the live Stalwart pod's spec.nodeName.
+  // E2E harness Phase G4 caught the drift: mailActiveNode is only
+  // persisted on migration runs (migration.ts:310 + 464), so if the
+  // pod is rescheduled by k8s without a migration (node drain, manual
+  // delete, image update, etc.) the DB column goes stale. Resolving
+  // from kubectl on every read makes this endpoint the source of
+  // truth and lazily-updates the DB so consuming code paths
+  // (migration source-node check, DR watcher) see consistent state.
+  //
+  // Best-effort: if the live pod query fails, fall back to the DB
+  // value. If both are null, activeNode is null in the response
+  // (which is still a legitimate state — operator hasn't set
+  // placement yet).
+  let liveActiveNode: string | null = null;
+  try {
+    const podList = await core.listNamespacedPod({
+      namespace: MAIL_NAMESPACE,
+      labelSelector: 'app=stalwart-mail',
+    }) as { items?: Array<{
+      metadata?: { name?: string; deletionTimestamp?: string };
+      spec?: { nodeName?: string };
+      status?: { phase?: string };
+    }> };
+    // Exclude pods that are mid-termination: `metadata.deletionTimestamp`
+    // is set while `status.phase` may still be 'Running' for the entire
+    // graceful shutdown window. Picking such a pod during a rollover
+    // would make liveActiveNode race-flip between the old and new node.
+    const runningPod = (podList.items ?? []).find(
+      (p) => p.status?.phase === 'Running' && !p.metadata?.deletionTimestamp,
+    );
+    liveActiveNode = runningPod?.spec?.nodeName ?? null;
+  } catch (err) {
+    // K8s API unreachable / RBAC denied / quota error → fall back to
+    // the stored value but emit a warn so the operator can see that
+    // the self-heal is silently no-oping. A persistent 403 from a
+    // missing pods:list RBAC verb otherwise looks identical to a
+    // healthy-but-stable cluster from the response.
+    opts.logger?.warn?.(
+      { err: (err as Error).message ?? String(err) },
+      'placement: live pod query failed; falling back to stored mailActiveNode',
+    );
+  }
+  const persistedActiveNode = (row?.mailActiveNode ?? null) as string | null;
+  if (liveActiveNode !== null && liveActiveNode !== persistedActiveNode) {
+    // Debounce identical writes. During a Stalwart pod rollover the
+    // frontend polls /admin/mail/placement every ~5s × 3 platform-api
+    // replicas — without this gate every poll would write the same
+    // value, spamming slow-query logs. The cache is process-local
+    // (per platform-api replica); a 10s skip-window is enough to
+    // absorb a normal rollover burst while still catching real
+    // multi-minute drift.
+    if (shouldWriteActiveNode(liveActiveNode)) {
+      await db.update(systemSettings)
+        .set({ mailActiveNode: liveActiveNode })
+        .where(eq(systemSettings.id, SETTINGS_ID))
+        .catch(() => { /* best-effort lazy update */ });
+    }
+  }
+  const effectiveActiveNode = liveActiveNode ?? persistedActiveNode;
+
   let candidates: NodeCandidate[] = [];
   try {
     const nodeList = await core.listNode({}) as { items?: NodeShape[] };
@@ -138,7 +235,7 @@ export async function getMailPlacement(
     primaryNode: row?.mailPrimaryNode ?? null,
     secondaryNode: row?.mailSecondaryNode ?? null,
     tertiaryNode: row?.mailTertiaryNode ?? null,
-    activeNode: row?.mailActiveNode ?? null,
+    activeNode: effectiveActiveNode,
     drState: row?.mailDrState ?? 'healthy',
     autoFailoverEnabled: row?.mailAutoFailoverEnabled ?? false,
     failoverThresholdSeconds: row?.mailFailoverThresholdSeconds ?? 300,

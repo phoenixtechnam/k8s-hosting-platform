@@ -114,19 +114,27 @@ if [[ -z "$API_POD" ]]; then
   exit 1
 fi
 
-# Pick the CNPG primary pod (post-M14 cluster). Falls back to
-# label app=postgres for any pre-CNPG StatefulSet still around.
+# Pick the CNPG primary pod. Cluster name was renamed
+# `postgres` → `system-db` in the 2026-05-07 PG18 migration; try the
+# canonical name first, then the legacy name, then the pre-CNPG
+# StatefulSet label as final fallback.
 PG_POD=$(kubectl -n "$PLATFORM_NS" get pods \
-  -l cnpg.io/cluster=postgres,role=primary \
+  -l cnpg.io/cluster=system-db,role=primary \
   --field-selector=status.phase=Running \
   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+if [[ -z "$PG_POD" ]]; then
+  PG_POD=$(kubectl -n "$PLATFORM_NS" get pods \
+    -l cnpg.io/cluster=postgres,role=primary \
+    --field-selector=status.phase=Running \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+fi
 if [[ -z "$PG_POD" ]]; then
   PG_POD=$(kubectl -n "$PLATFORM_NS" get pods -l app=postgres \
     --field-selector=status.phase=Running \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 fi
 if [[ -z "$PG_POD" ]]; then
-  echo "ERROR: no Running postgres pod in $PLATFORM_NS (looked for cnpg.io/cluster=postgres,role=primary then app=postgres)" >&2
+  echo "ERROR: no Running postgres pod in $PLATFORM_NS (looked for cnpg.io/cluster in [system-db, postgres] with role=primary, then app=postgres)" >&2
   exit 1
 fi
 

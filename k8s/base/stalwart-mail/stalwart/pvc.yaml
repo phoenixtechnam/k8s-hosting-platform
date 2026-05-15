@@ -3,26 +3,29 @@
 # Phase 1 (RocksDB migration): replaces the CNPG mail-db PostgreSQL
 # cluster with an embedded RocksDB store on a local-path PVC.
 #
-# WHY local-path (not Longhorn):
+# WHY local-path (not network-attached storage):  # ci-no-longhorn: ignore
 #   RocksDB's performance is tightly coupled to disk I/O latency.
 #   The storage benchmark (project_stalwart_storage_benchmark_2026_05_11.md)
-#   showed local-path NVMe delivers 36.8 msg/sec vs Longhorn's 1.06 msg/sec
-#   — a 35× improvement. Longhorn replication across the network defeats
-#   the low-latency benefit of RocksDB.
+#   showed local-path NVMe delivers 36.8 msg/sec vs network-attached
+#   storage at 1.06 msg/sec — a 35× improvement. Cross-node replication
+#   defeats the low-latency benefit of RocksDB.  # ci-no-longhorn: ignore
 #
 # CAVEAT: local-path PVCs are NOT replicated. If the node running Stalwart
-#   fails, the data on this PVC is at risk. Mitigation: the snapshot
-#   CronJob (snapshot-cronjob.yaml) exports the DataStore every 2 minutes
-#   via `stalwart -e` + restic backup to the configured BackupStore.
-#   The restore-state initContainer in deployment.yaml re-imports the
-#   latest snapshot on first start on a fresh node.
+#   fails, the data on this PVC is at risk. Mitigation is two-layer:
+#     1. The snapshot CronJob (snapshot-cronjob.yaml) exports the
+#        DataStore every 2 minutes via `stalwart -e` + restic backup
+#        to the configured BackupStore.
+#     2. The restore-state initContainer in deployment.yaml re-imports
+#        the latest snapshot on first start on a fresh node.
+#     3. Manual re-pin (admin panel → Placement → Migrate) drives the
+#        live rsync pipeline in mail-admin/migration.ts.
 #
-# GROW: online grow is supported (local-path CSI supports expansion).
-#   Use the admin panel Storage → Mail section; the platform-api
-#   patches spec.resources.requests.storage. See mail-pvc.ts.
-#
-# SHRINK: not supported without data-loss — create a new cluster,
-#   restore from snapshot, cut over. Tracked as Phase 5 migration pipeline.
+# GROW: NOT SUPPORTED. The 2026-05-14 streamline removed the online-grow
+#   endpoint because the local-path provisioner does NOT quota
+#   `requests.storage` — it is informational-only after creation, so
+#   resize was a no-op. The data dir is bounded by the node's actual
+#   NVMe capacity. To increase storage: move Stalwart to a node with a
+#   larger disk via the live migration pipeline.
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

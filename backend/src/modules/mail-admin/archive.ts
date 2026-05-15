@@ -763,7 +763,19 @@ async function createArchiveJob(
               // into a non-empty DataStore. The PVC is shared with the (now-
               // scaled-down) live Stalwart so its contents are the previous
               // production data — about to be replaced.
-              'rm -rf /var/lib/stalwart/data/* /var/lib/stalwart/data/.[!.]* 2>/dev/null; ' +
+              //
+              // SAFETY: bail BEFORE the rm if /export/export.lz4 is missing
+              // or trivially small. A partial / zero-byte download would
+              // otherwise wipe production data and then `stalwart -i` would
+              // fail, leaving the dir empty. 1024 bytes is a conservative
+              // floor — a real Stalwart export is always at least kilobytes
+              // (header + metadata even for an empty DB).
+              'EXPORT_SIZE=$(stat -c%s /export/export.lz4 2>/dev/null || echo 0); ' +
+                'if [ "$EXPORT_SIZE" -lt 1024 ]; then ' +
+                '  echo "ERROR: /export/export.lz4 missing or too small ($EXPORT_SIZE bytes) — refusing to wipe live data dir"; ' +
+                '  exit 1; ' +
+                'fi; ' +
+                'rm -rf /var/lib/stalwart/data/* /var/lib/stalwart/data/.[!.]* 2>/dev/null; ' +
                 'stalwart --config /etc/stalwart/config.json -i /export/export.lz4',
             ],
             volumeMounts: [configVolumeMount, dataVolumeMount, exportVolumeMount],
@@ -898,7 +910,21 @@ async function createArchiveJobNoDowntime(
   // jobName so concurrent runs (which `rejectIfAnotherRunActive`
   // prevents anyway) can't collide. Cleaned up by the stalwart-export
   // initContainer regardless of export exit code.
+  //
+  // SECURITY: this value is later interpolated into a `sh -c` script
+  // (stalwart-export trap cleanup) and an alt-config writer. Today
+  // jobName is platform-generated from randomUUID()+timestamp so it
+  // can't contain shell metacharacters — but a future refactor could
+  // accept user-influenced names. Assert the path matches a strict
+  // shell-safe character class to fail fast if the invariant breaks.
   const checkpointDirOnPvc = `/data/.checkpoint-tmp-${jobName}`;
+  if (!/^\/data\/\.checkpoint-tmp-[a-zA-Z0-9._-]+$/.test(checkpointDirOnPvc)) {
+    throw new ApiError(
+      'MAIL_ARCHIVE_UNSAFE_PATH',
+      `Internal error: checkpoint path '${checkpointDirOnPvc}' contains characters that would not be safe to shell-interpolate. jobName must match [a-zA-Z0-9._-]+ — refusing to spawn Job.`,
+      500,
+    );
+  }
 
   // Data PVC mounted WRITABLE because checkpoint dir lives inside it.
   // The secondary instance only READS the primary's SST/MANIFEST files;
@@ -1027,18 +1053,28 @@ async function createArchiveJobNoDowntime(
       name: 'stalwart-export',
       image: stalwartImage,
       imagePullPolicy: 'IfNotPresent',
+      // Run as root so the `rm -rf` in the EXIT trap can remove the
+      // checkpoint dir even though the rocksdb-checkpoint init
+      // container (distroless/cc, uid=0) owns the hard-linked SST
+      // files. Without runAsUser=0 here, the trap's rm silently
+      // skips root-owned files and orphans accumulate in the live
+      // PVC — caught by the streamline E2E harness Phase E6.
+      securityContext: { runAsUser: 0, runAsGroup: 0 },
       command: ['sh', '-c'],
       args: [
-        // Run `stalwart -e` against the alt-config (which points
-        // DataStore at the checkpoint dir, not the live primary).
-        // ALWAYS clean up the checkpoint dir afterwards — hard-linked
-        // SST files appear as a 0-byte cost only until the primary
-        // GC-rotates the underlying inode; after that we'd retain real
-        // bytes of dead data.
-        'rc=0; ' +
-          'stalwart --config /scratch/alt-cfg/config.json -e /export/export.lz4 || rc=$?; ' +
-          'rm -rf "' + checkpointDirOnPvc + '" || true; ' +
-          'exit $rc',
+        // Use `trap '...' EXIT` so the checkpoint cleanup runs
+        // UNCONDITIONALLY — including when stalwart-exits non-zero,
+        // which would otherwise leave the dir orphaned (Job has
+        // backoffLimit:0 + restartPolicy:Never, so no subsequent
+        // init container runs on failure). Also sweeps all
+        // `.checkpoint-tmp-*` siblings to catch orphans from prior
+        // runs that aborted between scratch-prep and this step.
+        'cleanup() { ' +
+          'rm -rf "' + checkpointDirOnPvc + '" 2>/dev/null || true; ' +
+          'rm -rf /data/.checkpoint-tmp-* 2>/dev/null || true; ' +
+        '}; ' +
+        'trap cleanup EXIT; ' +
+        'stalwart --config /scratch/alt-cfg/config.json -e /export/export.lz4',
       ],
       volumeMounts: [dataVolumeMount, scratchVolumeMount, exportVolumeMount],
     },

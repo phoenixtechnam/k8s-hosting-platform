@@ -563,12 +563,18 @@ _run_migrations_and_seed() {
 _bootstrap_stalwart_reader() {
   # The Drizzle migration creates stalwart_reader as NOLOGIN. Set the dev password
   # so Stalwart can authenticate to the platform DB.
-  # Resolve current primary (CNPG cluster) — falls back to legacy
-  # postgres-0 if that ever still exists.
+  # Resolve current primary. Cluster name was renamed
+  # `postgres` → `system-db` in the 2026-05-07 PG18 migration; try the
+  # canonical name first, then legacy CNPG name, then legacy postgres-0.
   local pg_pod
   pg_pod=$(k3s_exec kubectl -n platform get pods \
-    -l cnpg.io/cluster=postgres,role=primary \
+    -l cnpg.io/cluster=system-db,role=primary \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$pg_pod" ]]; then
+    pg_pod=$(k3s_exec kubectl -n platform get pods \
+      -l cnpg.io/cluster=postgres,role=primary \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  fi
   pg_pod="${pg_pod:-postgres-0}"
   k3s_exec kubectl exec -n platform "$pg_pod" -- \
     psql -U platform -d hosting_platform \

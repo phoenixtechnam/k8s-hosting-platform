@@ -22,6 +22,7 @@ kind: Kustomization
 resources:
   - stalwart/
   - haproxy/
+  - migration/
 
 labels:
   - pairs:

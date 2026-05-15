@@ -1,7 +1,32 @@
 import { z } from 'zod';
 
+/**
+ * RFC 1123 hostname (label) syntax, anchored.
+ *
+ * The migration Job's shell script and the placement DB row both
+ * consume node names as text. Without this constraint, a `super_admin`
+ * (or any code path that bypasses the API) could inject shell
+ * metacharacters via `targetNode` or via the `*_node` fields in
+ * placement updates. The values flow into `sh -c` inside the rsync
+ * Job (`backend/src/modules/mail-admin/migration.ts`), which mounts
+ * the live RocksDB DataStore PVC.
+ *
+ * Kubernetes already constrains Node `metadata.name` to this syntax,
+ * so anything legitimately coming from the cluster will pass. The
+ * regex is intentionally tighter than Kubernetes' RFC 1123 subdomain:
+ * we accept up to 253 chars, alphanumeric labels separated by `.`
+ * or `-`, no uppercase, no underscores, no shell metacharacters.
+ */
+export const kubernetesNodeNameSchema = z.string()
+  .min(1)
+  .max(253)
+  .regex(
+    /^[a-z0-9]([a-z0-9-.]{0,251}[a-z0-9])?$/,
+    'must be a valid RFC 1123 Kubernetes node name (lowercase alphanumeric, dot, dash)',
+  );
+
 export const mailMigrationStartRequestSchema = z.object({
-  targetNode: z.string().min(1),
+  targetNode: kubernetesNodeNameSchema,
   newGiB: z.number().int().min(1).max(2048).optional(),
   confirm: z.literal(true),
 });
@@ -43,9 +68,12 @@ export const mailPlacementResponseSchema = z.object({
 });
 
 export const mailPlacementUpdateRequestSchema = z.object({
-  primaryNode: z.string().nullable().optional(),
-  secondaryNode: z.string().nullable().optional(),
-  tertiaryNode: z.string().nullable().optional(),
+  // Node names persist to system_settings and flow into the
+  // migration Job's shell script. Use the strict node-name schema
+  // (rejects shell metacharacters) instead of a plain string.
+  primaryNode: kubernetesNodeNameSchema.nullable().optional(),
+  secondaryNode: kubernetesNodeNameSchema.nullable().optional(),
+  tertiaryNode: kubernetesNodeNameSchema.nullable().optional(),
   autoFailoverEnabled: z.boolean().optional(),
   failoverThresholdSeconds: z.number().int().min(60).max(3600).optional(),
 }).refine(
@@ -57,7 +85,9 @@ export const mailPlacementUpdateRequestSchema = z.object({
 );
 
 export const mailFailoverRequestSchema = z.object({
-  targetNode: z.string().nullable(),
+  // Same hostname constraint as mailMigrationStartRequestSchema —
+  // failover flows through the same migration Job code path.
+  targetNode: kubernetesNodeNameSchema.nullable(),
   confirm: z.literal(true),
 });
 

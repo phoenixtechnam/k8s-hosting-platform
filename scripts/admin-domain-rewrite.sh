@@ -70,8 +70,15 @@ fi
 # "cannot execute UPDATE in a read-only transaction" and the
 # operator gets a confusing psql error. Same selector pattern the
 # admin-password-reset.sh sister tool uses.
-POD=$(kubectl -n "$NAMESPACE" get pods -l cnpg.io/cluster=postgres,role=primary -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-[[ -n "$POD" ]] || { echo "ERROR: no postgres primary pod found in namespace $NAMESPACE (label cnpg.io/cluster=postgres,role=primary)" >&2; exit 1; }
+#
+# Cluster name was renamed `postgres` → `system-db` in the 2026-05-07
+# PG18 migration; try the canonical name first and fall back to the
+# legacy name so this tool keeps working on pre-migration clusters.
+POD=$(kubectl -n "$NAMESPACE" get pods -l cnpg.io/cluster=system-db,role=primary -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [[ -z "$POD" ]]; then
+  POD=$(kubectl -n "$NAMESPACE" get pods -l cnpg.io/cluster=postgres,role=primary -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+fi
+[[ -n "$POD" ]] || { echo "ERROR: no postgres primary pod found in namespace $NAMESPACE (looked for cnpg.io/cluster in [system-db, postgres] with role=primary)" >&2; exit 1; }
 
 # UPDATE system_settings + platform_settings via a SINGLE psql session
 # inside the postgres pod. Using cluster superuser ('postgres') so we

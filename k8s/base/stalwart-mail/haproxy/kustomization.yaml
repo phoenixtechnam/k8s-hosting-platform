@@ -1,6 +1,13 @@
+# 2026-05-14 streamline: daemonset.yaml was deleted from this kustomization.
+# The haproxy DaemonSet is now created and deleted by platform-api on
+# port-exposure mode flip. See:
+#   backend/src/modules/mail-admin/haproxy-builder.ts  (spec)
+#   backend/src/modules/mail-admin/port-exposure.ts    (lifecycle)
+#
+# ConfigMap and NetworkPolicy stay Flux-managed — their content is
+# static and benefits from GitOps as the source of truth.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - daemonset.yaml
   - configmap.yaml
   - networkpolicy.yaml

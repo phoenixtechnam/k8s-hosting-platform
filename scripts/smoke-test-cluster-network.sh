@@ -37,9 +37,40 @@
 # Exit status: 0 if every test PASSes, 1 otherwise.
 set -uo pipefail
 
-# Default hostnames probed in test 1. Override with --hostnames or env.
-SMOKE_HOSTNAMES_DEFAULT="admin.staging.phoenix-host.net,client.staging.phoenix-host.net,longhorn.staging.phoenix-host.net,dex.staging.phoenix-host.net"
-HOSTNAMES="${SMOKE_HOSTNAMES:-$SMOKE_HOSTNAMES_DEFAULT}"
+# Default hostnames probed in test 1. Resolution order:
+#   1. --hostnames flag (overrides everything)
+#   2. SMOKE_HOSTNAMES env var
+#   3. platform-cluster-config ConfigMap (deployed by bootstrap.sh —
+#      authoritative source of the cluster's PLATFORM_DOMAIN)
+#   4. Hardcoded fallback (staging cluster, used when CM is absent)
+SMOKE_HOSTNAMES_FALLBACK="admin.staging.phoenix-host.net,client.staging.phoenix-host.net,longhorn.staging.phoenix-host.net,dex.staging.phoenix-host.net"
+
+discover_hostnames() {
+  # Read the base domain from the live cluster's platform-config
+  # ConfigMap (key `ingress-base-domain`, set by bootstrap.sh from
+  # --domain). If absent (pre-Flux, missing namespace, etc.) fall
+  # back to the hardcoded staging hostnames so this script still
+  # produces output on broken clusters.
+  local dom
+  dom=$(kubectl -n platform get configmap platform-config \
+    -o jsonpath='{.data.ingress-base-domain}' 2>/dev/null || true)
+  # Backwards-compat: pre-2026 platform-cluster-config CM (if any
+  # legacy clusters still use it).
+  if [[ -z "$dom" ]]; then
+    dom=$(kubectl -n platform-system get configmap platform-cluster-config \
+      -o jsonpath='{.data.PLATFORM_DOMAIN}' 2>/dev/null || true)
+  fi
+  if [[ -z "$dom" ]]; then
+    dom=$(kubectl -n platform get configmap platform-cluster-config \
+      -o jsonpath='{.data.PLATFORM_DOMAIN}' 2>/dev/null || true)
+  fi
+  if [[ -n "$dom" ]]; then
+    echo "admin.${dom},client.${dom},longhorn.${dom},dex.${dom}"
+  else
+    echo "$SMOKE_HOSTNAMES_FALLBACK"
+  fi
+}
+HOSTNAMES="${SMOKE_HOSTNAMES:-$(discover_hostnames)}"
 
 # Test selection
 SKIP=""
@@ -66,7 +97,12 @@ RUN_ID="smoke-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 emit() {
   # emit <test> <status> <message>
   local test="$1" status="$2" msg="$3"
-  if [[ "$status" == "PASS" ]]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
+  case "$status" in
+    PASS) PASS=$((PASS+1)) ;;
+    FAIL) FAIL=$((FAIL+1)) ;;
+    # INFO/SKIP are informational — neither pass nor fail the run.
+    *) ;;
+  esac
   if [[ $JSON -eq 1 ]]; then
     # one JSON object per line — escape quotes/backslashes in msg
     local esc
@@ -83,14 +119,22 @@ skipped() { [[ ",$SKIP," == *",$1,"* ]]; }
 test_1_external_ips() {
   if skipped 1; then emit "test1.external_ip_matrix" SKIP "skipped"; return; fi
 
-  # discover external IPs from K8s nodes — authoritative
-  local ips
-  if ! ips=$(kubectl get nodes -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="ExternalIP")].address}{"\n"}{end}' 2>/dev/null | grep -v '^$'); then
-    emit "test1.external_ip_matrix" FAIL "kubectl get nodes failed"
+  # discover external IPs from K8s nodes. Cloud providers populate
+  # .status.addresses[type=ExternalIP]; bare-metal Hetzner installs
+  # often leave this empty and rely on InternalIP + DNS only. Split
+  # the kubectl error from the missing-field signal so the diagnostic
+  # message points at the actual problem.
+  local raw_ips ips
+  if ! raw_ips=$(kubectl get nodes -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="ExternalIP")].address}{"\n"}{end}' 2>/dev/null); then
+    emit "test1.external_ip_matrix" FAIL "kubectl get nodes failed (check kubeconfig)"
     return
   fi
+  ips=$(echo "$raw_ips" | grep -v '^$' || true)
   if [[ -z "$ips" ]]; then
-    emit "test1.external_ip_matrix" FAIL "no ExternalIP found on any node"
+    # Bare-metal install with no cloud-provider populating ExternalIP
+    # — that's expected (e.g. Hetzner VPS bootstrapped via our
+    # script) and not a regression. Skip the matrix probe.
+    emit "test1.external_ip_matrix" PASS "no ExternalIP on any node (bare-metal install) — matrix probe skipped"
     return
   fi
 
@@ -180,18 +224,25 @@ test_3_pod_to_pod() {
   api_pods=$(kubectl -n platform get pods -l app=platform-api \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{"\n"}{end}' 2>/dev/null) \
     || { emit "test3.pod_to_pod" FAIL "list platform-api failed"; return; }
-  # Postgres pod naming: CNPG cluster (postgres-1, postgres-2) or
-  # legacy StatefulSet (postgres-0). Resolve via primary label.
+  # Postgres pod naming: CNPG cluster (system-db-1, system-db-2) —
+  # was renamed from `postgres` to `system-db` during the 2026-05-07
+  # PG18 migration. Fall back to the old name + legacy StatefulSet
+  # for older clusters that haven't migrated yet.
   local pg_pod
   pg_pod=$(kubectl -n platform get pods \
-    -l cnpg.io/cluster=postgres,role=primary \
+    -l cnpg.io/cluster=system-db,role=primary \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$pg_pod" ]]; then
+    pg_pod=$(kubectl -n platform get pods \
+      -l cnpg.io/cluster=postgres,role=primary \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  fi
   if [[ -z "$pg_pod" ]]; then
     pg_pod=$(kubectl -n platform get pods -l app=postgres \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   fi
   if [[ -z "$pg_pod" ]]; then
-    emit "test3.pod_to_pod" FAIL "no postgres primary pod found"
+    emit "test3.pod_to_pod" FAIL "no postgres primary pod found (looked for system-db, postgres, and app=postgres)"
     return
   fi
   pg_ip=$(kubectl -n platform get pod "$pg_pod" -o jsonpath='{.status.podIP}' 2>/dev/null)
@@ -337,10 +388,21 @@ test_6_felix_logs() {
     pod=$(echo "$p" | cut -d= -f1)
     node=$(echo "$p" | cut -d= -f2)
     total=$((total+1))
-    # patterns that indicate Felix is unhappy
+    # Patterns that indicate Felix is unhappy. The grep is anchored
+    # to specific error classes — anything else is noise.
+    #
+    # 2026-05-14: tightened from a permissive 'wireguard.*error'
+    # which matched the benign `felix/wireguard.go ... Failed to
+    # set NAPI threading to 0 ... operation not supported` warning
+    # emitted on every Linux kernel without per-interface NAPI
+    # threading sysctl (Debian 13 trixie, kernel 6.12). Replaced
+    # with a narrower regex that targets actual wireguard egress/
+    # peer/encryption failures.
     local hits
     hits=$(kubectl -n calico-system logs "$pod" -c calico-node --tail=200 2>/dev/null \
-      | grep -cE 'Failed to set tunnel device MTU|Failed to wipe the XDP|fatal|panic|Permission denied|wireguard.*error' || true)
+      | grep -E 'Failed to set tunnel device MTU|Failed to wipe the XDP|fatal|panic|Permission denied|wireguard.*(peer|encrypt|cannot create)' \
+      | grep -vE 'Failed to set NAPI threading.*operation not supported' \
+      | wc -l)
     if [[ "$hits" -eq 0 ]]; then
       ok=$((ok+1))
       emit "test6.${node}" PASS "felix log clean (last 200 lines)"
@@ -475,6 +537,25 @@ test_7_cert_ready() {
 test_8_ha_deployments() {
   if skipped 8; then emit "test8.ha_deployments" SKIP "skipped"; return; fi
 
+  # Cluster-size awareness: HA assertions only apply on clusters
+  # with ≥2 schedulable nodes. Single-node testing/dev installs
+  # legitimately run 1 replica per stateless Deployment and would
+  # falsely fail this test on every run (observed 2026-05-14).
+  #
+  # Count via jsonpath rather than parsing `kubectl get nodes`
+  # human output: that output mixes status fields (`Ready`,
+  # `Ready,SchedulingDisabled`, `NotReady`) into one comma column,
+  # so an awk/grep regex easily mismatches. The Ready condition is
+  # in .status.conditions and is the authoritative signal.
+  local node_count
+  node_count=$(kubectl get nodes \
+    -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+    2>/dev/null | grep -c '^True$' || true)
+  if [[ "$node_count" -lt 2 ]]; then
+    emit "test8.ha_deployments" PASS "single-node cluster (Ready nodes=$node_count) — HA assertions skipped"
+    return
+  fi
+
   # Tier is implied by the live replica count: any of the stateless
   # Deployments at >=3 replicas means HA is in effect. Reading the
   # ConfigMap directly added no information beyond the live spec, so
@@ -518,10 +599,18 @@ test_9_cnpg_cluster() {
     return
   fi
 
-  local cluster
-  cluster=$(kubectl -n platform get cluster.postgresql.cnpg.io postgres -o json 2>/dev/null || true)
+  # Cluster name was renamed postgres → system-db during 2026-05-07
+  # PG18 migration. Try the canonical name first; fall back to legacy
+  # so this test still works on pre-migration clusters.
+  local cluster cluster_name
+  cluster=$(kubectl -n platform get cluster.postgresql.cnpg.io system-db -o json 2>/dev/null || true)
+  cluster_name="system-db"
   if [[ -z "$cluster" ]]; then
-    emit "test9.cnpg_cluster" FAIL "Cluster postgres -n platform not found"
+    cluster=$(kubectl -n platform get cluster.postgresql.cnpg.io postgres -o json 2>/dev/null || true)
+    cluster_name="postgres"
+  fi
+  if [[ -z "$cluster" ]]; then
+    emit "test9.cnpg_cluster" FAIL "Cluster system-db (or postgres) -n platform not found"
     return
   fi
 
@@ -531,9 +620,9 @@ test_9_cnpg_cluster() {
   phase=$(echo "$cluster" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("status",{}).get("phase","unknown"))')
 
   if [[ "$ready_instances" -eq "$instances" && "$instances" -ge 1 ]]; then
-    emit "test9.postgres" PASS "instances=$instances readyInstances=$ready_instances phase=$phase"
+    emit "test9.${cluster_name}" PASS "instances=$instances readyInstances=$ready_instances phase=$phase"
   else
-    emit "test9.postgres" FAIL "instances=$instances readyInstances=$ready_instances phase=$phase"
+    emit "test9.${cluster_name}" FAIL "instances=$instances readyInstances=$ready_instances phase=$phase"
   fi
 }
 

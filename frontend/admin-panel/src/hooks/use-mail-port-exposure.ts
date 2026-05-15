@@ -28,6 +28,21 @@ export function useUpdateMailPortExposure() {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: PORT_EXPOSURE_KEY }),
+    // Mode flip changes which path serves mail traffic (Stalwart
+    // hostPort vs. haproxy DS). Both the port-exposure card AND the
+    // MailHealthBanner read derived state from the health endpoint
+    // (probe reachability, DS readiness). Invalidate both so the
+    // operator sees consistent state immediately, not after the 30s
+    // health staleTime expires.
+    //
+    // Return the awaited Promise.all so TanStack Query holds the
+    // mutation as `isPending` until the invalidations have actually
+    // queued — without that, the component can re-render between the
+    // mutation settling and the cache being marked stale, which
+    // racy-flashes "succeeded" with the OLD data still in view.
+    onSuccess: () => Promise.all([
+      qc.invalidateQueries({ queryKey: PORT_EXPOSURE_KEY }),
+      qc.invalidateQueries({ queryKey: ['mail', 'health'] }),
+    ]),
   });
 }

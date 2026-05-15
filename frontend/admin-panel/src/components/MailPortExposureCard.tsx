@@ -45,7 +45,12 @@ export default function MailPortExposureCard() {
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 6_000);
     } catch {
-      // surfaced via update.isError below
+      // Failed mutation: surfaced via update.isError below, but ALSO
+      // clear the draft + close the confirm dialog so the operator
+      // can choose a different mode or retry without the previous
+      // selection stuck in the "you have unsaved changes" UI state.
+      setDraft(null);
+      setConfirmOpen(false);
     }
   }
 
@@ -221,9 +226,13 @@ export default function MailPortExposureCard() {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
           role="dialog"
           aria-modal="true"
+          aria-labelledby="mail-port-exposure-confirm-title"
         >
           <div className="relative w-full max-w-md bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <h3
+              id="mail-port-exposure-confirm-title"
+              className="text-lg font-semibold text-gray-900 dark:text-gray-100"
+            >
               Switch to{' '}
               {selected === 'allServerNodes' ? 'All server nodes' : 'This node only'}?
             </h3>

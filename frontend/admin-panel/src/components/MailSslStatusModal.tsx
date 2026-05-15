@@ -1,6 +1,7 @@
 /**
- * Mail SSL status modal — opened from the TLS/SSL cell in
- * MailServerStatusTile. Replaces the old inline MailSslStatusCard.
+ * Mail SSL status modal — opened from the TLS/SSL section of the
+ * Email Management page (or via the upcoming /admin/mail/health
+ * banner drill-down). Replaces the old inline MailSslStatusCard.
  *
  * Behaviour mirrors the old card:
  *   - Lazy: the probe doesn't run on mount. The modal opens with a
@@ -92,13 +93,17 @@ export default function MailSslStatusModal({ onClose }: { readonly onClose: () =
       className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
       role="dialog"
       aria-modal="true"
+      aria-labelledby="mail-ssl-status-modal-title"
       data-testid="mail-ssl-status-modal"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="w-full max-w-4xl rounded-xl bg-white dark:bg-gray-800 shadow-xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-3">
-          <h3 className="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-gray-100">
+          <h3
+            id="mail-ssl-status-modal-title"
+            className="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-gray-100"
+          >
             <ShieldCheck size={16} /> Mail server SSL status
           </h3>
           <div className="flex items-center gap-2">

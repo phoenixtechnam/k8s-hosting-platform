@@ -306,22 +306,28 @@ phase_postgres_restore() {
   fi
   log "  Dump: $dump"
 
-  # Resolve the current Postgres primary. CNPG cluster pods carry
-  # `cnpg.io/cluster=postgres,role=primary`. Pre-CNPG StatefulSet
-  # pods carry `app=postgres` (single instance, postgres-0). Try
-  # CNPG first; fall back to the legacy label.
+  # Resolve the current Postgres primary. CNPG cluster was renamed
+  # `postgres` → `system-db` in the 2026-05-07 PG18 migration. Try
+  # the canonical name first, then the legacy CNPG name, then the
+  # pre-CNPG StatefulSet label (single instance, postgres-0).
   local POD
   POD=$(kubectl -n platform get pods \
-    -l cnpg.io/cluster=postgres,role=primary \
+    -l cnpg.io/cluster=system-db,role=primary \
     --field-selector=status.phase=Running \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$POD" ]]; then
+    POD=$(kubectl -n platform get pods \
+      -l cnpg.io/cluster=postgres,role=primary \
+      --field-selector=status.phase=Running \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  fi
   if [[ -z "$POD" ]]; then
     POD=$(kubectl -n platform get pods -l app=postgres \
       --field-selector=status.phase=Running \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   fi
   if [[ -z "$POD" ]]; then
-    error "No Running postgres pod found in platform namespace."
+    error "No Running postgres pod found in platform namespace (looked for cnpg.io/cluster in [system-db, postgres] then app=postgres)."
   fi
   log "  Restoring into pod: $POD"
   run kubectl -n platform cp "$dump" "${POD}:/tmp/restore.dump"

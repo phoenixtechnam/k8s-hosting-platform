@@ -178,3 +178,175 @@ export function applyPatch(fieldManager: string, opts: { force?: boolean } = {})
   );
   return override as unknown as SDKOverride;
 }
+
+/**
+ * Strategic-Merge Patch with explicit field-manager attribution.
+ *
+ * `STRATEGIC_MERGE_PATCH` (the bare constant) doesn't claim SSA
+ * field ownership — the apiserver attributes the patch to whatever
+ * user-agent makes the request, which doesn't help against a
+ * Flux-owned manifest. Use this helper to claim ownership via a
+ * stable fieldManager name. With the target resource carrying
+ * `kustomize.toolkit.fluxcd.io/ssa: merge`, Flux's reconciler then
+ * uses non-force SSA and gets 409 on fields owned by another
+ * fieldManager — leaving the operator's claim intact.
+ *
+ * Used for the Stalwart Deployment `containers[].ports` mutation in
+ * port-exposure.ts. The `$patch: replace` directive (first list
+ * element) tells strategic-merge to wholesale-replace the list
+ * instead of merging by `containerPort` — that's what lets us drop
+ * the `hostPort` sub-field, which `mergeKey=containerPort` semantics
+ * would otherwise preserve.
+ *
+ * Example body for atomic list replacement:
+ *   {
+ *     spec: { template: { spec: { containers: [{
+ *       name: 'stalwart',
+ *       ports: [
+ *         { $patch: 'replace' },        // directive — must be first
+ *         { containerPort: 25, name: 'smtp', protocol: 'TCP' },
+ *         ...
+ *       ],
+ *     }] } } },
+ *   }
+ */
+export function strategicMergePatch(fieldManager: string): SDKOverride {
+  const stub = (ctx: RequestContextLike): ObservableLike<RequestContextLike> => {
+    const promise = Promise.resolve(ctx);
+    return { promise, toPromise: () => promise, pipe: () => undefined };
+  };
+  const mw: Middleware = {
+    pre: (ctx) => {
+      ctx.setHeaderParam('Content-Type', 'application/strategic-merge-patch+json');
+      const c = ctx as unknown as { setQueryParam?: (name: string, value: string) => void };
+      if (typeof c.setQueryParam === 'function') {
+        c.setQueryParam('fieldManager', fieldManager);
+      }
+      return stub(ctx);
+    },
+    post: stub,
+  };
+  const override = withTag(
+    { middleware: [mw] },
+    'application/strategic-merge-patch+json',
+  );
+  return override as unknown as SDKOverride;
+}
+
+/**
+ * Raw Server-Side Apply via direct fetch to the kube-apiserver.
+ *
+ * The SDK's typed `patchNamespacedDeployment` (and friends) runs every
+ * body through ObjectSerializer which silently drops fields whose types
+ * it can't reconstruct from a plain object — notably the polymorphic
+ * `V1Volume.persistentVolumeClaim` / `configMap` / `secret` union. The
+ * port-exposure SSA-apply happens to work because every field it
+ * claims (`containers[].ports[].hostPort` etc.) is a primitive that
+ * the serializer preserves; the migration cutover claim of
+ * `volumes[].persistentVolumeClaim.claimName` does NOT survive the
+ * serializer.
+ *
+ * Use this helper for any SSA-apply that needs to claim ownership of
+ * nested object fields. The kubectl equivalent is:
+ *
+ *   kubectl apply --server-side --force-conflicts \
+ *     --field-manager=$fieldManager -f -
+ *
+ * Caller passes a typed `KubeConfig` so we can extract the apiserver
+ * URL + auth (Bearer token OR client cert). Body is plain JSON with
+ * apiVersion + kind + metadata.{name,namespace}, exactly as you'd
+ * write the YAML.
+ *
+ * Returns the apiserver's response body on 2xx; throws on non-2xx.
+ *
+ * The fetch goes through Node's native fetch (Node 18+), so this
+ * helper is dependency-free and doesn't introduce a new client.
+ */
+export interface RawApplyTarget {
+  apiVersion: string;
+  kind: string;
+  namespace: string;
+  name: string;
+  /** Resource path component, e.g. 'deployments'. Plural, lowercase. */
+  resource: string;
+  /** API group prefix: '' for core (/api/v1), or 'apis/apps/v1' for apps. */
+  apiPath: string;
+}
+
+export async function applyRaw(
+  kc: import('@kubernetes/client-node').KubeConfig,
+  target: RawApplyTarget,
+  body: Record<string, unknown>,
+  opts: { fieldManager: string; force?: boolean },
+): Promise<unknown> {
+  const cluster = kc.getCurrentCluster();
+  if (!cluster) {
+    throw new Error('k8s-patch.applyRaw: no current cluster in kubeconfig');
+  }
+  const server = cluster.server.replace(/\/$/, '');
+
+  // Compose URL: $server/$apiPath/namespaces/$ns/$resource/$name?fieldManager=...&force=...
+  const url = new URL(
+    `${server}/${target.apiPath}/namespaces/${target.namespace}/${target.resource}/${target.name}`,
+  );
+  url.searchParams.set('fieldManager', opts.fieldManager);
+  url.searchParams.set('force', opts.force ? 'true' : 'false');
+
+  // Auth — pull from the kubeconfig's current user. v1 SDK exposes
+  // `applyToHTTPSOptions` that fills in headers + ca; we use it on a
+  // stub to extract Authorization without re-implementing auth.
+  // (Bearer-token clusters are the only kind in this codebase's
+  // staging + prod; client-cert clusters would need https.Agent
+  // wiring which we skip for now.)
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/apply-patch+yaml',
+    Accept: 'application/json',
+  };
+  const user = kc.getCurrentUser();
+  if (user?.token) {
+    headers.Authorization = `Bearer ${user.token}`;
+  } else {
+    // In-cluster path: loadFromCluster() copies the ServiceAccount
+    // token into user.token already; if we land here we have no
+    // token (e.g. exec-plugin auth) and the apiserver will respond
+    // 401. Surface that as a clearer error than a raw HTTP error.
+    throw new Error(
+      'k8s-patch.applyRaw: KubeConfig has no Bearer token. '
+      + 'exec-plugin / client-cert auth not yet supported via this raw path.',
+    );
+  }
+
+  // CA: in-cluster SA token is signed by the cluster CA; SDK's
+  // KubeConfig.loadFromCluster() points at /var/run/secrets/.../ca.crt.
+  // We let Node fetch use the system CA trust + this CA via undici's
+  // dispatcher only if needed — simplest path is to set NODE_EXTRA_CA_CERTS
+  // for the platform-api pod at deploy time. For now, support
+  // skipTLSVerify clusters (local-dev) and trust the system CA otherwise.
+  let dispatcher: unknown;
+  if (cluster.skipTLSVerify) {
+    const { Agent } = await import('undici');
+    dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
+  } else if (cluster.caData || cluster.caFile) {
+    const { Agent } = await import('undici');
+    const { readFileSync } = await import('node:fs');
+    const ca = cluster.caData
+      ? Buffer.from(cluster.caData, 'base64').toString('utf8')
+      : readFileSync(cluster.caFile!, 'utf8');
+    dispatcher = new Agent({ connect: { ca } });
+  }
+
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(body),
+    // @ts-expect-error — undici Dispatcher isn't part of Node fetch's stable types
+    dispatcher,
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(
+      `k8s-patch.applyRaw: ${target.kind}/${target.name} → HTTP ${res.status} ${res.statusText}: ${txt.slice(0, 500)}`,
+    );
+  }
+  return res.json();
+}

@@ -3,22 +3,34 @@
  *
  *   thisNodeOnly   — Stalwart pod binds mail ports via hostPort directly;
  *                    only the node the pod is scheduled on receives traffic.
+ *                    No haproxy DaemonSet present in the cluster.
  *
- *   allServerNodes — haproxy DaemonSet binds mail ports on every server node
- *                    and forwards to stalwart-mail.mail.svc.cluster.local with
+ *   allServerNodes — haproxy DaemonSet bound on every server-role node
+ *                    forwards mail traffic to stalwart-mail.mail.svc with
  *                    PROXY Protocol v2 so Stalwart sees real client IPs.
+ *                    DS is CREATED by platform-api on entry to this mode,
+ *                    DELETED on exit.
  *
  * Switching modes is a two-step operation that avoids port conflicts:
  *
  *   thisNodeOnly → allServerNodes:
- *     1. Remove hostPort from Stalwart Deployment (strategic-merge; Deployment rolls).
- *     2. Enable haproxy DaemonSet by patching nodeSelector to server-role label.
+ *     1. Remove hostPort from Stalwart Deployment (JSON-Patch on the
+ *        ports array; Deployment rolls).
+ *     2. CREATE the haproxy DaemonSet (apps.createNamespacedDaemonSet
+ *        from the buildHaproxyDaemonSet() spec).
  *     3. Persist mode in system_settings.
  *
  *   allServerNodes → thisNodeOnly:
- *     1. Disable haproxy DaemonSet (patch nodeSelector to a non-matching label).
- *     2. Re-add hostPort to Stalwart Deployment (strategic-merge; Deployment rolls).
+ *     1. DELETE the haproxy DaemonSet (apps.deleteNamespacedDaemonSet).
+ *     2. Re-add hostPort to Stalwart Deployment (Deployment rolls).
  *     3. Persist mode in system_settings.
+ *
+ * 2026-05-14 streamline: previously the DS was always-applied by Flux
+ * with a dummy nodeSelector and platform-api SSA-patched the selector
+ * to toggle. That created an ongoing field-ownership war with Flux's
+ * kustomize-controller (PRs #43–#45). Moving the DS object lifecycle
+ * to platform-api ends the war — Flux still owns the ConfigMap and
+ * NetworkPolicy, both of which are static and benefit from GitOps.
  *
  * GET  /admin/mail/port-exposure  → MailPortExposureResponse
  * PATCH /admin/mail/port-exposure → 204
@@ -26,42 +38,58 @@
 
 import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { JSON_PATCH, applyPatch } from '../../shared/k8s-patch.js';
+import { applyPatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
-
-/**
- * fieldManager string used by the platform-api when SSA-patching the
- * haproxy DaemonSet's nodeSelector. Must be stable across reconciler
- * restarts so the apiserver consistently attributes the field claim
- * to the same actor.
- *
- * `force: true` because the haproxy DS ships with Flux owning
- * `nodeSelector` (the disabled-selector default in
- * k8s/base/stalwart-mail/haproxy/daemonset.yaml). Without force, our
- * first apply 409's with "conflict with kustomize-controller". After
- * the first forced apply, the platform-api permanently owns the
- * field; Flux's subsequent reconciles use `ssa: merge` (non-force)
- * and leave our value alone.
- */
-const PORT_EXPOSURE_APPLY_PATCH = applyPatch('platform-api.port-exposure', { force: true });
+import { waitForStalwartRollout } from './rollout-wait.js';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
   type MailPortExposureResponse,
   mailPortExposureResponseSchema,
 } from '@k8s-hosting/api-contracts';
+import {
+  buildHaproxyDaemonSet,
+  HAPROXY_DS_NAME,
+  HAPROXY_DS_NAMESPACE,
+} from './haproxy-builder.js';
 
 const SETTINGS_ID = 'system';
-const MAIL_NAMESPACE = 'mail';
-const DAEMONSET_NAME = 'stalwart-haproxy';
 const DEPLOYMENT_NAME = 'stalwart-mail';
+// Stalwart Deployment + haproxy DaemonSet both live in the `mail`
+// namespace; aliasing this constant here for readability — code that
+// patches the Stalwart Deployment shouldn't read as if it were
+// patching the haproxy namespace.
+const MAIL_NS = HAPROXY_DS_NAMESPACE;
+
+// Server-Side Apply with force-claim, fieldManager=platform-api.port-exposure.
+//
+// Phase 7 streamline E2E exhausted three patch approaches:
+//   1. JSON-Patch op:replace — Flux re-claims `ports` and reverts within
+//      1min reconcile. Operation=Update; Flux's non-force SSA conflict
+//      check only looks at Apply-marker ownership.
+//   2. Strategic-merge with `$patch: replace` directive — apiserver
+//      accepts the patch but silently no-ops the directive on nested
+//      merge-key lists (containers[].ports inside containers[]).
+//   3. Strategic-merge with per-port `$retainKeys` — apiserver emits
+//      `Warning: unknown field` and treats the patch as a no-op.
+//      $retainKeys is not supported as a list-element directive in
+//      this position.
+//
+// The fix that works: REMOVE hostPort from the git manifest (done in
+// k8s/base/stalwart-mail/stalwart/deployment.yaml) and use SSA-apply
+// here to CLAIM hostPort dynamically. With manifest=no-hostPort and
+// fieldManager=platform-api.port-exposure (Apply operation), the
+// apiserver attributes hostPort ownership to us. Flux's reconcile
+// (non-force SSA via `kustomize.toolkit.fluxcd.io/ssa: merge`
+// annotation on the Deployment) sees the field is owned by another
+// Apply-manager and skips it — leaving our value intact.
+//
+// SSA can't UNSET fields it doesn't own, but now we OWN hostPort —
+// so we can choose to send or omit it based on mode.
+const STALWART_PORTS_PATCH = applyPatch('platform-api.port-exposure', { force: true });
 
 // Mail ports that Stalwart binds via hostPort in 'thisNodeOnly' mode.
 const MAIL_HOST_PORTS = [25, 465, 587, 143, 993, 4190] as const;
-
-// nodeSelector labels used to toggle the DaemonSet on/off.
-const DS_ENABLED_SELECTOR = { 'platform.phoenix-host.net/node-role': 'server' } as const;
-const DS_DISABLED_SELECTOR = { 'platform.phoenix-host.net/mail-haproxy-disabled': 'true' } as const;
 
 export interface PortExposureOptions {
   readonly kubeconfigPath: string | undefined;
@@ -83,6 +111,12 @@ async function loadK8sAppsClient(kubeconfigPath: string | undefined): Promise<K8
 
 /**
  * Read the current port-exposure mode and haproxy DaemonSet status.
+ *
+ * The DS is expected to be ABSENT in `thisNodeOnly` mode (platform-api
+ * deleted it) and PRESENT with the expected pod count in `allServerNodes`
+ * mode. Drift (DS present but mode=thisNodeOnly, or DS absent but
+ * mode=allServerNodes) shows up in the response as `daemonSetStatus`
+ * not matching `proxyProtocolActive` — operator-visible in the UI.
  */
 export async function getMailPortExposure(
   db: Database,
@@ -99,17 +133,16 @@ export async function getMailPortExposure(
   let daemonSetStatus: { ready: number; desired: number } | null = null;
   try {
     const ds = await apps.readNamespacedDaemonSet({
-      namespace: MAIL_NAMESPACE,
-      name: DAEMONSET_NAME,
+      namespace: HAPROXY_DS_NAMESPACE,
+      name: HAPROXY_DS_NAME,
     }) as { status?: { numberReady?: number; desiredNumberScheduled?: number } };
     daemonSetStatus = {
       ready: ds.status?.numberReady ?? 0,
       desired: ds.status?.desiredNumberScheduled ?? 0,
     };
   } catch (err) {
-    const code = (err as { statusCode?: number }).statusCode;
-    if (code === 404) {
-      // DaemonSet not yet applied by Flux — expected when mode is 'thisNodeOnly'.
+    if (isNotFound(err)) {
+      // DS not present — expected in thisNodeOnly mode.
       daemonSetStatus = null;
     }
     // Non-404 errors are swallowed — mode is still readable from DB.
@@ -138,14 +171,14 @@ export async function updateMailPortExposure(
     // the same ports on the same nodes without conflict.
     await removeHostPortsFromDeployment(apps);
 
-    // Step 2: Enable haproxy DaemonSet by restoring the server-role nodeSelector.
-    await setDaemonSetNodeSelector(apps, DS_ENABLED_SELECTOR, /* enable= */ true);
+    // Step 2: Create the haproxy DaemonSet.
+    await ensureHaproxyDaemonSetExists(apps);
   } else {
     // thisNodeOnly path — reverse order.
 
-    // Step 1: Disable haproxy DaemonSet first so hostPorts are freed before
-    // Stalwart tries to bind them.
-    await setDaemonSetNodeSelector(apps, DS_DISABLED_SELECTOR, /* enable= */ false);
+    // Step 1: Delete the haproxy DaemonSet first so its hostPorts are
+    // released before Stalwart tries to bind them.
+    await ensureHaproxyDaemonSetAbsent(apps);
 
     // Step 2: Re-add hostPorts to Stalwart Deployment.
     await addHostPortsToDeployment(apps);
@@ -159,98 +192,91 @@ export async function updateMailPortExposure(
 
 // ── Private helpers ────────────────────────────────────────────────────────────
 
-type ContainerShape = {
-  name: string;
-  ports?: Array<{ containerPort: number; hostPort?: number; name?: string; protocol?: string }>;
-};
-
-type DeploymentShape = {
-  spec?: {
-    template?: {
-      spec?: {
-        containers?: ContainerShape[];
-      };
-    };
-  };
-};
-
-async function readDeployment(apps: import('@kubernetes/client-node').AppsV1Api): Promise<DeploymentShape> {
-  try {
-    return await apps.readNamespacedDeployment({
-      namespace: MAIL_NAMESPACE,
-      name: DEPLOYMENT_NAME,
-    }) as DeploymentShape;
-  } catch (err) {
-    throw new ApiError(
-      'MAIL_DEPLOYMENT_READ_FAILED',
-      `Could not read Stalwart Deployment: ${(err as Error).message ?? String(err)}`,
-      503,
-    );
-  }
-}
-
 /**
- * Replace the Stalwart Deployment's container ports array.
+ * SSA-apply the Stalwart Deployment's container ports.
  *
- * We use JSON-Patch (`replace` on the whole ports array) rather than
- * strategic-merge-patch because strategic-merge merges port entries by
- * `containerPort`, which means omitting `hostPort` from a port entry does
- * NOT remove the existing hostPort — it just leaves the existing value
- * in place. To toggle hostPort on/off reliably we have to replace the
- * array wholesale.
+ * The Stalwart Deployment manifest declares mail ports WITHOUT
+ * hostPort (Phase 7 streamline rewrite). This function then SSA-
+ * applies hostPort as a field-manager-owned claim, mode-dependent:
  *
- * The container index in the patch path is 0 because the Stalwart
- * Deployment's `containers` list has a single entry — the `stalwart`
- * container (the init container is in `initContainers`, not `containers`).
- * We assert that invariant at the start so a future Deployment change
- * doesn't silently patch the wrong container.
+ *   withHostPorts=true (thisNodeOnly mode):
+ *     SSA-apply ports list WITH hostPort=containerPort on each mail
+ *     port. fieldManager=platform-api.port-exposure claims the
+ *     hostPort sub-field. Stalwart pod binds the node's external IP
+ *     on each mail port.
+ *
+ *   withHostPorts=false (allServerNodes mode):
+ *     SSA-apply ports list WITHOUT hostPort. Since the manifest
+ *     doesn't declare hostPort either, no manager claims it after
+ *     this apply — the field is unset and Stalwart binds only the
+ *     containerPort inside the pod network. haproxy DaemonSet handles
+ *     external traffic on every server node.
+ *
+ * `force: true` on the SSA-apply: the very first call after
+ * deploying this code may find hostPort claimed by another manager
+ * (e.g. a stale kustomize-controller ownership from before the
+ * manifest rewrite). force=true reassigns ownership to
+ * platform-api.port-exposure once; subsequent applies are idempotent.
+ *
+ * Mail-port list is canonical (MAIL_HOST_PORTS); we mirror the
+ * manifest's port names/protocol for consistency.
  */
 async function replaceStalwartContainerPorts(
   apps: import('@kubernetes/client-node').AppsV1Api,
   withHostPorts: boolean,
 ): Promise<void> {
-  const dep = await readDeployment(apps);
-  const containers = dep.spec?.template?.spec?.containers ?? [];
-  const stalwartIdx = containers.findIndex((c) => c.name === 'stalwart');
-  if (stalwartIdx < 0) {
-    throw new ApiError(
-      'MAIL_DEPLOYMENT_PATCH_FAILED',
-      'Stalwart container not found in Deployment spec',
-      503,
-    );
-  }
-  const stalwart = containers[stalwartIdx];
-
-  const newPorts = (stalwart.ports ?? []).map((p) => {
-    const isMailPort = (MAIL_HOST_PORTS as readonly number[]).includes(p.containerPort);
-    if (!isMailPort) {
-      // Non-mail port (mgmt-http :8080, http-acme :80) — never gets a hostPort.
-      const { hostPort: _drop, ...rest } = p;
-      return rest;
-    }
-    if (withHostPorts) {
-      return { ...p, hostPort: p.containerPort };
-    }
-    // Mail port + hostPorts disabled → strip hostPort.
-    const { hostPort: _drop, ...rest } = p;
-    return rest;
-  });
-
-  const body = [
-    {
-      op: 'replace',
-      path: `/spec/template/spec/containers/${stalwartIdx}/ports`,
-      value: newPorts,
-    },
+  // Canonical mail-port spec, matching k8s/base/stalwart-mail/stalwart/
+  // deployment.yaml. Keep this list in lockstep with the manifest's
+  // port names; SSA-apply must match name to claim the right entry.
+  const mailPortSpecs: Array<{ name: string; containerPort: number }> = [
+    { name: 'smtp', containerPort: 25 },
+    { name: 'submissions', containerPort: 465 },
+    { name: 'submission', containerPort: 587 },
+    { name: 'imap', containerPort: 143 },
+    { name: 'imaps', containerPort: 993 },
+    { name: 'sieve', containerPort: 4190 },
   ];
+
+  const portsForPatch = mailPortSpecs.map((p) => ({
+    name: p.name,
+    containerPort: p.containerPort,
+    protocol: 'TCP',
+    // Only claim hostPort in thisNodeOnly mode. In allServerNodes
+    // mode, omit hostPort so the apiserver leaves the field unset
+    // (nobody owns it post-apply — the manifest doesn't declare it
+    // either since the Phase 7 manifest rewrite).
+    ...(withHostPorts ? { hostPort: p.containerPort } : {}),
+  }));
+
+  // SSA-apply body — partial Deployment with just the stalwart
+  // container's ports list. We claim `containers[name=stalwart].ports`
+  // wholesale. Non-mail ports (mgmt-http :8080, http-acme :80) stay
+  // owned by kustomize-controller's apply; SSA merges per port name.
+  const body = {
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    metadata: { name: DEPLOYMENT_NAME, namespace: MAIL_NS },
+    spec: {
+      template: {
+        spec: {
+          containers: [
+            {
+              name: 'stalwart',
+              ports: portsForPatch,
+            },
+          ],
+        },
+      },
+    },
+  };
 
   await apps.patchNamespacedDeployment(
     {
-      namespace: MAIL_NAMESPACE,
+      namespace: MAIL_NS,
       name: DEPLOYMENT_NAME,
       body: body as unknown as object,
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    JSON_PATCH,
+    STALWART_PORTS_PATCH,
   ).catch((err) => {
     throw new ApiError(
       'MAIL_DEPLOYMENT_PATCH_FAILED',
@@ -258,6 +284,25 @@ async function replaceStalwartContainerPorts(
       500,
     );
   });
+
+  // CRITICAL: wait for the rollout to actually complete before
+  // returning. The streamline E2E harness Phase C3/C4 caught the
+  // race: patchNamespacedDeployment returns as soon as the apiserver
+  // accepts the patch, but the existing Stalwart pod KEEPS binding
+  // its hostPorts until the rollout terminates it. If
+  // ensureHaproxyDaemonSetExists creates the haproxy DS in that
+  // window, haproxy on the Stalwart-pod node fails to bind the
+  // hostPort (already taken by the old Stalwart pod) and either
+  // CrashLoopBacks or schedules without serving traffic. By waiting
+  // for the rollout we guarantee:
+  //   - withHostPorts=false (flip to allServerNodes) → old pod gone
+  //     before haproxy DS is created
+  //   - withHostPorts=true  (flip to thisNodeOnly)  → new pod ready
+  //     before mode flip returns (operator sees consistent state in
+  //     the response)
+  // 90s budget: a typical Stalwart pod restart is ~25s; 90s covers
+  // local-path PVC re-attach + restore-state initContainer.
+  await waitForStalwartRollout(apps);
 }
 
 async function removeHostPortsFromDeployment(
@@ -272,70 +317,134 @@ async function addHostPortsToDeployment(
   await replaceStalwartContainerPorts(apps, /* withHostPorts= */ true);
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * Replace the haproxy DaemonSet's nodeSelector.
+ * Create the haproxy DaemonSet if it doesn't exist; do nothing if it
+ * already does. Idempotent — safe to call from a retry loop.
  *
- * We use JSON-Patch (`add` op on `nodeSelector`, which acts as upsert)
- * rather than RFC 7396 merge-patch because merge-patch merges nodeSelector
- * keys INTO the existing map — so toggling from
- *   { 'mail-haproxy-disabled': 'true' }
- * to
- *   { 'node-role': 'server' }
- * via merge-patch produces
- *   { 'mail-haproxy-disabled': 'true', 'node-role': 'server' }
- * (both keys present), which matches zero nodes. JSON-Patch `add` on the
- * parent path replaces the whole map atomically.
+ * The spec comes from buildHaproxyDaemonSet() so this function and
+ * `getMailPortExposure`'s status read agree on the object's name +
+ * namespace.
  */
-async function setDaemonSetNodeSelector(
+async function ensureHaproxyDaemonSetExists(
   apps: import('@kubernetes/client-node').AppsV1Api,
-  nodeSelector: Record<string, string>,
-  enable: boolean,
 ): Promise<void> {
   try {
-    // Server-Side Apply with fieldManager=platform-api/port-exposure.
-    // Flux reconciles the DS with fieldManager=kustomize-controller +
-    // ssa:merge (see k8s/base/stalwart-mail/haproxy/daemonset.yaml
-    // annotation). With distinct fieldManagers + ssa:merge, the
-    // apiserver preserves OUR nodeSelector across Flux reconciles
-    // because Flux's apply is non-force and `nodeSelector` is owned
-    // by us.
-    //
-    // Previously this used JSON-Patch, which doesn't go through SSA
-    // at all — Flux still uniquely owned the field, and reverted the
-    // operator patch on every loop. See the SSA-managedFields probe
-    // in the PR #44 commit for the diagnostic trace.
-    const body = {
-      apiVersion: 'apps/v1',
-      kind: 'DaemonSet',
-      metadata: { name: DAEMONSET_NAME, namespace: MAIL_NAMESPACE },
-      spec: { template: { spec: { nodeSelector } } },
-    };
-    await apps.patchNamespacedDaemonSet(
-      {
-        namespace: MAIL_NAMESPACE,
-        name: DAEMONSET_NAME,
-        body: body as unknown as object,
-      } as unknown as Parameters<typeof apps.patchNamespacedDaemonSet>[0],
-      PORT_EXPOSURE_APPLY_PATCH,
-    );
+    await apps.readNamespacedDaemonSet({
+      namespace: HAPROXY_DS_NAMESPACE,
+      name: HAPROXY_DS_NAME,
+    });
+    // Already present — do not overwrite. Operator can `kubectl delete`
+    // to force a re-create from the latest builder output.
+    return;
   } catch (err) {
-    if (isNotFound(err)) {
-      if (enable) {
-        // Enabling but DaemonSet doesn't exist — operator must apply the haproxy
-        // Kustomize component before switching to allServerNodes mode.
-        throw new ApiError(
-          'MAIL_HAPROXY_DS_NOT_FOUND',
-          'haproxy DaemonSet not found — ensure the haproxy Kustomize component is applied in the overlay before enabling allServerNodes mode',
-          503,
-        );
-      }
-      // Disabling but DaemonSet already gone — already in the desired state.
-      return;
+    if (!isNotFound(err)) {
+      throw new ApiError(
+        'MAIL_HAPROXY_DS_READ_FAILED',
+        `Failed to read haproxy DaemonSet: ${(err as Error).message ?? String(err)}`,
+        500,
+      );
     }
+    // 404 — fall through to create.
+  }
+
+  const body = buildHaproxyDaemonSet();
+  try {
+    await apps.createNamespacedDaemonSet({
+      namespace: HAPROXY_DS_NAMESPACE,
+      body: body as unknown as Parameters<typeof apps.createNamespacedDaemonSet>[0]['body'],
+    });
+  } catch (err) {
+    // Race: someone else created it between our read + create. Treat
+    // as success since the desired state is "DS exists".
+    if (isConflict(err)) return;
     throw new ApiError(
-      'MAIL_HAPROXY_DS_PATCH_FAILED',
-      `Failed to patch haproxy DaemonSet nodeSelector: ${(err as Error).message ?? String(err)}`,
+      'MAIL_HAPROXY_DS_CREATE_FAILED',
+      `Failed to create haproxy DaemonSet: ${(err as Error).message ?? String(err)}`,
       500,
     );
   }
+}
+
+/**
+ * Delete the haproxy DaemonSet. Idempotent — 404 is treated as success.
+ *
+ * Uses propagationPolicy=Foreground so the apiserver blocks the
+ * delete-call until child pods are gone. Without this, the default
+ * Background GC returns immediately and haproxy pods can keep binding
+ * hostPorts 25/465/587/143/993/4190 for their grace period (~10s
+ * normally; can be longer). If the symmetric flip to thisNodeOnly
+ * then patches the Stalwart Deployment to RE-ADD hostPorts, the new
+ * Stalwart pod lands on a node where haproxy is still alive and
+ * fails to bind those ports.
+ *
+ * Foreground GC is exactly what `kubectl delete ds --wait=true`
+ * does, and what the symmetric streamline-fix path needs.
+ *
+ * After the delete returns we poll once to confirm pods are truly
+ * gone (Foreground guarantees this, but the SDK won't throw on
+ * timeout — we set a 60s cap and surface MAIL_HAPROXY_DS_DELETE_TIMEOUT).
+ */
+async function ensureHaproxyDaemonSetAbsent(
+  apps: import('@kubernetes/client-node').AppsV1Api,
+): Promise<void> {
+  try {
+    await apps.deleteNamespacedDaemonSet({
+      namespace: HAPROXY_DS_NAMESPACE,
+      name: HAPROXY_DS_NAME,
+      propagationPolicy: 'Foreground',
+    });
+  } catch (err) {
+    if (isNotFound(err)) return;
+    throw new ApiError(
+      'MAIL_HAPROXY_DS_DELETE_FAILED',
+      `Failed to delete haproxy DaemonSet: ${(err as Error).message ?? String(err)}`,
+      500,
+    );
+  }
+  // Belt-and-suspenders: poll until the DaemonSet is fully gone.
+  // Foreground propagation makes the delete-call wait for child pods,
+  // but client-side cancellation or apiserver hiccups could short-cut
+  // that. Verify empirically.
+  await waitForHaproxyDaemonSetGone(apps, 60_000);
+}
+
+async function waitForHaproxyDaemonSetGone(
+  apps: import('@kubernetes/client-node').AppsV1Api,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await apps.readNamespacedDaemonSet({
+        namespace: HAPROXY_DS_NAMESPACE,
+        name: HAPROXY_DS_NAME,
+      });
+      // Still present — wait and retry.
+      await sleepMs(2_000);
+      continue;
+    } catch (err) {
+      if (isNotFound(err)) return; // gone — success
+      throw new ApiError(
+        'MAIL_HAPROXY_DS_DELETE_VERIFY_FAILED',
+        `Could not verify haproxy DaemonSet deletion: ${(err as Error).message ?? String(err)}`,
+        500,
+      );
+    }
+  }
+  throw new ApiError(
+    'MAIL_HAPROXY_DS_DELETE_TIMEOUT',
+    `haproxy DaemonSet did not finish deleting within ${Math.floor(timeoutMs / 1000)}s — some pods may still be binding hostPorts`,
+    504,
+  );
+}
+
+function isConflict(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: number; statusCode?: number; body?: { code?: number } };
+  const code = e.code ?? e.statusCode ?? e.body?.code;
+  return code === 409;
 }

@@ -31,7 +31,7 @@ import * as service from './service.js';
 import { readStalwartCredentials } from './credentials.js';
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
-import { getMailPvcStorage, resizeMailPvc } from './mail-pvc.js';
+import { getMailPvcStorage } from './mail-pvc.js';
 import { getBlobStore, updateBlobStore, getBlobStoreJobStatus } from './blob-store.js';
 import {
   startMailArchive,
@@ -49,7 +49,6 @@ import {
   getMailArchiveSchedule,
   updateMailArchiveSchedule,
 } from './archive-schedule.js';
-import { getMailNodeSelector, updateMailNodeSelector } from './node-selector.js';
 import { getMailSnapshotStatus, triggerMailSnapshot, getMailSnapshotJobStatus } from './snapshot.js';
 import {
   getMailSnapshotSchedule,
@@ -62,15 +61,12 @@ import {
 import { getMailPlacement, updateMailPlacement } from './placement.js';
 import {
   startMailMigration,
-  startFailoverMigration,
-  startFailbackMigration,
   getMailMigrationStatus,
 } from './migration.js';
+import { getMailHealth } from './health.js';
 import { getMailPortExposure, updateMailPortExposure } from './port-exposure.js';
 import {
-  mailPvcResizeRequestSchema,
   blobStoreUpdateRequestSchema,
-  mailNodeSelectorUpdateSchema,
   mailSnapshotScheduleUpdateSchema,
   mailSnapshotBackupTargetUpdateSchema,
   mailPlacementUpdateRequestSchema,
@@ -86,6 +82,88 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // Note: routes that expose the cleartext Stalwart admin password
   // (`/admin/mail/stalwart-credentials` and `/admin/mail/rotate-*`) carry
   // their own narrower preHandler — see below.
+
+  // Real mail health endpoint — actually probes pod + JMAP rather than
+  // echoing system_settings. See backend/src/modules/mail-admin/health.ts.
+  // 30s in-process cache; ?refresh=1 bypasses (super_admin can do this
+  // from the "Re-check now" button on the new health banner).
+  // SECURITY: super_admin only. Calls readStalwartCredentials and
+  // dispatches kubectl exec (rocksdb probe) + outbound HTTPS with
+  // admin credentials (jmap probe) + TLS handshakes (cert probe).
+  // `admin`/`support` are excluded from this destructive surface.
+  app.get('/admin/mail/health', { preHandler: requireRole('super_admin') }, async (req: { query: unknown }) => {
+    try {
+      const cfg = app.config as Record<string, unknown>;
+      const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+      const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+      const k8s = createK8sClients(kubeconfigPath);
+      const jmapBaseUrlRaw = (cfg.STALWART_MGMT_URL as string | undefined)
+        ?? process.env.STALWART_MGMT_URL
+        ?? 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
+      // SECURITY: the JMAP probe sends Stalwart admin credentials via
+      // HTTP Basic auth to this URL. If the env var is set to an
+      // external host (misconfiguration / hostile operator), those
+      // credentials are exfiltrated on every health poll. Allow only
+      // in-cluster Service DNS (`.svc.cluster.local`), `localhost`
+      // (in-pod), or RFC-1918 / link-local IPs. Reject anything else.
+      let jmapBaseUrl: string;
+      try {
+        const parsed = new URL(jmapBaseUrlRaw);
+        const host = parsed.hostname;
+        const isInCluster = host.endsWith('.svc.cluster.local') || host.endsWith('.svc');
+        const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+        const isPrivateV4 = /^(?:10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)/.test(host);
+        const isLinkLocalV4 = /^169\.254\./.test(host);
+        const isPrivateV6 = host.toLowerCase().startsWith('fc') || host.toLowerCase().startsWith('fd') || host.toLowerCase().startsWith('fe80');
+        if (!(isInCluster || isLocalhost || isPrivateV4 || isLinkLocalV4 || isPrivateV6)) {
+          throw new ApiError(
+            'STALWART_MGMT_URL_UNSAFE',
+            `STALWART_MGMT_URL host '${host}' is not in-cluster / loopback / RFC-1918. Refusing to send admin credentials there.`,
+            500,
+          );
+        }
+        jmapBaseUrl = jmapBaseUrlRaw;
+      } catch (urlErr) {
+        if (urlErr instanceof ApiError) throw urlErr;
+        throw new ApiError(
+          'STALWART_MGMT_URL_INVALID',
+          `STALWART_MGMT_URL is not a valid URL: ${(urlErr as Error).message ?? String(urlErr)}`,
+          500,
+        );
+      }
+      let creds: { user: string; password: string } | null = null;
+      try {
+        const c = readStalwartCredentials(process.env);
+        creds = { user: c.username, password: c.password };
+      } catch {
+        creds = null;
+      }
+      // Mail hostname for TLS SNI on cert probes. Resolved from
+      // webmail_settings (operator-editable); falls back to null which
+      // makes the cert probe report not_implemented.
+      let mailHostname: string | null = null;
+      try {
+        const { getWebmailSettings } = await import('../webmail-settings/service.js');
+        const s = await getWebmailSettings(app.db);
+        mailHostname = s.mailServerHostname ?? null;
+      } catch {
+        mailHostname = null;
+      }
+      const refresh = ((req.query as { refresh?: string } | undefined)?.refresh ?? '') === '1';
+      const result = await getMailHealth(
+        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath },
+        { refresh },
+      );
+      return success(result);
+    } catch (err) {
+      app.log.warn({ err }, 'mail-admin: /admin/mail/health failed');
+      throw new ApiError(
+        'MAIL_HEALTH_UNAVAILABLE',
+        'Could not assess mail-server health — see server logs',
+        503,
+      );
+    }
+  });
 
   app.get('/admin/mail/metrics', async () => {
     try {
@@ -308,38 +386,11 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       }
     },
   );
-  app.patch(
-    '/admin/mail/pvc/storage',
-    { preHandler: requireRole('super_admin') },
-    async (req: { body: unknown; user?: { sub?: string } }) => {
-      const cfg = app.config as Record<string, unknown>;
-      const userId = req.user?.sub ?? 'unknown';
-      const parsed = mailPvcResizeRequestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new ApiError(
-          'VALIDATION_ERROR',
-          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
-          400,
-        );
-      }
-      app.log.warn({ userId, newGiB: parsed.data.newGiB }, 'mail-admin: pvc resize requested');
-      try {
-        const result = await resizeMailPvc(parsed.data.newGiB, {
-          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
-        });
-        app.log.warn({ userId, newGiB: parsed.data.newGiB }, 'mail-admin: pvc resize patched');
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.error({ err, userId }, 'mail-admin: pvc resize failed');
-        throw new ApiError(
-          'MAIL_PVC_RESIZE_FAILED',
-          'mail-pg-1 PVC resize failed — see server logs',
-          500,
-        );
-      }
-    },
-  );
+  // PATCH /admin/mail/pvc/storage was the online-grow endpoint from
+  // the pre-RocksDB CNPG era. local-path (post-migration) does not
+  // quota; `requests.storage` is informational only after creation,
+  // so the resize endpoint was deleted in the 2026-05-14 streamline.
+  // ci-no-longhorn: ignore
 
   // ─── Stalwart BlobStore (singleton) ──────────────────────────────
   // GET reads the current backend type via short-lived Pod running
@@ -461,72 +512,6 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       );
     }
   });
-
-  // ─── Stalwart node selector ───────────────────────────────────────
-  // GET reads the current nodeAffinity from the Stalwart Deployment
-  // plus the live pod's scheduled node.
-  // PATCH sets the nodeAffinity (any / preferred / required) on the
-  // Deployment; validates the target node exists before patching.
-  app.get(
-    '/admin/mail/node-selector',
-    { preHandler: requireRole('super_admin') },
-    async () => {
-      const cfg = app.config as Record<string, unknown>;
-      try {
-        const result = await getMailNodeSelector({
-          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
-        });
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.warn({ err }, 'mail-admin: node-selector read failed');
-        throw new ApiError(
-          'MAIL_NODE_SELECTOR_READ_FAILED',
-          'Could not read Stalwart node selector — see server logs',
-          503,
-        );
-      }
-    },
-  );
-
-  app.patch(
-    '/admin/mail/node-selector',
-    { preHandler: requireRole('super_admin') },
-    async (req: { body: unknown; user?: { sub?: string } }) => {
-      const cfg = app.config as Record<string, unknown>;
-      const userId = req.user?.sub ?? 'unknown';
-      const parsed = mailNodeSelectorUpdateSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new ApiError(
-          'VALIDATION_ERROR',
-          parsed.error.issues.map((i) => `${String(i.path.join('.'))}: ${i.message}`).join(', '),
-          400,
-        );
-      }
-      app.log.warn(
-        { userId, mode: parsed.data.mode, nodeName: parsed.data.nodeName },
-        'mail-admin: node-selector update requested',
-      );
-      try {
-        const result = await updateMailNodeSelector(parsed.data, {
-          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
-        });
-        app.log.warn(
-          { userId, mode: parsed.data.mode, nodeName: parsed.data.nodeName },
-          'mail-admin: node-selector updated',
-        );
-        return success(result);
-      } catch (err) {
-        if (err instanceof ApiError) throw err;
-        app.log.error({ err, userId }, 'mail-admin: node-selector update failed');
-        throw new ApiError(
-          'MAIL_NODE_SELECTOR_PATCH_FAILED',
-          'Stalwart node selector update failed — see server logs',
-          500,
-        );
-      }
-    },
-  );
 
   // ─── Stalwart DataStore snapshot ─────────────────────────────────
   // GET  /admin/mail/snapshot-status     — CronJob state + last snapshot time
@@ -969,13 +954,24 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/internal/mail/snapshot-last-run',
     async (req: { body: unknown; headers: Record<string, string | string[] | undefined> }) => {
+      // SECURITY: fail closed when PLATFORM_INTERNAL_TOKEN isn't set.
+      // The previous behaviour (skip check when env unset) meant a
+      // fresh / misconfigured deployment silently exposed this write
+      // endpoint to anyone who could reach the platform-api Service.
+      // Now an unset token returns 503 so the operator sees the
+      // misconfiguration immediately instead of silently-open.
       const expectedToken = process.env.PLATFORM_INTERNAL_TOKEN;
-      if (expectedToken) {
-        const auth = req.headers['authorization'] ?? '';
-        const token = Array.isArray(auth) ? auth[0] : auth;
-        if (!token.startsWith('Bearer ') || token.slice(7) !== expectedToken) {
-          throw new ApiError('UNAUTHORIZED', 'Invalid internal token', 401);
-        }
+      if (!expectedToken) {
+        throw new ApiError(
+          'INTERNAL_TOKEN_NOT_CONFIGURED',
+          'PLATFORM_INTERNAL_TOKEN env var must be set for /internal/* endpoints',
+          503,
+        );
+      }
+      const auth = req.headers['authorization'] ?? '';
+      const token = Array.isArray(auth) ? auth[0] : auth;
+      if (!token.startsWith('Bearer ') || token.slice(7) !== expectedToken) {
+        throw new ApiError('UNAUTHORIZED', 'Invalid internal token', 401);
       }
       const body = req.body as { totalSnapshotSizeBytes?: unknown; snapshotCount?: unknown };
       const totalSnapshotSizeBytes = Number(body.totalSnapshotSizeBytes ?? 0);
@@ -1102,19 +1098,11 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
         const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
         const k8s = createK8sClients(kubeconfigPath);
-        // If targetNode is explicitly provided, use it; otherwise pick secondary/tertiary.
-        let result: { runId: string };
-        if (parsed.data.targetNode) {
-          result = await startMailMigration(
-            { targetNode: parsed.data.targetNode, triggeredBy: 'manual-failover' },
-            { ...k8s, db: app.db, kubeconfigPath },
-          );
-        } else {
-          result = await startFailoverMigration(
-            { confirm: true },
-            { ...k8s, db: app.db, kubeconfigPath },
-          );
-        }
+        // Operator may pin a specific target; otherwise resolve from placement policy.
+        const intent = parsed.data.targetNode
+          ? ({ kind: 'explicit', targetNode: parsed.data.targetNode } as const)
+          : ({ kind: 'failover' } as const);
+        const result = await startMailMigration(intent, { ...k8s, db: app.db, kubeconfigPath });
         app.log.warn({ userId, runId: result.runId }, 'mail-admin: failover migration started');
         return success(result);
       } catch (err) {
@@ -1144,8 +1132,8 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
         const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
         const k8s = createK8sClients(kubeconfigPath);
-        const result = await startFailbackMigration(
-          { confirm: true },
+        const result = await startMailMigration(
+          { kind: 'failback' },
           { ...k8s, db: app.db, kubeconfigPath },
         );
         app.log.warn({ userId, runId: result.runId }, 'mail-admin: failback migration started');
@@ -1178,7 +1166,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
         const k8s = createK8sClients(kubeconfigPath);
         const result = await startMailMigration(
-          { targetNode: parsed.data.targetNode, triggeredBy: 'operator', newGiB: parsed.data.newGiB },
+          { kind: 'explicit', targetNode: parsed.data.targetNode, newGiB: parsed.data.newGiB },
           { ...k8s, db: app.db, kubeconfigPath },
         );
         app.log.warn({ userId, runId: result.runId, targetNode: parsed.data.targetNode }, 'mail-admin: migration started');

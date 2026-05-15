@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   AlertTriangle,
   Archive,
@@ -648,10 +648,18 @@ function RunProgressModal({
 }) {
   const terminal = run.state === 'succeeded' || run.state === 'failed';
   return (
-    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4">
+    <div
+      className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mail-archive-run-modal-title"
+    >
       <div className="w-full max-w-xl rounded-xl bg-white dark:bg-gray-800 shadow-xl">
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-3">
-          <h3 className="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-gray-100">
+          <h3
+            id="mail-archive-run-modal-title"
+            className="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-gray-100"
+          >
             <Archive size={16} /> {run.triggeredBy === 'restore' ? 'Restore run' : 'Archive run'}
           </h3>
           <button
@@ -734,11 +742,21 @@ function ConfirmModal({
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
 }) {
+  // Stable opaque id per dialog instance. Using useId() (React 18)
+  // because the prop-derived id from earlier had unsafe chars
+  // (parentheses, ?, etc.) and broke CSS selectors / aria-labelledby
+  // resolution in Firefox. useId returns SSR-safe, render-stable ids.
+  const titleId = useId();
   return (
-    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4">
+    <div
+      className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+    >
       <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 shadow-xl">
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-3">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
+          <h3 id={titleId} className="text-base font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
           <button onClick={onCancel} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700">
             <X size={16} />
           </button>

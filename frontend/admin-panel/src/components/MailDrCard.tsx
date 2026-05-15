@@ -130,7 +130,12 @@ export default function MailDrCard() {
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 5_000);
     } catch {
-      // surfaced via update.isError
+      // Failed mutation: drop the draft so the form re-syncs to
+      // server state on the next render. Without this the operator
+      // is left looking at their stale local selection while the
+      // banner says "save failed", with no clear path to retry from
+      // the actual server state.
+      setDraft(null);
     }
   }
 

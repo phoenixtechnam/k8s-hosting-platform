@@ -300,7 +300,13 @@ fi
 #      state ∈ {ok, noop} (anything else means a registered hook failed).
 log "── Scenario 8: client_lifecycle_transitions + hook_runs ──"
 
-PG_POD="$(ssh_cp 'kubectl -n platform get pod -l cnpg.io/cluster=postgres -o jsonpath="{.items[0].metadata.name}"' || true)"
+# Cluster name was renamed `postgres` → `system-db` in the 2026-05-07
+# PG18 migration. Try the canonical name first and fall back to the
+# legacy name so this harness works on pre-migration clusters.
+PG_POD="$(ssh_cp 'kubectl -n platform get pod -l cnpg.io/cluster=system-db -o jsonpath="{.items[0].metadata.name}"' || true)"
+if [[ -z "$PG_POD" ]]; then
+  PG_POD="$(ssh_cp 'kubectl -n platform get pod -l cnpg.io/cluster=postgres -o jsonpath="{.items[0].metadata.name}"' || true)"
+fi
 PSQL() {
   local q="$1"
   ssh_cp "kubectl -n platform exec $PG_POD -c postgres -- psql -U postgres -d hosting_platform -At -F'|' -c \"$q\"" 2>/dev/null || echo ""

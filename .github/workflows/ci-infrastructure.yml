@@ -191,3 +191,29 @@ jobs:
       - name: Verify system workloads carry role=server nodeAffinity
         run: ./scripts/ci-system-affinity-check.sh
 
+  # 2026-05-14 streamline: mail-subsystem static probes promoted to
+  # required gates. These detect classes of regression that have
+  # repeatedly slipped through the existing tests:
+  #   - mail-sdk-shape:    catches v0-positional @kubernetes/client-node
+  #                        casts that silently fail on the v1 SDK
+  #                        (real bug: migration.ts:84 "Node not found"
+  #                        while node was healthy).
+  #   - no-longhorn-in-mail: enforces the local-path-only decision in
+  #                        project_mail_architecture_streamline_2026_05_14.md.
+  mail-sdk-shape:
+    name: Mail-admin SDK v0/v1 shape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: ./scripts/ci-mail-sdk-shape.sh
+
+  no-longhorn-in-mail:
+    name: No Longhorn refs in mail subsystem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/ci-no-longhorn-in-mail.sh
+

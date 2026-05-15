@@ -1,0 +1,72 @@
+# Pinned SSH known_hosts for the rsync migration Job.
+#
+# The migration Job in backend/src/modules/mail-admin/migration.ts
+# uses `rsync -e ssh` to copy the live RocksDB PVC between server
+# nodes during a manual mail-server failover. SSH host-key
+# verification matters here: with hostNetwork=true on the Job pod,
+# an attacker who already controls DNS or ARP on the source node
+# could otherwise MITM the connection and exfiltrate the mail
+# DataStore.
+#
+# When THIS ConfigMap has a non-empty `known_hosts` key, the rsync
+# Job's shell script uses `StrictHostKeyChecking=yes` with this file
+# as the trust anchor. When the key is missing or empty (the default
+# state), the script falls back to `StrictHostKeyChecking=accept-new`
+# — trusts the first connection per node, rejects mismatches after.
+#
+# OPERATOR ACTION REQUIRED to enable strict mode:
+#
+#   1. List the server-role nodes for THIS cluster and capture their
+#      public host keys via SSH. Discover the node list with:
+#
+#        kubectl get nodes -l node-role=server -o jsonpath='{.items[*].metadata.name}'
+#
+#      Then for each node hostname (replace <node-fqdn>):
+#
+#        ssh-keyscan -t ed25519,ecdsa,rsa <node-fqdn> >> /tmp/cluster-known-hosts
+#
+#   2. Verify each fingerprint out-of-band (e.g. against the node's
+#      /etc/ssh/ssh_host_*_key.pub via console access). DO NOT skip
+#      this step — the whole point is to bind the trust to known
+#      keys, not whatever DNS returns at runtime.
+#
+#   3. Populate this ConfigMap:
+#
+#      kubectl create configmap stalwart-migration-known-hosts \
+#        --namespace mail \
+#        --from-file=known_hosts=/tmp/cluster-known-hosts \
+#        --dry-run=client -o yaml | kubectl apply -f -
+#
+#      The base layer ships this file with `known_hosts: ""` so it
+#      stays cluster-agnostic. If you want to commit the rendered
+#      known_hosts into git, do it in an OVERLAY (e.g.
+#      k8s/overlays/staging/) — not in `k8s/base/`. Mixing
+#      cluster-specific host keys into the base layer would silently
+#      apply one cluster's keys to other clusters that inherit it.
+#
+#   4. Trigger a small test migration via Admin Panel and verify the
+#      Job logs show "Using pinned known_hosts (StrictHostKeyChecking=yes)".
+#      If the operator rotates a node's host key (k3s reinstall, etc.)
+#      this ConfigMap must be regenerated.
+#
+# The empty-by-default ConfigMap exists so the migration Job mount
+# (`configMap.optional: true`) finds the resource and mounts it; the
+# absent-or-empty `known_hosts` key flips the shell into accept-new.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stalwart-migration-known-hosts
+  namespace: mail
+  labels:
+    app.kubernetes.io/component: mail-migration
+    app.kubernetes.io/part-of: hosting-platform
+  annotations:
+    platform.phoenix-host.net/operator-action: |
+      Populate the `known_hosts` key with `ssh-keyscan` output for
+      each server-role node before relying on strict host-key checks.
+      See file-level comment for the procedure.
+data:
+  # Empty by default — operator populates this via the procedure above.
+  # When empty / missing, the migration Job falls back to
+  # StrictHostKeyChecking=accept-new.
+  known_hosts: ""

@@ -26,6 +26,28 @@ export function useMailPlacement() {
   });
 }
 
+// Both placement updates and failover/failback move the active pod
+// to a different node, which changes:
+//   - what `useMailHealth` sees as the live nodeName
+//   - what the haproxy DS / hostPort path resolves to externally
+//   - what `useMailPortExposure` reports as daemonSetStatus.ready
+// Invalidate all three so the operator's view stays coherent after
+// a state-changing mutation instead of waiting out staleTime.
+//
+// Returns the awaited Promise.all so callers' `onSuccess` can return
+// it — TanStack Query then holds the mutation's `isPending` flag
+// until the invalidations have queued, preventing the brief "saved"
+// flash with stale data still mounted.
+function invalidateMailDerivedQueries(
+  qc: ReturnType<typeof useQueryClient>,
+): Promise<unknown> {
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: PLACEMENT_KEY }),
+    qc.invalidateQueries({ queryKey: ['mail', 'health'] }),
+    qc.invalidateQueries({ queryKey: ['mail', 'port-exposure'] }),
+  ]);
+}
+
 export function useUpdateMailPlacement() {
   const qc = useQueryClient();
   return useMutation({
@@ -34,7 +56,7 @@ export function useUpdateMailPlacement() {
         method: 'PATCH',
         body: JSON.stringify(input),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: PLACEMENT_KEY }),
+    onSuccess: () => invalidateMailDerivedQueries(qc),
   });
 }
 
@@ -46,7 +68,7 @@ export function useMailFailover() {
         method: 'POST',
         body: JSON.stringify(input),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: PLACEMENT_KEY }),
+    onSuccess: () => invalidateMailDerivedQueries(qc),
   });
 }
 
@@ -58,6 +80,6 @@ export function useMailFailback() {
         method: 'POST',
         body: JSON.stringify(input),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: PLACEMENT_KEY }),
+    onSuccess: () => invalidateMailDerivedQueries(qc),
   });
 }

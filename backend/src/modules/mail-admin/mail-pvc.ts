@@ -1,47 +1,44 @@
 /**
- * Mail PVC storage — read + online-grow the stalwart-rocksdb-data PVC.
+ * Mail PVC storage — read the stalwart-rocksdb-data PVC.
  *
- * Phase 1 (RocksDB migration): the CNPG mail-db PostgreSQL cluster has been
- * replaced with an embedded RocksDB DataStore on a local-path PVC named
- * `stalwart-rocksdb-data` in namespace `mail`.
- *
- * Mirrors the pattern in storage-lifecycle/service.ts:runGrowOnline:
- *   - PVC.spec.resources.requests.storage patch via MERGE_PATCH
- *   - local-path CSI ControllerExpandVolume → kubelet resize → status.capacity
- *   - No pod restart; RocksDB stays running through the grow
- *
- * Three explicit reject paths (return 400 with clear codes):
- *   - MAIL_PVC_SHRINK_NOT_SUPPORTED — newGiB < currentGiB
- *   - MAIL_PVC_SAME_SIZE — newGiB == currentGiB
- *   - STORAGE_CLASS_NO_EXPANSION — SC.allowVolumeExpansion === false
+ * Mail standardised on local-path PVC after the RocksDB migration
+ * (only storage class fast enough for `stalwart -e` import/export at
+ * production message volumes — see project_stalwart_storage_benchmark_
+ * 2026_05_11.md). Resize was historically supported but local-path
+ * does NOT quota — `requests.storage` is informational only after
+ * creation. The resize endpoint was deleted as part of the 2026-05-14
+ * streamline; this module is now READ-ONLY.
  */
 
 import { ApiError } from '../../shared/errors.js';
 import {
   type MailPvcStorageResponse,
-  type MailPvcResizeResponse,
   mailPvcStorageResponseSchema,
-  mailPvcResizeResponseSchema,
 } from '@k8s-hosting/api-contracts';
 
 const MAIL_NAMESPACE = 'mail';
 // Phase 1 (RocksDB migration): switched from CNPG PVC (mail-db-1) to the
 // Stalwart RocksDB DataStore PVC (stalwart-rocksdb-data, local-path, 20Gi).
 const MAIL_PVC_NAME = 'stalwart-rocksdb-data';
-const LAST_RESIZED_ANNOTATION = 'platform.phoenix-host.net/last-resized-at';
 
 export interface MailPvcOptions {
   readonly kubeconfigPath: string | undefined;
 }
 
 /**
- * Read the live PVC + StorageClass + (best-effort) used/free from the
- * CNPG primary pod's df probe.
+ * Read the live PVC + (best-effort) used bytes via `du -sb` exec probe.
+ *
+ * Mail PVC is always local-path post-RocksDB-migration. `requestedBytes`
+ * and `capacityBytes` are reported for completeness but are
+ * informational only — local-path does NOT enforce/quota the request.
+ * `expansionAllowed` is always false and `lastResizedAt` is always null;
+ * both kept on the response for contract stability (UI fields are being
+ * removed in the Phase-5 mail-page rewrite).
  */
 export async function getMailPvcStorage(
   opts: MailPvcOptions,
 ): Promise<MailPvcStorageResponse> {
-  const { core, storage, exec } = await loadK8sClients(opts.kubeconfigPath);
+  const { core, exec } = await loadK8sClients(opts.kubeconfigPath);
 
   const pvc = await core.readNamespacedPersistentVolumeClaim({
     name: MAIL_PVC_NAME,
@@ -62,21 +59,11 @@ export async function getMailPvcStorage(
   const requestedBytes = parseQuantity(requestedStr);
   const capacityBytes = parseQuantity(capacityStr);
 
-  // StorageClass.allowVolumeExpansion drives whether grow is even
-  // possible. Without this flag the kubelet would silently no-op the
-  // PVC patch — surface up-front instead.
-  const sc = (await storage.readStorageClass({ name: scName })) as ScShape;
-  const expansionAllowed = sc.allowVolumeExpansion === true;
-
   // Best-effort `du -sb` probe in the Stalwart pod. Falls back to null
   // on any failure — the GET endpoint is the operator's primary
   // visibility tool, do NOT block on this. See tryDfProbe for the
   // rationale on choosing du over df for local-path PVCs.
   const df = await tryDfProbe(exec, opts.kubeconfigPath, requestedBytes);
-
-  const annotations = pvc.metadata?.annotations ?? {};
-  const lastResizedAtRaw = annotations[LAST_RESIZED_ANNOTATION];
-  const lastResizedAt = isIsoDate(lastResizedAtRaw) ? lastResizedAtRaw : null;
 
   return mailPvcStorageResponseSchema.parse({
     pvcName: MAIL_PVC_NAME,
@@ -86,109 +73,10 @@ export async function getMailPvcStorage(
     usedBytes: df.usedBytes,
     freeBytes: df.freeBytes,
     storageClass: scName,
-    expansionAllowed,
-    lastResizedAt,
-  });
-}
-
-/**
- * Online-grow the PVC. Refuses shrink + same-size + SC-no-expansion.
- *
- * Patches `pvc.spec.resources.requests.storage` via MERGE_PATCH (same
- * shape storage-lifecycle uses for tenant PVCs). Returns immediately
- * after the patch — the operator UI polls GET to observe convergence
- * because Longhorn's expand + kubelet's filesystem-resize sequence
- * can take 30-120s on contended clusters.
- */
-export async function resizeMailPvc(
-  newGiB: number,
-  opts: MailPvcOptions,
-): Promise<MailPvcResizeResponse> {
-  if (!Number.isInteger(newGiB) || newGiB < 1) {
-    throw new ApiError('MAIL_PVC_INVALID_SIZE', `newGiB must be a positive integer; got ${newGiB}`, 400);
-  }
-
-  // Read current state first so we can validate + return reject codes
-  // BEFORE issuing the patch.
-  const current = await getMailPvcStorage(opts);
-  const newBytes = newGiB * 1024 * 1024 * 1024;
-
-  if (newBytes < current.requestedBytes) {
-    throw new ApiError(
-      'MAIL_PVC_SHRINK_NOT_SUPPORTED',
-      // TODO(Phase 5): offline shrink requires a migration pipeline —
-      // export DataStore snapshot, provision a fresh PVC at the smaller
-      // size, import snapshot, swap the PVC claim in the Deployment.
-      `K8s does not support online PVC shrink. Current ${formatGiB(current.requestedBytes)}, requested ${newGiB}GiB. To reduce capacity, take a snapshot, provision a fresh smaller PVC, import the snapshot, and swap.`,
-      400,
-    );
-  }
-  if (newBytes === current.requestedBytes) {
-    throw new ApiError(
-      'MAIL_PVC_SAME_SIZE',
-      `Storage already at ${newGiB}GiB`,
-      400,
-    );
-  }
-  if (!current.expansionAllowed) {
-    throw new ApiError(
-      'STORAGE_CLASS_NO_EXPANSION',
-      `StorageClass ${current.storageClass} does not allow volume expansion. Operator must set allowVolumeExpansion=true on the SC before resizing.`,
-      400,
-    );
-  }
-
-  const { core } = await loadK8sClients(opts.kubeconfigPath);
-  const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
-
-  const newSizeStr = `${newGiB}Gi`;
-  const nowIso = new Date().toISOString();
-
-  // Two MERGE_PATCH calls — spec.resources.requests.storage first
-  // (the actionable change) then metadata.annotations (informational).
-  // If the second fails, the resize already succeeded; surface a
-  // warning rather than rolling back the request.
-  try {
-    await core.patchNamespacedPersistentVolumeClaim({
-      name: MAIL_PVC_NAME,
-      namespace: MAIL_NAMESPACE,
-      body: { spec: { resources: { requests: { storage: newSizeStr } } } },
-    } as unknown as Parameters<typeof core.patchNamespacedPersistentVolumeClaim>[0],
-      MERGE_PATCH);
-  } catch (err) {
-    const code = (err as { statusCode?: number; code?: number }).statusCode
-      ?? (err as { code?: number }).code;
-    if (code === 422) {
-      throw new ApiError(
-        'MAIL_PVC_GROW_REJECTED',
-        `kubelet rejected PVC patch — SC ${current.storageClass} may have allowVolumeExpansion=false, or ${newSizeStr} is below current capacity`,
-        400,
-      );
-    }
-    throw new ApiError(
-      'MAIL_PVC_PATCH_FAILED',
-      `K8s API rejected PVC patch: ${(err as Error).message ?? String(err)}`,
-      500,
-    );
-  }
-
-  try {
-    await core.patchNamespacedPersistentVolumeClaim({
-      name: MAIL_PVC_NAME,
-      namespace: MAIL_NAMESPACE,
-      body: { metadata: { annotations: { [LAST_RESIZED_ANNOTATION]: nowIso } } },
-    } as unknown as Parameters<typeof core.patchNamespacedPersistentVolumeClaim>[0],
-      MERGE_PATCH);
-  } catch {
-    // Annotation patch is informational — the resize already
-    // succeeded. Silently swallow; UI will just show null
-    // lastResizedAt until the next successful resize.
-  }
-
-  return mailPvcResizeResponseSchema.parse({
-    pvcName: MAIL_PVC_NAME,
-    requestedBytes: newBytes,
-    lastResizedAt: nowIso,
+    // local-path doesn't support expansion; resize was deleted in the
+    // 2026-05-14 streamline. Kept on the response for UI stability.
+    expansionAllowed: false,
+    lastResizedAt: null,
   });
 }
 
@@ -234,7 +122,7 @@ async function loadK8sClients(kubeconfigPath: string | undefined): Promise<K8sCl
  *
  * Spec: https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/quantity/
  *
- * Restricted to the suffixes Longhorn produces — `Ki` / `Mi` / `Gi` /
+ * Restricted to the canonical K8s storage suffixes `Ki` / `Mi` / `Gi` /
  * `Ti` (binary, the K8s default for storage). Decimal SI suffixes
  * (`K` / `M` / etc.) are accepted with their power-of-1000 values.
  */
@@ -276,10 +164,10 @@ function isIsoDate(s: unknown): s is string {
  *   45 GB of unrelated container images + tenant PVCs shows ~62% used,
  *   yielding nonsense like "220% of the 20 GiB request" in the UI.
  *
- *   `du -sb` reports just the Stalwart data dir bytes. For Longhorn
- *   PVCs the answer is also correct (du ≈ filesystem-reported used
- *   minus a few hundred KB of fs metadata). Switching to `du` makes
- *   the measurement consistent across both storage backends.
+ *   `du -sb` reports just the Stalwart data dir bytes. Mail is
+ *   local-path only since the RocksDB migration (the storage
+ *   benchmark showed local-path 35× faster than alternatives for
+ *   `stalwart -e` import/export at production volumes).
  *
  * Falls back to nulls on any failure (exec RBAC denial, pod not Ready,
  * etc.) because the operator's primary need is to see the requested
