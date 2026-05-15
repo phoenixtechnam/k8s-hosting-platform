@@ -292,23 +292,11 @@ export async function applyRaw(
   url.searchParams.set('fieldManager', opts.fieldManager);
   url.searchParams.set('force', opts.force ? 'true' : 'false');
 
-  // Auth — pull from the kubeconfig's current user. v1 SDK exposes
-  // `applyToHTTPSOptions` that fills in headers + ca; we use it on a
-  // stub to extract Authorization without re-implementing auth.
-  // (Bearer-token clusters are the only kind in this codebase's
-  // staging + prod; client-cert clusters would need https.Agent
-  // wiring which we skip for now.)
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/apply-patch+yaml',
-    Accept: 'application/json',
-  };
   const user = kc.getCurrentUser();
-  if (user?.token) {
-    headers.Authorization = `Bearer ${user.token}`;
-  } else {
+  if (!user?.token) {
     // In-cluster path: loadFromCluster() copies the ServiceAccount
     // token into user.token already; if we land here we have no
-    // token (e.g. exec-plugin auth) and the apiserver will respond
+    // token (e.g. exec-plugin auth) and the apiserver would respond
     // 401. Surface that as a clearer error than a raw HTTP error.
     throw new Error(
       'k8s-patch.applyRaw: KubeConfig has no Bearer token. '
@@ -316,37 +304,55 @@ export async function applyRaw(
     );
   }
 
-  // CA: in-cluster SA token is signed by the cluster CA; SDK's
-  // KubeConfig.loadFromCluster() points at /var/run/secrets/.../ca.crt.
-  // We let Node fetch use the system CA trust + this CA via undici's
-  // dispatcher only if needed — simplest path is to set NODE_EXTRA_CA_CERTS
-  // for the platform-api pod at deploy time. For now, support
-  // skipTLSVerify clusters (local-dev) and trust the system CA otherwise.
-  let dispatcher: unknown;
-  if (cluster.skipTLSVerify) {
-    const { Agent } = await import('undici');
-    dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
-  } else if (cluster.caData || cluster.caFile) {
-    const { Agent } = await import('undici');
-    const { readFileSync } = await import('node:fs');
-    const ca = cluster.caData
-      ? Buffer.from(cluster.caData, 'base64').toString('utf8')
-      : readFileSync(cluster.caFile!, 'utf8');
-    dispatcher = new Agent({ connect: { ca } });
+  // Use node:https directly so we can pass the cluster CA via the
+  // standard `ca` option — Node's native fetch doesn't accept `ca`
+  // (only undici's Agent does, and undici isn't bundled in the prod
+  // Docker image's pruned node_modules). https is in Node core.
+  const { request: httpsRequest } = await import('node:https');
+  const { readFileSync } = await import('node:fs');
+
+  let ca: string | Buffer | undefined;
+  if (cluster.caData) {
+    ca = Buffer.from(cluster.caData, 'base64');
+  } else if (cluster.caFile) {
+    ca = readFileSync(cluster.caFile);
   }
 
-  const res = await fetch(url.toString(), {
-    method: 'PATCH',
-    headers,
-    body: JSON.stringify(body),
-    // @ts-expect-error — undici Dispatcher isn't part of Node fetch's stable types
-    dispatcher,
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error(
-      `k8s-patch.applyRaw: ${target.kind}/${target.name} → HTTP ${res.status} ${res.statusText}: ${txt.slice(0, 500)}`,
+  return await new Promise<unknown>((resolve, reject) => {
+    const req = httpsRequest(
+      {
+        method: 'PATCH',
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: `${url.pathname}${url.search}`,
+        ca,
+        rejectUnauthorized: !cluster.skipTLSVerify,
+        headers: {
+          'Content-Type': 'application/apply-patch+yaml',
+          Accept: 'application/json',
+          Authorization: `Bearer ${user.token}`,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          const status = res.statusCode ?? 0;
+          if (status >= 200 && status < 300) {
+            try { resolve(JSON.parse(text)); }
+            catch (err) { reject(new Error(`k8s-patch.applyRaw: bad JSON response (${(err as Error).message})`)); }
+            return;
+          }
+          reject(new Error(
+            `k8s-patch.applyRaw: ${target.kind}/${target.name} → HTTP ${status}: ${text.slice(0, 500)}`,
+          ));
+        });
+        res.on('error', reject);
+      },
     );
-  }
-  return res.json();
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
 }
