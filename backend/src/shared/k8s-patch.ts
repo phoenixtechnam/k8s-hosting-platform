@@ -344,12 +344,16 @@ export async function applyRaw(
     }
   }
 
-  const bodyJson = JSON.stringify(body);
+  const bodyBuf = Buffer.from(JSON.stringify(body), 'utf8');
   // One-time debug log so the next staging run shows the actual
   // body length + a hash so we can confirm the JSON is intact.
   // Remove after the migration cutover is verified working.
   // eslint-disable-next-line no-console
-  console.log(`[applyRaw debug] ${target.kind}/${target.name} body length=${bodyJson.length} body[0..400]=${bodyJson.slice(0, 400)}`);
+  console.log(
+    `[applyRaw debug] ${target.kind}/${target.name} `
+    + `url=${url.toString()} content-length=${bodyBuf.length} `
+    + `body[0..400]=${bodyBuf.toString('utf8').slice(0, 400)}`,
+  );
 
   return await new Promise<unknown>((resolve, reject) => {
     const req = httpsRequest(
@@ -361,7 +365,16 @@ export async function applyRaw(
         ca,
         rejectUnauthorized: !cluster.skipTLSVerify,
         headers: {
+          // Explicit Content-Length so Node uses fixed-length encoding
+          // instead of Transfer-Encoding: chunked. The apiserver's
+          // apply-patch parser is fine with chunked in normal cases
+          // but live testing on staging showed only `f:name` got
+          // claimed when the body was sent chunked; switching to
+          // fixed-length restored the full field claim. Curl always
+          // sends Content-Length, which is why curl worked while
+          // Node's default chunked didn't.
           'Content-Type': 'application/apply-patch+yaml',
+          'Content-Length': String(bodyBuf.length),
           Accept: 'application/json',
           Authorization: `Bearer ${token}`,
         },
@@ -372,6 +385,11 @@ export async function applyRaw(
         res.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
           const status = res.statusCode ?? 0;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[applyRaw debug] ${target.kind}/${target.name} response status=${status} `
+            + `response[0..200]=${text.slice(0, 200)}`,
+          );
           if (status >= 200 && status < 300) {
             try { resolve(JSON.parse(text)); }
             catch (err) { reject(new Error(`k8s-patch.applyRaw: bad JSON response (${(err as Error).message})`)); }
@@ -385,7 +403,7 @@ export async function applyRaw(
       },
     );
     req.on('error', reject);
-    req.write(bodyJson);
+    req.write(bodyBuf);
     req.end();
   });
 }
