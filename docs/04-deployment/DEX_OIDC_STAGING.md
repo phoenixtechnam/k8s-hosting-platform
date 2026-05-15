@@ -74,10 +74,24 @@ the May 2026 hardening sprint:
    by `0086_oidc_pkce_state.sql` migration which moves the store to
    postgres.
 
-4. **Intermittent 404 on `dex.staging.<DOMAIN>`** — one node's
-   nginx-ingress controller missed an Ingress watch update and serves
-   a stale `nginx.conf`. Detect and repair with
-   `scripts/check-nginx-ingress-drift.sh --repair`.
+4. **Intermittent 404 on `dex.staging.<DOMAIN>`** — Traefik migration
+   2026-05-15: this failure mode is largely obsolete. The original cause
+   was nginx-ingress's per-node `nginx.conf` rendering missing an
+   Ingress watch update, fixed by `nginx -s reload`. Traefik's
+   kubernetesCRD provider watches IngressRoute objects directly via
+   the k8s API and serves routes from in-memory — there's no nginx.conf
+   to drift. If a 404 surfaces from one specific node, query that pod's
+   admin API:
+   ```bash
+   kubectl -n traefik get pod -l app.kubernetes.io/name=traefik -o name | \
+     xargs -I{} kubectl -n traefik exec {} -- wget -q -O - \
+     http://localhost:8080/api/http/routers | \
+     jq -r '.[] | select(.rule | contains("dex.staging")) | "\(.name) \(.status)"'
+   ```
+   All pods should report the same routers in `enabled` status. A
+   `disabled` or missing entry on one pod points at a real Traefik bug
+   to file upstream. Recovery: `kubectl -n traefik delete pod NAME` —
+   the DaemonSet respawns it with a fresh K8s watch.
 
 5. **Bad creds rejected silently** — Dex's static-password connector
    re-renders the login form on bad credentials with no Location

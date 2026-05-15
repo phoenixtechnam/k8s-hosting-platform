@@ -412,26 +412,30 @@ spec:
     - port: 8089
       targetPort: 4180
 ---
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: acme-probe
   namespace: ${NAMESPACE}
-  annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
-  ingressClassName: nginx
-  rules:
-    - host: ${HOSTNAME}
-      http:
-        paths:
-          - path: /.well-known/acme-challenge/${probe_token}
-            pathType: Exact
-            backend:
-              service:
-                name: acme-probe-stub
-                port:
-                  number: 8089
+  # `web` entrypoint = HTTP/:80, no TLS. ACME challenges are plain HTTP
+  # per RFC 8555. No middleware attached on purpose — this IR
+  # MUST bypass the OAuth2 gate that the tenant's other IR has, so the
+  # test passes only when the platform's ingress reconciler also
+  # carves out /.well-known/acme-challenge/* from the OIDC scope.
+  entryPoints:
+    - web
+  routes:
+    # priority 100 beats the default rule-length-based priority on the
+    # tenant's OAuth2-gated Host(${HOSTNAME}) IR. Path is the EXACT
+    # ACME challenge token URL — narrowest possible match to avoid
+    # leaking other paths under an auth-bypassed route.
+    - kind: Rule
+      priority: 100
+      match: "Host(\`${HOSTNAME}\`) && Path(\`/.well-known/acme-challenge/${probe_token}\`)"
+      services:
+        - name: acme-probe-stub
+          port: 8089
 YAML
 )
   local apply_out
@@ -454,7 +458,7 @@ EOF" 2>&1)
   # redirect to the IdP, which would prove the gate is intercepting.
   if [[ "$status" == "302" ]]; then
     fail "acme-challenge path was gated (got 302 to IdP) — LE renewal would fail"
-    ssh_run "kubectl -n ${NAMESPACE} delete ingress acme-probe service acme-probe-stub --ignore-not-found" >/dev/null 2>&1 || true
+    ssh_run "kubectl -n ${NAMESPACE} delete ingressroute.traefik.io acme-probe --ignore-not-found; kubectl -n ${NAMESPACE} delete service acme-probe-stub --ignore-not-found" >/dev/null 2>&1 || true
     return 1
   fi
   ok "acme-challenge path bypasses auth gate (HTTP ${status}, not 302)"
@@ -467,13 +471,13 @@ EOF" 2>&1)
     "http://${HOSTNAME}/.well-known/acme-challenge/${probe_token}" 2>/dev/null)
   if echo "$resp_headers" | grep -qi '^x-auth-request-redirect:'; then
     fail "auth-request response header leaked into acme-challenge location"
-    ssh_run "kubectl -n ${NAMESPACE} delete ingress acme-probe service acme-probe-stub --ignore-not-found" >/dev/null 2>&1 || true
+    ssh_run "kubectl -n ${NAMESPACE} delete ingressroute.traefik.io acme-probe --ignore-not-found; kubectl -n ${NAMESPACE} delete service acme-probe-stub --ignore-not-found" >/dev/null 2>&1 || true
     return 1
   fi
   ok "no auth_request leak into /.well-known/acme-challenge/* location"
 
   # Cleanup.
-  ssh_run "kubectl -n ${NAMESPACE} delete ingress acme-probe service acme-probe-stub --ignore-not-found" >/dev/null 2>&1 || true
+  ssh_run "kubectl -n ${NAMESPACE} delete ingressroute.traefik.io acme-probe --ignore-not-found; kubectl -n ${NAMESPACE} delete service acme-probe-stub --ignore-not-found" >/dev/null 2>&1 || true
   return 0
 }
 

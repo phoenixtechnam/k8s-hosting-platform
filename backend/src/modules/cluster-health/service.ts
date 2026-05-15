@@ -4,7 +4,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 // Surface the readiness of key infrastructure Deployments without
 // requiring Prometheus. The admin panel uses this for a simple
 // traffic-light row on the Load Balancer settings page (CNPG,
-// cert-manager, Longhorn manager, ingress-nginx).
+// cert-manager, Longhorn manager, traefik).
 //
 // Plus per-node networking + storage subsystem health for the M4
 // Cluster Nodes page. Without this, a worker that joined but never

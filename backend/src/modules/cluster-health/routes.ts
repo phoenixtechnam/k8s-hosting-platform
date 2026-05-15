@@ -11,7 +11,7 @@ export async function clusterHealthRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/admin/cluster-health
   // Returns Deployment / DaemonSet readiness for a curated set of
-  // infrastructure components (CNPG, cert-manager, ingress-nginx,
+  // infrastructure components (CNPG, cert-manager, traefik,
   // longhorn-manager, flux). Used by the admin panel's cluster-health
   // card; no Prometheus dependency.
   app.get('/admin/cluster-health', {

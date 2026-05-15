@@ -351,8 +351,8 @@ export async function applyNetworkPolicy(
   // Two NetworkPolicies per tenant namespace:
   //
   // 1. default-deny-ingress — blanket deny for cross-namespace ingress,
-  //    except from ingress-nginx (so the user's web app remains reachable
-  //    from the load balancer).
+  //    except from traefik (so the user's web app remains reachable
+  //    from the ingress controller).
   //
   // 2. allow-intra-namespace — pods within the same tenant namespace may
   //    freely reach each other. Required for multi-component apps (e.g.
@@ -375,20 +375,22 @@ export async function applyNetworkPolicy(
               _from: [
                 {
                   namespaceSelector: {
-                    matchLabels: { 'kubernetes.io/metadata.name': 'ingress-nginx' },
+                    matchLabels: { 'kubernetes.io/metadata.name': 'traefik' },
                   },
                 },
-                // ingress-nginx runs hostNetwork=true. When it forwards
-                // cross-node to a tenant pod, Linux re-sources the
-                // packet via vxlan.calico — the tenant pod sees a
+                // Traefik runs hostPort (not hostNetwork); when it
+                // forwards cross-node to a tenant pod, Linux re-sources
+                // the packet via vxlan.calico — the tenant pod sees a
                 // source IP in the cluster pod CIDR (10.42.0.0/16),
-                // NOT the ingress-nginx namespace. Without this
-                // ipBlock the namespaceSelector above never matches
-                // for cross-node traffic, and tenant HTTP
-                // (including LE HTTP-01 challenges to the
-                // cm-acme-http-solver pod) times out at 504.
-                // Same fix shape as k8s/base/network-policies.yaml:
-                // allow-ingress-to-platform.
+                // NOT the traefik namespace. Without this ipBlock the
+                // namespaceSelector above never matches for cross-node
+                // traffic, and tenant HTTP (including LE HTTP-01
+                // challenges via Traefik's ingress-acme path) times out
+                // at 504. Same fix shape as k8s/base/network-policies.
+                // yaml: allow-ingress-to-platform. (Migrated from
+                // namespace=ingress-nginx to namespace=traefik
+                // 2026-05-15; the ipBlock fallback masked the dead
+                // selector during the migration window.)
                 {
                   ipBlock: { cidr: '10.42.0.0/16' },
                 },

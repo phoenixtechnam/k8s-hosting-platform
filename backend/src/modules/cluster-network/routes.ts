@@ -186,7 +186,7 @@ export async function clusterNetworkRoutes(app: FastifyInstance): Promise<void> 
 
   // ─── Node exposure (Phase 6 PRIVATE NODE) ────────────────────────────
   // Flips the platform.phoenix-host.net/exposure label on a Node.
-  // Drives ingress-nginx + cert-manager solver scheduler affinity
+  // Drives traefik + cert-manager solver scheduler affinity
   // (manifest-side); a future Phase 6.5 will add reconciler firewall-
   // chain drops on private nodes for workload ports.
   app.patch<{ Params: { name: string } }>(
