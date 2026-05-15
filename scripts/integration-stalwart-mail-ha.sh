@@ -102,6 +102,29 @@
 #     J2. cert issued by Let's Encrypt
 #     J3. cert currently valid (not expired)
 #
+#   Phase K — Live migration E2E (--migrate-e2e --i-mean-it, ~12 min, DESTRUCTIVE)
+#     The acceptance test for the Phase 1 streamline architecture rewrite.
+#     Triggers a real /admin/mail/migrate to a different node, polls until
+#     `done`, then verifies:
+#     K1. Migration reached `done` (not stuck or failed)
+#     K2. Pod scheduled on the requested target node
+#     K3. Deployment.volumes[stalwart-data].claimName = 'stalwart-rocksdb-data'
+#         (stable name invariant — catches per-run PVC naming regression)
+#     K4. PVC Bound on target node
+#     K5. RocksDB CURRENT sentinel present (data restored from snapshot)
+#     K6. After 5-min wait spanning a Flux reconcile, affinity NOT reverted
+#         (closes the SSA war regression PR #53 fixed)
+#     K7. Mail TLS handshake still works post-migration
+#     Requires placement.activeNode != target candidate with ready=true.
+#
+#   Phase L — DR auto-failover drill (--dr-drill --i-mean-it, ~5 min, DESTRUCTIVE)
+#     Cordons the node currently hosting Stalwart, force-deletes the pod.
+#     Verifies dr-watcher detects the loss and transitions drState:
+#     L1. drState transitions to degraded/failing-over/failed-over
+#     L2. (if failed-over) pod relocated to secondaryNode
+#     L3. uncordon — always runs via trap, even on ctrl-C
+#     Requires placement.autoFailoverEnabled=true + secondaryNode set.
+#
 # Exit code: 0 if everything passed (phases that ran). Non-zero with the
 # count of failures otherwise.
 #
@@ -167,6 +190,12 @@ RUN_HEALTH_TRUTH=false
 RUN_MIGRATE_SMOKE=false
 RUN_FLUX_OWNERSHIP=false
 RUN_CERT_ACQUISITION=false
+RUN_MIGRATE_E2E=false
+RUN_DR_DRILL=false
+# Destructive Phase K/L gate. Both phases mutate the live cluster
+# (relocate the Stalwart pod, kill the active mail node). They refuse
+# to run without --i-mean-it.
+I_MEAN_IT=false
 for arg in "$@"; do
   case "$arg" in
     --mode-flip)        RUN_MODE_FLIP=true ;;
@@ -177,6 +206,9 @@ for arg in "$@"; do
     --migrate-smoke)    RUN_MIGRATE_SMOKE=true ;;
     --flux-ownership)   RUN_FLUX_OWNERSHIP=true ;;
     --cert-acquisition) RUN_CERT_ACQUISITION=true ;;
+    --migrate-e2e)      RUN_MIGRATE_E2E=true ;;
+    --dr-drill)         RUN_DR_DRILL=true ;;
+    --i-mean-it)        I_MEAN_IT=true ;;
     --help|-h)
       sed -n '2,/^set -euo/p' "$0" | sed -e 's/^# //' -e 's/^#$//' -e '/^set -euo/d'
       exit 0
@@ -1525,6 +1557,323 @@ phase_j_cert_acquisition() {
   echo ""
 }
 
+# ── Phase K — Live migration E2E (DESTRUCTIVE; requires --i-mean-it) ──
+# The single test that proves the Phase 1 streamline architecture works
+# end-to-end. Triggers a real /admin/mail/migrate against a target node
+# different from the current active node, polls the run status until
+# `done`, then verifies:
+#   K1. Migration reached `done` state (not stuck or failed)
+#   K2. Stalwart pod is now scheduled on the requested target node
+#   K3. Deployment.volumes[stalwart-data].claimName is the STABLE
+#       'stalwart-rocksdb-data' (architecture invariant — Phase 1 retired
+#       per-run PVC naming)
+#   K4. PVC stalwart-rocksdb-data is Bound on the target node
+#   K5. Stalwart RocksDB sentinel (CURRENT file) is present in the new PVC
+#       (data was restored from snapshot, not silently empty)
+#   K6. After a 5-min wait spanning a full Flux Kustomization.spec.interval,
+#       the affinity field is NOT reverted (closes the Flux SSA war
+#       regression that PR #53 fixed)
+#   K7. Mail TLS handshake on the public hostname still succeeds (haproxy
+#       DS forwarding still works after the pod relocated)
+phase_k_migrate_e2e() {
+  echo "## Phase K — Live migration E2E (DESTRUCTIVE)"
+
+  if ! $I_MEAN_IT; then
+    note_fail "K. requires --i-mean-it — Phase K relocates the Stalwart pod (2-3min downtime on this cluster)"
+    echo ""
+    return
+  fi
+  if [[ -z "$ADMIN_TOKEN" || -z "$PLATFORM_API_URL" ]]; then
+    note_warn "K. SKIP — ADMIN_TOKEN + PLATFORM_API_URL required"
+    echo ""
+    return
+  fi
+
+  # Resolve the current source node from placement (NOT from kubectl —
+  # the API picks the target relative to its own source-node logic).
+  local placement source_node target_node
+  placement="$(curl -sk --fail --max-time 15 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/placement" 2>/dev/null || echo '')"
+  source_node="$(echo "$placement" | python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)['data']
+  print(d.get('activeNode') or d.get('primaryNode') or '')
+except: print('')" 2>/dev/null)"
+
+  # Pick a candidate ≠ source — prefer server-role nodes.
+  target_node="$(echo "$placement" | python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)['data']
+  src = d.get('activeNode') or d.get('primaryNode') or ''
+  for c in d.get('candidateNodes', []):
+    if c.get('hostname') and c['hostname'] != src and c.get('ready') and c.get('role') == 'server':
+      print(c['hostname']); break
+except: pass" 2>/dev/null)"
+
+  if [[ -z "$source_node" || -z "$target_node" ]]; then
+    note_warn "K. SKIP — could not resolve source/target nodes (source=${source_node:-EMPTY}, target=${target_node:-EMPTY})"
+    echo ""
+    return
+  fi
+  echo "  Triggering migration: ${source_node} → ${target_node}"
+
+  # K1. POST /admin/mail/migrate
+  local migrate_resp run_id
+  migrate_resp="$(curl -sk --max-time 30 -X POST \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"targetNode\":\"${target_node}\",\"confirm\":true}" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/migrate" 2>/dev/null || echo '')"
+  run_id="$(echo "$migrate_resp" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin)['data']['runId'])
+except: print('')" 2>/dev/null)"
+
+  if [[ -z "$run_id" ]]; then
+    note_fail "K. /admin/mail/migrate did not return runId (resp: ${migrate_resp:0:200})"
+    echo ""
+    return
+  fi
+  echo "  Migration runId=${run_id}; polling status every 15s (timeout 10min)..."
+
+  # Poll status until terminal state (done|failed|rolled-back) or 10min.
+  local poll_deadline=$(( SECONDS + 600 ))
+  local final_state="" final_step=""
+  while (( SECONDS < poll_deadline )); do
+    local status_resp state step
+    status_resp="$(curl -sk --fail --max-time 15 \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      "${PLATFORM_API_URL%/}/api/v1/admin/mail/migrate/${run_id}" 2>/dev/null || echo '')"
+    state="$(echo "$status_resp" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin)['data']['state'])
+except: print('')" 2>/dev/null)"
+    step="$(echo "$status_resp" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin)['data'].get('currentStep') or '')
+except: print('')" 2>/dev/null)"
+    echo "    [poll t+${SECONDS}s] state=${state} step=${step}"
+    case "$state" in
+      done|failed|'rolled-back')
+        final_state="$state"
+        final_step="$step"
+        break
+        ;;
+    esac
+    sleep 15
+  done
+
+  if [[ "$final_state" == "done" ]]; then
+    note_pass "K1. migration reached 'done' state (final step=${final_step})"
+  else
+    note_fail "K1. migration did not reach 'done' — state=${final_state:-TIMEOUT}, step=${final_step}"
+    echo ""
+    return  # later checks are meaningless if migration didn't complete
+  fi
+
+  # K2. Pod is now on the target node.
+  local pod_node
+  pod_node="$(kctl -n "$STALWART_NS" get pods -l app=stalwart-mail \
+    --no-headers 2>/dev/null | head -1 | awk '{print $NF}')"
+  if [[ "$pod_node" == "$target_node" ]]; then
+    note_pass "K2. Stalwart pod now scheduled on ${target_node}"
+  else
+    note_fail "K2. Stalwart pod on ${pod_node}, expected ${target_node}"
+  fi
+
+  # K3. PVC claimName invariant.
+  local pvc_claim
+  pvc_claim="$(kctl -n "$STALWART_NS" get deploy stalwart-mail \
+    -o jsonpath='{.spec.template.spec.volumes[?(@.name=="stalwart-data")].persistentVolumeClaim.claimName}' 2>/dev/null)"
+  if [[ "$pvc_claim" == "stalwart-rocksdb-data" ]]; then
+    note_pass "K3. Deployment.volumes[stalwart-data].claimName = stalwart-rocksdb-data (stable name invariant)"
+  else
+    note_fail "K3. claimName drift — got '${pvc_claim}'"
+  fi
+
+  # K4. PVC bound on target node.
+  local pvc_node pvc_phase
+  pvc_phase="$(kctl -n "$STALWART_NS" get pvc stalwart-rocksdb-data \
+    -o jsonpath='{.status.phase}' 2>/dev/null)"
+  pvc_node="$(kctl -n "$STALWART_NS" get pvc stalwart-rocksdb-data \
+    -o jsonpath='{.metadata.annotations.volume\.kubernetes\.io/selected-node}' 2>/dev/null)"
+  if [[ "$pvc_phase" == "Bound" && "$pvc_node" == "$target_node" ]]; then
+    note_pass "K4. PVC stalwart-rocksdb-data Bound on ${target_node}"
+  else
+    note_fail "K4. PVC drift — phase=${pvc_phase}, selected-node=${pvc_node}"
+  fi
+
+  # K5. RocksDB sentinel present (data restored from snapshot, not empty).
+  local current_pod sentinel_check
+  current_pod="$(kctl -n "$STALWART_NS" get pods -l app=stalwart-mail \
+    --no-headers 2>/dev/null | head -1 | awk '{print $1}')"
+  if [[ -n "$current_pod" ]]; then
+    sentinel_check="$(kctl -n "$STALWART_NS" exec "$current_pod" -c stalwart -- \
+      test -f /var/lib/stalwart/data/CURRENT && echo yes || echo no)"
+    if [[ "$sentinel_check" == "yes" ]]; then
+      note_pass "K5. RocksDB CURRENT sentinel present (snapshot restore succeeded)"
+    else
+      note_fail "K5. CURRENT sentinel missing — DataStore was not restored"
+    fi
+  else
+    note_warn "K5. could not find Stalwart pod to verify sentinel"
+  fi
+
+  # K6. Flux reconcile non-revert. Wait 5 min spanning a full
+  # Kustomization.spec.interval window, then re-check the affinity.
+  echo "  Sleeping 5 min to span Flux reconcile interval (this catches the PR #53 regression)..."
+  sleep 300
+  local affinity_node
+  affinity_node="$(kctl -n "$STALWART_NS" get deploy stalwart-mail \
+    -o jsonpath='{.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0]}' 2>/dev/null)"
+  if [[ "$affinity_node" == "$target_node" ]]; then
+    note_pass "K6. Deployment.affinity still pins ${target_node} after 5-min Flux reconcile window"
+  else
+    note_fail "K6. affinity reverted! got=${affinity_node:-EMPTY}, expected=${target_node} (Flux SSA war regression)"
+  fi
+
+  # K7. Mail TLS still serves a cert after the relocation.
+  local k7_cert
+  k7_cert="$(echo | timeout 10 openssl s_client \
+    -connect "${STALWART_DOMAIN}:465" -servername "${STALWART_DOMAIN}" 2>/dev/null \
+    | openssl x509 -noout -subject 2>/dev/null || echo '')"
+  if echo "$k7_cert" | grep -qE "CN ?= ?${STALWART_DOMAIN}"; then
+    note_pass "K7. ${STALWART_DOMAIN}:465 still serves cert post-migration"
+  else
+    note_fail "K7. TLS on ${STALWART_DOMAIN}:465 broken post-migration (got: ${k7_cert})"
+  fi
+  echo ""
+}
+
+# ── Phase L — DR auto-failover drill (DESTRUCTIVE; requires --i-mean-it) ──
+# Cordon the node currently hosting Stalwart and force-evict the pod.
+# dr-watcher should detect the node-NotReady (or pod-Unhealthy) condition
+# and trigger triggerRestoreBasedFailover within failoverThresholdSeconds.
+#
+# CRITICAL: this drill cordons a node — uncordon happens in a trap so
+# even ctrl-C leaves the cluster recoverable. Failure to uncordon
+# strands all pods scheduled there going forward.
+phase_l_dr_drill() {
+  echo "## Phase L — DR auto-failover drill (DESTRUCTIVE)"
+
+  if ! $I_MEAN_IT; then
+    note_fail "L. requires --i-mean-it — Phase L cordons the active mail node"
+    echo ""
+    return
+  fi
+  if [[ -z "$ADMIN_TOKEN" || -z "$PLATFORM_API_URL" ]]; then
+    note_warn "L. SKIP — ADMIN_TOKEN + PLATFORM_API_URL required"
+    echo ""
+    return
+  fi
+
+  # Preflight: auto-failover MUST be enabled, and there MUST be a
+  # secondary configured. Otherwise dr-watcher has nothing to do.
+  local placement auto_enabled secondary
+  placement="$(curl -sk --fail --max-time 15 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/placement" 2>/dev/null || echo '')"
+  auto_enabled="$(echo "$placement" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin)['data']['autoFailoverEnabled'])
+except: print('false')" 2>/dev/null)"
+  secondary="$(echo "$placement" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin)['data'].get('secondaryNode') or '')
+except: print('')" 2>/dev/null)"
+
+  if [[ "$auto_enabled" != "True" && "$auto_enabled" != "true" ]]; then
+    note_warn "L. SKIP — placement.autoFailoverEnabled is false; dr-watcher will not fire"
+    echo ""
+    return
+  fi
+  if [[ -z "$secondary" ]]; then
+    note_warn "L. SKIP — no secondaryNode configured; dr-watcher has no target"
+    echo ""
+    return
+  fi
+
+  local source_node
+  source_node="$(kctl -n "$STALWART_NS" get pods -l app=stalwart-mail \
+    --no-headers 2>/dev/null | head -1 | awk '{print $NF}')"
+  if [[ -z "$source_node" || "$source_node" == "$secondary" ]]; then
+    note_warn "L. SKIP — source_node=${source_node}, secondary=${secondary}; nothing to drill"
+    echo ""
+    return
+  fi
+  echo "  Cordoning ${source_node} to simulate node-loss DR..."
+
+  # Trap: ensure uncordon on ANY exit path (success, failure, ctrl-C).
+  # shellcheck disable=SC2064
+  trap "echo 'L. cleanup: uncordoning ${source_node}'; kctl uncordon '${source_node}' >/dev/null 2>&1 || true" EXIT INT TERM
+
+  if ! kctl cordon "$source_node" >/dev/null 2>&1; then
+    note_fail "L. failed to cordon ${source_node}"
+    trap - EXIT INT TERM
+    echo ""
+    return
+  fi
+
+  # Force-delete the Stalwart pod so kubelet must re-schedule. With the
+  # node cordoned, K8s can't put it back here.
+  local source_pod
+  source_pod="$(kctl -n "$STALWART_NS" get pods -l app=stalwart-mail \
+    --no-headers 2>/dev/null | head -1 | awk '{print $1}')"
+  echo "  Deleting pod ${source_pod} (forces re-schedule via dr-watcher)..."
+  kctl -n "$STALWART_NS" delete pod "$source_pod" --grace-period=0 --force >/dev/null 2>&1
+
+  # Wait for dr-watcher tick (30s default) + a couple of state-machine
+  # iterations. Threshold is operator-configurable; staging default is
+  # 300s but the dr-watcher should at least transition to 'degraded'
+  # within the first tick.
+  echo "  Sleeping 90s for dr-watcher to detect node-unhealthy..."
+  sleep 90
+
+  # L1. drState should at least be `degraded` or further along.
+  local drift_check
+  drift_check="$(curl -sk --fail --max-time 15 \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "${PLATFORM_API_URL%/}/api/v1/admin/mail/placement" 2>/dev/null \
+    | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin)['data'].get('drState','unknown'))
+except: print('unknown')" 2>/dev/null)"
+  case "$drift_check" in
+    degraded|failing-over|failed-over)
+      note_pass "L1. dr-watcher transitioned drState → ${drift_check}"
+      ;;
+    healthy)
+      note_warn "L1. drState still 'healthy' — dr-watcher may need higher threshold OR autoFailoverEnabled was off"
+      ;;
+    *)
+      note_fail "L1. unexpected drState=${drift_check}"
+      ;;
+  esac
+
+  # If failed-over: verify the new pod is on the secondary.
+  if [[ "$drift_check" == "failed-over" ]]; then
+    local new_pod_node
+    new_pod_node="$(kctl -n "$STALWART_NS" get pods -l app=stalwart-mail \
+      --no-headers 2>/dev/null | head -1 | awk '{print $NF}')"
+    if [[ "$new_pod_node" == "$secondary" ]]; then
+      note_pass "L2. Stalwart pod relocated to secondary ${secondary}"
+    else
+      note_fail "L2. Stalwart pod on ${new_pod_node}, expected secondary ${secondary}"
+    fi
+  fi
+
+  # L3. Cleanup — uncordon (the trap also covers this, but explicit
+  # exit is cleaner for the harness summary).
+  echo "  Uncordoning ${source_node}..."
+  kctl uncordon "$source_node" >/dev/null 2>&1
+  trap - EXIT INT TERM
+  note_pass "L3. uncordon ${source_node} complete"
+  echo ""
+}
+
 # ── Run phases ─────────────────────────────────────────────────────────
 phase_a_health
 phase_b_state
@@ -1536,6 +1885,8 @@ if $RUN_NEGATIVE;         then phase_d_negative;             fi
 if $RUN_ARCHIVE;          then phase_e_archive_no_downtime;  fi
 if $RUN_ARCHIVE_DOWNTIME; then phase_f_archive_downtime;     fi
 if $RUN_CERT_ACQUISITION; then phase_j_cert_acquisition;    fi
+if $RUN_MIGRATE_E2E;      then phase_k_migrate_e2e;          fi
+if $RUN_DR_DRILL;         then phase_l_dr_drill;             fi
 
 # ── Summary ────────────────────────────────────────────────────────────
 echo "═══════════════════════════════════════════════════════════════════"
