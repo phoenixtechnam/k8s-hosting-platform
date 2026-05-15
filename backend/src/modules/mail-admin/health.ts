@@ -103,8 +103,12 @@ export interface MailHealthDeps {
   readonly rocksdbExec?: (podName: string, kubeconfigPath: string | undefined) => Promise<{ currentExists: boolean; lockExists: boolean }>;
   /** Visible for tests: override the TCP probe. */
   readonly tcpProbe?: (host: string, port: number, timeoutMs: number) => Promise<{ reachable: boolean; latencyMs: number | null; error: string | null }>;
-  /** Visible for tests: override the TLS probe. */
+  /** Visible for tests: override the TLS probe (legacy direct-tls path; kept for tests that mock it). */
   readonly tlsProbe?: (host: string, port: number, sni: string, timeoutMs: number) => Promise<{ peerCertificate: tls.PeerCertificate | null; error: string | null }>;
+  /** Visible for tests: override the JMAP exec probe. */
+  readonly jmapExec?: (podName: string, kubeconfigPath: string | undefined, authHeader: string) => Promise<number>;
+  /** Visible for tests: override the cert exec probe. */
+  readonly certExec?: (podName: string, kubeconfigPath: string | undefined, port: number, sni: string) => Promise<{ subject: string | null; issuer: string | null; notAfter: string | null; error: string | null }>;
 }
 
 export interface GetMailHealthOpts {
@@ -122,15 +126,20 @@ export async function getMailHealth(
     return cache.response;
   }
 
-  // All five probes run in parallel; one failure doesn't block another.
-  const [pod, jmap, tcp, cert] = await Promise.all([
+  // Pod probe runs first — its result feeds the exec-based probes
+  // (rocksdb, jmap, cert) which need a pod name. TCP probe is the only
+  // truly independent one (no pod-name dep) so it runs in parallel with
+  // pod.
+  const [pod, tcp] = await Promise.all([
     probePod(deps),
-    probeJmap(deps),
     probeTcp(deps),
-    probeCert(deps),
   ]);
-  // RocksDB probe needs the pod name from the pod probe; run sequential.
-  const rocksdb = await probeRocksdb(deps, pod.podName);
+  // Exec-based probes need pod.podName. They run in parallel with each other.
+  const [jmap, rocksdb, cert] = await Promise.all([
+    probeJmap(deps, pod.podName),
+    probeRocksdb(deps, pod.podName),
+    probeCert(deps, pod.podName),
+  ]);
 
   const healthy =
     pod.healthy
@@ -248,14 +257,27 @@ interface JmapProbeShape {
   error: string | null;
 }
 
-async function probeJmap(deps: MailHealthDeps): Promise<JmapProbeShape> {
+/**
+ * JMAP probe — exec curl inside the Stalwart pod.
+ *
+ * Why exec instead of fetch: Stalwart 0.16's HTTP listener at :8080
+ * does PROXY-v2 protocol sniffing on every non-loopback connection
+ * whose source IP is in `SystemSettings.proxyTrustedNetworks`. Since
+ * the cluster pod/service CIDRs (10.42.0.0/16 + 10.43.0.0/16) are in
+ * that trust list — necessary for haproxy DS forwarding mail traffic
+ * — cross-pod plain HTTP from platform-api to `stalwart-mgmt:8080`
+ * gets dropped with "fetch failed cause=other side closed". The only
+ * source IP that bypasses PROXY-v2 sniff is 127.0.0.1.
+ *
+ * Same pattern as proxy-networks-reconciler.ts:jmapPost. The pod-name
+ * comes from the pod probe; if that returns null we skip the JMAP probe.
+ */
+async function probeJmap(deps: MailHealthDeps, podName: string | null): Promise<JmapProbeShape> {
   if (!deps.jmapAdminCredentials) {
     // Skipped probe → healthy: true matches the cert probe pattern
-    // (returns healthy when mailHostname missing). Code review caught
-    // the asymmetry: a fresh deploy without admin creds wired up
-    // would otherwise show globally-unhealthy even when pod + rocksdb
-    // + tcp all green. The error string makes the cause visible to
-    // an operator looking at the response.
+    // (returns healthy when mailHostname missing). A fresh deploy
+    // without admin creds wired up would otherwise show globally-
+    // unhealthy even when pod + rocksdb + tcp all green.
     return {
       durationMs: null,
       serverName: null,
@@ -264,44 +286,40 @@ async function probeJmap(deps: MailHealthDeps): Promise<JmapProbeShape> {
       error: 'Stalwart admin credentials not configured (probe skipped).',
     };
   }
+  if (!podName) {
+    return {
+      durationMs: null,
+      serverName: null,
+      serverVersion: null,
+      healthy: false,
+      error: 'JMAP probe needs a Running Stalwart pod (exec-based, see jmapPost comment).',
+    };
+  }
 
-  const fetcher = deps.fetcher ?? globalThis.fetch;
   const auth = Buffer.from(
     `${deps.jmapAdminCredentials.user}:${deps.jmapAdminCredentials.password}`,
   ).toString('base64');
-  const sessionUrl = `${deps.jmapBaseUrl.replace(/\/+$/, '')}/.well-known/jmap`;
+  const exec = deps.jmapExec ?? defaultJmapExec;
 
   const start = (deps.clock ?? Date.now)();
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 5_000);
   try {
-    const res = await fetcher(sessionUrl, {
-      method: 'GET',
-      headers: { Authorization: `Basic ${auth}` },
-      signal: controller.signal,
-    });
+    const httpCode = await exec(podName, deps.kubeconfigPath, `Basic ${auth}`);
     const durationMs = (deps.clock ?? Date.now)() - start;
-
-    if (!res.ok) {
+    if (httpCode === 200) {
       return {
         durationMs,
-        serverName: null,
+        serverName: 'Stalwart',
         serverVersion: null,
-        healthy: false,
-        error: `JMAP session probe HTTP ${res.status}`,
+        healthy: true,
+        error: null,
       };
     }
-    const body = await res.json() as { capabilities?: Record<string, unknown>; primaryAccounts?: Record<string, string> };
-    const serverInfo = body.capabilities?.['urn:ietf:params:jmap:core'] as
-      | { coreCapabilities?: Record<string, unknown> }
-      | undefined;
-    void serverInfo;
     return {
       durationMs,
-      serverName: 'Stalwart',
-      serverVersion: null, // capabilities don't include version; placeholder until we add x:Server/get
-      healthy: true,
-      error: null,
+      serverName: null,
+      serverVersion: null,
+      healthy: false,
+      error: `JMAP session probe HTTP ${httpCode}`,
     };
   } catch (err) {
     const durationMs = (deps.clock ?? Date.now)() - start;
@@ -312,9 +330,57 @@ async function probeJmap(deps: MailHealthDeps): Promise<JmapProbeShape> {
       healthy: false,
       error: `JMAP session probe failed: ${(err as Error).message ?? String(err)}`,
     };
-  } finally {
-    clearTimeout(t);
   }
+}
+
+/**
+ * Default JMAP exec probe — runs `curl http://127.0.0.1:8080/.well-known/jmap`
+ * inside the Stalwart pod. Returns the HTTP status code as a number.
+ */
+async function defaultJmapExec(
+  podName: string,
+  kubeconfigPath: string | undefined,
+  authHeader: string,
+): Promise<number> {
+  const k8s = await import('@kubernetes/client-node');
+  const kc = new k8s.KubeConfig();
+  if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
+  else kc.loadFromCluster();
+  const exec = new k8s.Exec(kc);
+
+  // curl with -w "%{http_code}" writes the status code to stdout for
+  // parsing. -o /dev/null discards the body. -s silent. -m bounds time.
+  const cmd = [
+    'curl', '-s', '-o', '/dev/null',
+    '-w', '%{http_code}',
+    '-m', String(Math.floor(PROBE_TIMEOUT_MS / 1000)),
+    '-H', `Authorization: ${authHeader}`,
+    'http://127.0.0.1:8080/.well-known/jmap',
+  ];
+
+  const { PassThrough, Writable } = await import('node:stream');
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const stdout = new PassThrough();
+    stdout.on('data', (c: Buffer) => chunks.push(c));
+    const stderr = new Writable({ write(_c, _e, cb) { cb(); } });
+    const timer = setTimeout(() => reject(new Error('jmap probe timed out')), PROBE_TIMEOUT_MS + 2_000);
+    exec.exec(
+      MAIL_NAMESPACE, podName, STALWART_CONTAINER, cmd,
+      stdout, stderr, null, false,
+      (status) => {
+        clearTimeout(timer);
+        if (status.status === 'Failure') {
+          reject(new Error(status.message ?? 'jmap probe non-zero exit'));
+          return;
+        }
+        const out = Buffer.concat(chunks).toString('utf8').trim();
+        const code = parseInt(out, 10);
+        if (Number.isFinite(code)) resolve(code);
+        else reject(new Error(`jmap probe non-numeric status: ${out.slice(0, 100)}`));
+      },
+    ).catch(reject);
+  });
 }
 
 async function probeRocksdb(
@@ -472,7 +538,27 @@ function defaultTcpProbe(
   });
 }
 
-async function probeCert(deps: MailHealthDeps): Promise<MailHealthCertComponent> {
+/**
+ * Cert probe — exec openssl s_client inside the Stalwart pod.
+ *
+ * Same PROXY-v2-sniff rationale as probeJmap: a TLS handshake from
+ * platform-api (cluster pod CIDR source IP) to Stalwart's :465/:993
+ * via ClusterIP triggers Stalwart's PROXY-v2 sniff because the source
+ * IP is in `proxyTrustedNetworks`. Stalwart waits for a PROXY-v2 frame
+ * and resets when the TLS handshake comes instead (`read ECONNRESET`).
+ *
+ * Loopback (127.0.0.1) bypasses the sniff, so we exec openssl inside
+ * the Stalwart pod and connect to its own port. The cert returned is
+ * the same one external clients would see (Stalwart serves a single
+ * cert per port regardless of source). What this probe DOESN'T cover:
+ * "haproxy forwards correctly + serves the cert end-to-end" — that
+ * lives in the integration harness Phase A5, which probes from a
+ * server-role node IP via haproxy.
+ */
+async function probeCert(
+  deps: MailHealthDeps,
+  podName: string | null,
+): Promise<MailHealthCertComponent> {
   if (!deps.mailHostname) {
     return {
       status: 'not_implemented',
@@ -481,31 +567,33 @@ async function probeCert(deps: MailHealthDeps): Promise<MailHealthCertComponent>
       error: null,
     };
   }
-  const probe = deps.tlsProbe ?? defaultTlsProbe;
+  if (!podName) {
+    return {
+      status: 'fail',
+      healthy: false,
+      ports: [],
+      error: 'Cert probe needs a Running Stalwart pod (exec-based, see probeCert comment).',
+    };
+  }
+
+  const exec = deps.certExec ?? defaultCertExec;
   const results: MailHealthCertPort[] = await Promise.all(
     TLS_PORTS.map(async ({ port, protocol }) => {
-      const r = await probe(STALWART_SERVICE_HOST, port, deps.mailHostname!, PROBE_TIMEOUT_MS);
-      if (r.error || !r.peerCertificate) {
+      const r = await exec(podName, deps.kubeconfigPath, port, deps.mailHostname!);
+      if (r.error || !r.notAfter) {
         return {
           port,
           protocol,
           daysUntilExpiry: null,
           issuer: null,
-          error: r.error ?? 'no peer certificate',
+          error: r.error ?? 'no cert returned by openssl',
         };
       }
-      const cert = r.peerCertificate;
-      const notAfter = cert.valid_to ? new Date(cert.valid_to) : null;
-      const daysUntilExpiry = notAfter
+      const notAfter = new Date(r.notAfter);
+      const daysUntilExpiry = Number.isFinite(notAfter.getTime())
         ? Math.floor((notAfter.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
         : null;
-      // tls.PeerCertificate.issuer.CN/.O can be string | string[] when
-      // the subject has multiple components. Coerce to a single string
-      // for the response (multi-component issuers are rare in practice).
-      const issuer = cert.issuer
-        ? firstString(cert.issuer.CN) ?? firstString(cert.issuer.O) ?? null
-        : null;
-      return { port, protocol, daysUntilExpiry, issuer, error: null };
+      return { port, protocol, daysUntilExpiry, issuer: r.issuer, error: null };
     }),
   );
 
@@ -530,41 +618,80 @@ async function probeCert(deps: MailHealthDeps): Promise<MailHealthCertComponent>
   return { status: 'ok', healthy: true, ports: results, error: null };
 }
 
-function defaultTlsProbe(
-  host: string,
+/**
+ * Default cert exec probe — runs `openssl s_client + x509` inside the
+ * Stalwart pod to extract subject + issuer + notAfter for the given
+ * port.
+ *
+ * The Stalwart upstream image carries openssl (verified on staging).
+ * If a future image drops it, this probe gracefully fails with the
+ * "openssl not found" stderr and the health response will surface it.
+ */
+async function defaultCertExec(
+  podName: string,
+  kubeconfigPath: string | undefined,
   port: number,
   sni: string,
-  timeoutMs: number,
-): Promise<{ peerCertificate: tls.PeerCertificate | null; error: string | null }> {
-  return new Promise((resolve) => {
-    const sock = tls.connect({
-      host,
-      port,
-      servername: sni,
-      // We're probing certs, not authenticating — the cert may be valid
-      // for `sni` but the in-cluster Service IP isn't in any SAN. Don't
-      // fail handshake on that. We still read the cert.
-      rejectUnauthorized: false,
-      timeout: timeoutMs,
-    });
-    let settled = false;
-    const cleanup = (out: { peerCertificate: tls.PeerCertificate | null; error: string | null }) => {
-      if (settled) return;
-      settled = true;
-      sock.destroy();
-      resolve(out);
-    };
-    sock.on('secureConnect', () => {
-      const cert = sock.getPeerCertificate();
-      cleanup({
-        peerCertificate: cert && Object.keys(cert).length > 0 ? cert : null,
-        error: null,
-      });
-    });
-    sock.on('timeout', () => cleanup({ peerCertificate: null, error: `TLS handshake timed out after ${timeoutMs}ms` }));
-    sock.on('error', (err) => cleanup({ peerCertificate: null, error: (err as Error).message ?? String(err) }));
+): Promise<{ subject: string | null; issuer: string | null; notAfter: string | null; error: string | null }> {
+  const k8s = await import('@kubernetes/client-node');
+  const kc = new k8s.KubeConfig();
+  if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
+  else kc.loadFromCluster();
+  const exec = new k8s.Exec(kc);
+
+  // `echo | openssl s_client -connect 127.0.0.1:PORT -servername SNI 2>/dev/null | openssl x509 -noout -subject -issuer -dates`
+  // We use sh -c so the pipe + redirect work. Output looks like:
+  //   subject=CN=mail.example.com
+  //   issuer=C=US, O=Let's Encrypt, CN=E8
+  //   notBefore=May 15 16:10:14 2026 GMT
+  //   notAfter=Aug 13 16:10:13 2026 GMT
+  const cmd = [
+    'sh', '-c',
+    `echo | timeout ${Math.floor(PROBE_TIMEOUT_MS / 1000)} openssl s_client `
+    + `-connect 127.0.0.1:${port} -servername ${sni} 2>/dev/null `
+    + `| openssl x509 -noout -subject -issuer -dates 2>&1 || echo "ERROR: cert probe failed"`,
+  ];
+
+  const { PassThrough, Writable } = await import('node:stream');
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const stdout = new PassThrough();
+    stdout.on('data', (c: Buffer) => chunks.push(c));
+    const stderr = new Writable({ write(_c, _e, cb) { cb(); } });
+    const timer = setTimeout(() => reject(new Error('cert probe timed out')), PROBE_TIMEOUT_MS + 5_000);
+    exec.exec(
+      MAIL_NAMESPACE, podName, STALWART_CONTAINER, cmd,
+      stdout, stderr, null, false,
+      (status) => {
+        clearTimeout(timer);
+        const out = Buffer.concat(chunks).toString('utf8');
+        if (status.status === 'Failure') {
+          resolve({ subject: null, issuer: null, notAfter: null, error: status.message ?? 'cert probe exec failed' });
+          return;
+        }
+        if (out.includes('ERROR: cert probe failed') || !out.includes('subject=')) {
+          resolve({ subject: null, issuer: null, notAfter: null, error: 'openssl returned no cert' });
+          return;
+        }
+        const subjectMatch = out.match(/subject=([^\r\n]+)/);
+        const issuerMatch = out.match(/issuer=([^\r\n]+)/);
+        const notAfterMatch = out.match(/notAfter=([^\r\n]+)/);
+        resolve({
+          subject: subjectMatch?.[1] ?? null,
+          issuer: issuerMatch?.[1] ?? null,
+          notAfter: notAfterMatch?.[1] ?? null,
+          error: null,
+        });
+      },
+    ).catch(reject);
   });
 }
+
+// (defaultTlsProbe + firstString removed in Phase 9 streamline —
+// the in-cluster TLS probe path is replaced by defaultCertExec which
+// exec's openssl inside the Stalwart pod, see probeCert comment.
+// The `tlsProbe` dep field is kept on MailHealthDeps for tests that
+// still inject a mock; the production path uses certExec.)
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -600,12 +727,6 @@ function normalisePhase(phase: string | undefined): PodProbeShape['phase'] {
     default:
       return null;
   }
-}
-
-function firstString(v: string | string[] | undefined): string | null {
-  if (typeof v === 'string') return v;
-  if (Array.isArray(v) && v.length > 0) return v[0];
-  return null;
 }
 
 function describeInitContainers(initStatuses: RawContainerStatus[]): string | null {

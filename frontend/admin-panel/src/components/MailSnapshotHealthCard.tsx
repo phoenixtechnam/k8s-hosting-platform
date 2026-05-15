@@ -235,39 +235,68 @@ export default function MailSnapshotHealthCard() {
           />
         </div>
 
-        {/* Backup target — dropdown selector */}
-        <div className="pt-1 border-t border-gray-200 dark:border-gray-700 space-y-1">
+        {/* Backup target — dropdown selector + setup CTA */}
+        <div className="pt-1 border-t border-gray-200 dark:border-gray-700 space-y-1.5">
           <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
             <Database size={11} /> Backup target (restic repo)
           </div>
-          <div className="flex items-center gap-2">
-            <select
-              value={backupTargetQuery.data?.data.backupStoreId ?? ''}
-              onChange={async (e) => {
-                const val = e.target.value;
-                await backupTargetUpdate.mutateAsync({ backupStoreId: val || null });
-              }}
-              disabled={backupTargetUpdate.isPending || backupConfigsQuery.isLoading}
-              data-testid="mail-snapshot-backup-target-select"
-              className="flex-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+          {/* Phase 10 CTA: when no BackupStores are configured at all,
+              the mail-snapshot CronJob effectively no-ops — data leaves
+              the cluster only via the local-path PV's host disk, which
+              is destroyed with the node. Surface that prominently as a
+              call-to-action with a deep-link to Settings → Backups.
+              This is the operator-facing fix for the silent-snapshot
+              no-op on fresh installs (Phase 10 streamline). */}
+          {!backupConfigsQuery.isLoading && (backupConfigsQuery.data?.data ?? []).length === 0 ? (
+            <a
+              href="/settings/backups"
+              data-testid="mail-snapshot-backup-target-setup-cta"
+              className="block rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/30"
             >
-              <option value="">(none — local CronJob only)</option>
-              {(backupConfigsQuery.data?.data ?? []).map((cfg) => (
-                <option key={cfg.id} value={cfg.id}>
-                  {cfg.name} ({cfg.storageType})
-                </option>
-              ))}
-            </select>
-            {backupTargetUpdate.isPending && <Loader2 size={14} className="animate-spin text-gray-400" />}
-          </div>
-          {backupTargetQuery.data?.data.backupStoreId ? (
-            <p className="text-xs text-green-700 dark:text-green-400">
-              Uploads to <strong>{backupTargetQuery.data.data.backupStoreName ?? backupTargetQuery.data.data.backupStoreId}</strong> via restic — deduplication enabled.
-            </p>
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <div className="flex-1">
+                  <div className="font-medium">No backup target configured</div>
+                  <div className="text-xs opacity-90 mt-0.5">
+                    The 2-minute snapshot CronJob is silently no-op'ing. Go to
+                    Settings → Backups to add a CIFS / S3 / Hetzner-Storage-Box
+                    BackupStore, then return here to select it.
+                  </div>
+                </div>
+              </div>
+            </a>
           ) : (
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              No offsite backup configured — backups run only as local k8s Jobs.
-            </p>
+            <>
+              <div className="flex items-center gap-2">
+                <select
+                  value={backupTargetQuery.data?.data.backupStoreId ?? ''}
+                  onChange={async (e) => {
+                    const val = e.target.value;
+                    await backupTargetUpdate.mutateAsync({ backupStoreId: val || null });
+                  }}
+                  disabled={backupTargetUpdate.isPending || backupConfigsQuery.isLoading}
+                  data-testid="mail-snapshot-backup-target-select"
+                  className="flex-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+                >
+                  <option value="">(none — local CronJob only)</option>
+                  {(backupConfigsQuery.data?.data ?? []).map((cfg) => (
+                    <option key={cfg.id} value={cfg.id}>
+                      {cfg.name} ({cfg.storageType})
+                    </option>
+                  ))}
+                </select>
+                {backupTargetUpdate.isPending && <Loader2 size={14} className="animate-spin text-gray-400" />}
+              </div>
+              {backupTargetQuery.data?.data.backupStoreId ? (
+                <p className="text-xs text-green-700 dark:text-green-400">
+                  Uploads to <strong>{backupTargetQuery.data.data.backupStoreName ?? backupTargetQuery.data.data.backupStoreId}</strong> via restic — deduplication enabled.
+                </p>
+              ) : (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  No backup target selected. {(backupConfigsQuery.data?.data ?? []).length} BackupStore{(backupConfigsQuery.data?.data ?? []).length === 1 ? '' : 's'} available — pick one above or <a href="/settings/backups" className="underline">add another</a>.
+                </p>
+              )}
+            </>
           )}
         </div>
       </div>
