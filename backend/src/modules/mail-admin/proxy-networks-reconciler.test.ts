@@ -260,7 +260,17 @@ describe('runProxyNetworksReconcilerTick', () => {
             [
               'x:SystemSettings/get',
               {
-                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1': true } }],
+                // Expected = node IPs + the two cluster CIDR seeds
+                // (10.42.0.0/16 + 10.43.0.0/16) that the reconciler
+                // always emits for PROXY-v2 inbound from haproxy DS.
+                list: [{
+                  id: 'singleton',
+                  proxyTrustedNetworks: {
+                    '10.0.0.1': true,
+                    '10.42.0.0/16': true,
+                    '10.43.0.0/16': true,
+                  },
+                }],
               },
               'c0',
             ],
@@ -349,7 +359,12 @@ describe('runProxyNetworksReconcilerTick', () => {
 
     expect(updatedBody).toEqual({
       singleton: {
-        proxyTrustedNetworks: { '10.0.0.1': true, '10.0.0.2': true },
+        proxyTrustedNetworks: {
+          '10.0.0.1': true,
+          '10.0.0.2': true,
+          '10.42.0.0/16': true,
+          '10.43.0.0/16': true,
+        },
       },
     });
   });
