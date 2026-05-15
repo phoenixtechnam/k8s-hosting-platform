@@ -79,13 +79,28 @@
 #         MAIL_PLACEMENT_NO_CANDIDATE (proves the intent-discriminator wiring)
 #     G4. placement.currentNode == kubectl pod.spec.nodeName
 #
-#   Phase I — Flux-ownership post-flip (--flux-ownership, ~70 sec, requires --mode-flip)
-#     After mode-flip, sleep 60s and assert Flux's kustomize-controller
-#     did NOT re-claim the haproxy DS nodeSelector field that platform-api
-#     set via SSA force-claim. Catches the PR-#43→#45 regression where
-#     Flux fought platform-api on every reconcile.
-#     I1. platform-api.port-exposure owns nodeSelector after 60s of Flux loops
-#     I2. kustomize-controller does not also claim nodeSelector
+#   Phase I — Flux-ownership post-flip (--flux-ownership, ~5 min, requires --mode-flip)
+#     After mode-flip, sleep 300s and assert Flux did NOT revert any of
+#     the runtime-owned fields. The 5-min wait is the full Kustomization.
+#     spec.interval window — a 60s wait would miss regressions where
+#     Flux's first reconcile passes but the 2nd/3rd reverts state.
+#     I1. haproxy DS presence matches mode (allServerNodes → present)
+#     I2. haproxy DS labelled managed-by=platform-api
+#     I3. kustomize-controller absent from haproxy DS managedFields
+#     I4. Stalwart Deployment uses stable PVC name 'stalwart-rocksdb-data'
+#         (Phase 1 streamline invariant — catches per-run-naming regression)
+#     I5. ssa:merge annotation NOT active on Stalwart Deployment
+#         (the annotation has the opposite effect of its name — verified
+#         on 2026-05-15, see migration.ts header comment)
+#
+#   Phase J — Stalwart cert acquisition (--cert-acquisition, ~10 sec)
+#     Live TLS handshake on mail.<host>:465. Verifies Phase 5 streamline:
+#     fresh bootstrap.sh produces a real Let's Encrypt cert via the
+#     x:Task/set create AcmeRenewal JMAP path. Non-destructive — can
+#     run against any cluster to verify cert state.
+#     J1. cert subject CN matches the mail hostname
+#     J2. cert issued by Let's Encrypt
+#     J3. cert currently valid (not expired)
 #
 # Exit code: 0 if everything passed (phases that ran). Non-zero with the
 # count of failures otherwise.
@@ -151,6 +166,7 @@ RUN_ARCHIVE_DOWNTIME=false
 RUN_HEALTH_TRUTH=false
 RUN_MIGRATE_SMOKE=false
 RUN_FLUX_OWNERSHIP=false
+RUN_CERT_ACQUISITION=false
 for arg in "$@"; do
   case "$arg" in
     --mode-flip)        RUN_MODE_FLIP=true ;;
@@ -160,6 +176,7 @@ for arg in "$@"; do
     --health-truth)     RUN_HEALTH_TRUTH=true ;;
     --migrate-smoke)    RUN_MIGRATE_SMOKE=true ;;
     --flux-ownership)   RUN_FLUX_OWNERSHIP=true ;;
+    --cert-acquisition) RUN_CERT_ACQUISITION=true ;;
     --help|-h)
       sed -n '2,/^set -euo/p' "$0" | sed -e 's/^# //' -e 's/^#$//' -e '/^set -euo/d'
       exit 0
@@ -1279,19 +1296,32 @@ except Exception:
 }
 
 # ── Phase I — Flux-ownership post-flip (depends on --mode-flip) ────────
-# After Phase C flips port-exposure, sleep 60s and assert the haproxy
+# After Phase C flips port-exposure, sleep 5 min and assert the haproxy
 # DaemonSet lifecycle matches the operator's intent:
 #   - mode=allServerNodes → DS exists, labelled managed-by=platform-api,
 #     Flux's kustomize-controller is NOT in its managedFields.
 #   - mode=thisNodeOnly   → DS does NOT exist (platform-api deleted it
 #     on the flip-back; Flux must not re-create it).
+#
 # 2026-05-14 streamline: haproxy DS lifecycle is now wholly owned by
 # platform-api (k8s/base/stalwart-mail/haproxy/daemonset.yaml was
-# deleted; spec moved to haproxy-builder.ts). Pre-streamline, this
-# probe asserted SSA field-ownership on a Flux-owned DS — that
-# arrangement is gone.
+# deleted; spec moved to haproxy-builder.ts).
+#
+# 2026-05-15 Phase 1 streamline: extended this phase to ALSO verify the
+# Stalwart Deployment's `template.spec.volumes[stalwart-data]` keeps the
+# stable PVC name (`stalwart-rocksdb-data`). Pre-streamline the migration
+# pipeline renamed the volume claim to a per-run name and Flux reverted
+# it ~60s later. The new architecture keeps the name stable across
+# migrations; if a future regression flips back to per-run naming, this
+# check catches the drift on the next Flux reconcile cycle.
+#
+# 2026-05-15 Phase 6 wait extended from 60s to 5 min: Flux's default
+# reconcile interval is 5 min (Kustomization.spec.interval) — the old
+# 60s wait did NOT span a full reconcile cycle, so a regression where
+# Flux's reconcile reverted state at minute 4 would pass at minute 1.
+# 5 min covers a full cycle even on the slowest staging reconcile.
 phase_i_flux_ownership() {
-  echo "## Phase I — Flux ownership post-flip (sleeps 60s)"
+  echo "## Phase I — Flux ownership post-flip (sleeps 5 min)"
 
   if ! $RUN_MODE_FLIP; then
     note_warn "I. SKIP — --flux-ownership requires --mode-flip to have run"
@@ -1299,8 +1329,8 @@ phase_i_flux_ownership() {
     return
   fi
 
-  echo "  Waiting 60s for Flux reconcile loops..."
-  sleep 60
+  echo "  Waiting 300s for Flux reconcile loops (full Kustomization.spec.interval window)..."
+  sleep 300
 
   local current_mode
   current_mode="$(curl -sk --fail --max-time 15 \
@@ -1359,6 +1389,108 @@ phase_i_flux_ownership() {
       note_pass "I3. kustomize-controller absent from managedFields (managers: ${managers})"
     fi
   fi
+
+  # I4. Stalwart Deployment's PVC name MUST be the stable
+  # `stalwart-rocksdb-data`. Phase 1 streamline retired the per-run
+  # `stalwart-rocksdb-data-mig-*` naming that fought with Flux. If a
+  # regression brings per-run naming back, the PVC name will drift and
+  # this check fails.
+  local pvc_claim
+  pvc_claim=$(kctl -n "$STALWART_NS" get deploy stalwart-mail \
+    -o jsonpath='{.spec.template.spec.volumes[?(@.name=="stalwart-data")].persistentVolumeClaim.claimName}' \
+    2>/dev/null || echo '')
+  if [[ "$pvc_claim" == "stalwart-rocksdb-data" ]]; then
+    note_pass "I4. Stalwart Deployment uses stable PVC name 'stalwart-rocksdb-data'"
+  else
+    note_fail "I4. Stalwart Deployment claimName drift — got '${pvc_claim}', expected 'stalwart-rocksdb-data'"
+  fi
+
+  # I5. The ssa:merge annotation must NOT be active on the Deployment.
+  # Live testing on 2026-05-15 proved the annotation's actual effect
+  # is "force-conflicts=true regardless of Kustomization.spec.force" —
+  # which is the opposite of what its name implies. CI guard
+  # ci-mail-arch-regressions.sh check 5 enforces this at build time;
+  # this check enforces it at runtime in case a hand-applied patch
+  # bypassed git.
+  local ssa_value
+  ssa_value=$(kctl -n "$STALWART_NS" get deploy stalwart-mail \
+    -o jsonpath='{.metadata.annotations.kustomize\.toolkit\.fluxcd\.io/ssa}' \
+    2>/dev/null || echo '')
+  if [[ "$ssa_value" == "merge" ]]; then
+    note_fail "I5. Stalwart Deployment has active kustomize.toolkit.fluxcd.io/ssa=merge annotation"
+  else
+    note_pass "I5. ssa:merge annotation NOT active on Stalwart Deployment"
+  fi
+  echo ""
+}
+
+# ── Phase J — fresh-bootstrap cert acquisition (operator-runnable only) ────
+# Verifies the Phase 5 streamline: bootstrap.sh produces a real Let's
+# Encrypt cert on mail.<host>:465 within 90s of bootstrap completing.
+# This phase is DESTRUCTIVE (requires nuking + re-bootstrapping a
+# cluster) and is therefore guarded by --fresh-bootstrap-check and a
+# subsequent live-cert probe. The probe portion can run against ANY
+# cluster — it just verifies a real cert is being served.
+phase_j_cert_acquisition() {
+  echo "## Phase J — Stalwart cert acquisition (live TLS probe)"
+
+  if [[ -z "$PLATFORM_API_URL" ]]; then
+    note_warn "J. SKIP — PLATFORM_API_URL required"
+    echo ""
+    return
+  fi
+
+  local mail_host
+  mail_host=$(echo "$PLATFORM_API_URL" | sed -E 's|^https?://||; s|/.*||; s|^api\.|mail.|; s|^admin\.|mail.|; s|^platform-api\.|mail.|')
+  if [[ -z "$mail_host" ]]; then
+    note_warn "J. SKIP — could not derive mail hostname from PLATFORM_API_URL=${PLATFORM_API_URL}"
+    echo ""
+    return
+  fi
+
+  echo "  Probing TLS on ${mail_host}:465 (SMTPS)..."
+  local cert_info
+  cert_info=$(echo | timeout 10 openssl s_client \
+    -connect "${mail_host}:465" \
+    -servername "${mail_host}" 2>/dev/null \
+    | openssl x509 -noout -subject -issuer -dates 2>/dev/null || echo '')
+
+  if [[ -z "$cert_info" ]]; then
+    note_fail "J1. TLS handshake on ${mail_host}:465 failed — no cert returned"
+    echo ""
+    return
+  fi
+
+  # J1. Cert subject must match the mail hostname.
+  if echo "$cert_info" | grep -qE "subject=.*CN ?= ?${mail_host}"; then
+    note_pass "J1. ${mail_host}:465 serves cert CN=${mail_host}"
+  else
+    note_fail "J1. ${mail_host}:465 cert subject does NOT match — got: $(echo "$cert_info" | grep subject)"
+  fi
+
+  # J2. Cert MUST be Let's Encrypt (not self-signed or staging cluster CA).
+  if echo "$cert_info" | grep -qE 'issuer=.*(Let.s Encrypt|R[0-9]{1,2}|E[0-9]{1,2})'; then
+    note_pass "J2. ${mail_host}:465 cert issued by Let's Encrypt"
+  else
+    note_fail "J2. ${mail_host}:465 cert NOT issued by Let's Encrypt — got: $(echo "$cert_info" | grep issuer)"
+  fi
+
+  # J3. Cert MUST be currently valid (notBefore < now < notAfter).
+  local not_after
+  not_after=$(echo "$cert_info" | grep -oP 'notAfter=\K.*' || echo '')
+  if [[ -n "$not_after" ]]; then
+    local expiry_epoch now_epoch
+    expiry_epoch=$(date -d "$not_after" +%s 2>/dev/null || echo 0)
+    now_epoch=$(date +%s)
+    if (( expiry_epoch > now_epoch )); then
+      local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
+      note_pass "J3. cert valid — ${days_left} days until expiry"
+    else
+      note_fail "J3. cert is EXPIRED (notAfter=${not_after})"
+    fi
+  else
+    note_warn "J3. could not parse notAfter from cert"
+  fi
   echo ""
 }
 
@@ -1372,6 +1504,7 @@ if $RUN_FLUX_OWNERSHIP;   then phase_i_flux_ownership;        fi
 if $RUN_NEGATIVE;         then phase_d_negative;             fi
 if $RUN_ARCHIVE;          then phase_e_archive_no_downtime;  fi
 if $RUN_ARCHIVE_DOWNTIME; then phase_f_archive_downtime;     fi
+if $RUN_CERT_ACQUISITION; then phase_j_cert_acquisition;    fi
 
 # ── Summary ────────────────────────────────────────────────────────────
 echo "═══════════════════════════════════════════════════════════════════"
