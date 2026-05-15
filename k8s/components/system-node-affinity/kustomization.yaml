@@ -80,3 +80,15 @@ patches:
   # zone where their NetworkPolicy assumes pods originate.
   - target: { kind: StatefulSet, name: valkey, namespace: redis-system }
     path: affinity-patch.yaml
+
+  # ── traefik namespace (WAF sidecars) ──────────────────────────────
+  # OWASP ModSecurity-CRS Deployments. The platform IngressRoute
+  # middleware `modsecurity-crs@traefik` proxies request bodies to
+  # these pods; if they can't schedule, every gated Host (admin,
+  # client) returns 502. Without this patch, single-node installs
+  # (testing.* apex, dev DinD) leave the pods Pending because the
+  # control-plane node carries the `server-only:NoSchedule` taint.
+  - target: { kind: Deployment, name: modsec-crs, namespace: traefik }
+    path: affinity-patch.yaml
+  - target: { kind: Deployment, name: modsec-stub, namespace: traefik }
+    path: affinity-patch.yaml

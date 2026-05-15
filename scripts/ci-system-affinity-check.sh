@@ -45,6 +45,11 @@ WORKLOADS=(
   # Valkey/Sentinel coordinator cache — staging-only until production
   # overlay folds in k8s/base/valkey/. StatefulSet (not Deployment).
   "redis-system|StatefulSet|valkey|1"
+  # OWASP ModSecurity-CRS WAF sidecars — checked in both overlays.
+  # The platform IngressRoute Middleware proxies to these pods; if
+  # they can't schedule, admin/client return 502.
+  "traefik|Deployment|modsec-crs|0"
+  "traefik|Deployment|modsec-stub|0"
 )
 # postgres is a CNPG Cluster (postgresql.cnpg.io/v1). Its spec.affinity
 # has its own schema (no .spec.template.spec.* path) so it is verified
