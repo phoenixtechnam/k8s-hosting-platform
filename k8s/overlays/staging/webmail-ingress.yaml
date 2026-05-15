@@ -28,6 +28,17 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: webmail
+  annotations:
+    # ADR-039 Phase 10: platform-api's webmail-router reconciler owns
+    # this resource's services[0].name field, flipping it between
+    # `roundcube` and `bulwark-impersonator` based on
+    # platform_settings.default_webmail_engine. Flux would otherwise
+    # revert the patch ~60s later from this manifest, producing a
+    # 403 from Roundcube on the bulwark /_impersonate handoff URL.
+    # `reconcile: disabled` tells Flux to skip this resource entirely
+    # — initial creation happens once (manual or first-bootstrap),
+    # subsequent updates are platform-api-owned.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:
   entryPoints:
     - websecure

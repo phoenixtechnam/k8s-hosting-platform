@@ -8,10 +8,13 @@ vi.mock('../webmail-settings/service.js', () => ({
 
 import { getDefaultWebmailEngine } from '../webmail-settings/service.js';
 
-function makeCustom(currentService: string | null) {
+function makeCustom(currentService: string | null, fluxAnnotated = true) {
+  const metadata = fluxAnnotated
+    ? { annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' } }
+    : { annotations: {} };
   const irBody = currentService === null
-    ? { spec: { routes: [{ services: [] }] } }
-    : { spec: { routes: [{ services: [{ name: currentService, port: 80 }] }] } };
+    ? { metadata, spec: { routes: [{ services: [] }] } }
+    : { metadata, spec: { routes: [{ services: [{ name: currentService, port: 80 }] }] } };
   return {
     getNamespacedCustomObject: vi.fn().mockResolvedValue(irBody),
     patchNamespacedCustomObject: vi.fn().mockResolvedValue({}),
@@ -107,10 +110,29 @@ describe('reconcileWebmailIngress', () => {
     expect(log.warn).toHaveBeenCalled();
   });
 
+  it('re-patches when the Flux reconcile=disabled annotation is missing even if service matches', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
+    // Service already correct, but annotation missing — must re-patch
+    // to lock the resource against Flux reconciliation.
+    const custom = makeCustom('bulwark-impersonator', false);
+    const log = makeLog();
+
+    const result = await reconcileWebmailIngress(db, custom as never, log);
+
+    expect(result?.patched).toBe(true);
+    const body = custom.patchNamespacedCustomObject.mock.calls[0][0] as {
+      body: { metadata: { annotations: Record<string, string> } };
+    };
+    expect(body.body.metadata.annotations).toEqual({
+      'kustomize.toolkit.fluxcd.io/reconcile': 'disabled',
+    });
+  });
+
   it('preserves existing route fields (e.g. middlewares) when patching', async () => {
     vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
     const custom = {
       getNamespacedCustomObject: vi.fn().mockResolvedValue({
+        metadata: { annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' } },
         spec: {
           routes: [
             {

@@ -42,12 +42,23 @@ export function serviceNameForEngine(engine: WebmailEngine): string {
 }
 
 interface IngressRoute {
+  readonly metadata?: {
+    readonly annotations?: Record<string, string>;
+  };
   readonly spec?: {
     readonly routes?: ReadonlyArray<{
       readonly services?: ReadonlyArray<{ readonly name: string; readonly port?: number | string }>;
     }>;
   };
 }
+
+// Flux annotation that tells the kustomize-controller to skip this
+// resource. Without it, every patch we apply gets reverted ~60s later
+// when Flux reconciles the static YAML's services[0].name back to
+// `roundcube`. The static webmail-ingress.yaml carries this annotation,
+// but the reconciler re-stamps it defensively in case the IR was
+// created manually or the annotation was edited away.
+const FLUX_RECONCILE_DISABLED = { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' };
 
 export interface ReconcileResult {
   readonly engine: WebmailEngine;
@@ -90,16 +101,22 @@ export async function reconcileWebmailIngress(
 
   const firstRoute = current.spec?.routes?.[0];
   const previousService = firstRoute?.services?.[0]?.name ?? null;
+  const currentAnnotations = current.metadata?.annotations ?? {};
+  const annotationMissing =
+    currentAnnotations['kustomize.toolkit.fluxcd.io/reconcile'] !== 'disabled';
 
-  if (previousService === expectedService) {
+  if (previousService === expectedService && !annotationMissing) {
     return { engine, expectedService, previousService, patched: false };
   }
 
   // Patch the first route's services array. We replace the entire
   // services list to clear any stale entries; the IR only has a single
-  // route (Host=`webmail.<apex>`) and a single backend Service.
+  // route (Host=`webmail.<apex>`) and a single backend Service. Also
+  // re-stamp the Flux `reconcile: disabled` annotation so a future
+  // YAML change can't accidentally hand ownership back to Flux.
   const port = firstRoute?.services?.[0]?.port ?? 80;
   const body = {
+    metadata: { annotations: FLUX_RECONCILE_DISABLED },
     spec: {
       routes: [
         {
