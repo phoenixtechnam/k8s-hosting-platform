@@ -60,18 +60,45 @@ spec:
           env:
             - name: BACKEND
               # The OWASP image expects a backend to proxy past the WAF
-              # check. The Traefik plugin discards the upstream
-              # response — it only inspects the status code. We point
-              # at the CrowdSec LAPI's /health which always returns 200
-              # so the plugin sees the WAF verdict (not the upstream
-              # error). Inter-namespace ClusterIP DNS.
-              value: "http://crowdsec.crowdsec.svc.cluster.local:8080/health"
+              # check. nginx's `proxy_pass ${BACKEND}` APPENDS the
+              # original request URI to the BACKEND URL — so a fixed-
+              # path BACKEND like `.../health` becomes `/health/assets/
+              # x.js` etc. for any non-root request, returning 404 from
+              # the upstream. The Traefik madebymode/traefik-modsecurity-
+              # plugin then forwards that 404 to the client (it does NOT
+              # discard the upstream response as a prior comment claimed
+              # — empirical test on staging.phoenix-host.net 2026-05-15:
+              # / returned 200 because /health/ exists, but /assets/x.js
+              # returned 404 because /health/assets/x.js doesn't, and
+              # the admin panel rendered blank).
+              #
+              # Fix: point BACKEND at the modsec-stub Deployment in this
+              # namespace — traefik/whoami returns 200 with a tiny
+              # request-echo body for ANY path + method, regardless of
+              # what nginx appends to the URL. Same idea as the WAF-
+              # smoke-test trick the OWASP image's own examples use.
+              # See deployment-stub.yaml in this dir.
+              value: "http://modsec-stub.traefik.svc.cluster.local:80/"
             - name: PARANOIA
               # CRS paranoia level 1 — broad coverage with manageable
               # false-positive rate. Operators wanting stricter checks
               # can patch this in their overlay (2/3/4 progressively
               # stricter).
               value: "1"
+            - name: ALLOWED_METHODS
+              # CRS rule 911100 ("HTTP method is not allowed by policy")
+              # defaults to `tx.allowed_methods=GET HEAD POST OPTIONS`.
+              # Our admin / client / tenant API uses PATCH heavily —
+              # system-settings, auth/passkey-mode, routes/<id> updates,
+              # mtls-providers/clients/<cid>/certificates/<certid>
+              # (revoke), etc. — plus PUT + DELETE for resource
+              # lifecycle. Without this override, every non-POST mutating
+              # request gets a 403 from modsec at the middleware sub-
+              # request, the plugin forwards 403 verbatim, and the
+              # admin panel surfaces it as "could not save". Caught
+              # 2026-05-15 when admin couldn't set passkey-mode.
+              # Default-allow the full REST verb set we actually use.
+              value: "GET HEAD POST PUT PATCH DELETE OPTIONS"
             - name: ANOMALY_INBOUND
               # Anomaly score threshold for blocking. CRS sums rule
               # scores per request; if total >= threshold, block. 5 is

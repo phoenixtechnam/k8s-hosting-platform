@@ -13,3 +13,8 @@ namespace: traefik
 
 resources:
   - deployment.yaml
+  # modsec-stub: tiny always-200 backend for the OWASP image's
+  # `proxy_pass ${BACKEND}` line. See deployment-stub.yaml for the
+  # full rationale — original BACKEND pointed at CrowdSec /health
+  # which only worked for path `/` because of nginx URI appending.
+  - deployment-stub.yaml

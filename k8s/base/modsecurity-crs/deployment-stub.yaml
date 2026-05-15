@@ -1,0 +1,124 @@
+# modsec-stub: tiny always-200 backend for the OWASP modsec-crs nginx
+# image's `proxy_pass ${BACKEND}` line.
+#
+# Why this exists:
+#   The OWASP modsecurity-crs:*-nginx image runs nginx with a single
+#   `location /` that has `modsecurity on` + a `proxy_pass ${BACKEND}`
+#   to forward the request past the WAF check. The Traefik plugin
+#   madebymode/traefik-modsecurity-plugin issues a sub-request to
+#   modsec-crs, modsec evaluates against OWASP CRS rules, and the
+#   resulting status code (200 = allowed, 403 = blocked, etc.) is
+#   what the plugin returns to the original client.
+#
+#   The catch: nginx's `proxy_pass` ALWAYS appends the original URI
+#   to the BACKEND URL. So if BACKEND is `http://X/health`, the
+#   actual upstream call is `http://X/health/<ORIGINAL-URI>` —
+#   which 404s for any non-root request. The plugin then forwards
+#   that 404 to the client even though the WAF said "allowed".
+#
+#   Originally (commit f8b8445c) BACKEND pointed at CrowdSec LAPI's
+#   /health, which "worked" only for path `/` (coincidence: nginx
+#   forwarded to /health/, which exists). For /assets/* and every
+#   other non-root path the admin panel rendered blank — surfaced
+#   during the staging.phoenix-host.net live install 2026-05-15.
+#
+# What this Deployment + Service provides:
+#   `traefik/whoami` returns 200 with a tiny plain-text request echo
+#   for ANY path + method. Used here purely as the BACKEND target —
+#   what nginx sees is "WAF passed → upstream 200" and the plugin
+#   forwards 200 to the original client, who then gets the REAL
+#   asset from the actual ingress upstream (admin-panel etc.).
+#
+#   The body returned by whoami is discarded by Traefik plugin —
+#   only the status code matters here.
+#
+# Resource sizing: idle ~5MB / 1m CPU. 2 replicas for HA alongside
+# modsec-crs. Image is ~5MB.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: modsec-stub
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: modsec-stub
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: modsec-stub
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: modsec-stub
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: waf
+    spec:
+      affinity:
+        # Spread the 2 replicas across nodes — same intent as modsec-crs.
+        # Single-node clusters get one pod scheduled and one Pending;
+        # the Service still works via the running pod.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: modsec-stub
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: stub
+          image: traefik/whoami:v1.11.0
+          args:
+            - "--port=80"
+            - "--name=modsec-stub"
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: modsec-stub
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: modsec-stub
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  selector:
+    app.kubernetes.io/name: modsec-stub
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

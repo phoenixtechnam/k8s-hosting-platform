@@ -234,6 +234,18 @@ POD_CIDR_V4="10.42.0.0/16"
 # are seeded from the repeatable --allow-source flag below.
 ALLOW_SOURCE_LIST_V4=()
 ALLOW_SOURCE_LIST_V6=()
+# Repeatable --pre-enroll-peer <IP> seeds cluster_peers_v{4,6} on the
+# first-server bootstrap so subsequent --join-as server/worker invocations
+# from those IPs can hit :6443 immediately. Without pre-enrollment, the
+# joining node's k3s.service first-start fails (peer firewall closed), and
+# the operator must SSH to the first server and run
+# /usr/local/bin/peer-firewall-add <IP> manually before the join can
+# proceed. Pass once per joining-node-IP (or comma-separated):
+#   ./bootstrap.sh --join-as server --domain ... \
+#                  --pre-enroll-peer 10.1.0.4 \
+#                  --pre-enroll-peer 10.1.0.2
+PRE_ENROLL_PEERS_V4=()
+PRE_ENROLL_PEERS_V6=()
 # CLUSTER_NETWORK_CIDR retained for k3s --node-ip pinning ONLY (selects
 # which interface k3s advertises on). No longer drives firewall trust;
 # pass --allow-source for that. Auto-detected from wt0/tailscale0 if
@@ -488,6 +500,25 @@ FIREWALL TRUST (always-on set mode):
                          Optional — bootstrap-time convenience only.
                          Once platform-api is up, manage via the UI.
 
+  --pre-enroll-peer <ip>
+                         Pre-authorise a joining node's bare IP in the
+                         first-server's cluster_peers_v{4,6} nft sets.
+                         Lets the joining node hit :6443 from the moment
+                         its k3s.service starts — without this, the join
+                         fails with "Get cacerts: context deadline
+                         exceeded" until the operator runs
+                         /usr/local/bin/peer-firewall-add <IP> manually
+                         on the existing peer.
+                         Repeatable and comma-tolerant. Bare addresses
+                         only (no CIDR; sets are type ipv*_addr):
+                           --pre-enroll-peer 10.1.0.4
+                           --pre-enroll-peer 167.235.237.116,89.167.3.56
+                           --pre-enroll-peer 2a01:4f8:1c17:5d0f::1
+                         Pass on the FIRST server bootstrap with one
+                         entry per expected joining-node IP; subsequent
+                         --join-as server/worker bootstraps then succeed
+                         on first try with no operator intervention.
+
   --cluster-network-cidr <cidr>
                          k3s --node-ip pinning. When set, k3s binds and
                          advertises the node's IP from inside this CIDR
@@ -654,6 +685,47 @@ PYEOF
   done
 }
 
+# Parse one --pre-enroll-peer argument value (comma-tolerant). Each token
+# must be a bare IPv4 or IPv6 address (NO CIDR — these go into nft
+# `cluster_peers_v{4,6}` sets which are type ipv*_addr, not networks).
+# Validates via the same python3 + ipaddress round-trip as
+# parse_allow_source_arg so /32 tokens or networks get rejected.
+parse_pre_enroll_peer_arg() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    error "python3 not found — required for --pre-enroll-peer validation. Install python3 first and re-run."
+  fi
+  local raw="$1" tok normalized family
+  local IFS=','
+  for tok in $raw; do
+    tok="${tok//[[:space:]]/}"
+    [[ -z "$tok" ]] && continue
+    if [[ "$tok" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      family=v4
+    elif [[ "$tok" =~ ^[0-9a-fA-F:]+$ && "$tok" == *:* ]]; then
+      family=v6
+    else
+      error "Invalid --pre-enroll-peer token: '${tok}'. Must be a bare IPv4 or IPv6 address (no CIDR — these are added to nft cluster_peers_v{4,6} sets)."
+    fi
+    normalized=$(python3 - "$tok" <<'PYEOF' 2>/dev/null || true
+import ipaddress, sys
+try:
+    addr = ipaddress.ip_address(sys.argv[1])
+    print(str(addr))
+except ValueError:
+    sys.exit(1)
+PYEOF
+)
+    if [[ -z "$normalized" ]]; then
+      error "Invalid --pre-enroll-peer token: '${tok}' rejected by ipaddress.ip_address validation."
+    fi
+    if [[ "$family" == "v4" ]]; then
+      PRE_ENROLL_PEERS_V4+=("$normalized")
+    else
+      PRE_ENROLL_PEERS_V6+=("$normalized")
+    fi
+  done
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -667,6 +739,7 @@ parse_args() {
       --cluster-network-cidr) CLUSTER_NETWORK_CIDR="$2"; shift 2 ;;
       --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; shift 2 ;;
       --allow-source)    parse_allow_source_arg "$2"; shift 2 ;;
+      --pre-enroll-peer) parse_pre_enroll_peer_arg "$2"; shift 2 ;;
       --calico-wg-public) CALICO_WG_PUBLIC="$2"; shift 2 ;;
       --calico-mtu)      CALICO_MTU="$2"; shift 2 ;;
       --with-monitoring) ENABLE_MONITORING=true; shift ;;
@@ -1467,12 +1540,37 @@ seed_firewall_sets() {
     log ""
     log "  IMPORTANT — joining an existing cluster requires this node's"
     log "  IP to be pre-authorised on every existing peer. Either:"
-    log "    (a) Settings → Cluster Networking → Pre-Enroll Node (preferred)"
-    log "    (b) On each existing peer, run BEFORE this bootstrap:"
+    log "    (a) Pass --pre-enroll-peer ${local_v4} to the FIRST server's bootstrap"
+    log "        (seeds cluster_peers_v4 up front; joining bootstraps succeed without"
+    log "         further operator action)."
+    log "    (b) Settings → Cluster Networking → Pre-Enroll Node (post-install UI path)"
+    log "    (c) On each existing peer, run BEFORE this bootstrap:"
     log "          /usr/local/bin/peer-firewall-add ${local_v4}"
-    log "  Otherwise this node cannot reach :6443 and the join will hang."
+    log "  Otherwise this node cannot reach :6443 and the join will hang"
+    log "  (k3s.service auto-retries every ~5s; we'll poll for up to 600s)."
     log ""
   fi
+  # Pre-enroll peers from --pre-enroll-peer flag (first-server bootstrap
+  # path — operator passes joining-node IPs ahead of time so the
+  # cluster_peers_v{4,6} sets are populated before the joining bootstraps
+  # try to hit :6443. Avoids the chicken-and-egg where the operator would
+  # otherwise have to SSH into the first server and run peer-firewall-add
+  # for each joining node mid-bootstrap.) Seeded even on join-as-server
+  # paths — harmless duplicates get rejected by nft and the rest go in.
+  for entry in "${PRE_ENROLL_PEERS_V4[@]+"${PRE_ENROLL_PEERS_V4[@]}"}"; do
+    if nft add element inet filter cluster_peers_v4 "{ ${entry} }" 2>/dev/null; then
+      log "  + cluster_peers_v4 ${entry} (--pre-enroll-peer)"
+    else
+      warn "  failed to seed cluster_peers_v4 ${entry}; check nft set declaration"
+    fi
+  done
+  for entry in "${PRE_ENROLL_PEERS_V6[@]+"${PRE_ENROLL_PEERS_V6[@]}"}"; do
+    if nft add element inet filter cluster_peers_v6 "{ ${entry} }" 2>/dev/null; then
+      log "  + cluster_peers_v6 ${entry} (--pre-enroll-peer)"
+    else
+      warn "  failed to seed cluster_peers_v6 ${entry}; check nft set declaration"
+    fi
+  done
   # Seed trusted_ranges from the --allow-source flag entries. Each
   # element was already normalized to a CIDR (with prefix) by
   # parse_allow_source_arg, so no further validation is needed here.
@@ -2321,35 +2419,93 @@ install_k3s_server() {
     tls_sans="${tls_sans} --tls-san=${public_ip}"
   fi
 
-  # shellcheck disable=SC2086
-  curl -sfL https://get.k3s.io | \
-    INSTALL_K3S_VERSION="$K3S_VERSION" \
-    INSTALL_K3S_EXEC="server" \
-    sh -s - \
-      ${init_or_join} \
-      ${node_pin} \
-      --flannel-backend=none \
-      --disable-network-policy \
-      --disable=traefik \
-      --disable=servicelb \
-      --write-kubeconfig-mode=644 \
-      --cluster-cidr=${cluster_cidr_arg} \
-      --service-cidr=${service_cidr_arg} \
-      --kubelet-arg=image-gc-high-threshold=70 \
-      --kubelet-arg=image-gc-low-threshold=60 \
-      --kubelet-arg=minimum-image-ttl-duration=60m \
-      ${tls_sans}
+  # Joining-server installs depend on the existing cluster peer's
+  # firewall allowing the new node's IP on :6443. Without that
+  # pre-enrollment, k3s.service first-start fails with
+  # "Get cacerts: context deadline exceeded" → curl|sh exits non-zero
+  # → bootstrap under `set -e` dies before Phase 3 runs. systemd
+  # auto-retries k3s.service every 5s and will eventually succeed
+  # once peer-firewall is opened, so we ABSORB the curl|sh failure
+  # on join paths and let the extended poll loop below pick up.
+  #
+  # First-server (--cluster-init) doesn't have this race — no peer
+  # to gate-keep — so curl|sh failure there is fatal as before.
+  local is_joining_server=false
+  if [[ -n "$K3S_SERVER_IP" && -n "$K3S_TOKEN" ]]; then
+    is_joining_server=true
+  fi
 
-  log "Waiting for k3s API server..."
+  local install_rc=0
+  # shellcheck disable=SC2086
+  if [[ "$is_joining_server" == true ]]; then
+    set +e
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="$K3S_VERSION" \
+      INSTALL_K3S_EXEC="server" \
+      sh -s - \
+        ${init_or_join} \
+        ${node_pin} \
+        --flannel-backend=none \
+        --disable-network-policy \
+        --disable=traefik \
+        --disable=servicelb \
+        --write-kubeconfig-mode=644 \
+        --cluster-cidr=${cluster_cidr_arg} \
+        --service-cidr=${service_cidr_arg} \
+        --kubelet-arg=image-gc-high-threshold=70 \
+        --kubelet-arg=image-gc-low-threshold=60 \
+        --kubelet-arg=minimum-image-ttl-duration=60m \
+        ${tls_sans}
+    install_rc=$?
+    set -e
+    if [[ $install_rc -ne 0 ]]; then
+      log "  k3s installer first-start failed (rc=${install_rc}). This is expected when joining a"
+      log "  cluster whose existing peers have not yet pre-enrolled this node's IP. systemd will"
+      log "  auto-retry k3s.service every ~5s; if peer-firewall is the cause, run on an existing"
+      log "  cluster peer:"
+      local self_v4
+      self_v4=$(detect_local_ipv4 || true)
+      [[ -n "$self_v4" ]] && log "    /usr/local/bin/peer-firewall-add ${self_v4}"
+      log "  Polling for k3s API readiness up to 600 seconds (10 min) — bootstrap will resume"
+      log "  automatically as soon as the join succeeds. Ctrl-C if you need to investigate."
+    fi
+  else
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="$K3S_VERSION" \
+      INSTALL_K3S_EXEC="server" \
+      sh -s - \
+        ${init_or_join} \
+        ${node_pin} \
+        --flannel-backend=none \
+        --disable-network-policy \
+        --disable=traefik \
+        --disable=servicelb \
+        --write-kubeconfig-mode=644 \
+        --cluster-cidr=${cluster_cidr_arg} \
+        --service-cidr=${service_cidr_arg} \
+        --kubelet-arg=image-gc-high-threshold=70 \
+        --kubelet-arg=image-gc-low-threshold=60 \
+        --kubelet-arg=minimum-image-ttl-duration=60m \
+        ${tls_sans}
+  fi
+
+  # Wait window: 120s on first-server (cluster-init is local + fast),
+  # 600s on join paths (systemd retries every 5s; need at least
+  # several attempts to absorb the peer-firewall gating window).
+  local poll_attempts=60
+  if [[ "$is_joining_server" == true ]]; then
+    poll_attempts=300  # 300 × 2s = 600s
+  fi
+  log "Waiting for k3s API server (up to $((poll_attempts * 2))s)..."
   local _attempt
-  for _attempt in $(seq 1 60); do
+  for _attempt in $(seq 1 "$poll_attempts"); do
     if kubectl --kubeconfig="$KUBECONFIG" get nodes &>/dev/null; then
       log "k3s API server is ready."
       return 0
     fi
     sleep 2
   done
-  error "k3s API server did not become ready within 120 seconds."
+  error "k3s API server did not become ready within $((poll_attempts * 2)) seconds. If joining, ensure /usr/local/bin/peer-firewall-add <THIS_NODE_IP> ran on an existing cluster peer. journalctl -u k3s -n 50 for details."
 }
 
 install_k3s_worker() {
@@ -2385,23 +2541,41 @@ install_k3s_worker() {
     exec_args="agent --node-ip=${public_ip}"
   fi
 
+  # Worker installs hit the same peer-firewall gate as joining
+  # servers: k3s-agent.service can't reach :6443 on the control
+  # plane until our IP is pre-enrolled there. Tolerate the initial
+  # curl|sh failure and let the extended poll catch the eventual
+  # systemd-retried success.
+  local install_rc=0
+  set +e
   curl -sfL https://get.k3s.io | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="$exec_args" \
     K3S_URL="https://${K3S_SERVER_IP}:6443" \
     K3S_TOKEN="$K3S_TOKEN" \
     sh -
+  install_rc=$?
+  set -e
+  if [[ $install_rc -ne 0 ]]; then
+    log "  k3s-agent installer first-start failed (rc=${install_rc}). This is expected when joining"
+    log "  a cluster whose existing peers have not yet pre-enrolled this worker's IP. systemd"
+    log "  will auto-retry k3s-agent.service every ~5s. To unblock, run on an existing cluster peer:"
+    local self_v4
+    self_v4=$(detect_local_ipv4 || true)
+    [[ -n "$self_v4" ]] && log "    /usr/local/bin/peer-firewall-add ${self_v4}"
+    log "  Polling for k3s-agent up to 600 seconds (10 min)..."
+  fi
 
-  log "Waiting for k3s agent to register..."
+  log "Waiting for k3s agent to register (up to 600s)..."
   local _attempt
-  for _attempt in $(seq 1 30); do
+  for _attempt in $(seq 1 300); do
     if systemctl is-active --quiet k3s-agent; then
       log "k3s agent is running."
       return 0
     fi
     sleep 2
   done
-  error "k3s agent did not start within 60 seconds."
+  error "k3s agent did not start within 600 seconds. If joining, ensure /usr/local/bin/peer-firewall-add <THIS_NODE_IP> ran on an existing cluster peer. journalctl -u k3s-agent -n 50 for details."
 }
 
 # detect_calico_mtu — pick the right Calico pod-network MTU.
@@ -2836,6 +3010,48 @@ install_traefik() {
     --timeout 300s
 
   log "Traefik v3 Ingress Controller installed."
+
+  # CNI portmap chain self-test (Calico+CNI portmap race mitigation,
+  # 2026-05-15): after install_traefik's --wait returns Ready, occasionally
+  # the local node's `nat CNI-HOSTPORT-DNAT` chain is missing the rule for
+  # the Traefik DS pod's :80/:443 hostPort binding — Calico Felix's
+  # dataplane refresh can win the install race over CNI portmap, leaving
+  # external :80/:443 traffic on that node Connection-refused even though
+  # the pod is Running. Detected on staging.phoenix-host.net 2026-05-15.
+  #
+  # Detection: grep for a "tcp dport 80 ... dnat to <pod>:8000" rule in
+  # the local nft nat table. If absent, recycle the local Traefik pod
+  # ONCE — that re-runs CNI portmap during the new pod's network setup
+  # and reliably installs the chain.
+  if command -v nft >/dev/null 2>&1; then
+    if ! nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
+      log "CNI portmap chain self-test: no :80 hostPort DNAT rule found on this node — recycling the local Traefik pod to force CNI portmap install."
+      local local_traefik_pod
+      local_traefik_pod=$(kubectl --kubeconfig="$KUBECONFIG" -n traefik get pod \
+        -l app.kubernetes.io/name=traefik \
+        --field-selector "spec.nodeName=$(hostname)" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+      if [[ -n "$local_traefik_pod" ]]; then
+        kctl -n traefik delete pod "$local_traefik_pod" --grace-period=10 >/dev/null 2>&1 || true
+        # Brief wait for the DS controller to spawn a replacement + CNI
+        # portmap to wire the new hostPort. 30s is enough on a healthy
+        # node; if longer, the next verify_install probe will surface it.
+        local _w
+        for _w in $(seq 1 15); do
+          if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
+            log "  CNI portmap chain installed on attempt $_w (after ${_w}×2s)."
+            break
+          fi
+          sleep 2
+        done
+        if ! nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
+          warn "  CNI portmap chain still missing after recycle — manual investigation needed. Try: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --field-selector spec.nodeName=$(hostname)"
+        fi
+      else
+        warn "  no local Traefik pod found via field-selector spec.nodeName=$(hostname); check DS rollout state"
+      fi
+    fi
+  fi
 }
 
 # Generate / load the per-cluster CrowdSec bouncer key and ensure it
