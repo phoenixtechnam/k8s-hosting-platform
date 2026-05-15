@@ -85,6 +85,20 @@ spec:
               # can patch this in their overlay (2/3/4 progressively
               # stricter).
               value: "1"
+            - name: ALLOWED_METHODS
+              # CRS rule 911100 ("HTTP method is not allowed by policy")
+              # defaults to `tx.allowed_methods=GET HEAD POST OPTIONS`.
+              # Our admin / client / tenant API uses PATCH heavily —
+              # system-settings, auth/passkey-mode, routes/<id> updates,
+              # mtls-providers/clients/<cid>/certificates/<certid>
+              # (revoke), etc. — plus PUT + DELETE for resource
+              # lifecycle. Without this override, every non-POST mutating
+              # request gets a 403 from modsec at the middleware sub-
+              # request, the plugin forwards 403 verbatim, and the
+              # admin panel surfaces it as "could not save". Caught
+              # 2026-05-15 when admin couldn't set passkey-mode.
+              # Default-allow the full REST verb set we actually use.
+              value: "GET HEAD POST PUT PATCH DELETE OPTIONS"
             - name: ANOMALY_INBOUND
               # Anomaly score threshold for blocking. CRS sums rule
               # scores per request; if total >= threshold, block. 5 is
