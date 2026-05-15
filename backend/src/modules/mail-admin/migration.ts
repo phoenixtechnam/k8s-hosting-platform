@@ -85,12 +85,45 @@ export interface MigrationDeps {
   readonly logger?: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void };
 }
 
-// Build-trigger anchor: the Build Backend job in build-deploy.yml
-// only fires when files under `backend/` change. The chmod fix in
-// 622f278f only touched `scripts/*.sh` mode bits, so the new image
-// was never built and staging stayed on the previous image without
-// the raw-fetch SSA helper. Touching this comment shifts the file's
-// content so the next run builds. (No effect on runtime behavior.)
+// KNOWN ISSUE (2026-05-15): the cutover SSA-apply via applyRaw DOES
+// claim ownership of f:volumes.persistentVolumeClaim and f:affinity
+// — verified by inspecting the apiserver's response managedFields
+// immediately after our apply. The Stalwart pod relocates to the
+// target node with the new PVC mounted, sentinel verified.
+//
+// HOWEVER, Flux's reconcile (~60s after our apply) re-applies its
+// manifest and ENDS UP overwriting our value back to the manifest's
+// `stalwart-rocksdb-data`. This happens despite:
+//   - Kustomization.spec.force = false (non-force apply)
+//   - kustomize.toolkit.fluxcd.io/ssa: merge annotation on the
+//     Deployment (which the manifest comment claims preserves
+//     other-manager ownership)
+//   - applyRaw using force: true to STEAL ownership at apply time
+//
+// The same body sent via `kubectl apply --server-side --force-conflicts`
+// from inside the cluster IS preserved across Flux cycles — only our
+// in-process SSA-apply gets reverted. The exact Flux internal that
+// causes this hasn't been pinned down in this debugging round.
+//
+// Architectural paths forward (not implemented yet):
+//   1. Add a Kustomization.spec.patches op that removes
+//      `/spec/template/spec/volumes/0/persistentVolumeClaim` from
+//      Flux's apply scope for the Stalwart Deployment. Platform-api
+//      then becomes the sole owner. Caveat: needs a bootstrap step
+//      to seed the initial claim on first install.
+//   2. Externalise the PVC name to a ConfigMap that Flux substitutes
+//      via postBuild. Migration updates the ConfigMap + triggers
+//      Flux reconcile. Flux remains the sole owner with the
+//      substituted value.
+//   3. Remove the `ssa: merge` annotation from the Deployment and
+//      test whether Flux's spec.force=false alone is enough to
+//      respect ownership (the annotation's documented behaviour
+//      may differ from its actual one).
+//
+// The migration data path (rsync, PVC binding, Stalwart restart on
+// new node with new PVC) WORKS correctly. The cutover is the only
+// piece blocked by Flux's revert. See [project_mail_migration_flux_revert_2026_05_15]
+// memory for the full investigation log.
 
 /**
  * Build a KubeConfig for the raw-fetch SSA apply paths in this file.
