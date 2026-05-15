@@ -482,20 +482,20 @@ print(' '.join(sorted(ips)))" 2>/dev/null || echo '')"
     return
   fi
 
-  # The proxy-networks reconciler ALSO trusts the cluster pod + service
-  # CIDRs since the 2026-05-15 streamline. Reason: when haproxy DS pods
-  # (hostNetwork=true) forward to Stalwart via ClusterIP, kube-proxy
-  # SNATs the source IP to a pod CIDR (10.42.0.0/16 by default in k3s
-  # + 10.43.0.0/16 for Service VIPs). Without these in the trust list,
-  # Stalwart refuses the PROXY-v2 frame and TLS handshakes return
-  # "received corrupt message of type InvalidContentType" on :465/:993.
-  # See backend/src/modules/mail-admin/proxy-networks-reconciler.ts.
+  # **Phase 11 streamline (Bug F fix, 2026-05-15): per-listener trust.**
+  # Global `SystemSettings.proxyTrustedNetworks` is now empty `{}`. Each
+  # MAIL listener (smtp/imap/manageSieve/pop3) carries the full trust list
+  # via `overrideProxyTrustedNetworks` (cluster CIDRs + server node IPs).
+  # HTTP listeners (http/https/http-acme) get an empty override → inherit
+  # empty global → no PROXY-v2 sniff → cross-pod plain HTTP works and LE
+  # HTTP-01 challenges complete. See
+  # backend/src/modules/mail-admin/proxy-networks-reconciler.ts.
   local expected_with_cidrs
   expected_with_cidrs="$(printf '%s\n10.42.0.0/16\n10.43.0.0/16\n' "$expected_ips" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
   echo "  Expected server-role IPs: ${expected_ips}"
   echo "  Expected cluster CIDRs:   10.42.0.0/16 10.43.0.0/16"
 
-  # B1. proxyTrustedNetworks ⊇ expected (exact match)
+  # B1. Global SystemSettings.proxyTrustedNetworks MUST be empty (Phase 11).
   local ptn_resp ptn_actual
   ptn_resp="$(jmap_call 'x:SystemSettings/get' '{"ids":["singleton"],"properties":["proxyTrustedNetworks"]}')"
   ptn_actual="$(echo "$ptn_resp" | python3 -c "
@@ -507,19 +507,58 @@ def canon(k):
     return k[:-3] if k.endswith('/32') else k
 print(' '.join(sorted(canon(k) for k, v in ks.items() if v is True)))" 2>/dev/null || echo '')"
   ORIGINAL_PROXY_TRUSTED_NETWORKS="$ptn_actual"
-  echo "  Actual   server-role IPs: ${ptn_actual}"
 
-  if [[ "$ptn_actual" == "$expected_with_cidrs" ]]; then
-    note_pass "B1. proxyTrustedNetworks = expected (server IPs + cluster CIDRs)"
+  if [[ -z "$ptn_actual" ]]; then
+    note_pass "B1. global proxyTrustedNetworks empty (Phase 11: per-listener trust owns it now)"
   else
-    note_fail "B1. Mismatch: expected '${expected_with_cidrs}', got '${ptn_actual}'"
+    note_fail "B1. global proxyTrustedNetworks NOT empty — got '${ptn_actual}' (Phase 11 expects empty)"
   fi
 
-  # B2. Spoofing defense — 0.0.0.0/0 must NOT be in proxyTrustedNetworks
-  if echo " ${ptn_actual} " | grep -qE ' (0\.0\.0\.0/0|0\.0\.0\.0|::|::/0) '; then
-    note_fail "B2. SECURITY: proxyTrustedNetworks contains a wildcard — PROXY-v2 IP spoofing is now possible"
+  # B1b. Per-listener overrideProxyTrustedNetworks check:
+  #   - mail listeners (smtp/imap/manageSieve/pop3) MUST contain
+  #     cluster CIDRs + server node IPs
+  #   - http listeners MUST have empty override (so PROXY-v2 sniff is off)
+  local listener_resp listener_audit
+  listener_resp="$(jmap_call 'x:NetworkListener/get' '{"accountId":"d333333","ids":null,"properties":["name","protocol","overrideProxyTrustedNetworks"]}')"
+  listener_audit="$(echo "$listener_resp" | python3 -c "
+import sys, json
+expected = set('${expected_with_cidrs}'.split())
+def canon(k):
+    return k[:-3] if k.endswith('/32') else k
+MAIL_PROTOS = {'smtp', 'imap', 'manageSieve', 'pop3'}
+errors = []
+listeners = json.load(sys.stdin)['methodResponses'][0][1].get('list', [])
+for l in listeners:
+    name = l.get('name','?')
+    proto = l.get('protocol','?')
+    override = set(canon(k) for k, v in (l.get('overrideProxyTrustedNetworks') or {}).items() if v is True)
+    if proto in MAIL_PROTOS:
+        if override != expected:
+            errors.append(f'{name}({proto}): expected={sorted(expected)}, got={sorted(override)}')
+    else:
+        if override:
+            errors.append(f'{name}({proto}): expected EMPTY, got={sorted(override)}')
+print('\\n'.join(errors) if errors else 'OK')" 2>/dev/null || echo 'parse-err')"
+
+  if [[ "$listener_audit" == "OK" ]]; then
+    note_pass "B1b. per-listener overrideProxyTrustedNetworks correct (mail=trust, http=empty)"
   else
-    note_pass "B2. proxyTrustedNetworks does not contain 0.0.0.0/0 (spoofing defense intact)"
+    note_fail "B1b. per-listener trust drift:"
+    echo "$listener_audit" | sed 's/^/        /'
+  fi
+
+  # B2. Spoofing defense — 0.0.0.0/0 must NOT be in any trust list
+  local b2_ok=true
+  if echo " ${ptn_actual} " | grep -qE ' (0\.0\.0\.0/0|0\.0\.0\.0|::|::/0) '; then
+    b2_ok=false
+  fi
+  if echo "$listener_resp" | grep -qE '"(0\.0\.0\.0/0|0\.0\.0\.0|::|::/0)":\s*true'; then
+    b2_ok=false
+  fi
+  if $b2_ok; then
+    note_pass "B2. no 0.0.0.0/0 in any proxy trust list (spoofing defense intact)"
+  else
+    note_fail "B2. SECURITY: 0.0.0.0/0 found in a proxy trust list — PROXY-v2 IP spoofing now possible"
   fi
 
   # B3. Every server-role IP is in x:AllowedIp
