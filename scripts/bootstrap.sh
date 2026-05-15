@@ -2923,15 +2923,21 @@ spec:
     - http01:
         ingress:
           # Traefik migration 2026-05-15: cert-manager's HTTP-01 solver
-          # spawns a short-lived `kind: Ingress` (the v1 networking API,
-          # NOT IngressRoute) to expose the /.well-known/acme-challenge/
-          # path during the ACME flow. Traefik with kubernetesCRD-only
-          # providers IGNORES legacy Ingresses, so the challenge was
-          # unreachable and certs never issued. We now configure Traefik
-          # to additionally read class=traefik Ingresses (kept narrow via
-          # ingressClass filter so non-cert-manager Ingresses are still
-          # ignored). Solver Ingress class flipped from nginx→traefik to
-          # match.
+          # spawns a short-lived legacy Ingress (networking.k8s.io/v1
+          # API kind, not IngressRoute) to expose the /.well-known/acme-
+          # challenge/ path during the ACME flow. Traefik with the
+          # kubernetesCRD-only providers ignored that solver Ingress, so
+          # the challenge was unreachable and certs never issued. We now
+          # configure Traefik to additionally read class=traefik
+          # Ingresses (narrowed via ingressClass filter + labelSelector
+          # so non-cert-manager Ingresses are still ignored). Solver
+          # ingressClassName flipped from nginx to traefik to match.
+          # NOTE: prior revision wrapped "kind: Ingress" in backticks
+          # inside this unquoted <<EOF heredoc; bash interpreted the
+          # backticks as command substitution and emitted spurious
+          # "kind:: command not found" stderr during cluster-issuer
+          # apply. The kubectl apply still received the right body, but
+          # log diffs became noisy. No backticks in heredoc bodies.
           ingressClassName: traefik
           # Solver Pods are short-lived Jobs spawned by cert-manager.
           # On clusters where servers carry the platform-managed
@@ -2962,15 +2968,21 @@ spec:
     - http01:
         ingress:
           # Traefik migration 2026-05-15: cert-manager's HTTP-01 solver
-          # spawns a short-lived `kind: Ingress` (the v1 networking API,
-          # NOT IngressRoute) to expose the /.well-known/acme-challenge/
-          # path during the ACME flow. Traefik with kubernetesCRD-only
-          # providers IGNORES legacy Ingresses, so the challenge was
-          # unreachable and certs never issued. We now configure Traefik
-          # to additionally read class=traefik Ingresses (kept narrow via
-          # ingressClass filter so non-cert-manager Ingresses are still
-          # ignored). Solver Ingress class flipped from nginx→traefik to
-          # match.
+          # spawns a short-lived legacy Ingress (networking.k8s.io/v1
+          # API kind, not IngressRoute) to expose the /.well-known/acme-
+          # challenge/ path during the ACME flow. Traefik with the
+          # kubernetesCRD-only providers ignored that solver Ingress, so
+          # the challenge was unreachable and certs never issued. We now
+          # configure Traefik to additionally read class=traefik
+          # Ingresses (narrowed via ingressClass filter + labelSelector
+          # so non-cert-manager Ingresses are still ignored). Solver
+          # ingressClassName flipped from nginx to traefik to match.
+          # NOTE: prior revision wrapped "kind: Ingress" in backticks
+          # inside this unquoted <<EOF heredoc; bash interpreted the
+          # backticks as command substitution and emitted spurious
+          # "kind:: command not found" stderr during cluster-issuer
+          # apply. The kubectl apply still received the right body, but
+          # log diffs became noisy. No backticks in heredoc bodies.
           ingressClassName: traefik
           # Solver Pods are short-lived Jobs spawned by cert-manager.
           # On clusters where servers carry the platform-managed
