@@ -173,13 +173,28 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
       },
     }, async (request) => {
       const user = request.user as JwtPayload;
-      const body = request.body as { mailbox_id?: string };
-
-      if (!body.mailbox_id) {
-        throw new ApiError('MISSING_REQUIRED_FIELD', 'Required field missing: mailbox_id', 400, { field: 'mailbox_id' });
+      const { webmailTokenRequestSchema } = await import('@k8s-hosting/api-contracts');
+      const parsed = webmailTokenRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        const firstError = parsed.error.issues[0];
+        throw new ApiError(
+          'MISSING_REQUIRED_FIELD',
+          `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
+          400,
+          { field: firstError.path.join('.') },
+        );
       }
-
-      const result = await service.generateWebmailToken(app, app.db, user.sub, body.mailbox_id);
+      const result = await service.generateWebmailToken(
+        app,
+        app.db,
+        user.sub,
+        parsed.data.mailbox_id,
+        {
+          engine: parsed.data.engine,
+          tenantId: user.clientId,
+          actorUserId: user.sub,
+        },
+      );
       return success(result);
     });
 

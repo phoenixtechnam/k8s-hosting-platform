@@ -1,0 +1,512 @@
+# bulwark-impersonator proxy script.
+#
+# Tiny Node.js reverse proxy that sits in front of the Bulwark webmail
+# Deployment. Handles ONE special path — `/_impersonate?token=<JWT>` —
+# and transparently proxies everything else.
+#
+# Impersonation flow (mirrors Roundcube's jwt_auth.php pattern):
+#   1. Client-panel asks platform-api `POST /api/v1/webmail/impersonate`
+#   2. platform-api verifies caller is client_admin of the mailbox's
+#      tenant, mints HS256 JWT signed with the shared JWT_SECRET,
+#      returns the impersonation URL to client-panel.
+#   3. client-panel `window.location = <url>`.
+#   4. Browser GET https://webmail.${DOMAIN}/_impersonate?token=<JWT>
+#      → Traefik → this proxy.
+#   5. Proxy verifies JWT (HS256 signature, exp, nbf, iat clock-skew,
+#      jti-not-replayed in LRU). Extracts `mailbox` claim.
+#   6. Proxy builds master-auth header
+#      `Basic base64(<mailbox>%<master_user>:<master_password>)` and
+#      POSTs to Bulwark's `/api/auth/stalwart-context` (cross-pod,
+#      same-namespace).
+#   7. Bulwark validates against Stalwart's JMAP — Stalwart 0.16 master-
+#      user permission grants the impersonator session-cookie for the
+#      target mailbox.
+#   8. Proxy captures Bulwark's Set-Cookie and forwards to the browser
+#      with a 303 to `/`. Browser lands in Bulwark fully authenticated
+#      as the target mailbox.
+#
+# Security:
+#   - HS256 signature MUST verify against JWT_SECRET (constant-time)
+#   - JWT claim `exp` is REQUIRED (no immortal tokens)
+#   - `nbf` enforced when present, `iat` clock-skew tolerance 60s
+#   - `jti` (replay protection) dedup'd in process-local LRU. Single
+#     use within 60s TTL. Multi-replica races accepted as documented
+#     in ADR-039.
+#   - Header alg pre-check rejects `alg: none` before HMAC touch.
+#   - The master credentials never leave the impersonator; only the
+#     Bulwark Set-Cookie is forwarded to the browser.
+#
+# Audit:
+#   - Every accepted impersonation logs one structured JSON line to
+#     stdout with `actor_user_id`, `tenant_id`, `target_mailbox`, `jti`.
+#   - Every rejected attempt logs the failure reason.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bulwark-impersonator-script
+  namespace: mail
+  labels:
+    app: bulwark-impersonator
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+data:
+  proxy.js: |
+    'use strict';
+    const http = require('node:http');
+    const crypto = require('node:crypto');
+    const fs = require('node:fs');
+    const path = require('node:path');
+
+    // ── Configuration ────────────────────────────────────────────────
+    const LISTEN_PORT = parseInt(process.env.LISTEN_PORT || '8080', 10);
+    const BULWARK_HOST = process.env.BULWARK_HOST || 'bulwark.mail.svc.cluster.local';
+    const BULWARK_PORT = parseInt(process.env.BULWARK_PORT || '80', 10);
+    const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || `https://bulwark.${process.env.PLATFORM_BASE_DOMAIN || 'k8s-platform.test'}`;
+    const JWT_SECRET = process.env.JWT_SECRET || '';
+    const MASTER_USER = process.env.STALWART_MASTER_USER || '';
+    const MASTER_PASSWORD = process.env.STALWART_MASTER_PASSWORD || '';
+    const STALWART_JMAP_URL = process.env.STALWART_JMAP_URL || `https://stalwart.${process.env.PLATFORM_BASE_DOMAIN || 'k8s-platform.test'}`;
+    // Required JWT issuer — must match the platform-api signer's `iss`
+    // claim. Prevents tokens minted for other subsystems (admin
+    // panel auth, etc.) from being replayed against the impersonator.
+    const REQUIRED_ISS = process.env.REQUIRED_ISS || 'platform-api/webmail';
+    // Clock skew tolerance for `iat` future-dating attacks.
+    const CLOCK_SKEW_S = parseInt(process.env.CLOCK_SKEW_S || '60', 10);
+    // Hard ceiling on JWT lifetime — defence-in-depth even if the
+    // platform-api accidentally mints a long-lived token.
+    const MAX_JWT_TTL_S = parseInt(process.env.MAX_JWT_TTL_S || '300', 10);
+    // Maximum Bulwark upstream response size (bytes) the impersonator
+    // will buffer when calling /api/auth/stalwart-context. Anything
+    // larger aborts the request — protects against a malicious or
+    // misconfigured upstream returning unbounded HTML.
+    const MAX_BULWARK_RESP_BYTES = parseInt(process.env.MAX_BULWARK_RESP_BYTES || '65536', 10);
+    // Strict mailbox format: local-part chars + @ + domain. Rejects
+    // any input containing `%` or `:` (Stalwart master-auth syntax
+    // chars) — defends against signed-token-with-malicious-mailbox.
+    const MAILBOX_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+    // Operator token gating the admin endpoint (DELETE
+    // /__impersonator/settings/*). Empty disables admin entirely.
+    const ADMIN_TOKEN = process.env.IMPERSONATOR_ADMIN_TOKEN || '';
+    // Path to Bulwark's per-account settings dir. The lifecycle hook
+    // sends a username + serverUrl pair; we sha256 them to compute
+    // the filename Bulwark wrote.
+    const SETTINGS_DIR = process.env.SETTINGS_DATA_DIR || '/app/data/settings';
+
+    if (!JWT_SECRET) { console.error('FATAL: JWT_SECRET not set'); process.exit(1); }
+    if (!MASTER_USER) { console.error('FATAL: STALWART_MASTER_USER not set'); process.exit(1); }
+    if (!MASTER_PASSWORD) { console.error('FATAL: STALWART_MASTER_PASSWORD not set'); process.exit(1); }
+
+    // ── JTI replay cache (in-process, TTL-first eviction) ───────────
+    // TTL aligns with MAX_JWT_TTL_S — a jti is dropped from the cache
+    // only after its enforcing JWT can no longer be valid. FIFO
+    // eviction of unexpired entries would let an attacker replay a
+    // still-valid jti by flooding new ones (review finding H1).
+    //
+    // Background sweep every 30s removes expired entries — keeps the
+    // request path O(1) instead of O(n).
+    const JTI_TTL_MS = Math.max(60_000, MAX_JWT_TTL_S * 1000);
+    const JTI_MAX = 10_000;
+    /** Map<string, number expiresAt> */
+    const jtiSeen = new Map();
+    function jtiSweep() {
+      const now = Date.now();
+      for (const [k, v] of jtiSeen) { if (v <= now) jtiSeen.delete(k); }
+    }
+    setInterval(jtiSweep, 30_000).unref?.();
+    function jtiClaim(jti) {
+      const now = Date.now();
+      const existing = jtiSeen.get(jti);
+      if (existing !== undefined && existing > now) return false;
+      if (jtiSeen.size >= JTI_MAX) {
+        // Force a sweep — only evict expired entries. If the cache
+        // is full of unexpired jtis (10k concurrent valid tokens),
+        // reject the new claim rather than evict a valid one.
+        jtiSweep();
+        if (jtiSeen.size >= JTI_MAX) {
+          log('warn', 'jti_cache_full', { size: jtiSeen.size });
+          return false;
+        }
+      }
+      jtiSeen.set(jti, now + JTI_TTL_MS);
+      return true;
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────
+    function b64urlDecode(s) {
+      const pad = '='.repeat((4 - (s.length % 4)) % 4);
+      return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/') + pad, 'base64');
+    }
+    function b64urlEncode(buf) {
+      return Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+    }
+
+    function log(level, msg, extra = {}) {
+      const rec = { ts: new Date().toISOString(), level, msg, ...extra };
+      console.log(JSON.stringify(rec));
+    }
+
+    /**
+     * Verify an HS256 JWT. Returns { valid: true, payload } or { valid: false, reason }.
+     *
+     * Order of operations (matches Roundcube's jwt_auth.php):
+     *   1. Header parse + alg=HS256 + typ=JWT check (rejects "alg: none")
+     *   2. Constant-time HMAC verify
+     *   3. Payload parse + claim enforcement (exp required, nbf, iat skew)
+     */
+    function verifyJwt(token) {
+      const parts = String(token || '').split('.');
+      if (parts.length !== 3) return { valid: false, reason: 'malformed' };
+      const [h64, p64, s64] = parts;
+
+      let header;
+      try { header = JSON.parse(b64urlDecode(h64).toString('utf8')); }
+      catch { return { valid: false, reason: 'header_decode' }; }
+      if (header?.alg !== 'HS256') return { valid: false, reason: 'wrong_alg' };
+      if (header.typ != null && header.typ !== 'JWT') return { valid: false, reason: 'wrong_typ' };
+
+      // Constant-time HMAC compare.
+      const expected = crypto.createHmac('sha256', JWT_SECRET).update(`${h64}.${p64}`).digest();
+      let provided;
+      try { provided = b64urlDecode(s64); }
+      catch { return { valid: false, reason: 'sig_decode' }; }
+      if (expected.length !== provided.length) return { valid: false, reason: 'sig_length' };
+      if (!crypto.timingSafeEqual(expected, provided)) return { valid: false, reason: 'sig_mismatch' };
+
+      let payload;
+      try { payload = JSON.parse(b64urlDecode(p64).toString('utf8')); }
+      catch { return { valid: false, reason: 'payload_decode' }; }
+
+      const now = Math.floor(Date.now() / 1000);
+      // `iss` MUST match REQUIRED_ISS — prevents tokens minted for
+      // other subsystems (admin panel session JWTs etc.) from being
+      // replayed here. Review finding H4.
+      if (payload.iss !== REQUIRED_ISS) return { valid: false, reason: 'wrong_iss' };
+      // `iat` REQUIRED — without it the TTL ceiling can be bypassed
+      // by omitting it (review finding M4).
+      if (typeof payload.iat !== 'number') return { valid: false, reason: 'no_iat' };
+      if (payload.iat > now + CLOCK_SKEW_S) return { valid: false, reason: 'iat_future' };
+      if (typeof payload.exp !== 'number') return { valid: false, reason: 'no_exp' };
+      if (payload.exp < now) return { valid: false, reason: 'expired' };
+      if (typeof payload.nbf === 'number' && payload.nbf > now) return { valid: false, reason: 'not_yet_valid' };
+      // Hard TTL ceiling — protects against runaway-token-lifetime
+      // signing bugs even if the platform-api emits a 30-day expiry.
+      if (payload.exp - payload.iat > MAX_JWT_TTL_S) {
+        return { valid: false, reason: 'ttl_too_long' };
+      }
+      // Mailbox claim is required AND must match strict email format.
+      // Rejects any string containing `%` or `:` so a signed token
+      // with a malicious mailbox can't corrupt the master-auth header
+      // (review finding H2).
+      if (typeof payload.mailbox !== 'string' || !MAILBOX_RE.test(payload.mailbox)) {
+        return { valid: false, reason: 'bad_mailbox' };
+      }
+      // jti is required for replay protection.
+      if (typeof payload.jti !== 'string' || !payload.jti) {
+        return { valid: false, reason: 'no_jti' };
+      }
+      return { valid: true, payload };
+    }
+
+    /**
+     * Server-side POST to Bulwark's /api/auth/stalwart-context with
+     * the master-auth header. Captures Set-Cookie headers from the
+     * response and returns them to the caller.
+     */
+    function bulwarkLogin(mailbox) {
+      return new Promise((resolve, reject) => {
+        // Stalwart master-user auth syntax: `<target>%<master>`. The
+        // master_user value may be the bare local part or the FQDN;
+        // either works (verified 2026-05-15 spike). The cleartext
+        // password authenticates the master.
+        const authString = `${mailbox}%${MASTER_USER}:${MASTER_PASSWORD}`;
+        const authHeader = `Basic ${Buffer.from(authString, 'utf8').toString('base64')}`;
+        const body = JSON.stringify({
+          serverUrl: STALWART_JMAP_URL,
+          username: mailbox,
+          authHeader,
+          slot: 0,
+        });
+        const req = http.request({
+          hostname: BULWARK_HOST,
+          port: BULWARK_PORT,
+          method: 'POST',
+          path: '/api/auth/stalwart-context',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(body, 'utf8'),
+            // Bulwark's CSRF/Origin check accepts any matching Origin
+            // since the request lands cross-pod inside the cluster.
+            // The PUBLIC_ORIGIN value matches what the browser would
+            // send so Bulwark treats this as legitimate.
+            'origin': PUBLIC_ORIGIN,
+          },
+        }, (res) => {
+          const chunks = [];
+          let received = 0;
+          let aborted = false;
+          // Bound the buffer (review finding L3) — a malicious or
+          // misconfigured upstream returning a huge HTML error page
+          // shouldn't be able to OOM the impersonator.
+          res.on('data', (c) => {
+            if (aborted) return;
+            received += c.length;
+            if (received > MAX_BULWARK_RESP_BYTES) {
+              aborted = true;
+              res.destroy();
+              return;
+            }
+            chunks.push(c);
+          });
+          res.on('end', () => {
+            if (aborted) {
+              resolve({ status: 502, body: '{"error":"upstream response too large"}', setCookies: [] });
+              return;
+            }
+            const setCookies = res.headers['set-cookie'] || [];
+            const text = Buffer.concat(chunks).toString('utf8');
+            resolve({ status: res.statusCode || 500, body: text, setCookies });
+          });
+          // Both request and response error handlers — review finding L2.
+          res.on('error', reject);
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+      });
+    }
+
+    /**
+     * Proxy a request transparently to Bulwark, streaming body + headers.
+     *
+     * Strips client-supplied `authorization` header before forwarding
+     * upstream (review finding M2) — Bulwark only authenticates via
+     * cookies (`jmap_stalwart_ctx`), never bearer/basic auth from the
+     * browser. Defense-in-depth in case anything ever reaches this
+     * pod outside the Traefik-mediated path.
+     */
+    function proxyToBulwark(req, res) {
+      const headers = { ...req.headers };
+      headers.host = `${BULWARK_HOST}:${BULWARK_PORT}`;
+      delete headers.authorization;
+      delete headers.Authorization;
+      const upReq = http.request({
+        hostname: BULWARK_HOST,
+        port: BULWARK_PORT,
+        method: req.method,
+        path: req.url,
+        headers,
+      }, (upRes) => {
+        res.writeHead(upRes.statusCode || 502, upRes.headers);
+        upRes.pipe(res);
+      });
+      upReq.on('error', (e) => {
+        log('error', 'proxy_upstream_failed', { url: req.url, err: e.message });
+        try { res.writeHead(502, { 'content-type': 'text/plain' }); res.end('Bad Gateway'); } catch {}
+      });
+      req.pipe(upReq);
+    }
+
+    /**
+     * Handle DELETE /__impersonator/settings — purges Bulwark's
+     * encrypted per-account settings file for a given (mailbox,
+     * serverUrl) pair. Called by platform-api's
+     * `bulwark-settings-purge` lifecycle hook on client_deleted /
+     * archived transitions (ADR-039 Phase 8).
+     *
+     * Auth: requires `X-Admin-Token` header == IMPERSONATOR_ADMIN_TOKEN.
+     * Returns 410-style semantics: 200 on successful unlink or
+     * already-absent; 404 if SETTINGS_DIR doesn't exist; 401 if the
+     * token mismatches; 400 if body shape is wrong.
+     */
+    async function handleAdminPurge(req, res) {
+      // Constant-time-ish token compare.
+      const tok = req.headers['x-admin-token'] || '';
+      if (!ADMIN_TOKEN || tok.length !== ADMIN_TOKEN.length ||
+          !crypto.timingSafeEqual(Buffer.from(String(tok)), Buffer.from(ADMIN_TOKEN))) {
+        log('warn', 'admin_purge_unauthorized', { ip: req.socket.remoteAddress });
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+
+      // Collect JSON body.
+      const chunks = [];
+      let bodySize = 0;
+      for await (const c of req) {
+        bodySize += c.length;
+        if (bodySize > 4096) {
+          res.writeHead(413, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'body too large' }));
+          return;
+        }
+        chunks.push(c);
+      }
+      let body;
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
+      catch { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'malformed json' })); return; }
+
+      const username = body.username;
+      const serverUrl = body.serverUrl;
+      if (typeof username !== 'string' || !MAILBOX_RE.test(username)) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid username' }));
+        return;
+      }
+      if (typeof serverUrl !== 'string' || serverUrl.length === 0 || serverUrl.length > 512) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid serverUrl' }));
+        return;
+      }
+
+      // Bulwark file naming: sha256(`${username}:${serverUrl}`).enc.
+      // Mirror the upstream function K(a,b) from /api/settings.
+      const hash = crypto.createHash('sha256').update(`${username}:${serverUrl}`).digest('hex');
+      const target = path.join(SETTINGS_DIR, `${hash}.enc`);
+
+      // Defense-in-depth path-traversal check — refuse to delete
+      // anything outside SETTINGS_DIR. Matches the same check
+      // Bulwark itself applies on writes.
+      const resolvedDir = path.resolve(SETTINGS_DIR);
+      const resolvedTarget = path.resolve(target);
+      if (!resolvedTarget.startsWith(resolvedDir + path.sep) && resolvedTarget !== resolvedDir) {
+        log('error', 'admin_purge_path_traversal', { username, hash });
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid path' }));
+        return;
+      }
+
+      try {
+        fs.unlinkSync(resolvedTarget);
+        log('info', 'admin_purge_unlinked', { username, hash });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, status: 'unlinked' }));
+      } catch (e) {
+        if (e && e.code === 'ENOENT') {
+          log('info', 'admin_purge_already_absent', { username, hash });
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, status: 'already_absent' }));
+          return;
+        }
+        log('error', 'admin_purge_unlink_failed', { username, hash, err: String(e.message || e) });
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unlink failed' }));
+      }
+    }
+
+    /** Handle GET /_impersonate?token=<JWT> */
+    async function handleImpersonate(req, res, urlObj) {
+      const token = urlObj.searchParams.get('token') || '';
+      if (!token) {
+        log('warn', 'impersonate_no_token', { ip: req.socket.remoteAddress });
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'token required' }));
+        return;
+      }
+
+      const verify = verifyJwt(token);
+      if (!verify.valid) {
+        log('warn', 'impersonate_jwt_invalid', { reason: verify.reason, ip: req.socket.remoteAddress });
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid token', reason: verify.reason }));
+        return;
+      }
+      const { mailbox, jti, tenant_id, actor_user_id } = verify.payload;
+
+      // jti single-use enforcement.
+      if (!jtiClaim(jti)) {
+        log('warn', 'impersonate_jti_replay', { jti, mailbox, tenant_id, actor_user_id });
+        res.writeHead(410, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'token already used' }));
+        return;
+      }
+
+      // Server-side login to Bulwark with master-auth header.
+      let bw;
+      try { bw = await bulwarkLogin(mailbox); }
+      catch (e) {
+        log('error', 'impersonate_bulwark_unreachable', { mailbox, err: String(e.message || e) });
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'webmail upstream unavailable' }));
+        return;
+      }
+
+      if (bw.status < 200 || bw.status >= 300) {
+        log('error', 'impersonate_bulwark_rejected', { mailbox, status: bw.status, body: bw.body.slice(0, 400) });
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'webmail login rejected', status: bw.status }));
+        return;
+      }
+
+      // Forward the Bulwark session cookies to the browser. The
+      // cookies are scoped to the Bulwark hostname (same origin) so
+      // Bulwark's own server reads them on the follow-up GET /.
+      log('info', 'impersonate_ok', {
+        jti, mailbox, tenant_id, actor_user_id,
+        bulwark_set_cookie_count: bw.setCookies.length,
+      });
+      const headers = { location: '/' };
+      if (bw.setCookies.length) headers['set-cookie'] = bw.setCookies;
+      res.writeHead(303, headers);
+      res.end();
+    }
+
+    // ── HTTP server ──────────────────────────────────────────────────
+    const server = http.createServer((req, res) => {
+      let urlObj;
+      try { urlObj = new URL(req.url, 'http://internal'); }
+      catch { res.writeHead(400); res.end('bad url'); return; }
+
+      // Liveness probe — match by path only, not full URL, so a query
+      // string can't bypass into the proxy (review finding L1).
+      if (urlObj.pathname === '/healthz' || urlObj.pathname === '/__impersonator/healthz') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+        return;
+      }
+
+      if (urlObj.pathname === '/_impersonate') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          res.writeHead(405, { allow: 'GET' });
+          res.end();
+          return;
+        }
+        // Drain any request body silently to allow keep-alive reuse.
+        req.on('data', () => {});
+        handleImpersonate(req, res, urlObj).catch((e) => {
+          log('error', 'impersonate_unhandled', { err: String(e.message || e) });
+          try { res.writeHead(500); res.end(); } catch {}
+        });
+        return;
+      }
+
+      // Admin: DELETE /__impersonator/settings — purge a single
+      // account's encrypted settings file. NEVER proxied to Bulwark.
+      if (urlObj.pathname === '/__impersonator/settings') {
+        if (req.method !== 'DELETE') {
+          res.writeHead(405, { allow: 'DELETE' });
+          res.end();
+          return;
+        }
+        handleAdminPurge(req, res).catch((e) => {
+          log('error', 'admin_purge_unhandled', { err: String(e.message || e) });
+          try { res.writeHead(500); res.end(); } catch {}
+        });
+        return;
+      }
+
+      proxyToBulwark(req, res);
+    });
+
+    server.listen(LISTEN_PORT, '0.0.0.0', () => {
+      // Do NOT log MASTER_USER — even the username half of a
+      // credential pair leaks operational info via the log
+      // aggregator (review finding C1).
+      log('info', 'bulwark_impersonator_listening', {
+        port: LISTEN_PORT,
+        upstream: `${BULWARK_HOST}:${BULWARK_PORT}`,
+        public_origin: PUBLIC_ORIGIN,
+        stalwart_jmap_url: STALWART_JMAP_URL,
+        required_iss: REQUIRED_ISS,
+        master_user_configured: MASTER_USER ? '[set]' : '[unset]',
+      });
+    });

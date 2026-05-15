@@ -1,0 +1,47 @@
+# Bulwark impersonator NetworkPolicy.
+#
+# The mail namespace's base NetPols (allow-haproxy-to-stalwart) gate
+# Stalwart pods only. The impersonator selects itself + needs:
+#   - Ingress: Traefik (browser-facing) + diagnostic pods
+#   - Egress:  bulwark pod (for the server-side /api/auth/stalwart-context POST)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-impersonator-ingress
+  namespace: mail
+  labels:
+    app: bulwark-impersonator
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  # The impersonator runs as a sidecar in the Bulwark Pod, so the
+  # podSelector targets bulwark pods. The port-specific ingress on
+  # 8081 only affects the impersonator container — Bulwark's own
+  # :3000 is governed by other rules.
+  podSelector:
+    matchLabels:
+      app: bulwark
+  policyTypes: [Ingress]
+  ingress:
+    # Traefik DaemonSet — browser path to /_impersonate.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - port: 8081
+          protocol: TCP
+    # platform-api — calls DELETE /__impersonator/settings/* from the
+    # bulwark-settings-purge lifecycle hook (ADR-039 Phase 8).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+          podSelector:
+            matchLabels:
+              app: platform-api
+      ports:
+        - port: 8081
+          protocol: TCP

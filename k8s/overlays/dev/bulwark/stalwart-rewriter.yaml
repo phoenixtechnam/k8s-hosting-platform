@@ -1,0 +1,280 @@
+# Stalwart response-URL rewriter for the Bulwark eval.
+#
+# WHY: Stalwart 0.16 self-reports its kernel hostname in `apiUrl` /
+# `downloadUrl` / `uploadUrl` / `eventSourceUrl` on the JMAP session
+# response. In Kubernetes the kernel hostname defaults to the pod
+# name, so Bulwark's SPA receives URLs like
+#   https://stalwart-mail-5b97d4679f-blk2d/jmap/
+# which the browser can't resolve.
+#
+# Stalwart 0.16 has no exposed setting to override this after the
+# bootstrap window closes (x:Bootstrap/set returns `forbidden`,
+# x:SystemSettings/set rejects `serverHostname` as an invalid
+# property, the management REST API requires a token shape we
+# couldn't reverse-engineer in time).
+#
+# This sidecar deploys a thin Node.js reverse proxy that streams
+# requests to stalwart-mgmt:8080 and rewrites any
+# `https://<pod-hostname>` occurrences in the response body to the
+# external `https://stalwart.k8s-platform.test:2011`. The Bulwark
+# IngressRoute is pointed at this proxy instead of stalwart-mgmt.
+#
+# Eval-only — production fixes this at Stalwart bootstrap time, not
+# downstream of it.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stalwart-url-rewriter-script
+  namespace: mail
+  labels:
+    app: stalwart-url-rewriter
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail-eval
+data:
+  proxy.js: |
+    // HTTP reverse proxy for Stalwart that:
+    //   (a) injects `:PUBLIC_PORT` into Stalwart's self-reported URLs
+    //       (Stalwart 0.16 `defaultHostname` doesn't accept host:port),
+    //   (b) fixes CORS for credentialed requests by echoing the requester's
+    //       Origin into Access-Control-Allow-Origin and adding
+    //       Access-Control-Allow-Credentials: true on EVERY response
+    //       (Stalwart returns `*` only on preflights, none on redirects).
+    //
+    // Strips Accept-Encoding from upstream requests so we never have to
+    // decompress gzip before rewriting JSON.
+    const http = require('node:http');
+    const zlib = require('node:zlib');
+
+    const UPSTREAM_HOST = process.env.UPSTREAM_HOST || 'stalwart-mgmt.mail.svc.cluster.local';
+    const UPSTREAM_PORT = parseInt(process.env.UPSTREAM_PORT || '8080', 10);
+    const PUBLIC_HOST   = process.env.PUBLIC_HOST   || 'stalwart.k8s-platform.test';
+    const PUBLIC_PORT   = process.env.PUBLIC_PORT   || '2011';
+    const LISTEN_PORT   = parseInt(process.env.LISTEN_PORT || '8080', 10);
+    // Comma-separated list of browser origins permitted by CORS.
+    // Wildcard fallback `*` is set if the request Origin is not in the list,
+    // but credentialed mode requires an exact match so the SPA will fail
+    // unless its origin is whitelisted.
+    const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
+      'https://bulwark.k8s-platform.test:2011')
+      .split(',').map(s => s.trim()).filter(Boolean);
+
+    const escHost = PUBLIC_HOST.replace(/\./g, '\\.');
+    const HTTPS_RE = new RegExp(`https://${escHost}(?=[/"'\\s]|$)`, 'g');
+    const WSS_RE   = new RegExp(`wss://${escHost}(?=[/"'\\s]|$)`, 'g');
+
+    function rewriteBody(buf) {
+      const s = buf.toString('utf8');
+      const out = s
+        .replace(HTTPS_RE, `https://${PUBLIC_HOST}:${PUBLIC_PORT}`)
+        .replace(WSS_RE,   `wss://${PUBLIC_HOST}:${PUBLIC_PORT}`);
+      return Buffer.from(out, 'utf8');
+    }
+
+    function corsHeadersFor(reqOrigin) {
+      const allowOrigin = ALLOWED_ORIGINS.includes(reqOrigin) ? reqOrigin : ALLOWED_ORIGINS[0] || '*';
+      return {
+        'access-control-allow-origin': allowOrigin,
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-headers': 'Authorization, Content-Type, Accept, X-Requested-With',
+        'access-control-allow-methods': 'GET, POST, PATCH, PUT, DELETE, HEAD, OPTIONS',
+        'access-control-expose-headers': 'Content-Length, Content-Type',
+        'access-control-max-age': '600',
+        'vary': 'Origin',
+      };
+    }
+
+    const server = http.createServer((req, res) => {
+      const reqOrigin = req.headers['origin'] || '';
+      const cors = corsHeadersFor(reqOrigin);
+
+      // CORS preflight: respond locally without going upstream.
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, cors);
+        res.end();
+        return;
+      }
+
+      // Strip Accept-Encoding so Stalwart returns plain bodies (we can't
+      // regex-rewrite gzip without decompressing first).
+      const upHeaders = { ...req.headers };
+      delete upHeaders['accept-encoding'];
+      delete upHeaders['Accept-Encoding'];
+      upHeaders.host = `${UPSTREAM_HOST}:${UPSTREAM_PORT}`;
+
+      const upReq = http.request({
+        hostname: UPSTREAM_HOST,
+        port: UPSTREAM_PORT,
+        method: req.method,
+        path: req.url,
+        headers: upHeaders,
+      }, (upRes) => {
+        const ct = (upRes.headers['content-type'] || '').toLowerCase();
+        const isJson = ct.includes('application/json') ||
+                       ct.includes('application/problem+json');
+
+        // Merge upstream headers with our CORS overrides (case-insensitive
+        // replace — Node lowercases header names already).
+        const headers = { ...upRes.headers };
+        delete headers['access-control-allow-origin'];
+        delete headers['access-control-allow-credentials'];
+        delete headers['access-control-allow-headers'];
+        delete headers['access-control-allow-methods'];
+        Object.assign(headers, cors);
+
+        if (!isJson) {
+          res.writeHead(upRes.statusCode || 502, headers);
+          upRes.pipe(res);
+          return;
+        }
+        const chunks = [];
+        upRes.on('data', (c) => chunks.push(c));
+        upRes.on('end', () => {
+          const raw = Buffer.concat(chunks);
+          const encoding = (upRes.headers['content-encoding'] || '').toLowerCase();
+          let decoded;
+          try {
+            if (encoding === 'gzip')         decoded = zlib.gunzipSync(raw);
+            else if (encoding === 'deflate') decoded = zlib.inflateSync(raw);
+            else if (encoding === 'br')      decoded = zlib.brotliDecompressSync(raw);
+            else                              decoded = raw;
+          } catch (e) {
+            console.error('decode failed for', req.url, encoding, e.message);
+            decoded = raw;
+          }
+          const body = rewriteBody(decoded);
+          // We always emit uncompressed; strip the encoding header.
+          delete headers['content-encoding'];
+          delete headers['Content-Encoding'];
+          delete headers['content-length'];
+          delete headers['Content-Length'];
+          res.writeHead(upRes.statusCode || 502, headers);
+          res.end(body);
+        });
+        upRes.on('error', (_e) => { try { res.end(); } catch {} });
+      });
+      upReq.on('error', (e) => {
+        res.writeHead(502, { 'content-type': 'application/json', ...cors });
+        res.end(JSON.stringify({ error: 'upstream', detail: String(e.message || e) }));
+      });
+      req.pipe(upReq);
+    });
+
+    server.listen(LISTEN_PORT, '0.0.0.0', () => {
+      console.log(`stalwart-url-rewriter listening on :${LISTEN_PORT}`);
+      console.log(`  upstream:        http://${UPSTREAM_HOST}:${UPSTREAM_PORT}`);
+      console.log(`  rewrite:         https://${PUBLIC_HOST} -> https://${PUBLIC_HOST}:${PUBLIC_PORT}`);
+      console.log(`  allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
+    });
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stalwart-url-rewriter
+  namespace: mail
+  labels:
+    app: stalwart-url-rewriter
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail-eval
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stalwart-url-rewriter
+  template:
+    metadata:
+      labels:
+        app: stalwart-url-rewriter
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: webmail-eval
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rewriter
+          image: node:22-alpine
+          command: ["node", "/opt/proxy/proxy.js"]
+          env:
+            - name: UPSTREAM_HOST
+              value: stalwart-mgmt.mail.svc.cluster.local
+            - name: UPSTREAM_PORT
+              value: "8080"
+            - name: PUBLIC_HOST
+              value: "stalwart.k8s-platform.test"
+            - name: PUBLIC_PORT
+              value: "2011"
+            - name: ALLOWED_ORIGINS
+              # Browser origins that may make credentialed JMAP requests.
+              # Bulwark is the only consumer in this eval; Stalwart's own
+              # WebAdmin is same-origin so doesn't need CORS at all.
+              value: "https://bulwark.k8s-platform.test:2011,https://stalwart.k8s-platform.test:2011"
+            - name: LISTEN_PORT
+              value: "8080"
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: script
+              mountPath: /opt/proxy
+              readOnly: true
+          resources:
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          readinessProbe:
+            tcpSocket: { port: 8080 }
+            periodSeconds: 5
+      volumes:
+        - name: script
+          configMap:
+            name: stalwart-url-rewriter-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-url-rewriter
+  namespace: mail
+  labels:
+    app: stalwart-url-rewriter
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail-eval
+spec:
+  type: ClusterIP
+  selector:
+    app: stalwart-url-rewriter
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+# Allow the rewriter pod to reach Stalwart mgmt port (base
+# allow-haproxy-to-stalwart NetPol implicitly denies it).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-rewriter-to-stalwart-mgmt
+  namespace: mail
+  labels:
+    app: stalwart-url-rewriter
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: stalwart
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: stalwart-url-rewriter
+      ports:
+        - port: 8080
+          protocol: TCP

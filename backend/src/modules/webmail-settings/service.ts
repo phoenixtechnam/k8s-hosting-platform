@@ -168,6 +168,23 @@ async function defaultMailHostname(db: Database): Promise<string> {
   return apex ? `mail.${apex}` : 'mail.example.com';
 }
 
+export type WebmailEngine = 'roundcube' | 'bulwark';
+
+/**
+ * Read the platform-wide default webmail engine. Roundcube is the
+ * historic default; flip to `bulwark` once the operator has verified
+ * the Bulwark stack on staging (ADR-039 Phase 10). When unset,
+ * defaults to 'roundcube' for backwards compatibility.
+ *
+ * Per-tenant override is out of scope for v1 — all tenants share the
+ * platform default. The setting is super_admin only.
+ */
+export async function getDefaultWebmailEngine(db: Database): Promise<WebmailEngine> {
+  const raw = (await getSetting(db, 'default_webmail_engine'))?.trim().toLowerCase();
+  if (raw === 'bulwark') return 'bulwark';
+  return 'roundcube';
+}
+
 export async function getWebmailSettings(db: Database) {
   const defaultWebmailUrlStored = await getSetting(db, 'default_webmail_url');
   const mailServerHostnameStored = await getSetting(db, 'mail_server_hostname');
@@ -177,6 +194,7 @@ export async function getWebmailSettings(db: Database) {
     defaultWebmailUrl: defaultWebmailUrlStored ?? (await defaultWebmailUrl(db)),
     mailServerHostname: mailServerHostnameStored ?? (await defaultMailHostname(db)),
     emailSendRateLimitDefault: Number.isFinite(emailSendRateLimitDefault) ? emailSendRateLimitDefault : null,
+    defaultWebmailEngine: await getDefaultWebmailEngine(db),
   };
 }
 
@@ -186,6 +204,7 @@ export async function updateWebmailSettings(
     defaultWebmailUrl?: string;
     mailServerHostname?: string;
     emailSendRateLimitDefault?: number | null;
+    defaultWebmailEngine?: WebmailEngine;
   },
 ) {
   if (input.defaultWebmailUrl !== undefined) {
@@ -201,6 +220,12 @@ export async function updateWebmailSettings(
     } else {
       await setSetting(db, 'email_send_rate_limit_default', String(input.emailSendRateLimitDefault));
     }
+  }
+  if (input.defaultWebmailEngine !== undefined) {
+    if (input.defaultWebmailEngine !== 'roundcube' && input.defaultWebmailEngine !== 'bulwark') {
+      throw new Error(`Invalid webmail engine: ${input.defaultWebmailEngine}`);
+    }
+    await setSetting(db, 'default_webmail_engine', input.defaultWebmailEngine);
   }
   return getWebmailSettings(db);
 }

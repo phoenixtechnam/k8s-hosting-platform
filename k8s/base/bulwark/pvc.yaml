@@ -1,0 +1,26 @@
+# Single /app/data PVC for Bulwark.
+#
+# Bulwark v1.6.x writes to four subdirectories at runtime:
+#   /app/data/admin/         — admin.json (hashed admin password, ~1 KB)
+#   /app/data/settings/      — per-account encrypted preferences (~few KB each)
+#   /app/data/telemetry/     — heartbeat state (~1 KB)
+#   /app/data/version-check/ — auto-update poller state (~1 KB)
+#
+# 1 GiB is generous — actual production usage stays under 100 MB even
+# for thousands of accounts. The fsGroup=1000 setting in the
+# Deployment makes the entire tree writable by the non-root UID at
+# pod start.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bulwark-data
+  namespace: mail
+  labels:
+    app: bulwark
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

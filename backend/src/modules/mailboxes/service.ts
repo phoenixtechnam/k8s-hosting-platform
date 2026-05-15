@@ -731,11 +731,30 @@ export async function getAccessibleMailboxes(
   return rows;
 }
 
+interface GenerateWebmailTokenOptions {
+  /**
+   * Webmail engine to mint a token for. Defaults to `roundcube` to
+   * preserve the historical behaviour for all callers that haven't
+   * been updated yet. Phase 10 of the Bulwark integration roadmap
+   * (ADR-039) wires `platform_config.default_webmail_engine` to flip
+   * the default for new tenants.
+   *
+   * Bulwark tokens carry `iss`/`jti`/`tenant_id`/`actor_user_id` and
+   * are validated by the bulwark-impersonator sidecar.
+   */
+  engine?: 'roundcube' | 'bulwark';
+  /** Tenant ID stamped on Bulwark JWTs for audit. Defaults to the user's clientId. */
+  tenantId?: string;
+  /** Actor user ID stamped on Bulwark JWTs for audit. Defaults to the calling userId. */
+  actorUserId?: string;
+}
+
 export async function generateWebmailToken(
   app: FastifyInstance,
   db: Database,
   userId: string,
   mailboxId: string,
+  options?: GenerateWebmailTokenOptions,
 ) {
   // Look up user to get clientId
   const [user] = await db
@@ -821,21 +840,44 @@ export async function generateWebmailToken(
       + 'For production, set WEBMAIL_JWT_SECRET to an independent random value.',
     );
   }
-  const token = signWebmailJwt({ mailbox: mailbox.fullAddress }, webmailSecret, 30);
+  // ─── Engine-aware JWT minting + URL composition ───────────────────
+  //
+  // Roundcube path  → JWT `{ mailbox, iat, exp }` + URL `?_task=login&_jwt=…`
+  //                   The Roundcube jwt_auth plugin reads `?_jwt=` query.
+  // Bulwark path    → JWT `{ iss, mailbox, jti, tenant_id, actor_user_id,
+  //                          iat, exp }` + URL `/_impersonate?token=…`
+  //                   The bulwark-impersonator sidecar enforces `iss`,
+  //                   `iat`, single-use `jti`, and TTL ceiling (≤300s).
+  //                   Mirrors Roundcube's master-user pattern but lives
+  //                   in a separate JMAP-native code path (ADR-039).
+  //
+  // The two formats coexist by design — both consume the same
+  // WEBMAIL_JWT_SECRET so the operator only has to manage one secret.
+  // Phase 10 (`platform_config.default_webmail_engine`) will let the
+  // operator flip the default for new tenants.
+  // Engine resolution precedence:
+  //   1. explicit caller override (options.engine)
+  //   2. platform-wide `default_webmail_engine` setting
+  //      (managed by super_admin via webmail-settings)
+  //   3. hardcoded 'roundcube' (back-compat for fresh installs)
+  let engine: 'roundcube' | 'bulwark';
+  if (options?.engine) {
+    engine = options.engine;
+  } else {
+    try {
+      const { getDefaultWebmailEngine } = await import('../webmail-settings/service.js');
+      engine = await getDefaultWebmailEngine(db);
+    } catch {
+      engine = 'roundcube';
+    }
+  }
+  const tenantId = options?.tenantId ?? user.clientId;
+  const actorUserId = options?.actorUserId ?? userId;
 
-  // Resolve the webmail base URL. Phase 2c.5 introduced derived
-  // webmail Ingresses: every email_domain with webmail_enabled=true
-  // gets a webmail.<domain> Ingress in the client's namespace. So the
-  // lookup order is:
-  //
-  //   1. mailbox → email_domain → domain → if webmail_enabled, use
-  //      `https://webmail.<domain.domainName>`
-  //   2. webmail-settings `default_webmail_url` (admin-configured via the
-  //      Email Management page → Mail Server Settings → Webmail URL)
-  //   3. WEBMAIL_URL env var (legacy / container-env override)
-  //   4. Hardcoded fallback `https://webmail.example.com`
-  //
-  // Lazy imports to avoid circular dependencies.
+  let token: string;
+  let webmailUrl: string;
+
+  // Resolve the webmail base URL — same lookup chain regardless of engine.
   let baseUrl: string | undefined;
   try {
     const { getDerivedWebmailUrlForMailbox } = await import('../email-domains/service.js');
@@ -853,15 +895,37 @@ export async function generateWebmailToken(
   }
   baseUrl = baseUrl ?? process.env.WEBMAIL_URL ?? 'https://webmail.example.com';
 
-  // The SSO URL points at Roundcube's login action with the JWT as a
-  // query parameter. The jwt_auth plugin's `startup` hook intercepts it
-  // before the login form renders.
-  const webmailUrl = `${baseUrl}/?_task=login&_jwt=${encodeURIComponent(token)}`;
+  if (engine === 'bulwark') {
+    // Bulwark impersonator JWT — must match the schema enforced by
+    // k8s/base/bulwark-impersonator/configmap.yaml. `iss`, `jti`,
+    // and `iat` are required; max TTL 300s; mailbox must be strict
+    // email format (the impersonator rejects %/: chars).
+    const jti = crypto.randomUUID();
+    token = signWebmailJwt(
+      {
+        iss: 'platform-api/webmail',
+        mailbox: mailbox.fullAddress,
+        jti,
+        tenant_id: tenantId,
+        actor_user_id: actorUserId,
+      },
+      webmailSecret,
+      // Keep the 30s window we use for Roundcube — short enough to
+      // limit blast radius on a leaked Referer / access log entry.
+      30,
+    );
+    webmailUrl = `${baseUrl}/_impersonate?token=${encodeURIComponent(token)}`;
+  } else {
+    // Roundcube path — unchanged from before this commit.
+    token = signWebmailJwt({ mailbox: mailbox.fullAddress }, webmailSecret, 30);
+    webmailUrl = `${baseUrl}/?_task=login&_jwt=${encodeURIComponent(token)}`;
+  }
 
   return {
     token,
     mailbox: mailbox.fullAddress,
     webmailUrl,
+    engine,
   };
 }
 

@@ -1,0 +1,20 @@
+# bulwark-impersonator: ConfigMap (script) + Service + NetworkPolicy.
+# The actual container runs as a sidecar inside the Bulwark Pod
+# (k8s/base/bulwark/deployment.yaml) so it can read /app/data/settings/
+# for the bulwark-settings-purge lifecycle hook (ADR-039 Phase 8).
+#
+# This kustomization is included by overlays alongside k8s/base/bulwark.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - configmap.yaml
+  - service.yaml
+  - networkpolicy.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hosting-platform
+      app.kubernetes.io/component: webmail

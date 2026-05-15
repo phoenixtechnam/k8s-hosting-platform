@@ -1,0 +1,249 @@
+# Bulwark webmail — JMAP-native client for Stalwart Mail Server.
+#
+# See ADR-039 for the integration design. The Deployment ships as
+# part of the platform base but is NOT included by
+# k8s/base/kustomization.yaml — overlays opt-in.
+#
+# Pairs with:
+#   - bulwark-impersonator/ — sidecar Deployment in front of this one
+#     that handles JWT-signed client-panel handoffs
+#   - secret/bulwark-secrets — ADMIN_PASSWORD, SESSION_SECRET
+#
+# Image is pinned by digest. Bump via the procedure documented in
+# ADR-039 ("Bulwark version pinning"). The :v1.6.5 tag is informational
+# only — the digest pin is what k8s uses.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bulwark
+  namespace: mail
+  labels:
+    app: bulwark
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+  annotations:
+    # Roll on bulwark-secrets change (admin password, session secret).
+    secret.reloader.stakater.com/reload: bulwark-secrets
+spec:
+  # Cut 3: replicas removed from manifest — owned by the
+  # platform-storage-policy reconciler (mirrors Roundcube's contract,
+  # see project_ha_replicas_cap3_2026_05_11). Fresh clusters land at
+  # k8s default = 1 until the policy fires.
+  strategy:
+    # Bulwark is stateless except for the /app/data PVC (admin config
+    # + per-user settings). With multi-replica deployments, all
+    # replicas mount the same RWO PVC — only one will Mount, so HA
+    # scaling beyond 1 requires switching to a RWX PVC at provision
+    # time. For now, single-replica + rolling-update with
+    # maxUnavailable=0 / maxSurge=1 gives zero-downtime image bumps.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: bulwark
+  template:
+    metadata:
+      labels:
+        app: bulwark
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: webmail
+    spec:
+      # Spread replicas across server-role nodes so a node failure
+      # leaves at least one Bulwark pod scheduled. DoNotSchedule
+      # (matches Roundcube's 2026-05-07 tightening): keeps placement
+      # strictly one-per-node so a node-failure window doesn't leave
+      # 2 pods on one surviving node + 0 on another.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: bulwark
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # fsGroup is critical — Bulwark writes to four subdirectories
+        # under /app/data (admin/, settings/, telemetry/, version-check/).
+        # A single PVC mount with fsGroup=1000 makes the entire tree
+        # writable by the non-root container UID.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # ── Bulwark SPA (main) ────────────────────────────────────
+        - name: bulwark
+          # Pinned by sha256 digest. Bump procedure: ADR-039 section
+          # "Bulwark version pinning". The :v1.6.5 tag is annotative.
+          image: ghcr.io/bulwarkmail/webmail@sha256:78c691efa842c8de655980c623fedd66d3d8dc3049bd1b3f4062417335b19a46
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
+          env:
+            # JMAP server URL — must be browser-reachable because
+            # Bulwark's SPA fetches `${JMAP_SERVER_URL}/.well-known/jmap`
+            # client-side after login. In production this is the
+            # public mail server hostname. Overlays override via env
+            # patch.
+            - name: JMAP_SERVER_URL
+              value: "https://stalwart.${PLATFORM_BASE_DOMAIN}"
+            - name: ALLOW_CUSTOM_JMAP_ENDPOINT
+              value: "false"
+            - name: STALWART_FEATURES
+              value: "true"
+            - name: PORT
+              value: "3000"
+            - name: HOSTNAME
+              value: "0.0.0.0"
+            - name: NODE_ENV
+              value: "production"
+            - name: SETTINGS_SYNC_ENABLED
+              value: "true"
+            # Single /app/data mount covers admin/, settings/,
+            # telemetry/, version-check/ — fsGroup makes them all
+            # writable.
+            - name: ADMIN_DATA_DIR
+              value: "/app/data/admin"
+            - name: SETTINGS_DATA_DIR
+              value: "/app/data/settings"
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bulwark-secrets
+                  key: ADMIN_PASSWORD
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bulwark-secrets
+                  key: SESSION_SECRET
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          volumeMounts:
+            # Single /app/data PVC — Bulwark's runtime writes to:
+            #   /app/data/admin/         (admin.json with hashed pwd)
+            #   /app/data/settings/      (per-account encrypted prefs)
+            #   /app/data/telemetry/     (heartbeat state)
+            #   /app/data/version-check/ (auto-update poller state)
+            - name: data
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+        # ── Impersonator sidecar (ADR-039 Phase 4 + 8) ────────────
+        # Co-located with Bulwark so it can read /app/data/settings/
+        # for the bulwark-settings-purge lifecycle hook. Same /app/data
+        # PVC mount; the sidecar is read-only on Bulwark's writes
+        # except inside the `settings/` subtree where it unlinks the
+        # per-account `.enc` files on tenant deletion.
+        - name: impersonator
+          image: node:22-alpine
+          command: ["node", "/opt/proxy/proxy.js"]
+          env:
+            - name: LISTEN_PORT
+              value: "8081"
+            # Bulwark runs in the same Pod — talk over localhost
+            # instead of the cross-pod Service DNS for lower latency.
+            - name: BULWARK_HOST
+              value: "127.0.0.1"
+            - name: BULWARK_PORT
+              value: "3000"
+            - name: PLATFORM_BASE_DOMAIN
+              value: "${PLATFORM_BASE_DOMAIN}"
+            - name: PUBLIC_ORIGIN
+              value: "https://bulwark.${PLATFORM_BASE_DOMAIN}"
+            - name: STALWART_JMAP_URL
+              value: "https://stalwart.${PLATFORM_BASE_DOMAIN}"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bulwark-impersonator-secrets
+                  key: JWT_SECRET
+            - name: STALWART_MASTER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: bulwark-impersonator-secrets
+                  key: STALWART_MASTER_USER
+            - name: STALWART_MASTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bulwark-impersonator-secrets
+                  key: STALWART_MASTER_PASSWORD
+            # Operator token gating the admin endpoint
+            # (DELETE /__impersonator/settings/*). The lifecycle hook
+            # in platform-api sends this token in the
+            # `X-Admin-Token` header. Optional — if unset, the admin
+            # endpoint returns 403 for every request.
+            - name: IMPERSONATOR_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bulwark-impersonator-secrets
+                  key: IMPERSONATOR_ADMIN_TOKEN
+                  optional: true
+            # Filesystem path Bulwark writes per-account settings to.
+            # Must match Bulwark's SETTINGS_DATA_DIR env (mounted on
+            # the bulwark container above).
+            - name: SETTINGS_DATA_DIR
+              value: "/app/data/settings"
+          ports:
+            - containerPort: 8081
+              name: imp-http
+          volumeMounts:
+            # Same PVC as Bulwark — provides access to settings/*.enc.
+            - name: data
+              mountPath: /app/data
+            - name: impersonator-script
+              mountPath: /opt/proxy
+              readOnly: true
+          resources:
+            requests: { cpu: "20m", memory: "48Mi" }
+            limits:   { cpu: "500m", memory: "192Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          readinessProbe:
+            httpGet: { path: /healthz, port: imp-http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: imp-http }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bulwark-data
+        - name: impersonator-script
+          configMap:
+            name: bulwark-impersonator-script

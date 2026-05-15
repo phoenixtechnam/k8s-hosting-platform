@@ -1,0 +1,28 @@
+# Bulwark webmail base. See ADR-039.
+#
+# NOT included by k8s/base/kustomization.yaml — overlays opt-in.
+# Dev: k8s/overlays/dev/bulwark/
+# Staging: k8s/overlays/staging/bulwark/   (M+1 — once impersonator ships)
+# Production: k8s/overlays/production/bulwark/ (M+2 — once Roundcube deprecation toggle is flipped)
+#
+# Operator-provided Secret `bulwark-secrets` must carry:
+#   ADMIN_PASSWORD       — Bulwark admin dashboard login
+#   SESSION_SECRET       — 32+ char, encrypts "remember me" + OAuth PKCE state
+# Provisioning is per-environment (kubectl / sealed-secrets / SOPS).
+# The dev overlay supplies plaintext dev defaults.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  # secret.example.yaml is NOT included — operators provide the real
+  # Secret per environment (matches Roundcube's contract).
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hosting-platform
+      app.kubernetes.io/component: webmail

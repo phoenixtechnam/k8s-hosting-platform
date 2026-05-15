@@ -515,6 +515,80 @@ describe('generateWebmailToken', () => {
     });
   });
 
+  // ─── Bulwark engine path (ADR-039) ───────────────────────────────
+
+  it('engine=bulwark mints a JWT with iss/jti/tenant_id/actor_user_id + /_impersonate URL', async () => {
+    const user = { clientId: 'c1' };
+    const activeClient = { status: 'active' };
+    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    const mbStatus = { status: 'active' };
+    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    const db = createMockDb();
+
+    const result = await generateWebmailToken(
+      makeMockApp(),
+      db as never,
+      'u1',
+      'mb1',
+      { engine: 'bulwark', tenantId: 'tenant-42', actorUserId: 'user-42' },
+    );
+
+    expect(result.engine).toBe('bulwark');
+    expect(result.token.split('.')).toHaveLength(3);
+    const payload = decodeJwtPayload(result.token);
+    expect(payload.mailbox).toBe('info@example.com');
+    expect(payload.iss).toBe('platform-api/webmail');
+    expect(typeof payload.jti).toBe('string');
+    expect((payload.jti as string).length).toBeGreaterThan(8);
+    expect(payload.tenant_id).toBe('tenant-42');
+    expect(payload.actor_user_id).toBe('user-42');
+    expect(typeof payload.iat).toBe('number');
+    expect(typeof payload.exp).toBe('number');
+    expect((payload.exp as number) - (payload.iat as number)).toBe(30);
+
+    // URL must point to the impersonator endpoint, not Roundcube's
+    // ?_task=login&_jwt= shape.
+    expect(result.webmailUrl).toContain('/_impersonate?token=');
+    expect(result.webmailUrl).not.toContain('_task=login');
+    expect(result.webmailUrl).toContain(encodeURIComponent(result.token));
+  });
+
+  it('engine=bulwark generates a fresh jti each call', async () => {
+    const user = { clientId: 'c1' };
+    const activeClient = { status: 'active' };
+    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    const mbStatus = { status: 'active' };
+
+    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    const r1 = await generateWebmailToken(makeMockApp(), createMockDb() as never, 'u1', 'mb1', { engine: 'bulwark' });
+
+    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    const r2 = await generateWebmailToken(makeMockApp(), createMockDb() as never, 'u1', 'mb1', { engine: 'bulwark' });
+
+    const jti1 = (decodeJwtPayload(r1.token) as { jti: string }).jti;
+    const jti2 = (decodeJwtPayload(r2.token) as { jti: string }).jti;
+    expect(jti1).not.toBe(jti2);
+  });
+
+  it('engine defaults to roundcube when omitted (back-compat)', async () => {
+    const user = { clientId: 'c1' };
+    const activeClient = { status: 'active' };
+    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    const mbStatus = { status: 'active' };
+    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
+    const db = createMockDb();
+
+    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
+    expect(result.engine).toBe('roundcube');
+    expect(result.webmailUrl).toContain('?_task=login&_jwt=');
+    const payload = decodeJwtPayload(result.token);
+    expect(payload.iss).toBeUndefined();
+    expect(payload.jti).toBeUndefined();
+  });
+
   it('should reject token generation for unauthorized user', async () => {
     const user = { clientId: 'c1' };
     const activeClient = { status: 'active' };

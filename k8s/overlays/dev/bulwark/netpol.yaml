@@ -1,0 +1,42 @@
+# Allow Bulwark to reach Stalwart's JMAP/management HTTP endpoint (8080).
+#
+# The base `allow-haproxy-to-stalwart` NetworkPolicy selects Stalwart
+# pods for Ingress, which makes ingress to non-listed ports (including
+# 8080) implicitly denied. This sibling policy whitelists Bulwark →
+# Stalwart:8080.
+#
+# This lives in the dev overlay only — evaluation scope. A production
+# wiring would either merge this into the base policy or move Bulwark
+# into the haproxy-fronted path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-bulwark-to-stalwart-mgmt
+  namespace: mail
+  labels:
+    app: bulwark
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail-eval
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: stalwart
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Bulwark Pod — server-side proxy at /api/account/stalwart/jmap.
+        - podSelector:
+            matchLabels:
+              app: bulwark
+        # Traefik DaemonSet — routes the browser-direct fetch to
+        # /.well-known/jmap (Bulwark's SPA fetches Stalwart directly).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - port: 8080
+          protocol: TCP

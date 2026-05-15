@@ -4825,6 +4825,22 @@ spec:
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
           echo "Jmap limits OK"
 
+          # 3b. HTTP — enable permissive CORS so cross-origin JMAP
+          # clients (Bulwark webmail, third-party JMAP apps) see
+          # access-control-allow-* on every response, not just OPTIONS
+          # preflights (Stalwart 0.16 default emits CORS only on OPTIONS,
+          # which breaks credentialed cross-origin GETs and the
+          # /.well-known/jmap → /jmap/session 307 redirect). Wildcard
+          # origin is not credentials-safe; the webmail rewriter sidecar
+          # converts wildcard to specific-origin echo + Allow-Credentials.
+          # See ADR-039 finding #14.
+          jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:Http/set",
+                {accountId:\$a,update:{singleton:{usePermissiveCors:true}}},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "Http CORS OK"
+
           # 4. DkimSignature — create if missing
           EXISTING_DKIM=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],

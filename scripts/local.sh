@@ -34,6 +34,10 @@ set -euo pipefail
 #   ./scripts/local.sh webmail-down   Remove Roundcube
 #   ./scripts/local.sh webmail-status Show Roundcube state
 #   ./scripts/local.sh webmail-logs   Tail Roundcube logs
+#   ./scripts/local.sh bulwark-up     Deploy Bulwark webmail (opt-in, ADR-039)
+#   ./scripts/local.sh bulwark-down   Remove Bulwark
+#   ./scripts/local.sh bulwark-status Show Bulwark state
+#   ./scripts/local.sh bulwark-logs   Tail Bulwark logs
 #   ./scripts/local.sh sftp-up     Deploy SFTP gateway (opt-in)
 #   ./scripts/local.sh sftp-down   Remove SFTP gateway
 #   ./scripts/local.sh sftp-status Show SFTP gateway state
@@ -1013,6 +1017,71 @@ cmd_webmail_logs() {
   k3s_exec kubectl logs -n mail -l app=roundcube --tail=100 -f
 }
 
+# ─── Bulwark webmail commands (JMAP-native, ADR-039) ────────────────────────
+
+# Render the dev/bulwark overlay through kustomize → sed-substitute
+# ${DOMAIN} → apply. Same pattern as _apply_dev_overlay but scoped to
+# the bulwark stack so we don't touch the rest of the platform.
+_bulwark_render_apply() {
+  local action="$1"  # "apply" or "delete"
+  local rendered
+  rendered=$(k3s_exec kubectl kustomize /tmp/k8s-sync/overlays/dev/bulwark) || {
+    echo "  kustomize build failed"; return 1; }
+  rendered=$(echo "$rendered" | sed "s|\${DOMAIN}|${PLATFORM_BASE_DOMAIN}|g")
+  local staged="${PROJECT_DIR}/.local.bulwark-rendered.yaml"
+  echo "$rendered" > "$staged"
+  docker cp "$staged" "${K3S_CONTAINER}:/tmp/bulwark-rendered.yaml" >/dev/null
+  if [[ "$action" == "delete" ]]; then
+    k3s_exec kubectl delete -f /tmp/bulwark-rendered.yaml --ignore-not-found=true 2>&1 | sed 's/^/  /'
+  else
+    k3s_exec kubectl apply -f /tmp/bulwark-rendered.yaml | sed 's/^/  /'
+  fi
+  rm -f "$staged"
+}
+
+cmd_bulwark_up() {
+  echo "Deploying Bulwark webmail (JMAP-native, ADR-039)..."
+  _ensure_k3s_running
+  _sync_manifests
+  _bulwark_render_apply apply
+  echo ""
+  echo "Waiting for Bulwark pod + rewriter sidecar (up to 3 minutes)..."
+  k3s_exec kubectl wait --for=condition=Ready pod -l app=bulwark -n mail --timeout=180s || {
+    echo "Bulwark not ready. Logs:"
+    k3s_exec kubectl logs -l app=bulwark -n mail --tail=30 || true
+    return 1
+  }
+  k3s_exec kubectl wait --for=condition=Ready pod -l app=stalwart-url-rewriter -n mail --timeout=60s || true
+  echo ""
+  cmd_bulwark_status
+}
+
+cmd_bulwark_down() {
+  _sync_manifests
+  _bulwark_render_apply delete
+}
+
+cmd_bulwark_status() {
+  echo "════════════════════════════════════════════════"
+  echo "  Bulwark Webmail"
+  echo "════════════════════════════════════════════════"
+  echo ""
+  echo "  Pods:"
+  k3s_exec kubectl get pods -n mail -l 'app in (bulwark,stalwart-url-rewriter)' -o wide 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  Endpoints:"
+  echo "    Webmail:  https://bulwark.${PLATFORM_BASE_DOMAIN}:${PORT_INGRESS_HTTPS}/"
+  echo "    Stalwart: https://stalwart.${PLATFORM_BASE_DOMAIN}:${PORT_INGRESS_HTTPS}/admin/"
+  echo ""
+  echo "  Admin password (Bulwark /admin/):"
+  echo "    kubectl get secret bulwark-secrets -n mail -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d"
+  echo "════════════════════════════════════════════════"
+}
+
+cmd_bulwark_logs() {
+  k3s_exec kubectl logs -n mail -l app=bulwark --tail=100 -f
+}
+
 # ─── SFTP Gateway commands ──────────────────────────────────────────────────
 
 _sftp_ensure_host_key() {
@@ -1134,6 +1203,10 @@ case "${1:-help}" in
   webmail-down)   cmd_webmail_down ;;
   webmail-status) cmd_webmail_status ;;
   webmail-logs)   cmd_webmail_logs ;;
+  bulwark-up)     cmd_bulwark_up ;;
+  bulwark-down)   cmd_bulwark_down ;;
+  bulwark-status) cmd_bulwark_status ;;
+  bulwark-logs)   cmd_bulwark_logs ;;
   sftp-up)        cmd_sftp_up ;;
   sftp-down)      cmd_sftp_down ;;
   sftp-status)    cmd_sftp_status ;;

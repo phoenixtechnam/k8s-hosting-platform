@@ -48,10 +48,28 @@ export const mailboxAccessSchema = z.object({
 
 export type MailboxAccessInput = z.infer<typeof mailboxAccessSchema>;
 
+export const webmailEngineSchema = z.enum(['roundcube', 'bulwark']);
+export type WebmailEngine = z.infer<typeof webmailEngineSchema>;
+
+export const webmailTokenRequestSchema = z.object({
+  mailbox_id: z.string().uuid(),
+  /**
+   * Engine to mint the token for. Defaults to `roundcube` for
+   * backwards compatibility with the existing client-panel button.
+   * Bulwark tokens carry additional claims (`iss`, `jti`,
+   * `tenant_id`, `actor_user_id`) and resolve to a different URL
+   * shape — see ADR-039.
+   */
+  engine: webmailEngineSchema.optional(),
+});
+
+export type WebmailTokenRequest = z.infer<typeof webmailTokenRequestSchema>;
+
 export const webmailTokenResponseSchema = z.object({
   token: z.string(),
   mailbox: z.string(),
   webmailUrl: z.string(),
+  engine: webmailEngineSchema,
 });
 
 export type WebmailTokenResponse = z.infer<typeof webmailTokenResponseSchema>;

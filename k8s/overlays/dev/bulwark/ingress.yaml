@@ -1,0 +1,99 @@
+# Bulwark webmail IngressRoute for local DinD evaluation.
+#
+# The platform uses Traefik with `--providers.kubernetescrd` only — the
+# standard `networking.k8s.io/v1` Ingress kind is ignored. Use Traefik's
+# IngressRoute CRD instead.
+#
+# Reachable at:
+#   https://bulwark.k8s-platform.test:2011  (websecure entrypoint, TLS)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: bulwark-ingress
+  namespace: mail
+  labels:
+    app: bulwark
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail-eval
+spec:
+  # TLS-only — when `tls:` is set, Traefik attaches the IR to TLS-enabled
+  # entrypoints only. Matches the pattern used by dex-ingress, etc.
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`bulwark.${DOMAIN}`)
+      services:
+        # Route through the impersonator Service — it transparently
+        # proxies all traffic to Bulwark + intercepts /_impersonate
+        # for the client-panel JWT handoff (ADR-039). The Service
+        # selects the bulwark Pod and targets its impersonator
+        # sidecar container's :8081 (named port `imp-http`).
+        - name: bulwark-impersonator
+          port: 80
+  tls:
+    secretName: bulwark-dev-tls
+---
+# cert-manager Certificate (since IngressRoute doesn't trigger the
+# cert-manager ingress-shim).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bulwark-dev-tls
+  namespace: mail
+  labels:
+    app: bulwark
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  secretName: bulwark-dev-tls
+  issuerRef:
+    name: local-ca-issuer
+    kind: ClusterIssuer
+  dnsNames:
+    - bulwark.${DOMAIN}
+---
+# Stalwart JMAP exposed at stalwart.${DOMAIN}:2011 — required because
+# Bulwark's SPA fetches `${JMAP_SERVER_URL}/.well-known/jmap` from the
+# BROWSER (not via the server-side proxy). The pre-existing
+# stalwart-webadmin Ingress uses ingressClassName: nginx which Traefik
+# ignores. Eval-only — production would extend the base mail-acme/mgmt
+# ingresses.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: stalwart-jmap-eval
+  namespace: mail
+  labels:
+    app: bulwark
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail-eval
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`stalwart.${DOMAIN}`)
+      services:
+        # Route through the URL rewriter so the SPA receives the
+        # external Stalwart hostname instead of the pod name that
+        # Stalwart 0.16 self-reports in apiUrl/downloadUrl/etc.
+        - name: stalwart-url-rewriter
+          port: 8080
+  tls:
+    secretName: stalwart-jmap-eval-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: stalwart-jmap-eval-tls
+  namespace: mail
+  labels:
+    app: bulwark
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  secretName: stalwart-jmap-eval-tls
+  issuerRef:
+    name: local-ca-issuer
+    kind: ClusterIssuer
+  dnsNames:
+    - stalwart.${DOMAIN}

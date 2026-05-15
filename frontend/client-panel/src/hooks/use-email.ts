@@ -68,7 +68,19 @@ interface MailboxesResponse { readonly data: readonly Mailbox[] }
 interface MailboxResponse { readonly data: Mailbox }
 interface AliasesResponse { readonly data: readonly EmailAlias[] }
 interface AliasResponse { readonly data: EmailAlias }
-interface WebmailTokenResponse { readonly data: { token: string; mailbox: string; webmailUrl: string } }
+interface WebmailTokenResponse {
+  readonly data: {
+    token: string;
+    mailbox: string;
+    webmailUrl: string;
+    /**
+     * Engine that minted this token. Roundcube is the historic
+     * default; Bulwark adds JMAP-native UI (ADR-039). The URL is
+     * already engine-shaped — the client just window.open()s it.
+     */
+    engine: 'roundcube' | 'bulwark';
+  };
+}
 
 export function useEmailDomains(clientId?: string) {
   return useQuery({
@@ -237,10 +249,27 @@ export function useDeleteEmailAlias(clientId: string) {
   });
 }
 
+export interface WebmailTokenInput {
+  mailboxId: string;
+  /**
+   * Optional engine override. When unset the backend uses its current
+   * default (roundcube today; Phase 10 ADR-039 introduces a
+   * platform-config flag to flip the default to bulwark).
+   */
+  engine?: 'roundcube' | 'bulwark';
+}
+
 export function useWebmailToken() {
   return useMutation({
-    mutationFn: (mailboxId: string) =>
-      apiFetch<WebmailTokenResponse>('/api/v1/email/webmail-token', { method: 'POST', body: JSON.stringify({ mailbox_id: mailboxId }) }),
+    mutationFn: (input: string | WebmailTokenInput) => {
+      const args: WebmailTokenInput = typeof input === 'string' ? { mailboxId: input } : input;
+      const body: Record<string, unknown> = { mailbox_id: args.mailboxId };
+      if (args.engine) body.engine = args.engine;
+      return apiFetch<WebmailTokenResponse>('/api/v1/email/webmail-token', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
   });
 }
 

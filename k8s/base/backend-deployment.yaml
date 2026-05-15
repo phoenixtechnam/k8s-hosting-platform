@@ -67,6 +67,25 @@ spec:
                   name: platform-webmail-jwt
                   key: WEBMAIL_JWT_SECRET
                   optional: true
+            # ADR-039 Phase 8 — bulwark-settings-purge lifecycle hook
+            # talks to the bulwark-impersonator sidecar's admin
+            # endpoint with this token. Optional: when unset (or empty)
+            # the hook returns noop ("Bulwark-disabled stack") and
+            # transitions complete without it. Must equal
+            # bulwark-impersonator-secrets.IMPERSONATOR_ADMIN_TOKEN.
+            - name: LIFECYCLE_HOOK_BULWARK_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bulwark-impersonator-secrets
+                  key: IMPERSONATOR_ADMIN_TOKEN
+                  optional: true
+            # JMAP server URL passed in the purge request body —
+            # MUST match what Bulwark's /api/config returns to the
+            # browser (used by Bulwark to compute the settings file
+            # hash). Defaults to https://stalwart.${PLATFORM_BASE_DOMAIN}
+            # if unset — the hook falls back to that pattern.
+            - name: LIFECYCLE_HOOK_BULWARK_JMAP_URL
+              value: "https://stalwart.${PLATFORM_BASE_DOMAIN}"
             # Admin seed credentials — only consumed during db/seed.js on
             # startup; harmless to leave set after seed completes. Secret
             # is created by bootstrap.sh and marked optional so the Pod

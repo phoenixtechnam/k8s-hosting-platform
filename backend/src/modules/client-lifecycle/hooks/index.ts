@@ -20,6 +20,8 @@ import { registerDnsZoneCleanupHook } from './dns-zone-cleanup.js';
 import { registerTenantBundlesBundleCleanupHook } from './tenant-bundles-cleanup.js';
 import { registerClusterScopedRefsCleanupHook } from './cluster-scoped-refs.js';
 import { registerCustomDeploymentsScaleHook } from './k8s-custom-deployments.js';
+// ADR-039 Phase 8 — purge orphan Bulwark settings on archive.
+import { registerBulwarkSettingsPurgeHook } from './bulwark-settings-purge.js';
 
 export function registerAllLifecycleHooks(): void {
   // Phase 2: PV/Longhorn cleanup on delete.
@@ -51,4 +53,11 @@ export function registerAllLifecycleHooks(): void {
   // ADR-036: custom deployments — scale K8s Deployments to 0/1 on
   // client suspend/restore so tenant workloads stop consuming resources.
   registerCustomDeploymentsScaleHook();
+
+  // ADR-039 Phase 8: archive → unlink per-mailbox Bulwark settings
+  // files via the bulwark-impersonator admin endpoint. Order=210 so
+  // it runs BEFORE mailboxes-status (220) which deletes the rows.
+  // blocking=continue + kill-switch
+  // (`LIFECYCLE_HOOK_BULWARK_SETTINGS_PURGE=disable`) per ADR-039.
+  registerBulwarkSettingsPurgeHook();
 }
