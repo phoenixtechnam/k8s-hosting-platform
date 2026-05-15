@@ -157,23 +157,34 @@ export async function runProxyNetworksReconcilerTick(
   // would be preserved verbatim, but server-role node InternalIPs are
   // always individual hosts.
   //
-  // Trust list includes:
-  //   1. Server-role node external IPs — haproxy DS runs `hostNetwork:true`
-  //      on each server-role node, so its outbound source is the node IP.
-  //   2. Cluster pod CIDR (10.42.0.0/16) — kube-proxy SNATs ClusterIP
-  //      traffic to the source pod's CNI subnet when it can't preserve
-  //      the host IP across nodes. Stalwart sees `remoteIp` from this
-  //      range and refuses to parse PROXY-v2 unless the sender is
-  //      trusted. Without this, every TLS handshake on submissions/imaps
-  //      fails with `received corrupt message of type InvalidContentType`
-  //      because Stalwart treats the PROXY-v2 binary header as TLS.
-  //   3. Cluster service CIDR (10.43.0.0/16) — defense-in-depth for
-  //      hairpin / NodePort routing variants that could surface a
-  //      different source CIDR.
+  // **Per-listener trust architecture** (Phase 11 streamline, 2026-05-15):
   //
-  // The two cluster CIDRs are hardcoded for k3s defaults. Operators
-  // running on non-default CIDRs need a knob; see the
-  // `STALWART_CLUSTER_TRUSTED_CIDRS` env (PR-TBD).
+  // Until PR #57 surfaced Bug F, this reconciler set
+  // `SystemSettings.proxyTrustedNetworks` GLOBALLY with cluster CIDRs +
+  // server node IPs. That worked for mail listener PROXY-v2 forwarding
+  // from haproxy, but it ALSO caused Stalwart to PROXY-v2-sniff HTTP
+  // listeners (mgmt :8080 and http-acme :80). Any non-loopback connection
+  // from a cluster-CIDR source (platform-api → mgmt, Traefik → http-acme
+  // for ACME HTTP-01) was rejected with "invalid proxy header".
+  //
+  // Fix: split trust by listener protocol.
+  //   - global `proxyTrustedNetworks` = {} (empty)
+  //   - mail listener override = cluster CIDRs + node IPs (PROXY-v2 from
+  //     haproxy honored)
+  //   - http listener override = {} (inherits empty global → no sniff,
+  //     plain HTTP from platform-api / Traefik works)
+  //
+  // Verified on staging.phoenix-host.net 2026-05-15: with this layout,
+  //   cross-pod plain HTTP to mgmt:8080 succeeds (HTTP 200 JMAP session),
+  //   and an external GET to http://mail.staging.../.well-known/acme-
+  //   challenge/* returns 404 cleanly (no connection reset).
+  //
+  // CRITICAL: trust changes require Stalwart pod RESTART (or wait until
+  // the listener is naturally re-bound). `x:Action/set ReloadSettings`
+  // is NOT sufficient — Stalwart caches the trust list at listener-init
+  // time in 0.16. The reconciler tolerates a stale pod for the duration
+  // of one tick; operators can force a faster update by `kubectl rollout
+  // restart deploy/stalwart-mail` after a node-IP change.
   const expectedProxyNetworks: Record<string, boolean> = {
     '10.42.0.0/16': true,
     '10.43.0.0/16': true,
@@ -181,6 +192,13 @@ export async function runProxyNetworksReconcilerTick(
   for (const node of serverNodes) {
     expectedProxyNetworks[node.ip] = true;
   }
+
+  /**
+   * Per-listener override map: same trust list as `expectedProxyNetworks`
+   * for mail listeners; empty for everything else (http etc).
+   */
+  const expectedMailListenerOverride: Record<string, boolean> = { ...expectedProxyNetworks };
+  const expectedHttpListenerOverride: Record<string, boolean> = {};
 
   const env = deps.env ?? process.env;
 
@@ -215,25 +233,38 @@ export async function runProxyNetworksReconcilerTick(
     jmapCall = (a, b) => jmapPost(transport, a, b);
   }
 
-  // ── Step 1: reconcile global SystemSettings.proxyTrustedNetworks ───
-  // Stalwart applies this to every NetworkListener that doesn't carry an
-  // explicit `overrideProxyTrustedNetworks` map. Setting it globally is
-  // one write per change rather than fanning out across all 6 mail
-  // listeners — and matches the way mail-port behaviour should be
-  // uniform across the protocol set.
+  // ── Step 1: global SystemSettings.proxyTrustedNetworks → empty ───────
+  // See architectural rationale above. We keep this call so any stale
+  // entries (e.g. from a prior reconciler version) get cleared exactly
+  // once and stay clear.
   try {
     await reconcileSystemProxyTrustedNetworks(
       jmapCall,
       auth,
-      expectedProxyNetworks,
+      {}, // empty — per-listener overrides own the trust now
       log,
     );
   } catch (err) {
     log.warn('SystemSettings.proxyTrustedNetworks reconcile failed:', err);
-    // Continue to AllowedIp reconcile — independent failure modes.
   }
 
-  // ── Step 2: reconcile x:AllowedIp for cluster-IP rate-limit safety ─
+  // ── Step 2: per-listener overrideProxyTrustedNetworks ────────────────
+  // Mail protocols (smtp/imap/manageSieve/pop3) get the full trust list;
+  // http (and any other) protocols get an empty override so they inherit
+  // the empty global → no PROXY-v2 sniff on HTTP connections.
+  try {
+    await reconcileListenerProxyTrustedNetworks(
+      jmapCall,
+      auth,
+      expectedMailListenerOverride,
+      expectedHttpListenerOverride,
+      log,
+    );
+  } catch (err) {
+    log.warn('NetworkListener.overrideProxyTrustedNetworks reconcile failed:', err);
+  }
+
+  // ── Step 3: reconcile x:AllowedIp for cluster-IP rate-limit safety ─
   try {
     await reconcileAllowedIps(
       jmapCall,
@@ -592,6 +623,91 @@ export function proxyNetworksMatches(
     if (!set.has(k)) return false;
   }
   return true;
+}
+
+// ── Internal: NetworkListener.overrideProxyTrustedNetworks reconcile ─
+
+/** Stalwart protocol categories — mail protocols get PROXY-v2 trust. */
+const MAIL_PROTOCOLS = new Set(['smtp', 'imap', 'manageSieve', 'pop3']);
+
+/**
+ * For each NetworkListener, write the appropriate `overrideProxyTrustedNetworks`
+ * map based on its `protocol`:
+ *
+ *   - Mail protocols (smtp/imap/manageSieve/pop3) → mail-trust (cluster
+ *     CIDRs + node IPs)
+ *   - Everything else (http and any future protocols) → empty map →
+ *     inherits empty global → no PROXY-v2 sniff
+ *
+ * Idempotent — only writes a listener if its current override doesn't
+ * match the expected map (per `proxyNetworksMatches`).
+ *
+ * Bulk-updates all changed listeners in a single x:NetworkListener/set
+ * call to minimise round-trips. Stalwart's per-batch validation will
+ * reject the whole batch if any individual listener update fails
+ * (assertJmapSetSucceeded throws on `notUpdated`).
+ */
+async function reconcileListenerProxyTrustedNetworks(
+  jmapCall: (auth: string, body: unknown) => Promise<JmapInvocationResponse>,
+  auth: string,
+  mailTrust: Record<string, boolean>,
+  httpTrust: Record<string, boolean>,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<void> {
+  const getRes = await jmapCall(auth, {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      [
+        'x:NetworkListener/get',
+        {
+          accountId: ADMIN_ACCOUNT_ID,
+          ids: null,
+          properties: ['name', 'protocol', 'overrideProxyTrustedNetworks'],
+        },
+        'c0',
+      ],
+    ],
+  });
+
+  const args = getRes.methodResponses[0]?.[1] as { list?: unknown };
+  const list = args?.list;
+  if (!Array.isArray(list) || list.length === 0) {
+    log.warn('x:NetworkListener/get returned no listeners — Stalwart may not be fully bootstrapped.');
+    return;
+  }
+
+  type Listener = {
+    id?: string;
+    name?: string;
+    protocol?: string;
+    overrideProxyTrustedNetworks?: Record<string, boolean> | null;
+  };
+
+  const updates: Record<string, { overrideProxyTrustedNetworks: Record<string, boolean> }> = {};
+  for (const l of list as Listener[]) {
+    if (!l.id) continue;
+    const expected = MAIL_PROTOCOLS.has(l.protocol ?? '') ? mailTrust : httpTrust;
+    if (!proxyNetworksMatches(l.overrideProxyTrustedNetworks, expected)) {
+      updates[l.id] = { overrideProxyTrustedNetworks: expected };
+    }
+  }
+
+  if (Object.keys(updates).length === 0) return; // already in sync
+
+  const setRes = await jmapCall(auth, {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      ['x:NetworkListener/set', { accountId: ADMIN_ACCOUNT_ID, update: updates }, 'c0'],
+    ],
+  });
+  assertJmapSetSucceeded(setRes, 'x:NetworkListener/set');
+
+  log.info(
+    `Updated NetworkListener.overrideProxyTrustedNetworks on ${Object.keys(updates).length} listener(s); ` +
+      `mail-trust=${Object.keys(mailTrust).join(',')} http-trust=empty. ` +
+      `NOTE: Stalwart caches the trust list at listener-init time; a pod ` +
+      `restart may be needed for the change to take effect on existing connections.`,
+  );
 }
 
 // ── Internal: AllowedIp reconcile ────────────────────────────────────

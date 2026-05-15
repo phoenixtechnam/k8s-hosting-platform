@@ -259,7 +259,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     expect(JSON.stringify(warns)).toMatch(/No server-role nodes/);
   });
 
-  it('skips x:SystemSettings/set when proxyTrustedNetworks already matches', async () => {
+  it('skips x:SystemSettings/set when proxyTrustedNetworks already empty (Phase 11 streamline: global trust IS empty)', async () => {
     let setCalled = false;
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
@@ -269,16 +269,13 @@ describe('runProxyNetworksReconcilerTick', () => {
             [
               'x:SystemSettings/get',
               {
-                // Expected = node IPs + the two cluster CIDR seeds
-                // (10.42.0.0/16 + 10.43.0.0/16) that the reconciler
-                // always emits for PROXY-v2 inbound from haproxy DS.
+                // Phase 11 streamline (2026-05-15): global trust is now
+                // empty; per-listener overrides own the trust. The
+                // reconciler should NOT call SystemSettings/set when
+                // current already matches the empty expected.
                 list: [{
                   id: 'singleton',
-                  proxyTrustedNetworks: {
-                    '10.0.0.1': true,
-                    '10.42.0.0/16': true,
-                    '10.43.0.0/16': true,
-                  },
+                  proxyTrustedNetworks: {},
                 }],
               },
               'c0',
@@ -289,6 +286,16 @@ describe('runProxyNetworksReconcilerTick', () => {
       if (method === 'x:SystemSettings/set') {
         setCalled = true;
         return { methodResponses: [['x:SystemSettings/set', { updated: { singleton: {} } }, 'c0']] };
+      }
+      if (method === 'x:NetworkListener/get') {
+        return {
+          methodResponses: [['x:NetworkListener/get', {
+            list: [
+              { id: 'l-smtp', name: 'smtp', protocol: 'smtp', overrideProxyTrustedNetworks: { '10.0.0.1': true, '10.42.0.0/16': true, '10.43.0.0/16': true } },
+              { id: 'l-http', name: 'http', protocol: 'http', overrideProxyTrustedNetworks: {} },
+            ],
+          }, 'c0']],
+        };
       }
       // AllowedIp paths
       return { methodResponses: [[method as string, { list: [] }, 'c0']] };
@@ -315,7 +322,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     expect(setCalled).toBe(false);
   });
 
-  it('pushes the new IP set on the singleton SystemSettings record when nodes change', async () => {
+  it('pushes empty proxyTrustedNetworks on global when stale entries exist (Phase 11 streamline)', async () => {
     let updatedBody: Record<string, unknown> | null = null;
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
@@ -325,7 +332,9 @@ describe('runProxyNetworksReconcilerTick', () => {
             [
               'x:SystemSettings/get',
               {
-                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1': true } }],
+                // Pre-streamline state: cluster CIDRs in global trust.
+                // Phase 11 expects the reconciler to CLEAR them.
+                list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.1': true, '10.42.0.0/16': true } }],
               },
               'c0',
             ],
@@ -336,6 +345,9 @@ describe('runProxyNetworksReconcilerTick', () => {
         const call = (req.body as { methodCalls: unknown[][] }).methodCalls[0];
         updatedBody = (call[1] as { update: Record<string, unknown> }).update;
         return { methodResponses: [['x:SystemSettings/set', { updated: { singleton: {} } }, 'c0']] };
+      }
+      if (method === 'x:NetworkListener/get') {
+        return { methodResponses: [['x:NetworkListener/get', { list: [] }, 'c0']] };
       }
       return { methodResponses: [[method as string, { list: [] }, 'c0']] };
     });
@@ -370,14 +382,68 @@ describe('runProxyNetworksReconcilerTick', () => {
 
     expect(updatedBody).toEqual({
       singleton: {
-        proxyTrustedNetworks: {
-          '10.0.0.1': true,
-          '10.0.0.2': true,
-          '10.42.0.0/16': true,
-          '10.43.0.0/16': true,
-        },
+        proxyTrustedNetworks: {},
       },
     });
+  });
+
+  it('sets per-listener override on mail listeners only (http stays empty)', async () => {
+    let listenerUpdates: Record<string, unknown> | null = null;
+    mockFetch((req) => {
+      const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
+      if (method === 'x:SystemSettings/get') {
+        return { methodResponses: [['x:SystemSettings/get', { list: [{ id: 'singleton', proxyTrustedNetworks: {} }] }, 'c0']] };
+      }
+      if (method === 'x:NetworkListener/get') {
+        return {
+          methodResponses: [['x:NetworkListener/get', {
+            list: [
+              { id: 'l-smtp', name: 'smtp', protocol: 'smtp', overrideProxyTrustedNetworks: {} },
+              { id: 'l-imap', name: 'imap', protocol: 'imap', overrideProxyTrustedNetworks: {} },
+              { id: 'l-sieve', name: 'sieve', protocol: 'manageSieve', overrideProxyTrustedNetworks: {} },
+              { id: 'l-pop3', name: 'pop3s', protocol: 'pop3', overrideProxyTrustedNetworks: {} },
+              { id: 'l-http', name: 'http', protocol: 'http', overrideProxyTrustedNetworks: {} },
+              { id: 'l-http-acme', name: 'http-acme', protocol: 'http', overrideProxyTrustedNetworks: {} },
+            ],
+          }, 'c0']],
+        };
+      }
+      if (method === 'x:NetworkListener/set') {
+        const call = (req.body as { methodCalls: unknown[][] }).methodCalls[0];
+        listenerUpdates = (call[1] as { update: Record<string, unknown> }).update;
+        return { methodResponses: [['x:NetworkListener/set', { updated: { 'l-smtp': {}, 'l-imap': {}, 'l-sieve': {}, 'l-pop3': {} } }, 'c0']] };
+      }
+      return { methodResponses: [[method as string, { list: [] }, 'c0']] };
+    });
+
+    await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
+      core: makeCore([
+        {
+          metadata: {
+            name: 's1',
+            labels: { 'platform.phoenix-host.net/node-role': 'server', 'kubernetes.io/hostname': 's1' },
+          },
+          status: { addresses: [{ type: 'InternalIP', address: '10.0.0.1' }] },
+        },
+      ]),
+      env,
+      logger: { warn: () => undefined, info: () => undefined },
+    });
+
+    // 4 mail listeners updated with cluster CIDRs + node IPs. 2 http
+    // listeners already had empty override → no update needed → not in
+    // the set call.
+    expect(listenerUpdates).not.toBeNull();
+    const updates = listenerUpdates! as Record<string, { overrideProxyTrustedNetworks: Record<string, boolean> }>;
+    expect(Object.keys(updates).sort()).toEqual(['l-imap', 'l-pop3', 'l-sieve', 'l-smtp']);
+    for (const id of Object.keys(updates)) {
+      expect(updates[id].overrideProxyTrustedNetworks).toEqual({
+        '10.0.0.1': true,
+        '10.42.0.0/16': true,
+        '10.43.0.0/16': true,
+      });
+    }
   });
 
   it('creates AllowedIp entries for cluster IPs that are not already allowlisted', async () => {
@@ -591,11 +657,13 @@ describe('runProxyNetworksReconcilerTick', () => {
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
       if (method === 'x:SystemSettings/get') {
+        // Non-empty current → forces SystemSettings/set call because the
+        // reconciler expects empty global (Phase 11 streamline).
         return {
           methodResponses: [
             [
               'x:SystemSettings/get',
-              { list: [{ id: 'singleton', proxyTrustedNetworks: {} }] }, // forces an update
+              { list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.99': true } }] },
               'c0',
             ],
           ],
@@ -647,11 +715,12 @@ describe('runProxyNetworksReconcilerTick', () => {
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
       if (method === 'x:SystemSettings/get') {
+        // Non-empty current → forces SystemSettings/set (Phase 11 expects empty).
         return {
           methodResponses: [
             [
               'x:SystemSettings/get',
-              { list: [{ id: 'singleton', proxyTrustedNetworks: {} }] },
+              { list: [{ id: 'singleton', proxyTrustedNetworks: { '10.0.0.99': true } }] },
               'c0',
             ],
           ],
