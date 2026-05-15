@@ -344,6 +344,13 @@ export async function applyRaw(
     }
   }
 
+  const bodyJson = JSON.stringify(body);
+  // One-time debug log so the next staging run shows the actual
+  // body length + a hash so we can confirm the JSON is intact.
+  // Remove after the migration cutover is verified working.
+  // eslint-disable-next-line no-console
+  console.log(`[applyRaw debug] ${target.kind}/${target.name} body length=${bodyJson.length} body[0..400]=${bodyJson.slice(0, 400)}`);
+
   return await new Promise<unknown>((resolve, reject) => {
     const req = httpsRequest(
       {
@@ -378,7 +385,7 @@ export async function applyRaw(
       },
     );
     req.on('error', reject);
-    req.write(JSON.stringify(body));
+    req.write(bodyJson);
     req.end();
   });
 }
