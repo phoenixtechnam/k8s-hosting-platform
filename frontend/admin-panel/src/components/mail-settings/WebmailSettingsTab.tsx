@@ -33,7 +33,7 @@ const ENGINES: ReadonlyArray<EngineMeta> = [
     tagline: 'Modern JMAP-native client purpose-built for Stalwart (ADR-039).',
     bullets: [
       'Speaks JMAP directly — lower latency, no IMAP→JMAP translation.',
-      'Single platform-wide subdomain (bulwark.<apex>) — no per-tenant cert.',
+      'Reuses the same webmail.<apex> URL — no extra DNS or cert work.',
       'Master-user impersonation lets client_admin open any mailbox SSO-style.',
     ],
     docsHref: 'https://bulwarkmail.org/',
@@ -130,8 +130,10 @@ export default function WebmailSettingsTab() {
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
         Pick the webmail client every mailbox lands in when a customer
-        clicks &ldquo;Open Webmail&rdquo;. The engine is platform-wide —
-        flipping it switches the handoff URL shape for all tenants.
+        clicks &ldquo;Open Webmail&rdquo;. Both engines share the same{' '}
+        <code>webmail.&lt;apex&gt;</code> hostname &mdash; flipping the
+        engine switches which backend serves that URL. Only one engine is
+        active at a time.
       </p>
 
       {/* Engine selector */}
@@ -211,10 +213,11 @@ export default function WebmailSettingsTab() {
           spellCheck={false}
         />
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          Used for SSO login links when a tenant&apos;s domain doesn&apos;t
-          host its own webmail. For Bulwark, the platform-wide{' '}
-          <code>bulwark.&lt;apex&gt;</code> URL is used regardless of this
-          setting.
+          Used as the SSO login URL for both engines (Roundcube falls back
+          to per-tenant <code>webmail.&lt;clientdomain&gt;</code> when the
+          tenant&apos;s domain hosts its own webmail). The platform&apos;s
+          webmail IngressRoute is reconciled to point at whichever engine
+          is active.
         </p>
       </div>
 

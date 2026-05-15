@@ -729,6 +729,22 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const webmailReconTimer = startWebmailReconciler(app.db, k8sForImapsync);
         app.addHook('onClose', () => stopWebmailReconciler(webmailReconTimer));
 
+        // ADR-039 Phase 10: on boot, ensure the platform-webmail-ingress
+        // IngressRoute targets whichever engine the DB says is active.
+        // Idempotent — no-op if the IR already matches. Non-blocking so
+        // a missing IR or transient k8s error doesn't gate platform-api
+        // startup; the same reconcile runs again on every engine flip
+        // via /admin/webmail-settings.
+        try {
+          const { reconcileWebmailIngress } = await import('./modules/webmail-router/reconciler.js');
+          await reconcileWebmailIngress(app.db, k8sForImapsync.custom, app.log);
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'webmail-router: boot-time reconcile failed (non-blocking)',
+          );
+        }
+
         // M1: node-role taxonomy. Upserts cluster_nodes from k8s every
         // 60s. Shares the same k8s client instance as mail reconcilers
         // to avoid re-reading the kubeconfig. Stops cleanly on app

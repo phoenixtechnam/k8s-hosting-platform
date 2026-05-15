@@ -877,13 +877,23 @@ export async function generateWebmailToken(
   let token: string;
   let webmailUrl: string;
 
-  // Resolve the webmail base URL — same lookup chain regardless of engine.
+  // Resolve the webmail base URL. Both engines share the same URL —
+  // webmail.<apex> serves whichever engine is currently active (the
+  // platform-webmail-ingress reconciler points it at roundcube OR
+  // bulwark-impersonator based on default_webmail_engine).
+  //
+  // Per-tenant Roundcube subdomains (webmail.<clientdomain>) are still
+  // preferred for Roundcube so the cert in the address bar matches the
+  // customer's domain. They do not apply to Bulwark, which is a single
+  // platform-wide Deployment.
   let baseUrl: string | undefined;
-  try {
-    const { getDerivedWebmailUrlForMailbox } = await import('../email-domains/service.js');
-    baseUrl = await getDerivedWebmailUrlForMailbox(db, mailbox.id);
-  } catch {
-    // Email domain lookup failure is non-fatal — fall through to defaults
+  if (engine === 'roundcube') {
+    try {
+      const { getDerivedWebmailUrlForMailbox } = await import('../email-domains/service.js');
+      baseUrl = await getDerivedWebmailUrlForMailbox(db, mailbox.id);
+    } catch {
+      // Email domain lookup failure is non-fatal — fall through to defaults
+    }
   }
   if (!baseUrl) {
     try {
@@ -914,11 +924,15 @@ export async function generateWebmailToken(
       // limit blast radius on a leaked Referer / access log entry.
       30,
     );
-    webmailUrl = `${baseUrl}/_impersonate?token=${encodeURIComponent(token)}`;
+    // Strip trailing slash on baseUrl so concat doesn't produce `//_impersonate`.
+    // Bulwark's Next.js router treats // as the same path but logs are cleaner.
+    const trimmed = baseUrl.replace(/\/+$/, '');
+    webmailUrl = `${trimmed}/_impersonate?token=${encodeURIComponent(token)}`;
   } else {
     // Roundcube path — unchanged from before this commit.
     token = signWebmailJwt({ mailbox: mailbox.fullAddress }, webmailSecret, 30);
-    webmailUrl = `${baseUrl}/?_task=login&_jwt=${encodeURIComponent(token)}`;
+    const trimmed = baseUrl.replace(/\/+$/, '');
+    webmailUrl = `${trimmed}/?_task=login&_jwt=${encodeURIComponent(token)}`;
   }
 
   return {

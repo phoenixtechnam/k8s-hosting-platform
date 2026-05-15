@@ -235,6 +235,7 @@ export async function getDefaultWebmailUrl(db: Database): Promise<string> {
   return settings.defaultWebmailUrl;
 }
 
+
 export async function getMailServerHostname(db: Database): Promise<string> {
   const settings = await getWebmailSettings(db);
   return settings.mailServerHostname;

@@ -10,6 +10,7 @@ import {
 } from './service.js';
 import { updateWebmailSettingsSchema } from '@k8s-hosting/api-contracts';
 import { reconcileOutboundConfig } from '../email-outbound/service.js';
+import { reconcileWebmailIngress } from '../webmail-router/reconciler.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { auditLogs } from '../../db/schema.js';
@@ -176,6 +177,22 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
         app.log.warn(
           { err },
           'webmail-settings: outbound reconcile failed (non-blocking)',
+        );
+      }
+    }
+
+    // ADR-039 Phase 10: when the webmail engine is flipped, patch the
+    // platform-webmail-ingress IngressRoute so `webmail.<apex>` lands
+    // at the active engine's Service (roundcube or bulwark-impersonator).
+    // Non-blocking — the reconciler also runs on platform-api startup,
+    // so a transient k8s failure here is recovered by the next boot.
+    if (k8s && parsed.data.defaultWebmailEngine !== undefined) {
+      try {
+        await reconcileWebmailIngress(app.db, k8s.custom, app.log);
+      } catch (err) {
+        app.log.warn(
+          { err },
+          'webmail-settings: webmail-router reconcile failed (non-blocking)',
         );
       }
     }
