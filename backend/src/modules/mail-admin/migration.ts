@@ -521,6 +521,12 @@ async function deletePvcAndWait(core: CoreV1Api, name: string, timeoutSeconds: n
  * local-path provisioner creates the PV on the target node.
  */
 async function createMailPvc(core: CoreV1Api, targetNode: string, sizeGiB: number): Promise<void> {
+  // Mail-DataStore PVC recreate during migration. The data inside is
+  // captured by the mail-snapshot bundle component (restic, 2-min
+  // interval) — this `createNamespacedPersistentVolumeClaim` only
+  // recreates the empty volume; the `restore-state` initContainer
+  // re-imports the data on the next pod start.
+  // backup-coverage: captured-by:mail-snapshot
   await core.createNamespacedPersistentVolumeClaim({
     namespace: MAIL_NAMESPACE,
     body: {
