@@ -2809,7 +2809,9 @@ install_traefik() {
     --set providers.kubernetesCRD.enabled=true \
     --set providers.kubernetesCRD.allowCrossNamespace=true \
     --set providers.kubernetesCRD.allowExternalNameServices=true \
-    --set providers.kubernetesIngress.enabled=false \
+    --set providers.kubernetesIngress.enabled=true \
+    --set providers.kubernetesIngress.ingressClass=traefik \
+    --set providers.kubernetesIngress.labelSelector="acme.cert-manager.io/http01-solver=true" \
     --set "experimental.plugins.crowdsec.moduleName=${CROWDSEC_PLUGIN_MODULE}" \
     --set "experimental.plugins.crowdsec.version=${CROWDSEC_PLUGIN_VERSION}" \
     --set "experimental.plugins.modsecurity.moduleName=${MODSECURITY_PLUGIN_MODULE}" \
@@ -2920,7 +2922,17 @@ spec:
     solvers:
     - http01:
         ingress:
-          ingressClassName: nginx
+          # Traefik migration 2026-05-15: cert-manager's HTTP-01 solver
+          # spawns a short-lived `kind: Ingress` (the v1 networking API,
+          # NOT IngressRoute) to expose the /.well-known/acme-challenge/
+          # path during the ACME flow. Traefik with kubernetesCRD-only
+          # providers IGNORES legacy Ingresses, so the challenge was
+          # unreachable and certs never issued. We now configure Traefik
+          # to additionally read class=traefik Ingresses (kept narrow via
+          # ingressClass filter so non-cert-manager Ingresses are still
+          # ignored). Solver Ingress class flipped from nginx→traefik to
+          # match.
+          ingressClassName: traefik
           # Solver Pods are short-lived Jobs spawned by cert-manager.
           # On clusters where servers carry the platform-managed
           # platform.phoenix-host.net/server-only=true:NoSchedule taint
@@ -2949,7 +2961,17 @@ spec:
     solvers:
     - http01:
         ingress:
-          ingressClassName: nginx
+          # Traefik migration 2026-05-15: cert-manager's HTTP-01 solver
+          # spawns a short-lived `kind: Ingress` (the v1 networking API,
+          # NOT IngressRoute) to expose the /.well-known/acme-challenge/
+          # path during the ACME flow. Traefik with kubernetesCRD-only
+          # providers IGNORES legacy Ingresses, so the challenge was
+          # unreachable and certs never issued. We now configure Traefik
+          # to additionally read class=traefik Ingresses (kept narrow via
+          # ingressClass filter so non-cert-manager Ingresses are still
+          # ignored). Solver Ingress class flipped from nginx→traefik to
+          # match.
+          ingressClassName: traefik
           # Solver Pods are short-lived Jobs spawned by cert-manager.
           # On clusters where servers carry the platform-managed
           # platform.phoenix-host.net/server-only=true:NoSchedule taint
@@ -5476,7 +5498,7 @@ print_summary() {
   log ""
   log "  Installed:"
   log "    - k3s + Calico CNI"
-  log "    - NGINX Ingress Controller (ports 80/443)"
+  log "    - Traefik v3 Ingress Controller (DaemonSet, ports 80/443, CrowdSec + ModSecurity-CRS)"
   log "    - cert-manager (Let's Encrypt staging + production)"
   log "    - Sealed Secrets"
   [[ "$ENABLE_MONITORING" == true ]] && log "    - Prometheus + Grafana + Loki"

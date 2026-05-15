@@ -43,15 +43,3 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     purpose: gitops
----
-# Valkey (Redis-protocol) coordinator cache namespace. The k8s/base/
-# valkey/ Deployment + Service + Secret + ConfigMap all land here;
-# without this Namespace CR, fresh-cluster kustomize-apply 404s on
-# the valkey/configmap.yaml.
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: redis-system
-  labels:
-    app.kubernetes.io/part-of: hosting-platform
-    purpose: coordinator-cache
