@@ -4,10 +4,10 @@
 #   stalwart-mail       — mail ports, LoadBalancer, externalTrafficPolicy: Local
 #   stalwart-mgmt       — management HTTP (8080), ClusterIP
 #
-# Port 443 (HTTPS API) is handled by the Ingress (ingress-mgmt.yaml) which
-# terminates TLS at the nginx controller. Stalwart itself listens on 8080
-# for plain HTTP; the controller adds TLS termination in front. This avoids
-# needing a wildcard cert inside the Stalwart pod for the management UI.
+# Port 443 (HTTPS API) is handled by the IngressRoute (ingress-mgmt.yaml)
+# which terminates TLS at Traefik. Stalwart itself listens on 8080 for
+# plain HTTP; Traefik adds TLS termination in front. This avoids needing
+# a wildcard cert inside the Stalwart pod for the management UI.
 #
 # Dev overlay: patches stalwart-mail → NodePort (no LB controller in
 # DinD k3s). See k8s/overlays/dev/stalwart-mail/service-nodeport-patch.yaml.
@@ -53,10 +53,10 @@ spec:
       protocol: TCP
     # ACME HTTP-01 challenge (Stalwart-managed cert, see
     # bootstrap-plan-cm.yaml requestTlsCertificate=true). Cluster-
-    # internal only — exposed via the mail-acme-ingress.yaml Ingress
+    # internal only — exposed via the ingress-acme.yaml IngressRoute
     # which path-prefix-routes /.well-known/acme-challenge/* to this
     # service. Not in externalIPs / hostPort so this does NOT bind 80
-    # on the node externally (nginx-ingress already owns that).
+    # on the node externally (Traefik already owns that).
     - name: http-acme
       port: 80
       targetPort: http-acme

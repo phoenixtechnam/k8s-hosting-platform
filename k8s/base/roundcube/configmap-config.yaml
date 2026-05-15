@@ -45,8 +45,10 @@ data:
       ],
     ];
 
-    // Trust the X-Forwarded-* headers — Roundcube sits behind nginx ingress
-    // in production. Local dev uses NodePort with no proxy.
+    // Trust the X-Forwarded-* headers — Roundcube sits behind the
+    // Traefik ingress controller in production (the `web`/`websecure`
+    // entrypoints set X-Forwarded-* and forward to Roundcube on :80).
+    // Local dev uses NodePort with no proxy.
     $config['use_https'] = false;
     $config['proxy_whitelist'] = [];
 

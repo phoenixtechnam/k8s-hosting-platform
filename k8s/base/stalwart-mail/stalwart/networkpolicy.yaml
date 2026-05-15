@@ -46,20 +46,26 @@ spec:
           port: 993
         - protocol: TCP
           port: 4190
-    # ACME HTTP-01 challenge (port 80) — from the nginx-ingress
-    # controller pods. mail-acme-ingress.yaml routes
-    # /.well-known/acme-challenge/* to Service:80 → this pod:80, where
-    # Stalwart's `http-acme` NetworkListener responds with the LE
-    # token. Same source-pattern as the 8080 mgmt rule (ingress-nginx
-    # uses hostNetwork so the source IP is the node IP, which Linux
-    # re-sources to a Calico VXLAN tunnel IP inside the pod CIDR).
+    # ACME HTTP-01 challenge (port 80) — from the Traefik ingress
+    # controller pods. ingress-acme.yaml (an IngressRoute on the `web`
+    # entrypoint) routes /.well-known/acme-challenge/* to Service:80 →
+    # this pod:80, where Stalwart's `http-acme` NetworkListener
+    # responds with the LE token.
+    #
+    # Traefik migration 2026-05-15: ns `ingress-nginx` → `traefik`,
+    # pod label `app.kubernetes.io/name=ingress-nginx` →
+    # `app.kubernetes.io/name=traefik`. The ipBlock fallback to the
+    # full pod CIDR (10.42.0.0/16) is retained — Traefik uses hostPort
+    # (not hostNetwork) so the source IP from cross-node ACME hops
+    # appears as a Calico VXLAN tunnel IP in 10.42.0.0/16. Selector
+    # match covers same-node hops; CIDR match covers cross-node.
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
+              kubernetes.io/metadata.name: traefik
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: ingress-nginx
+              app.kubernetes.io/name: traefik
         - ipBlock:
             cidr: 10.42.0.0/16
       ports:
@@ -73,9 +79,10 @@ spec:
     # becoming Ready. Allowing 0.0.0.0/0 is safe because port 8080 is the
     # Stalwart management API which requires HTTP Basic auth for every
     # request; there is no unauthenticated surface on this port.
-    # ingress-nginx still gates the admin Ingress with auth_request, so the
-    # port is not directly routable from the internet anyway (no hostPort,
-    # no externalIPs). See `project_calico_netpol_ipblock_fix.md`.
+    # Traefik still gates the admin IngressRoute with the admin-auth-
+    # cookie ForwardAuth Middleware, so the port is not directly
+    # routable from the internet anyway (no hostPort, no externalIPs).
+    # See `project_calico_netpol_ipblock_fix.md`.
     - from: []
       ports:
         - protocol: TCP

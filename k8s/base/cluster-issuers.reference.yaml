@@ -15,7 +15,9 @@ spec:
     solvers:
       - http01:
           ingress:
-            ingressClassName: nginx
+            # Traefik migration 2026-05-15: was `nginx`. See
+            # k8s/base/cert-manager/clusterissuer-letsencrypt-http01.yaml.
+            ingressClassName: traefik
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -30,4 +32,6 @@ spec:
     solvers:
       - http01:
           ingress:
-            ingressClassName: nginx
+            # Traefik migration 2026-05-15: was `nginx`. See
+            # k8s/base/cert-manager/clusterissuer-letsencrypt-http01.yaml.
+            ingressClassName: traefik

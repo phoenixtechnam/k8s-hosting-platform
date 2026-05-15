@@ -33,4 +33,12 @@ spec:
     solvers:
       - http01:
           ingress:
-            ingressClassName: nginx
+            # Traefik migration 2026-05-15: was `nginx`. Traefik's
+            # kubernetesIngress provider is configured with
+            # ingressClass=traefik + labelSelector
+            # acme.cert-manager.io/http01-solver=true so the solver
+            # Ingress is the only legacy `kind: Ingress` Traefik will
+            # observe (operator-created Ingresses with class=traefik
+            # but no solver label are still ignored — see install_traefik
+            # in scripts/bootstrap.sh).
+            ingressClassName: traefik

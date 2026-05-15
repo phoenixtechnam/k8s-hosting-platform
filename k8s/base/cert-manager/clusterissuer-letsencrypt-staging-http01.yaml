@@ -24,4 +24,8 @@ spec:
     solvers:
       - http01:
           ingress:
-            ingressClassName: nginx
+            # Traefik migration 2026-05-15: was `nginx`. See the
+            # equivalent comment in clusterissuer-letsencrypt-http01.yaml
+            # for the full rationale (narrow ingressClass + labelSelector
+            # hole on the Traefik kubernetesIngress provider).
+            ingressClassName: traefik

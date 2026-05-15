@@ -27,15 +27,18 @@ spec:
       ports:
         - port: 3000
           protocol: TCP
-    # Allow ingress controller → backend (public API)
-    # Scoped to the ingress-nginx namespace only.
+    # Allow ingress controller → backend (public API).
+    # Traefik migration 2026-05-15: scoped to the `traefik` namespace +
+    # Traefik DS pods (was `ingress-nginx` ns + `app.kubernetes.io/name=
+    # ingress-nginx` pod selector). Traefik runs as a DaemonSet labelled
+    # `app.kubernetes.io/name=traefik`.
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
+              kubernetes.io/metadata.name: traefik
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: ingress-nginx
+              app.kubernetes.io/name: traefik
       ports:
         - port: 3000
           protocol: TCP

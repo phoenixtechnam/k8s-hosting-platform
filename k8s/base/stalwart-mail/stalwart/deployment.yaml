@@ -258,10 +258,10 @@ spec:
             # HTTP listener for ACME HTTP-01 challenge responses
             # (2026-05-06 TLS-bootstrap rewrite). Cluster-internal —
             # no hostPort, no externalIPs. Traffic flows: LE →
-            # nginx-ingress :80 → mail-acme-ingress (path-prefix
-            # /.well-known/acme-challenge/*) → this Service:80 →
-            # this pod:80 → Stalwart's `http-acme` NetworkListener
-            # (configured in bootstrap-plan-cm.yaml).
+            # Traefik `web` entrypoint :80 → ingress-acme.yaml
+            # IngressRoute (path-prefix /.well-known/acme-challenge/*)
+            # → this Service:80 → this pod:80 → Stalwart's `http-acme`
+            # NetworkListener (configured in bootstrap-plan-cm.yaml).
             - name: http-acme
               containerPort: 80
               protocol: TCP

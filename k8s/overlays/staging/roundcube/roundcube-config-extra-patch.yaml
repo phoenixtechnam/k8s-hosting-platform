@@ -36,7 +36,7 @@ data:
       ],
     ];
 
-    // Roundcube sits behind nginx ingress on https://webmail.${DOMAIN}.
+    // Roundcube sits behind the Traefik ingress on https://webmail.${DOMAIN}.
     $config['use_https'] = true;
     $config['proxy_whitelist'] = ['10.0.0.0/8', '127.0.0.1'];
 
