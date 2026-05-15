@@ -837,6 +837,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         );
         const proxyNetworksStop = startProxyNetworksReconciler({
           core: k8sForImapsync.core,
+          kubeconfigPath: kubePath,
           logger: {
             warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
             info: (...args: unknown[]) => app.log.info(args.join(' ')),

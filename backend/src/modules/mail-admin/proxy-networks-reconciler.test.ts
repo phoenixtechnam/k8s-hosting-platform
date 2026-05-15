@@ -8,7 +8,7 @@
  * JMAP /set partial-failures.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   listServerNodeIps,
   proxyNetworksMatches,
@@ -189,7 +189,6 @@ describe('listServerNodeIps', () => {
 });
 
 describe('runProxyNetworksReconcilerTick', () => {
-  const originalFetch = globalThis.fetch;
   const env = {
     STALWART_ADMIN_USER: 'admin',
     STALWART_ADMIN_PASSWORD: 'pw',
@@ -197,30 +196,39 @@ describe('runProxyNetworksReconcilerTick', () => {
 
   let calls: Array<{ url: string; body: unknown }> = [];
 
-  function mockFetch(handler: (req: { url: string; body: unknown }) => unknown) {
-    globalThis.fetch = (async (input: unknown, init: unknown) => {
-      const url = typeof input === 'string' ? input : (input as { url: string }).url;
-      const body = init && (init as { body?: string }).body
-        ? JSON.parse((init as { body: string }).body)
-        : null;
+  /**
+   * Pre-streamline tests intercepted `globalThis.fetch`. The reconciler
+   * now runs JMAP calls via `kubectl exec curl` inside the Stalwart pod
+   * (Stalwart 0.16's HTTP listener PROXY-v2-sniffs every non-loopback
+   * connection — see jmapPost() in the reconciler). For tests we inject
+   * a stub transport via `deps.jmapTransport`, which bypasses pod-
+   * discovery + exec entirely. We keep the `mockFetch(handler)` shape
+   * + a `tick()` helper to minimise the per-test diff.
+   */
+  type JmapHandler = (req: { url: string; body: unknown }) => unknown;
+  let currentHandler: JmapHandler | null = null;
+  function mockFetch(handler: JmapHandler) {
+    currentHandler = handler;
+  }
+  function buildTransport():
+    (auth: string, body: unknown) => Promise<{
+      methodResponses: ReadonlyArray<[string, Record<string, unknown>, string]>;
+    }>
+  {
+    return async (_auth, body) => {
+      const url = 'mock://stalwart-mgmt:8080/jmap/';
       calls.push({ url, body });
-      const result = handler({ url, body });
-      return {
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: async () => result,
-        text: async () => JSON.stringify(result),
-      } as unknown as Response;
-    }) as typeof fetch;
+      if (!currentHandler) throw new Error('test forgot to call mockFetch() before tick()');
+      const result = currentHandler({ url, body }) as {
+        methodResponses: ReadonlyArray<[string, Record<string, unknown>, string]>;
+      };
+      return result;
+    };
   }
 
   beforeEach(() => {
     calls = [];
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
+    currentHandler = null;
   });
 
   function makeCore(items: unknown[]) {
@@ -238,6 +246,7 @@ describe('runProxyNetworksReconcilerTick', () => {
 
     const warns: unknown[] = [];
     await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
       core: makeCore([]),
       env,
       logger: {
@@ -286,6 +295,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
       core: makeCore([
         {
           metadata: {
@@ -331,6 +341,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
       core: makeCore([
         {
           metadata: {
@@ -402,6 +413,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
       core: makeCore([
         {
           metadata: {
@@ -469,6 +481,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
       core: makeCore([
         {
           metadata: {
@@ -525,6 +538,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
       core: makeCore([
         {
           metadata: {
@@ -552,6 +566,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
       core: makeCore([
         {
           metadata: {
@@ -596,6 +611,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
       core: makeCore([
         {
           metadata: {
@@ -656,6 +672,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
 
     await runProxyNetworksReconcilerTick({
+      jmapTransport: buildTransport(),
       core: makeCore([
         {
           metadata: {

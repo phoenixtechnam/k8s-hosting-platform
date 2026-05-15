@@ -65,15 +65,38 @@ const STALWART_MGMT_URL =
 
 export interface ProxyNetworksReconcilerDeps {
   readonly core: CoreV1Api;
+  /**
+   * Kubeconfig path for the exec-into-Stalwart-pod transport. Passed
+   * through to `KubeConfig.loadFromFile`; falls back to
+   * `loadFromCluster` when undefined. The reconciler exec's `curl
+   * http://127.0.0.1:8080/jmap/` inside the Stalwart pod because
+   * Stalwart 0.16's HTTP listener does PROXY-v2 sniffing on every
+   * non-loopback connection — see jmapPost() comment.
+   */
+  readonly kubeconfigPath?: string;
   readonly tickMs?: number;
   readonly logger?: {
     warn: (...args: unknown[]) => void;
     info: (...args: unknown[]) => void;
   };
-  /** Override for tests — defaults to STALWART_MGMT_URL. */
+  /**
+   * Override for tests — defaults to STALWART_MGMT_URL. Kept for
+   * forward-compat with a future Stalwart release that ships a
+   * `disableProxyProtocolSniffing` per-listener option; the reconciler
+   * could revert to plain HTTP and this URL would become live again.
+   */
   readonly stalwartMgmtUrl?: string;
   /** Override for tests — defaults to process.env. */
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Optional JMAP transport injection (for unit tests). When provided,
+   * bypasses pod-discovery + kubectl-exec entirely and routes calls
+   * through the supplied function. Production callers do NOT set this.
+   */
+  readonly jmapTransport?: (
+    auth: string,
+    body: unknown,
+  ) => Promise<JmapInvocationResponse>;
 }
 
 /**
@@ -159,7 +182,6 @@ export async function runProxyNetworksReconcilerTick(
     expectedProxyNetworks[node.ip] = true;
   }
 
-  const baseUrl = deps.stalwartMgmtUrl ?? STALWART_MGMT_URL;
   const env = deps.env ?? process.env;
 
   let auth: string;
@@ -173,6 +195,26 @@ export async function runProxyNetworksReconcilerTick(
     return;
   }
 
+  // Build the JMAP transport. Tests inject a stub via `deps.jmapTransport`;
+  // production discovers a Running Stalwart pod and exec's curl inside it
+  // (only way to bypass Stalwart 0.16's PROXY-v2 sniffing — see jmapPost()).
+  let jmapCall: (auth: string, body: unknown) => Promise<JmapInvocationResponse>;
+  if (deps.jmapTransport) {
+    jmapCall = deps.jmapTransport;
+  } else {
+    const podName = await findStalwartPodName(deps.core);
+    if (!podName) {
+      log.warn('No Running Stalwart pod found — skipping tick (will retry).');
+      return;
+    }
+    const transport: ExecTransport = {
+      core: deps.core,
+      podName,
+      kubeconfigPath: deps.kubeconfigPath,
+    };
+    jmapCall = (a, b) => jmapPost(transport, a, b);
+  }
+
   // ── Step 1: reconcile global SystemSettings.proxyTrustedNetworks ───
   // Stalwart applies this to every NetworkListener that doesn't carry an
   // explicit `overrideProxyTrustedNetworks` map. Setting it globally is
@@ -181,7 +223,7 @@ export async function runProxyNetworksReconcilerTick(
   // uniform across the protocol set.
   try {
     await reconcileSystemProxyTrustedNetworks(
-      baseUrl,
+      jmapCall,
       auth,
       expectedProxyNetworks,
       log,
@@ -194,7 +236,7 @@ export async function runProxyNetworksReconcilerTick(
   // ── Step 2: reconcile x:AllowedIp for cluster-IP rate-limit safety ─
   try {
     await reconcileAllowedIps(
-      baseUrl,
+      jmapCall,
       auth,
       serverNodes,
       log,
@@ -256,28 +298,164 @@ interface JmapInvocationResponse {
   readonly methodResponses: ReadonlyArray<[string, Record<string, unknown>, string]>;
 }
 
+/**
+ * Stalwart-mgmt transport.
+ *
+ * **Why this is exec-based, not fetch:** Stalwart 0.16's HTTP listener at
+ * `:8080` does PROXY-v2 sniffing on every incoming connection whose source
+ * IP is in `SystemSettings.proxyTrustedNetworks`. Since the Phase 1
+ * streamline put the cluster pod/service CIDRs (10.42.0.0/16 + 10.43.0.0/16)
+ * into that trust list — necessary for haproxy DS forwarding mail traffic
+ * with PROXY-v2 — cross-pod plain HTTP from platform-api to
+ * `stalwart-mgmt.mail.svc:8080` is silently rejected ("invalid proxy
+ * header" in the Stalwart log, "fetch failed cause=other side closed"
+ * from Node.js). Per-listener `overrideProxyTrustedNetworks` does NOT
+ * disable the sniffing in 0.16 — it only refines trust decisions after
+ * the sniff. The only source IP that bypasses the sniff is 127.0.0.1.
+ *
+ * So the reconciler exec's into the Stalwart pod and runs `curl` against
+ * 127.0.0.1:8080. Loopback bypasses the PROXY-v2 sniff. This is the same
+ * pattern used by the kubelet exec liveness probe (see
+ * k8s/base/stalwart-mail/stalwart/deployment.yaml). The cost is roughly
+ * 200ms per JMAP call (exec stream setup + curl) — well within the 60s
+ * tick budget.
+ *
+ * If Stalwart upstream gains a `disableProxyProtocolSniffing` per-listener
+ * option, replace this helper with a plain `fetch` to make the reconciler
+ * snappier. The existing `STALWART_MGMT_URL` constant captures the URL
+ * for that future direct-HTTP path.
+ */
+interface ExecTransport {
+  readonly core: CoreV1Api;
+  readonly podName: string;
+  readonly kubeconfigPath: string | undefined;
+}
+
+/**
+ * Find a Running Stalwart mail pod. Returns null if none — the reconciler
+ * tick logs a warn + skips.
+ */
+async function findStalwartPodName(core: CoreV1Api): Promise<string | null> {
+  try {
+    const pods = await core.listNamespacedPod({
+      namespace: 'mail',
+      labelSelector: 'app=stalwart-mail',
+    }) as {
+      items?: Array<{
+        metadata?: { name?: string };
+        status?: { phase?: string; containerStatuses?: Array<{ ready?: boolean; name?: string }> };
+      }>;
+    };
+    for (const p of pods.items ?? []) {
+      if (p.status?.phase !== 'Running') continue;
+      const ready = p.status?.containerStatuses?.find((c) => c.name === 'stalwart')?.ready;
+      if (ready && p.metadata?.name) return p.metadata.name;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Exec curl inside the Stalwart pod and capture stdout. Wraps the raw
+ * `@kubernetes/client-node` Exec stream API. Auth uses the recovery
+ * password (which Stalwart accepts identically to adminPassword for
+ * mgmt-level operations) so the reconciler doesn't have to find or
+ * rotate the adminPassword separately.
+ */
+async function execCurlInStalwartPod(
+  transport: ExecTransport,
+  auth: string,
+  body: unknown,
+): Promise<string> {
+  const { Exec, KubeConfig } = await import('@kubernetes/client-node');
+  const { Writable } = await import('node:stream');
+  const kc = new KubeConfig();
+  if (transport.kubeconfigPath) kc.loadFromFile(transport.kubeconfigPath);
+  else kc.loadFromCluster();
+  const exec = new Exec(kc);
+
+  const bodyJson = JSON.stringify(body);
+  // curl args:
+  //   -sf        → silent + fail-on-HTTP-error (4xx/5xx → curl exit 22)
+  //   --max-time → bound the request
+  //   -H Auth   → Basic creds via STDIN-piped body? No — pass via -H
+  //   -d @-     → read body from stdin to avoid encoding the JSON in argv
+  //               (Stalwart admin password may contain shell metacharacters
+  //               if it ever changes; -d @- side-steps argv escaping)
+  const args = [
+    'curl',
+    '-sf',
+    '--max-time', String(Math.floor(JMAP_TIMEOUT_MS / 1000)),
+    '-H', `Authorization: ${auth}`,
+    '-H', 'Content-Type: application/json',
+    '-H', 'Accept: application/json',
+    '-X', 'POST',
+    '--data-binary', '@-',
+    'http://127.0.0.1:8080/jmap/',
+  ];
+
+  let stdout = '';
+  let stderr = '';
+  const stdoutSink = new Writable({
+    write(chunk: Buffer, _enc, cb) { stdout += chunk.toString('utf8'); cb(); },
+  });
+  const stderrSink = new Writable({
+    write(chunk: Buffer, _enc, cb) { stderr += chunk.toString('utf8'); cb(); },
+  });
+
+  // exec.exec returns a WebSocket-like handle whose `close` event resolves
+  // the status callback we pass in. The body is fed via stdin (the 6th
+  // arg, after stdoutSink/stderrSink).
+  const { Readable } = await import('node:stream');
+  const stdin = Readable.from(Buffer.from(bodyJson, 'utf8'));
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Stalwart JMAP exec-curl timed out after ${JMAP_TIMEOUT_MS}ms`)),
+      JMAP_TIMEOUT_MS + 5_000, // +5s grace beyond curl's own --max-time
+    );
+    exec.exec(
+      'mail',
+      transport.podName,
+      'stalwart',
+      args,
+      stdoutSink,
+      stderrSink,
+      stdin,
+      false,
+      (status) => {
+        clearTimeout(timer);
+        if (status.status === 'Failure') {
+          reject(
+            new Error(
+              `Stalwart JMAP exec-curl failed: ${status.message ?? 'unknown'} ` +
+                `(stderr=${stderr.slice(0, 200)})`,
+            ),
+          );
+        } else {
+          resolve();
+        }
+      },
+    ).catch(reject);
+  });
+
+  return stdout;
+}
+
 async function jmapPost(
-  baseUrl: string,
+  transport: ExecTransport,
   auth: string,
   body: unknown,
 ): Promise<JmapInvocationResponse> {
-  const res = await fetch(`${baseUrl}/jmap/`, {
-    method: 'POST',
-    headers: {
-      Authorization: auth,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(JMAP_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(
-      `Stalwart JMAP ${res.status} ${res.statusText}: ${text.slice(0, 200)}`,
-    );
+  const text = await execCurlInStalwartPod(transport, auth, body);
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Stalwart JMAP non-JSON response: ${text.slice(0, 200)}`);
   }
-  const data = (await res.json()) as unknown;
   if (
     !data ||
     typeof data !== 'object' ||
@@ -297,12 +475,12 @@ async function jmapPost(
  * none do — we never set the per-listener override).
  */
 async function reconcileSystemProxyTrustedNetworks(
-  baseUrl: string,
+  jmapCall: (auth: string, body: unknown) => Promise<JmapInvocationResponse>,
   auth: string,
   expected: Record<string, boolean>,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
 ): Promise<void> {
-  const getRes = await jmapPost(baseUrl, auth, {
+  const getRes = await jmapCall(auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
       [
@@ -324,7 +502,7 @@ async function reconcileSystemProxyTrustedNetworks(
     .proxyTrustedNetworks;
   if (proxyNetworksMatches(current, expected)) return;
 
-  const setRes = await jmapPost(baseUrl, auth, {
+  const setRes = await jmapCall(auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
       [
@@ -435,12 +613,12 @@ export function proxyNetworksMatches(
  * etc.) must remain untouched.
  */
 async function reconcileAllowedIps(
-  baseUrl: string,
+  jmapCall: (auth: string, body: unknown) => Promise<JmapInvocationResponse>,
   auth: string,
   serverNodes: ReadonlyArray<{ hostname: string; ip: string }>,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
 ): Promise<void> {
-  const getRes = await jmapPost(baseUrl, auth, {
+  const getRes = await jmapCall(auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
       ['x:AllowedIp/get', { accountId: ADMIN_ACCOUNT_ID, ids: null }, 'c0'],
@@ -475,7 +653,7 @@ async function reconcileAllowedIps(
 
   if (Object.keys(create).length === 0) return;
 
-  const setRes = await jmapPost(baseUrl, auth, {
+  const setRes = await jmapCall(auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
       [
