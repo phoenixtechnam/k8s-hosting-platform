@@ -38,7 +38,7 @@ import crypto from 'node:crypto';
 const SAFE_NAMESPACES: ReadonlySet<string> = new Set([
   'calico-system',
   'longhorn-system',
-  'ingress-nginx',
+  'traefik',
   'kube-system',
   'cnpg-system',
   'cert-manager',

@@ -24,7 +24,7 @@ export const SYSTEM_NAMESPACES = Object.freeze([
   'platform-tenant-ops',
   'flux-system',
   'cert-manager',
-  'ingress-nginx',
+  'traefik',
   'longhorn-system',
   'mail',
   'dex',

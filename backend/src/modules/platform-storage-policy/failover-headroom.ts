@@ -49,7 +49,7 @@ const SYSTEM_NAMESPACES: ReadonlyArray<string> = [
   'longhorn-system',
   'flux-system',
   'cert-manager',
-  'ingress-nginx',
+  'traefik',
   'redis-system',
   'platform',
   'platform-system',

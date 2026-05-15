@@ -7,7 +7,7 @@
  * Sources:
  *   - Deployments in `platform` and `platform-system` namespaces
  *   - Platform-controlled deployments in cluster add-on namespaces
- *     (ingress-nginx, cert-manager, longhorn-system, flux-system,
+ *     (traefik, cert-manager, longhorn-system, flux-system,
  *     sealed-secrets) — useful to spot drift from pinned chart versions
  *
  * Returns image refs grouped by component with status hints (Running /
@@ -69,7 +69,7 @@ interface StatefulSetList {
 const PLATFORM_NAMESPACES = [
   'platform',
   'platform-system',
-  'ingress-nginx',
+  'traefik',
   'cert-manager',
   'longhorn-system',
   'flux-system',

@@ -167,7 +167,7 @@ export function translateOperatorError(
     return {
       code: OPERATOR_ERROR_CODES.CERT_HTTP01_TIMEOUT,
       title: 'HTTP-01 challenge failed',
-      detail: 'Let\'s Encrypt could not reach the challenge URL. Either DNS does not resolve here yet, OR ingress-nginx → solver-pod is blocked.',
+      detail: 'Let\'s Encrypt could not reach the challenge URL. Either DNS does not resolve here yet, OR Traefik → solver-pod is blocked.',
       remediation: [
         'Verify the domain\'s DNS A record points to the platform\'s public IPs.',
         'Check tenant NetworkPolicy allow-platform-api / default-deny-ingress includes ipBlock 10.42.0.0/16.',
