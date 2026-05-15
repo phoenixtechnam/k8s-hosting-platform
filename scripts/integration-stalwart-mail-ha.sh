@@ -244,7 +244,21 @@ if [[ -z "$POD" ]]; then
 fi
 NODE_OF_POD="$(kctl -n "$STALWART_NS" get pod "$POD" -o jsonpath='{.spec.nodeName}')"
 HOST_IP_OF_POD="$(kctl -n "$STALWART_NS" get pod "$POD" -o jsonpath='{.status.hostIP}')"
-PROBE_HOST="${PROBE_HOST:-$HOST_IP_OF_POD}"
+
+# In allServerNodes mode (Phase 2 streamline default), mail ports are
+# served by the haproxy DaemonSet on server-role nodes, NOT by the
+# Stalwart pod's own host (which may be a worker-role node). Probe a
+# server-role node IP so the TLS handshake hits haproxy. In
+# thisNodeOnly mode the Stalwart pod's host IS the serving node, so
+# fall back to HOST_IP_OF_POD.
+DEFAULT_PROBE_HOST="$HOST_IP_OF_POD"
+if [[ "$(kctl -n "$STALWART_NS" get daemonset stalwart-haproxy --no-headers 2>/dev/null | awk '{print $4}')" -gt 0 ]]; then
+  SERVER_NODE_IP="$(kctl get nodes -l "$SERVER_ROLE_LABEL" -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)"
+  if [[ -n "$SERVER_NODE_IP" ]]; then
+    DEFAULT_PROBE_HOST="$SERVER_NODE_IP"
+  fi
+fi
+PROBE_HOST="${PROBE_HOST:-$DEFAULT_PROBE_HOST}"
 
 ADMIN_PW="$(kctl -n "$STALWART_NS" get secret stalwart-admin-creds \
   -o jsonpath='{.data.adminPassword}' 2>/dev/null \
@@ -334,14 +348,19 @@ print(next((x.get('challengeType','') for x in r), ''))" 2>/dev/null || echo '')
     fi
   fi
 
-  # A3. Ingress routes /.well-known/acme-challenge
-  local ing_paths
+  # A3. Ingress (or IngressRoute) routes /.well-known/acme-challenge.
+  # The platform migrated from ingress-nginx to Traefik on 2026-05-14, so
+  # we check both resource kinds and pass if either has the ACME path.
+  local ing_paths route_match
   ing_paths="$(kctl -n "$STALWART_NS" get ingress stalwart-mail-acme \
     -o jsonpath='{.spec.rules[*].http.paths[*].path}' 2>/dev/null || echo '')"
-  if echo "$ing_paths" | grep -q '\.well-known/acme-challenge'; then
-    note_pass "A3. Ingress stalwart-mail-acme routes /.well-known/acme-challenge"
+  route_match="$(kctl -n "$STALWART_NS" get ingressroute stalwart-mail-acme \
+    -o jsonpath='{.spec.routes[*].match}' 2>/dev/null || echo '')"
+  if echo "$ing_paths" | grep -q '\.well-known/acme-challenge' || \
+     echo "$route_match" | grep -q '\.well-known/acme-challenge'; then
+    note_pass "A3. stalwart-mail-acme routes /.well-known/acme-challenge"
   else
-    note_fail "A3. Ingress stalwart-mail-acme missing ACME path (got: '${ing_paths}')"
+    note_fail "A3. stalwart-mail-acme missing ACME path (Ingress.paths='${ing_paths}', IngressRoute.match='${route_match}')"
   fi
 
   # A4. All 6 mail listeners exist
@@ -430,7 +449,19 @@ print(' '.join(sorted(ips)))" 2>/dev/null || echo '')"
     note_fail "B0. No server-role nodes labeled '${SERVER_ROLE_LABEL}' — harness cannot validate"
     return
   fi
+
+  # The proxy-networks reconciler ALSO trusts the cluster pod + service
+  # CIDRs since the 2026-05-15 streamline. Reason: when haproxy DS pods
+  # (hostNetwork=true) forward to Stalwart via ClusterIP, kube-proxy
+  # SNATs the source IP to a pod CIDR (10.42.0.0/16 by default in k3s
+  # + 10.43.0.0/16 for Service VIPs). Without these in the trust list,
+  # Stalwart refuses the PROXY-v2 frame and TLS handshakes return
+  # "received corrupt message of type InvalidContentType" on :465/:993.
+  # See backend/src/modules/mail-admin/proxy-networks-reconciler.ts.
+  local expected_with_cidrs
+  expected_with_cidrs="$(printf '%s\n10.42.0.0/16\n10.43.0.0/16\n' "$expected_ips" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
   echo "  Expected server-role IPs: ${expected_ips}"
+  echo "  Expected cluster CIDRs:   10.42.0.0/16 10.43.0.0/16"
 
   # B1. proxyTrustedNetworks ⊇ expected (exact match)
   local ptn_resp ptn_actual
@@ -446,10 +477,10 @@ print(' '.join(sorted(canon(k) for k, v in ks.items() if v is True)))" 2>/dev/nu
   ORIGINAL_PROXY_TRUSTED_NETWORKS="$ptn_actual"
   echo "  Actual   server-role IPs: ${ptn_actual}"
 
-  if [[ "$ptn_actual" == "$expected_ips" ]]; then
-    note_pass "B1. SystemSettings.proxyTrustedNetworks = expected server-role node IPs"
+  if [[ "$ptn_actual" == "$expected_with_cidrs" ]]; then
+    note_pass "B1. proxyTrustedNetworks = expected (server IPs + cluster CIDRs)"
   else
-    note_fail "B1. Mismatch: expected '${expected_ips}', got '${ptn_actual}'"
+    note_fail "B1. Mismatch: expected '${expected_with_cidrs}', got '${ptn_actual}'"
   fi
 
   # B2. Spoofing defense — 0.0.0.0/0 must NOT be in proxyTrustedNetworks
