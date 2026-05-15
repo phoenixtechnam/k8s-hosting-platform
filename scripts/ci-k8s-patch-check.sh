@@ -80,10 +80,18 @@ for hit in "${HITS[@]}"; do
   END=$((LINE + LOOKAHEAD))
   # Look at LOOKAHEAD lines starting from the call site for one of the shims.
   WINDOW=$(sed -n "${LINE},${END}p" "$FILE")
-  # Match the legacy 3 constants OR the new apply-patch convention
-  # (any identifier ending in _APPLY_PATCH passed as the 2nd arg, or
-  # an inline applyPatch(…) call result).
-  if echo "$WINDOW" | grep -qE '\b(MERGE_PATCH|STRATEGIC_MERGE_PATCH|JSON_PATCH|[A-Z_]+_APPLY_PATCH|applyPatch\()\b'; then
+  # Match the legacy 3 content-type constants, OR any SCREAMING_SNAKE_CASE
+  # identifier ending in _PATCH at the call site (this covers
+  # *_APPLY_PATCH from apply-patch SSA, *_MERGE_PATCH / *_STRATEGIC_PATCH
+  # from the strategic-merge helper, and pre-streamline module-local
+  # *_PATCH constants like STALWART_PORTS_PATCH or MIGRATION_AFFINITY_PATCH),
+  # OR an inline call to one of the helper functions.
+  #
+  # The general `[A-Z_]+_PATCH\b` clause is permissive but safe: the
+  # second positional arg is typed as `ConfigurationOptions` so a
+  # non-middleware constant ending in _PATCH would fail TypeScript at
+  # compile time before reaching this check.
+  if echo "$WINDOW" | grep -qE '\b(MERGE_PATCH|STRATEGIC_MERGE_PATCH|JSON_PATCH|[A-Z_]+_PATCH|applyPatch\(|strategicMergePatch\()\b'; then
     continue
   fi
   FAIL=1

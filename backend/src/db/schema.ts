@@ -2037,8 +2037,11 @@ export const systemSettings = pgTable('system_settings', {
   //   automatically once mailFailoverThresholdSeconds have elapsed without a healthy pod.
   // mailFailoverThresholdSeconds: seconds of pod unavailability before auto-failover.
   // mailLastFailoverAt: timestamp of last failover action (manual or automatic).
-  // mailPortExposureMode: 'thisNodeOnly' = Stalwart hostPort on active node only;
-  //   'allServerNodes' = haproxy DaemonSet forwards on all server nodes + PROXY proto.
+  // mailPortExposureMode: default 'allServerNodes' since the Phase 2 streamline
+  //   (2026-05-15). The haproxy DaemonSet (PROXY-v2) is the production-ready
+  //   path. 'thisNodeOnly' (Stalwart hostPort on the active node only) remains
+  //   supported via the admin API for debugging single-node installs but is no
+  //   longer surfaced in the operator UI by default.
   // mailDatastorePvcSizeGi: requested size (Gi) for the stalwart-rocksdb-data PVC.
   mailPrimaryNode: varchar('mail_primary_node', { length: 253 }),
   mailSecondaryNode: varchar('mail_secondary_node', { length: 253 }),
@@ -2048,7 +2051,7 @@ export const systemSettings = pgTable('system_settings', {
   mailAutoFailoverEnabled: boolean('mail_auto_failover_enabled').notNull().default(false),
   mailFailoverThresholdSeconds: integer('mail_failover_threshold_seconds').notNull().default(300),
   mailLastFailoverAt: timestamp('mail_last_failover_at', { withTimezone: true }),
-  mailPortExposureMode: varchar('mail_port_exposure_mode', { length: 32 }).notNull().default('thisNodeOnly'),
+  mailPortExposureMode: varchar('mail_port_exposure_mode', { length: 32 }).notNull().default('allServerNodes'),
   mailDatastorePvcSizeGi: integer('mail_datastore_pvc_size_gi').notNull().default(20),
   // 0107: mail archive scheduler (minimum-viable fixed-interval cron).
   // mailArchiveScheduleInterval: 'off' | 'hourly' | 'daily' | 'weekly' — fires

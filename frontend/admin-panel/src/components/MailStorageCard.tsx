@@ -2,16 +2,24 @@ import { HardDrive, AlertTriangle, Loader2 } from 'lucide-react';
 import { useMailPvcStorage } from '@/hooks/use-mail-storage';
 
 /**
- * Read-only mail-server storage card.
+ * Mail storage card — used bytes + node free disk only.
  *
- * The 2026-05-14 streamline removed the online-grow PATCH because the
- * Stalwart PVC is local-path-only (local-path does not quota
- * `requests.storage` — it's informational only after creation, so
- * resize was never a meaningful operation post-RocksDB-migration).
+ * Phase 3 streamline (2026-05-15): dropped the "PVC capacity" line and
+ * the percentage donut. `requests.storage` is informational only on
+ * local-path (the provisioner does NOT quota the request) so showing
+ * "23% of 20 GiB used" misled operators into thinking the 20 GiB number
+ * meant anything — it doesn't. The only meaningful sizing constraint is
+ * the node's actual free disk on the local NVMe mount.
  *
- * Phase-5 of the streamline will fold this card into a unified
- * "Storage & Blob Store" section. For now it shows just the live
- * data-dir bytes-used and the PVC's reported capacity.
+ * We show:
+ *   - Used (data dir, from `du -sb` exec probe)
+ *   - Free  (from `df` on the same mount — bounded by node free disk)
+ *   - Storage class
+ *
+ * If a future variant ever quotas mail storage (network volume, etc.),
+ * add capacity + percentage donut behind a `quota_enabled` flag on the
+ * MailPvcStorageResponse contract — but not before we have a real
+ * quota mechanism.
  */
 export default function MailStorageCard() {
   const storage = useMailPvcStorage();
@@ -41,13 +49,8 @@ export default function MailStorageCard() {
   }
 
   const data = storage.data.data;
-  const used = data.usedBytes ?? 0;
-  const cap = data.capacityBytes ?? 0;
-  const pct = cap > 0 ? Math.round((used / cap) * 100) : 0;
-  const dotColor =
-    pct < 70 ? 'bg-green-500'
-    : pct < 90 ? 'bg-amber-500'
-    : 'bg-red-500';
+  const usedBytes = data.usedBytes;
+  const freeBytes = data.freeBytes;
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5 space-y-3">
@@ -63,29 +66,20 @@ export default function MailStorageCard() {
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
         Stalwart RocksDB DataStore lives on a local-path PVC
-        (<code>{data.pvcName}</code>). local-path doesn't enforce or
-        quota the requested storage size — these numbers report what
-        the data dir is using on the node's local NVMe.
+        (<code>{data.pvcName}</code>) on the active mail node's local NVMe.
+        Storage growth is bounded by the node's free disk, not by a PVC quota.
       </p>
 
-      <div className="grid grid-cols-2 gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">
+      <div className="grid grid-cols-3 gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">
         <Stat label="Used (data dir)">
-          <span className="text-sm font-mono text-gray-900 dark:text-gray-100">
-            {formatBytes(used)}
+          <span className="text-sm font-mono text-gray-900 dark:text-gray-100" data-testid="mail-storage-used">
+            {formatBytes(usedBytes)}
           </span>
         </Stat>
-        <Stat label="PVC capacity (informational)">
-          <span className="text-sm font-mono text-gray-900 dark:text-gray-100">
-            {formatBytes(cap)}
+        <Stat label="Free on node">
+          <span className="text-sm font-mono text-gray-900 dark:text-gray-100" data-testid="mail-storage-free">
+            {formatBytes(freeBytes)}
           </span>
-        </Stat>
-        <Stat label="Usage">
-          <div className="flex items-center gap-1.5">
-            <span className={`inline-block w-2 h-2 rounded-full ${dotColor}`} />
-            <span className="text-sm font-mono text-gray-900 dark:text-gray-100">
-              {pct}%
-            </span>
-          </div>
         </Stat>
         <Stat label="Storage class">
           <span className="text-sm font-mono text-gray-700 dark:text-gray-300">
@@ -108,8 +102,8 @@ function Stat({ label, children }: { readonly label: string; readonly children: 
   );
 }
 
-function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return '—';
+function formatBytes(n: number | null): string {
+  if (n == null || !Number.isFinite(n) || n < 0) return '—';
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;

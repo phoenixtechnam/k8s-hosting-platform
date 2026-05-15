@@ -194,21 +194,22 @@ export default function MailDrCard() {
         </span>
       </div>
 
-      {/* Active node */}
-      {current.activeNode && (
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-4 py-3 text-sm">
-          <div className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
-            Currently running on
-          </div>
-          <code data-testid="mail-dr-active-node" className="font-mono text-gray-900 dark:text-gray-100">
-            {current.activeNode}
-          </code>
-          {current.lastFailoverAt && (
-            <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Last failover: {new Date(current.lastFailoverAt).toLocaleString()}
-            </div>
-          )}
+      {/* Phase 3 streamline (2026-05-15): the "Currently running on" tile
+          was removed from this card — it read from system_settings.
+          activeNode which can drift from the pod's real node. The health
+          banner above shows the verified pod node (probed live from k8s).
+          We only render the last-failover timestamp here as it's not
+          available from the health endpoint. */}
+      {current.lastFailoverAt && (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-4 py-2 text-xs text-gray-500 dark:text-gray-400">
+          Last failover: {new Date(current.lastFailoverAt).toLocaleString()}
         </div>
+      )}
+      {/* Keep activeNode as a data attribute for the harness without
+          rendering it visibly — harness Phase G4 reads it via the
+          test-id to compare against `kubectl get pod`. */}
+      {current.activeNode && (
+        <span data-testid="mail-dr-active-node" className="sr-only">{current.activeNode}</span>
       )}
 
       {/* Node assignments */}

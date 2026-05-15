@@ -128,7 +128,10 @@ export async function getMailPortExposure(
     .from(systemSettings)
     .where(eq(systemSettings.id, SETTINGS_ID));
 
-  const mode = (row?.v as 'thisNodeOnly' | 'allServerNodes' | null) ?? 'thisNodeOnly';
+  // Default to allServerNodes (Phase 2 streamline, 2026-05-15). Matches
+  // the schema column default. thisNodeOnly is a debugging escape hatch
+  // for single-node installs, set via the admin API.
+  const mode = (row?.v as 'thisNodeOnly' | 'allServerNodes' | null) ?? 'allServerNodes';
 
   let daemonSetStatus: { ready: number; desired: number } | null = null;
   try {
@@ -164,6 +167,42 @@ export async function updateMailPortExposure(
   db: Database,
   opts: PortExposureOptions,
 ): Promise<void> {
+  await applyModeToCluster(mode, opts);
+
+  // Persist the new mode.
+  await db.update(systemSettings)
+    .set({ mailPortExposureMode: mode })
+    .where(eq(systemSettings.id, SETTINGS_ID));
+}
+
+/**
+ * Drive the cluster state to match the DB-stored mode.
+ *
+ * Used at platform-api startup so fresh installs (where the DB row was
+ * created with the default `allServerNodes`) actually have the haproxy
+ * DaemonSet present without the operator needing to PATCH the endpoint.
+ * Idempotent — if the cluster already matches, the calls are no-ops.
+ */
+export async function ensureMailPortExposureApplied(
+  db: Database,
+  opts: PortExposureOptions,
+): Promise<void> {
+  const [row] = await db.select({ v: systemSettings.mailPortExposureMode })
+    .from(systemSettings)
+    .where(eq(systemSettings.id, SETTINGS_ID));
+  const mode = (row?.v as 'thisNodeOnly' | 'allServerNodes' | null) ?? 'allServerNodes';
+  await applyModeToCluster(mode, opts);
+}
+
+/**
+ * Two-step cluster mutation for the given mode. Extracted from
+ * `updateMailPortExposure` so the startup reconciler can reuse it
+ * without writing back to the DB (the DB value is the source of truth).
+ */
+async function applyModeToCluster(
+  mode: 'thisNodeOnly' | 'allServerNodes',
+  opts: PortExposureOptions,
+): Promise<void> {
   const { apps } = await loadK8sAppsClient(opts.kubeconfigPath);
 
   if (mode === 'allServerNodes') {
@@ -183,11 +222,6 @@ export async function updateMailPortExposure(
     // Step 2: Re-add hostPorts to Stalwart Deployment.
     await addHostPortsToDeployment(apps);
   }
-
-  // Step 3: Persist the new mode.
-  await db.update(systemSettings)
-    .set({ mailPortExposureMode: mode })
-    .where(eq(systemSettings.id, SETTINGS_ID));
 }
 
 // ── Private helpers ────────────────────────────────────────────────────────────

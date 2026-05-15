@@ -35,7 +35,11 @@ export const mailMigrationStatusResponseSchema = z.object({
   runId: z.string(),
   sourceNode: z.string(),
   targetNode: z.string(),
-  state: z.enum(['queued', 'preflight', 'snapshotting', 'scaling-down', 'rsync', 'verifying', 'cutover', 'done', 'failed', 'rolled-back']),
+  // Phase 1 streamline (2026-05-15): replaced rsync/cutover with
+  // swapping-pvc + scaling-up. PVC name is stable across migrations;
+  // data moves via the restic snapshot the CronJob produces every
+  // 2 minutes (see runMigrationStateMachine in migration.ts).
+  state: z.enum(['queued', 'preflight', 'snapshotting', 'scaling-down', 'swapping-pvc', 'scaling-up', 'verifying', 'done', 'failed', 'rolled-back']),
   currentStep: z.string().nullable(),
   progressBytes: z.number().nullable(),
   startedAt: z.string(),

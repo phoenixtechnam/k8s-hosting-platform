@@ -41,32 +41,26 @@ metadata:
     # ensures restore-state on next pod start picks up new credentials.
     configmap.reloader.stakater.com/reload: "stalwart-config"
     secret.reloader.stakater.com/reload: "stalwart-admin-creds,stalwart-snapshot-restic-repo"
-    # NOTE on Flux SSA semantics (2026-05-15 investigation):
+    # Field-ownership note (Phase 1 streamline, 2026-05-15):
     #
-    # The earlier revision of this file carried
-    #   kustomize.toolkit.fluxcd.io/ssa: merge
-    # with a comment claiming the annotation made Flux respect other
-    # field-managers' ownership during reconcile. Live testing
-    # contradicted that: with the annotation, Flux's kustomize-
-    # controller force-conflicted on every reconcile and overrode
-    # platform-api's mail-migration cutover claim on
-    # `volumes[stalwart-data].persistentVolumeClaim.claimName` and
-    # `template.spec.affinity` within ~60s. The annotation's actual
-    # effect appears to be "force-conflicts=true regardless of
-    # Kustomization.spec.force" — opposite of the comment.
+    # Three fields on this Deployment are mutated at runtime by
+    # platform-api and are intentionally NOT declared in this manifest:
+    #   - `template.spec.containers[stalwart].ports[*].hostPort`
+    #       owned by `platform-api.port-exposure` — toggled when
+    #       switching between thisNodeOnly / allServerNodes modes.
+    #   - `template.spec.affinity.nodeAffinity`
+    #       owned by `platform-api.migration` — set on every migration
+    #       to pin the pod to the target node.
+    #   - `metadata.annotations[mail.platform/allow-restore]`
+    #       owned by `platform-api.migration` — set during migration to
+    #       trigger the `restore-state` initContainer.
     #
-    # Removed the annotation so the cluster's Flux Kustomization spec
-    # `force: false` actually takes effect for this resource. Result:
-    # Flux's reconcile uses non-force SSA, which respects
-    # platform-api.port-exposure and platform-api.migration field
-    # ownership.
-    #
-    # Port-exposure is unaffected by this removal: its claimed fields
-    # (`hostPort` per port) are NOT declared in this manifest (Phase-7
-    # streamline stripped them), so Flux's apply never includes
-    # `hostPort` in its body and there's no conflict to force-resolve.
-    # See project_mail_migration_flux_revert_2026_05_15 memory note
-    # for the full investigation log.
+    # Because none of these are in the manifest, Flux's non-force SSA
+    # reconcile never includes them in its apply body — no conflict, no
+    # revert. The `kustomize.toolkit.fluxcd.io/ssa: merge` annotation
+    # that used to live here was REMOVED on 2026-05-15: testing showed
+    # the annotation's actual effect is "force-conflicts=true regardless
+    # of Kustomization.spec.force", which IS the opposite of its name.
 spec:
   # Rolling-update strategy: kill the old pod BEFORE scheduling the new
   # one. Stalwart binds 6 hostPorts (25/465/587/143/993/4190); k8s default
@@ -84,8 +78,9 @@ spec:
   # stalwart-rocksdb-ha (2026-05-12): replicas pinned to 1 because
   # the RocksDB DataStore lives on a local-path PVC (ReadWriteOnce,
   # node-local). Multiple replicas would leave additional pods Pending
-  # with Multi-Attach errors. DR is handled via rsync migration +
-  # auto-failover (mail-admin module), not via replica count.
+  # with Multi-Attach errors. DR is handled via snapshot+restore
+  # migration (see backend/src/modules/mail-admin/migration.ts) +
+  # auto-failover (dr-watcher.ts), not via replica count.
   # stalwart-mail was removed from STATELESS_DEPLOYMENTS in the
   # platform-storage-policy reconciler so HA toggle no longer touches it.
   replicas: 1

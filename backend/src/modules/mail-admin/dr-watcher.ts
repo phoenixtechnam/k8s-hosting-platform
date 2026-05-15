@@ -26,11 +26,20 @@ const SETTINGS_ID = 'system';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 type AppsV1Api = import('@kubernetes/client-node').AppsV1Api;
+type BatchV1Api = import('@kubernetes/client-node').BatchV1Api;
 
 export interface DrWatcherDeps {
   readonly db: Database;
   readonly core: CoreV1Api;
   readonly apps: AppsV1Api;
+  /**
+   * Batch client — required since Phase 1 streamline (2026-05-15)
+   * because the restore-based failover polls the snapshot CronJob's
+   * `status.lastSuccessfulTime` to wait for fresh snapshots before
+   * scaling Stalwart down.
+   */
+  readonly batch: BatchV1Api;
+  readonly kubeconfigPath?: string;
   readonly tickMs?: number;
   readonly logger?: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void };
 }
@@ -57,7 +66,7 @@ export function startDrWatcher(deps: DrWatcherDeps): () => void {
  * One tick of the DR watcher. Exported for unit-testability.
  */
 export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
-  const { db, core, apps } = deps;
+  const { db, core, apps, batch, kubeconfigPath } = deps;
   const log = deps.logger ?? {
     warn: (...args: unknown[]) => console.warn('[dr-watcher]', ...args),
     info: (...args: unknown[]) => console.info('[dr-watcher]', ...args),
@@ -119,7 +128,7 @@ export async function runDrWatcherTick(deps: DrWatcherDeps): Promise<void> {
         .where(eq(systemSettings.id, SETTINGS_ID));
 
       try {
-        await triggerRestoreBasedFailover(targetNode, { db, core, apps });
+        await triggerRestoreBasedFailover(targetNode, { db, core, apps, batch, kubeconfigPath });
         log.warn(`Auto-failover to ${targetNode} complete — state set to failed-over`);
       } catch (err) {
         log.warn('Auto-failover failed — resetting to degraded for next tick retry:', err);

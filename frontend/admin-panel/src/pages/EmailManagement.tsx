@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import {
   Mail, Globe, Server, Shield, Loader2, CheckCircle, XCircle, Plus, Trash2,
-  TestTube, X, Key, Copy, ExternalLink, HardDrive, Network, Archive as ArchiveIcon,
-  Settings,
+  TestTube, X, Key, Copy, ExternalLink, HardDrive, Settings, Archive as ArchiveIcon,
+  Network,
 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import StatCard from '@/components/ui/StatCard';
@@ -32,11 +32,34 @@ import SortableHeader from '@/components/ui/SortableHeader';
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-type Tab = 'domains' | 'relays';
+type DomainsTab = 'domains' | 'relays';
+type OpsTab = 'placement' | 'backups' | 'storage';
 type BackupTab = 'snapshot' | 'archive';
 
+/**
+ * Email Management page — Phase 3 streamline (2026-05-15).
+ *
+ * Pre-streamline layout: 7 always-expanded cards (Domains, Server settings,
+ * Placement, Port exposure, Backups, Storage, Stalwart admin) dumped inline
+ * — operator scrolled past 2000 lines of DOM to find the section they
+ * needed. Status info was duplicated across cards (placement showed an
+ * active-node tile that didn't verify the pod, storage showed a "PVC
+ * capacity %" that wasn't enforced).
+ *
+ * Post-streamline:
+ *
+ *   1. Health banner (always at top, real probes from /admin/mail/health)
+ *   2. Domains & SMTP relays (default-expanded, day-1 operator surface)
+ *   3. Server settings (collapsible — hostname + webmail URL)
+ *   4. Operations (collapsible — Placement / Backups / Storage tabs)
+ *   5. Stalwart admin UI (collapsible — link to upstream Stalwart admin)
+ *
+ * Port exposure (a Day-99 toggle since Phase 2 made allServerNodes the
+ * default) lives inside Operations → Placement → "Advanced" details.
+ */
 export default function EmailManagement() {
-  const [tab, setTab] = useState<Tab>('domains');
+  const [domainsTab, setDomainsTab] = useState<DomainsTab>('domains');
+  const [opsTab, setOpsTab] = useState<OpsTab>('placement');
   const [backupTab, setBackupTab] = useState<BackupTab>('snapshot');
   const { data: domainsRes, isLoading: domainsLoading } = useAdminEmailDomains();
   const domains = domainsRes?.data ?? [];
@@ -58,17 +81,14 @@ export default function EmailManagement() {
         <StatCard title="Mail Server" value="Stalwart" icon={Server} accent="green" />
       </div>
 
-      {/* Live mail-server health banner — replaces the cosmetic
-          MailServerStatusTile. Drills down into pod + JMAP + (future)
-          RocksDB / cert / TCP probes. See MailHealthBanner.tsx.
-          Always visible at the top — the "is anything broken?" question
-          is answered before anything else. */}
+      {/* Always-visible real-probe health banner.
+          Drill-down: pod | jmap | rocksdb | cert-per-port | tcp-per-port. */}
       <MailHealthBanner />
 
-      {/* ─── Section 1: Domains & Relays (default-open daily-driver) ── */}
+      {/* ─── Section 1: Domains & SMTP relays (daily-driver, default-open) ─── */}
       <MailSectionCard
         icon={Mail}
-        title="Domains & Relays"
+        title="Domains & SMTP relays"
         summary={
           domainsLoading
             ? 'Loading…'
@@ -80,104 +100,130 @@ export default function EmailManagement() {
       >
         <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
           {[
-            { key: 'domains' as Tab, label: 'Email Domains' },
-            { key: 'relays' as Tab, label: 'SMTP Relays' },
+            { key: 'domains' as DomainsTab, label: 'Email Domains' },
+            { key: 'relays' as DomainsTab, label: 'SMTP Relays' },
           ].map((t) => (
             <button
               key={t.key}
               type="button"
-              onClick={() => setTab(t.key)}
-              className={`border-b-2 px-4 py-2.5 text-sm font-medium ${tab === t.key ? 'border-brand-500 text-brand-600 dark:text-brand-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+              onClick={() => setDomainsTab(t.key)}
+              className={`border-b-2 px-4 py-2.5 text-sm font-medium ${domainsTab === t.key ? 'border-brand-500 text-brand-600 dark:text-brand-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
               data-testid={`tab-${t.key}`}
             >
               {t.label}
             </button>
           ))}
         </div>
-        {tab === 'domains' && <EmailDomainsTable domains={domains} isLoading={domainsLoading} />}
-        {tab === 'relays' && <SmtpRelaysSection />}
+        {domainsTab === 'domains' && <EmailDomainsTable domains={domains} isLoading={domainsLoading} />}
+        {domainsTab === 'relays' && <SmtpRelaysSection />}
       </MailSectionCard>
 
       {/* ─── Section 2: Server settings (hostname + webmail URL) ─── */}
       <MailSectionCard
         icon={Settings}
-        title="Mail server settings"
-        summary="Hostname, webmail URL, ACME-driven cert"
+        title="Server settings"
+        summary="Public hostname + webmail URL (ACME-managed TLS)"
         dataTestId="mail-section-server-settings"
         storageKey="server-settings"
       >
         <MailServerSettings />
       </MailSectionCard>
 
-      {/* ─── Section 3: Placement & DR ─────────────────────────────── */}
-      <MailSectionCard
-        icon={Network}
-        title="Placement & Disaster Recovery"
-        summary="Active node, pinning, auto-failover, live migration"
-        dataTestId="mail-section-placement"
-        storageKey="placement"
-      >
-        <MailDrCard />
-      </MailSectionCard>
-
-      {/* ─── Section 4: Port exposure ──────────────────────────────── */}
+      {/* ─── Section 3: Operations (placement / backups / storage) ─── */}
       <MailSectionCard
         icon={Server}
-        title="Port exposure"
-        summary="thisNodeOnly vs allServerNodes (haproxy DaemonSet)"
-        dataTestId="mail-section-ports"
-        storageKey="port-exposure"
-      >
-        <MailPortExposureCard />
-      </MailSectionCard>
-
-      {/* ─── Section 5: Backups (snapshot + archive sub-tabs) ──────── */}
-      <MailSectionCard
-        icon={ArchiveIcon}
-        title="Backups"
-        summary="Snapshot (restic, 2-min interval) + Archive (stalwart -e, clean exports)"
-        dataTestId="mail-section-backups"
-        storageKey="backups"
+        title="Operations"
+        summary="Placement & migration • Backups (snapshot + archive) • Storage"
+        dataTestId="mail-section-operations"
+        storageKey="operations"
       >
         <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
           {[
-            { key: 'snapshot' as BackupTab, label: 'Snapshot (restic)' },
-            { key: 'archive' as BackupTab, label: 'Archive (stalwart -e)' },
+            { key: 'placement' as OpsTab, label: 'Placement & migration', icon: Network },
+            { key: 'backups' as OpsTab, label: 'Backups', icon: ArchiveIcon },
+            { key: 'storage' as OpsTab, label: 'Storage', icon: HardDrive },
           ].map((t) => (
             <button
               key={t.key}
               type="button"
-              onClick={() => setBackupTab(t.key)}
-              className={`border-b-2 px-4 py-2 text-sm font-medium ${backupTab === t.key
-                ? 'border-brand-500 text-brand-600 dark:text-brand-400'
-                : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
-              data-testid={`backup-tab-${t.key}`}
+              onClick={() => setOpsTab(t.key)}
+              className={`flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium ${
+                opsTab === t.key
+                  ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+              }`}
+              data-testid={`ops-tab-${t.key}`}
             >
+              <t.icon size={13} />
               {t.label}
             </button>
           ))}
         </div>
-        {backupTab === 'snapshot' && <MailSnapshotHealthCard />}
-        {backupTab === 'archive' && <MailArchiveCard />}
+
+        {opsTab === 'placement' && (
+          <div className="space-y-4">
+            <MailDrCard />
+            {/* Port exposure as Advanced collapsible — `allServerNodes` is
+                the default since Phase 2. The toggle is retained for
+                debugging single-node installs but rarely needed. */}
+            <details className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
+              <summary className="cursor-pointer px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
+                Advanced — port exposure (debugging only)
+              </summary>
+              <div className="border-t border-gray-200 dark:border-gray-700 p-4">
+                <MailPortExposureCard />
+              </div>
+            </details>
+          </div>
+        )}
+
+        {opsTab === 'backups' && (
+          <div className="space-y-3">
+            <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+              {[
+                { key: 'snapshot' as BackupTab, label: 'Snapshot (restic, 2-min interval)' },
+                { key: 'archive' as BackupTab, label: 'Archive (DR export)' },
+              ].map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setBackupTab(t.key)}
+                  className={`border-b-2 px-4 py-2 text-sm font-medium ${
+                    backupTab === t.key
+                      ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                  }`}
+                  data-testid={`backup-tab-${t.key}`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {backupTab === 'snapshot' && <MailSnapshotHealthCard />}
+            {backupTab === 'archive' && <MailArchiveCard />}
+          </div>
+        )}
+
+        {opsTab === 'storage' && (
+          <div className="space-y-4">
+            <MailStorageCard />
+            <details className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
+              <summary className="cursor-pointer px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200">
+                Blob store (S3-compatible, for large attachments)
+              </summary>
+              <div className="border-t border-gray-200 dark:border-gray-700 p-4">
+                <StalwartBlobStoreCard />
+              </div>
+            </details>
+          </div>
+        )}
       </MailSectionCard>
 
-      {/* ─── Section 6: Storage & Blob ─────────────────────────────── */}
-      <MailSectionCard
-        icon={HardDrive}
-        title="Storage & Blob store"
-        summary="RocksDB DataStore PVC (local-path) + S3-compatible BlobStore"
-        dataTestId="mail-section-storage"
-        storageKey="storage"
-      >
-        <MailStorageCard />
-        <StalwartBlobStoreCard />
-      </MailSectionCard>
-
-      {/* ─── Section 7: Stalwart admin embed ───────────────────────── */}
+      {/* ─── Section 4: Stalwart admin embed (advanced) ─── */}
       <MailSectionCard
         icon={Shield}
-        title="Stalwart admin panel"
-        summary="Direct access to the Stalwart web admin UI (advanced)"
+        title="Stalwart admin UI"
+        summary="Direct access to the upstream Stalwart web admin (advanced)"
         dataTestId="mail-section-stalwart-admin"
         storageKey="stalwart-admin"
       >
@@ -301,7 +347,7 @@ function EmailDomainRowView({ domain: d, onOpenDkim }: { readonly domain: EmailD
   );
 }
 
-// ─── M12 — DKIM Status Modal (read-only, Stalwart 0.16 owns rotation) ────────
+// ─── DKIM Status Modal (read-only, Stalwart 0.16 owns rotation) ────────
 
 function DkimStatusModal({ domain: d, onClose }: { readonly domain: EmailDomainRow; readonly onClose: () => void }) {
   const { data: statusRes, isLoading } = useDkimStatus(d.id);

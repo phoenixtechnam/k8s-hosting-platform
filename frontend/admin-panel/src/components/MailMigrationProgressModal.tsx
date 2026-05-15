@@ -2,14 +2,17 @@ import { X, ArrowRight, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { useMailMigrationStatus } from '@/hooks/use-mail-migration';
 import type { MailMigrationStatusResponse } from '@k8s-hosting/api-contracts';
 
+// Migration step labels — kept in sync with mailMigrationStatusResponseSchema.state
+// in packages/api-contracts/src/mail-placement.ts. Phase 1 streamline (2026-05-15)
+// replaced 'rsync' + 'creating-target-pvc' + 'cutover' with 'swapping-pvc' +
+// 'scaling-up' — the data path is now snapshot+restore on a stable PVC name.
 const STEP_LABELS: Record<string, string> = {
-  preflight: 'Preflight disk check',
-  snapshotting: 'Safety snapshot',
+  preflight: 'Preflight checks',
+  snapshotting: 'Triggering fresh snapshot',
   'scaling-down': 'Scaling Stalwart to 0',
-  'creating-target-pvc': 'Creating target PVC',
-  rsync: 'rsync data transfer',
-  verifying: 'Verifying sentinel',
-  cutover: 'Cutover (PVC swap)',
+  'swapping-pvc': 'Swapping PVC to target node',
+  'scaling-up': 'Scaling Stalwart up (restoring data)',
+  verifying: 'Verifying RocksDB sentinel',
   done: 'Complete',
   failed: 'Failed',
   'rolled-back': 'Rolled back',
@@ -19,10 +22,9 @@ const STEP_ORDER = [
   'preflight',
   'snapshotting',
   'scaling-down',
-  'creating-target-pvc',
-  'rsync',
+  'swapping-pvc',
+  'scaling-up',
   'verifying',
-  'cutover',
   'done',
 ];
 
@@ -92,9 +94,9 @@ export default function MailMigrationProgressModal({ runId, onClose }: Props) {
 
             <MigrationStepList status={status} />
 
-            {status.progressBytes != null && status.state === 'rsync' && (
+            {status.progressBytes != null && status.state === 'scaling-up' && (
               <div className="text-xs text-gray-500 dark:text-gray-400">
-                Transferred: {formatBytes(status.progressBytes)}
+                Restored: {formatBytes(status.progressBytes)}
               </div>
             )}
 
