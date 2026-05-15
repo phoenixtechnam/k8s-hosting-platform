@@ -134,15 +134,27 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
                 // Writable tmpfs for the haproxy stats socket.
                 { name: 'haproxy-run', mountPath: '/tmp' },
               ],
+              // 2026-05-15: the old probe used `socat` to query the
+              // haproxy admin socket. socat isn't installed in the
+              // haproxy:2.9-alpine image, so the probe was failing
+              // from second 5 onward and kubelet was killing the pod
+              // after 30s — manifesting as a stable-looking DS that
+               // CrashLoopBackOffs over a 9-minute span on staging.
+               //
+               // Switch to a plain TCP-port-bound check: open a
+               // connection to localhost:25 (frontend smtp_in). If
+               // haproxy is alive and listening, TCP succeeds. No
+               // extra tooling required.
               livenessProbe: {
-                exec: {
-                  command: [
-                    'sh', '-c',
-                    "echo 'show info' | socat - /tmp/haproxy.sock | grep -q 'Uptime'",
-                  ],
-                },
+                tcpSocket: { port: 25 },
                 initialDelaySeconds: 5,
                 periodSeconds: 10,
+                failureThreshold: 3,
+              },
+              readinessProbe: {
+                tcpSocket: { port: 25 },
+                initialDelaySeconds: 2,
+                periodSeconds: 5,
                 failureThreshold: 3,
               },
               resources: {
