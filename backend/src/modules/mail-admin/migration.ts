@@ -26,7 +26,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
-import { STRATEGIC_MERGE_PATCH, applyPatch, strategicMergePatch } from '../../shared/k8s-patch.js';
+import { STRATEGIC_MERGE_PATCH, applyPatch, applyRaw, strategicMergePatch } from '../../shared/k8s-patch.js';
 import { waitForStalwartReplicaCount } from './rollout-wait.js';
 
 // Field-manager attribution for migration's Deployment patches. Two
@@ -83,6 +83,34 @@ export interface MigrationDeps {
   /** Pass-through so safety snapshot can load its own k8s clients. */
   readonly kubeconfigPath: string | undefined;
   readonly logger?: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void };
+}
+
+/**
+ * Build a KubeConfig for the raw-fetch SSA apply paths in this file.
+ *
+ * The typed `core` / `apps` SDK clients in `MigrationDeps` are already
+ * connected, but we can't reuse their KubeConfig instance directly
+ * (the SDK constructs it internally). Rebuild it here using the same
+ * priorities the SDK does:
+ *   1. Explicit kubeconfigPath argument → `loadFromFile`
+ *   2. KUBECONFIG env var → `loadFromDefault` (which honors it)
+ *   3. In-cluster (ServiceAccount + ca.crt) → `loadFromCluster`
+ *
+ * Used by the cutover + DR-failover SSA paths in this module — see
+ * the comment on those call sites for why we bypass the SDK's typed
+ * patch method.
+ */
+async function loadKubeConfig(kubeconfigPath: string | undefined) {
+  const { KubeConfig } = await import('@kubernetes/client-node');
+  const kc = new KubeConfig();
+  if (kubeconfigPath) {
+    kc.loadFromFile(kubeconfigPath);
+  } else if (process.env.KUBECONFIG) {
+    kc.loadFromDefault();
+  } else {
+    kc.loadFromCluster();
+  }
+  return kc;
 }
 
 // ── Row shape for mail_migration_runs ─────────────────────────────────────────
@@ -279,7 +307,7 @@ export async function getMailMigrationStatus(
  */
 export async function triggerRestoreBasedFailover(
   targetNode: string,
-  deps: { db: Database; core: CoreV1Api; apps: AppsV1Api },
+  deps: { db: Database; core: CoreV1Api; apps: AppsV1Api; kubeconfigPath?: string },
 ): Promise<void> {
   const { db, core, apps } = deps;
 
@@ -313,9 +341,8 @@ export async function triggerRestoreBasedFailover(
   }
 
   // Patch Deployment: new node affinity + new PVC + allow-restore annotation.
-  // SSA-apply with fieldManager=platform-api.migration so Flux's
-  // non-force reconcile leaves our fields alone — see the comment
-  // on MIGRATION_CUTOVER_PATCH for the failure mode this fixes.
+  // SSA-apply via raw fetch — see migration cutover for why the SDK's
+  // typed body call drops persistentVolumeClaim during serialization.
   const failoverPatchBody = {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -348,13 +375,18 @@ export async function triggerRestoreBasedFailover(
       },
     },
   };
-  await apps.patchNamespacedDeployment(
+  await applyRaw(
+    await loadKubeConfig(deps.kubeconfigPath),
     {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
       namespace: MAIL_NAMESPACE,
       name: DEPLOYMENT_NAME,
-      body: failoverPatchBody as unknown as object,
-    } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    MIGRATION_CUTOVER_PATCH,
+      resource: 'deployments',
+      apiPath: 'apis/apps/v1',
+    },
+    failoverPatchBody,
+    { fieldManager: 'platform-api.migration', force: true },
   );
 
   await db.update(systemSettings)
@@ -456,18 +488,24 @@ async function runMigrationStateMachine(
   await waitForJobCompletion(batch, rsyncJobName, 1800); // 30 min timeout
 
   // Step 6: Swap PVC claim in Deployment to point at new PVC.
-  // SSA-apply with force=true, fieldManager=platform-api.migration.
-  // The previous strategic-merge-patch lost a race with Flux's
-  // reconcile loop on the first staging E2E (2026-05-14): rsync
-  // completed, the patch landed, Flux reconciled within 60s and
-  // reverted Deployment.template.spec.volumes back to the
-  // manifest's claim. Pod returned to the original node. The
-  // migration silently became a no-op. SSA-apply with
-  // fieldManager claims ownership of `volumes` + `affinity` AND
-  // the Deployment's `kustomize.toolkit.fluxcd.io/ssa: merge`
-  // annotation tells Flux to skip fields owned by another
-  // Apply-manager. Same fix-pattern as port-exposure's Phase-7
-  // SSA-claim of `containers[].ports`.
+  // SSA-apply via raw fetch (not the SDK's patchNamespacedDeployment).
+  //
+  // The K8s client-node v1 SDK's ObjectSerializer silently drops
+  // nested polymorphic fields like `V1Volume.persistentVolumeClaim`
+  // from the request body. Migration #5 on staging caught this:
+  // managedFields after the SDK apply showed
+  //   f:volumes.k:{name:stalwart-data}: { ".": {}, "f:name": {} }
+  // with no `f:persistentVolumeClaim` claim — so the apiserver
+  // recorded ownership of the volume entry's name only, not its
+  // PVC reference. The same YAML body sent via kubectl apply
+  // --server-side --force-conflicts claimed
+  //   f:persistentVolumeClaim.f:claimName: {}
+  // correctly and the pod migrated.
+  //
+  // `applyRaw` sends the JSON body to the apiserver verbatim via
+  // node:fetch, bypassing the SDK's typed serializer. Port-exposure
+  // doesn't need this because its claimed fields (hostPort, name)
+  // are primitives the serializer happens to preserve.
   await setStep(db, runId, 'cutover');
   const cutoverPatchBody = {
     apiVersion: 'apps/v1',
@@ -497,13 +535,18 @@ async function runMigrationStateMachine(
       },
     },
   };
-  await apps.patchNamespacedDeployment(
+  await applyRaw(
+    await loadKubeConfig(deps.kubeconfigPath),
     {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
       namespace: MAIL_NAMESPACE,
       name: DEPLOYMENT_NAME,
-      body: cutoverPatchBody as unknown as object,
-    } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
-    MIGRATION_CUTOVER_PATCH,
+      resource: 'deployments',
+      apiPath: 'apis/apps/v1',
+    },
+    cutoverPatchBody,
+    { fieldManager: 'platform-api.migration', force: true },
   );
 
   // Step 7: Scale back up
