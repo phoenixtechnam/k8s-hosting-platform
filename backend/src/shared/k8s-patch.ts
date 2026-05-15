@@ -388,8 +388,26 @@ export async function applyRaw(
           // eslint-disable-next-line no-console
           console.log(
             `[applyRaw debug] ${target.kind}/${target.name} response status=${status} `
-            + `response[0..200]=${text.slice(0, 200)}`,
+            + `response.length=${text.length}`,
           );
+          // Extract just the managedFields piece of the response so we
+          // see which fields the apiserver attributed to our manager.
+          try {
+            const respObj = JSON.parse(text) as {
+              metadata?: { managedFields?: Array<{ manager?: string; fieldsV1?: unknown }> };
+              spec?: { template?: { spec?: { volumes?: unknown[]; affinity?: unknown } } };
+            };
+            const ourClaim = (respObj.metadata?.managedFields ?? [])
+              .find((m) => m.manager === opts.fieldManager && (m as { operation?: string }).operation === 'Apply');
+            const vol = respObj.spec?.template?.spec?.volumes?.find?.(
+              (v) => (v as { name?: string })?.name === 'stalwart-data',
+            );
+            // eslint-disable-next-line no-console
+            console.log(
+              `[applyRaw debug] our-claim.fieldsV1=${JSON.stringify(ourClaim?.fieldsV1)} `
+              + `live-volume.persistentVolumeClaim=${JSON.stringify((vol as { persistentVolumeClaim?: unknown })?.persistentVolumeClaim)}`,
+            );
+          } catch { /* response was not JSON, ignore */ }
           if (status >= 200 && status < 300) {
             try { resolve(JSON.parse(text)); }
             catch (err) { reject(new Error(`k8s-patch.applyRaw: bad JSON response (${(err as Error).message})`)); }
