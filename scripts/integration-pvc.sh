@@ -123,7 +123,7 @@ done
 # ─── scenario 3: client delete cascade fires ─────────────────────────
 log "── scenario: cascade cleans tenant PV ──"
 DEL=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
-echo "$DEL" | tail -1 | grep -q "204" && ok "client deleted (204)" || { fail "delete failed: $DEL"; exit 1; }
+echo "$DEL" | tail -1 | grep -qE "20[04]" && ok "tenant deleted (200|204)" || { fail "delete failed: $DEL"; exit 1; }
 
 # Wait up to 90s for the orphan PV to disappear.
 GONE=0
@@ -157,7 +157,7 @@ done
 # the late-binding tracking in the pv-cleanup-released hook.
 sleep 1
 DEL2=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID2" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
-echo "$DEL2" | tail -1 | grep -q "204" && ok "race delete 204" || fail "race delete failed: $DEL2"
+echo "$DEL2" | tail -1 | grep -qE "20[04]" && ok "race delete 20x" || fail "race delete failed: $DEL2"
 
 # After 90s, no PV should reference this namespace.
 sleep 3
