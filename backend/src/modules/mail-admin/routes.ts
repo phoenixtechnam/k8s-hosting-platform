@@ -1396,9 +1396,11 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         userId: req.user.sub,
         label: toSafeText(targetLabel),
         target: {
+          // TaskCenterChip's dispatcher merges `taskId` into modalProps
+          // automatically — MailTaskProgressModal reads it from there.
           type: 'modal',
           modal: 'mail-operation',
-          modalProps: {}, // taskId is added by the chip dispatcher
+          modalProps: {},
         },
         progressPct: 0,
         progressText: toSafeText('Starting port-exposure flip'),
