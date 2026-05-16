@@ -656,6 +656,12 @@ async function readLiveNodeSelectors(
 // /scale is HPAs' subresource — it has its own field manager rules so
 // Flux SSA on the parent Deployment .spec.replicas can't fight with us.
 // A normal MERGE_PATCH on .spec.replicas would lose on every reconcile.
+// Annotation set by the webmail-router reconciler when an engine is
+// deselected via the admin panel. Storage-policy treats the Deployment
+// as "already at the desired count of 0" and skips it, so the engine
+// stays scaled down between policy reconciles.
+export const WEBMAIL_ENGINE_DISABLED_ANNOTATION = 'platform.phoenix-host.net/webmail-engine-disabled';
+
 async function patchDeploymentsToReplicaCount(
   k8s: K8sClients,
   deployments: ReadonlyArray<{ namespace: string; name: string }>,
@@ -667,6 +673,20 @@ async function patchDeploymentsToReplicaCount(
     try {
       const live = await k8s.apps.readNamespacedDeployment({ namespace: d.namespace, name: d.name });
       previousReplicas = live.spec?.replicas ?? 0;
+      // Honor the webmail-engine-disabled gate. The webmail-router
+      // reconciler stamps this annotation on the engine that the
+      // operator deselected in admin → Email → Webmail. Without this
+      // skip, storage-policy would scale the disabled engine back up
+      // to the tier-correct count on every 5-min tick.
+      const annotations = live.metadata?.annotations ?? {};
+      if (annotations[WEBMAIL_ENGINE_DISABLED_ANNOTATION] === 'true') {
+        results.push({
+          namespace: d.namespace, name: d.name,
+          previousReplicas, newReplicas: previousReplicas,
+          patched: false, error: null,
+        });
+        continue;
+      }
       if (previousReplicas === desired) {
         results.push({
           namespace: d.namespace, name: d.name,

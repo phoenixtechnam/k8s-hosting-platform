@@ -738,9 +738,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // reconcile runs again on every engine/URL flip via
         // /admin/webmail-settings.
         try {
-          const { reconcileWebmailIngress, reconcileBulwarkOrigin } = await import(
-            './modules/webmail-router/reconciler.js'
-          );
+          const {
+            reconcileWebmailIngress,
+            reconcileBulwarkOrigin,
+            reconcileEngineDeployments,
+          } = await import('./modules/webmail-router/reconciler.js');
           await reconcileWebmailIngress(app.db, k8sForImapsync.custom, app.log);
           // KubeConfig instance for the SSA-apply path (applyRaw uses
           // its server URL + auth directly).
@@ -749,6 +751,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           if (kubePath) kc.loadFromFile(kubePath);
           else kc.loadFromCluster();
           await reconcileBulwarkOrigin(app.db, kc, k8sForImapsync.apps, app.log);
+          // 2026-05-16: mutex engine Pods. Idempotent — scales the
+          // inactive engine Deployment to 0 and stamps it with the
+          // disabled annotation so storage-policy leaves it alone.
+          await reconcileEngineDeployments(app.db, k8sForImapsync.apps, app.log);
         } catch (err) {
           app.log.warn(
             { err },

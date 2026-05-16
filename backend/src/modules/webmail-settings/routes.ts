@@ -10,7 +10,11 @@ import {
 } from './service.js';
 import { updateWebmailSettingsSchema } from '@k8s-hosting/api-contracts';
 import { reconcileOutboundConfig } from '../email-outbound/service.js';
-import { reconcileWebmailIngress, reconcileBulwarkOrigin } from '../webmail-router/reconciler.js';
+import {
+  reconcileWebmailIngress,
+  reconcileBulwarkOrigin,
+  reconcileEngineDeployments,
+} from '../webmail-router/reconciler.js';
 import * as k8sNode from '@kubernetes/client-node';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -219,6 +223,22 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
         app.log.warn(
           { err },
           'webmail-settings: Bulwark origin reconcile failed (non-blocking)',
+        );
+      }
+    }
+
+    // 2026-05-16: when the engine flips, scale the now-inactive
+    // engine's Deployment to 0 + stamp the disabled annotation so
+    // platform-storage-policy stops resurrecting it. The active
+    // engine gets the annotation cleared so storage-policy resumes
+    // its tier-aware replica management.
+    if (k8s && parsed.data.defaultWebmailEngine !== undefined) {
+      try {
+        await reconcileEngineDeployments(app.db, k8s.apps, app.log);
+      } catch (err) {
+        app.log.warn(
+          { err },
+          'webmail-settings: engine-Deployment reconcile failed (non-blocking)',
         );
       }
     }

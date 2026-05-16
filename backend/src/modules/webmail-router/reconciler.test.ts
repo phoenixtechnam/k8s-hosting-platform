@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   reconcileWebmailIngress,
   reconcileBulwarkOrigin,
+  reconcileEngineDeployments,
   serviceNameForEngine,
   originFromUrl,
+  WEBMAIL_ENGINE_DISABLED_ANNOTATION,
 } from './reconciler.js';
 import type { Database } from '../../db/index.js';
 
@@ -298,5 +300,167 @@ describe('reconcileBulwarkOrigin', () => {
     expect(result).toBeNull();
     expect(applyRaw).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalled();
+  });
+});
+
+describe('reconcileEngineDeployments', () => {
+  function makeApps(opts: {
+    activeName: string;
+    activeReplicas?: number;
+    activeAnnotated?: boolean;
+    inactiveName: string;
+    inactiveReplicas?: number;
+    inactiveAnnotated?: boolean;
+    activeMissing?: boolean;
+    inactiveMissing?: boolean;
+  }) {
+    const readNs = vi.fn(({ name }: { name: string }) => {
+      if (name === opts.activeName) {
+        if (opts.activeMissing) {
+          return Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }));
+        }
+        return Promise.resolve({
+          metadata: {
+            annotations: opts.activeAnnotated
+              ? { [WEBMAIL_ENGINE_DISABLED_ANNOTATION]: 'true' }
+              : {},
+          },
+          spec: { replicas: opts.activeReplicas ?? 1 },
+        });
+      }
+      if (name === opts.inactiveName) {
+        if (opts.inactiveMissing) {
+          return Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }));
+        }
+        return Promise.resolve({
+          metadata: {
+            annotations: opts.inactiveAnnotated
+              ? { [WEBMAIL_ENGINE_DISABLED_ANNOTATION]: 'true' }
+              : {},
+          },
+          spec: { replicas: opts.inactiveReplicas ?? 1 },
+        });
+      }
+      return Promise.reject(Object.assign(new Error('not found'), { statusCode: 404 }));
+    });
+    return {
+      readNamespacedDeployment: readNs,
+      replaceNamespacedDeploymentScale: vi.fn().mockResolvedValue({}),
+      patchNamespacedDeployment: vi.fn().mockResolvedValue({}),
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(getDefaultWebmailEngine).mockReset();
+  });
+
+  it('engine=roundcube: scales bulwark to 0 + annotates; leaves roundcube alone', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('roundcube');
+    const apps = makeApps({
+      activeName: 'roundcube',
+      activeReplicas: 1,
+      activeAnnotated: false,
+      inactiveName: 'bulwark',
+      inactiveReplicas: 1,
+      inactiveAnnotated: false,
+    });
+    const log = makeLog();
+
+    const result = await reconcileEngineDeployments({} as Database, apps as never, log);
+
+    expect(result?.engine).toBe('roundcube');
+    expect(result?.activeDeployment.name).toBe('roundcube');
+    expect(result?.inactiveDeployment.name).toBe('bulwark');
+    expect(result?.activeAnnotationCleared).toBe(false); // wasn't annotated
+    expect(result?.inactiveScaledToZero).toBe(true);
+    expect(result?.inactiveAnnotated).toBe(true);
+    expect(apps.replaceNamespacedDeploymentScale).toHaveBeenCalledOnce();
+    const scaleCall = apps.replaceNamespacedDeploymentScale.mock.calls[0][0] as {
+      name: string;
+      body: { spec: { replicas: number } };
+    };
+    expect(scaleCall.name).toBe('bulwark');
+    expect(scaleCall.body.spec.replicas).toBe(0);
+  });
+
+  it('engine=bulwark: scales roundcube to 0 + annotates; leaves bulwark alone', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
+    const apps = makeApps({
+      activeName: 'bulwark',
+      activeReplicas: 1,
+      inactiveName: 'roundcube',
+      inactiveReplicas: 1,
+    });
+    const log = makeLog();
+
+    const result = await reconcileEngineDeployments({} as Database, apps as never, log);
+
+    expect(result?.engine).toBe('bulwark');
+    expect(result?.activeDeployment.name).toBe('bulwark');
+    expect(result?.inactiveDeployment.name).toBe('roundcube');
+    const scaleCall = apps.replaceNamespacedDeploymentScale.mock.calls[0][0] as {
+      name: string;
+    };
+    expect(scaleCall.name).toBe('roundcube');
+  });
+
+  it('clears the disabled annotation from the active engine on engine flip', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('roundcube');
+    const apps = makeApps({
+      activeName: 'roundcube',
+      activeReplicas: 0, // was inactive previously
+      activeAnnotated: true, // ← carries the annotation from the prior flip
+      inactiveName: 'bulwark',
+      inactiveReplicas: 1,
+      inactiveAnnotated: false,
+    });
+    const log = makeLog();
+
+    const result = await reconcileEngineDeployments({} as Database, apps as never, log);
+
+    expect(result?.activeAnnotationCleared).toBe(true);
+    // The JSON-patch must be a remove operation for the annotation key.
+    const patchCalls = apps.patchNamespacedDeployment.mock.calls;
+    const removeCall = patchCalls.find((c: unknown[]) => {
+      const arg = c[0] as { name: string; body: ReadonlyArray<{ op: string }> | unknown };
+      return arg.name === 'roundcube' && Array.isArray(arg.body) && arg.body[0]?.op === 'remove';
+    });
+    expect(removeCall).toBeDefined();
+  });
+
+  it('skips scaling when inactive Deployment is missing (404 is non-fatal)', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('roundcube');
+    const apps = makeApps({
+      activeName: 'roundcube',
+      inactiveName: 'bulwark',
+      inactiveMissing: true,
+    });
+    const log = makeLog();
+
+    const result = await reconcileEngineDeployments({} as Database, apps as never, log);
+
+    expect(result?.inactiveScaledToZero).toBe(false);
+    expect(result?.inactiveAnnotated).toBe(false);
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it('no-ops when inactive is already scaled to 0 + annotated', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('roundcube');
+    const apps = makeApps({
+      activeName: 'roundcube',
+      activeReplicas: 1,
+      activeAnnotated: false,
+      inactiveName: 'bulwark',
+      inactiveReplicas: 0,
+      inactiveAnnotated: true,
+    });
+    const log = makeLog();
+
+    const result = await reconcileEngineDeployments({} as Database, apps as never, log);
+
+    expect(result?.inactiveScaledToZero).toBe(false);
+    expect(result?.inactiveAnnotated).toBe(false);
+    expect(apps.replaceNamespacedDeploymentScale).not.toHaveBeenCalled();
+    expect(apps.patchNamespacedDeployment).not.toHaveBeenCalled();
   });
 });
