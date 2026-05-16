@@ -133,18 +133,18 @@ probe_static_client() {
   local res code err
   res=$(curl -sk --max-time 5 -X POST \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "grant_type=authorization_code&code=bogus&redirect_uri=https://example.invalid/cb&tenant_id=${cid}&client_secret=${cs}&code_verifier=verifier_at_least_43_chars_aaaaaaaaaaaaaaaaaaa" \
+    -d "grant_type=authorization_code&code=bogus&redirect_uri=https://example.invalid/cb&client_id=${cid}&client_secret=${cs}&code_verifier=verifier_at_least_43_chars_aaaaaaaaaaaaaaaaaaa" \
     "$DEX_HOST/dex/token")
   err=$(echo "$res" | jq -r '.error // empty')
   case "$err" in
     invalid_grant|invalid_request)
-      ok "Dex recognises $label tenant_id=${cid} (error=$err for bogus code)"
+      ok "Dex recognises $label client_id=${cid} (error=$err for bogus code)"
       ;;
     invalid_client|"")
-      fail "Dex did NOT recognise $label tenant_id=${cid}: $res"
+      fail "Dex did NOT recognise $label client_id=${cid}: $res"
       ;;
     *)
-      ok "Dex recognises $label tenant_id=${cid} (error=$err — non-fatal)"
+      ok "Dex recognises $label client_id=${cid} (error=$err — non-fatal)"
       ;;
   esac
 }
@@ -156,7 +156,7 @@ probe_static_client "$CLIENT_CLIENT_ID" "$CLIENT_CLIENT_SECRET" "client"
 log "Scenario 2: register OIDC providers"
 
 create_provider() {
-  local panel="$1" tenant_id="$2" client_secret="$3" display="$4"
+  local panel="$1" client_id="$2" client_secret="$3" display="$4"
   local body
   # enabled:true is REQUIRED — service.createProvider stores enabled=0
   # by default, and getAuthStatus filters by enabled=1 so a disabled
@@ -164,10 +164,10 @@ create_provider() {
   body=$(jq -nc \
     --arg dn "$display" \
     --arg iu "$DEX_HOST/dex" \
-    --arg ci "$tenant_id" \
+    --arg ci "$client_id" \
     --arg cs "$client_secret" \
     --arg ps "$panel" \
-    '{display_name:$dn, issuer_url:$iu, tenant_id:$ci, client_secret:$cs, panel_scope:$ps, enabled:true, auto_provision:true}')
+    '{display_name:$dn, issuer_url:$iu, client_id:$ci, client_secret:$cs, panel_scope:$ps, enabled:true, auto_provision:true}')
   curl -sk --max-time 10 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
     -d "$body" "$ADMIN_HOST/api/v1/admin/oidc/providers"
 }
@@ -189,7 +189,7 @@ else
   ok "admin provider id=$ADMIN_PROVIDER_ID"
 fi
 
-CLIENT_PROVIDER_RES=$(create_provider client "$CLIENT_CLIENT_ID" "$CLIENT_CLIENT_SECRET" "Dex (integration-test client)")
+CLIENT_PROVIDER_RES=$(create_provider tenant "$CLIENT_CLIENT_ID" "$CLIENT_CLIENT_SECRET" "Dex (integration-test client)")
 CLIENT_PROVIDER_ID=$(echo "$CLIENT_PROVIDER_RES" | jq -r '.data.id // empty')
 if [[ -z "$CLIENT_PROVIDER_ID" || "$CLIENT_PROVIDER_ID" == "null" ]]; then
   fail "create tenant provider returned no id: $CLIENT_PROVIDER_RES"
@@ -267,8 +267,8 @@ check_authorize_redirect() {
     *) fail "$panel: Location does not point to Dex /dex/auth: $loc"; return 1 ;;
   esac
   case "$loc" in
-    *"tenant_id=$expected_cid"*) ok "$panel: redirect carries tenant_id=$expected_cid" ;;
-    *) fail "$panel: redirect missing tenant_id=$expected_cid (got: $loc)" ;;
+    *"client_id=$expected_cid"*) ok "$panel: redirect carries client_id=$expected_cid" ;;
+    *) fail "$panel: redirect missing client_id=$expected_cid (got: $loc)" ;;
   esac
   case "$loc" in
     *"response_type=code"*) ok "$panel: redirect carries response_type=code" ;;
