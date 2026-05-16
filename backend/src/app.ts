@@ -762,6 +762,34 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // 2026-05-16: Roundcube DB password self-healer. If the
+        // password in `mail/roundcube-secrets.ROUNDCUBEMAIL_DB_PASSWORD`
+        // drifts from what's set on the `roundcube` Postgres role,
+        // Roundcube can't authenticate and the webmail page renders
+        // a 500. Boot once + every 5 min reconciles by ALTER ROLE
+        // ... PASSWORD '<secret>' on the CNPG primary pod via exec.
+        // Non-blocking — failure logs a warning.
+        try {
+          const { startRoundcubeDbReconciler } = await import(
+            './modules/roundcube-db-reconciler/reconciler.js'
+          );
+          const k8sNode2 = await import('@kubernetes/client-node');
+          const kc2 = new k8sNode2.KubeConfig();
+          if (kubePath) kc2.loadFromFile(kubePath);
+          else kc2.loadFromCluster();
+          const rcDbHandle = startRoundcubeDbReconciler(
+            k8sForImapsync.core,
+            kc2,
+            app.log,
+          );
+          app.addHook('onClose', () => rcDbHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'roundcube-db-reconciler: failed to start (non-blocking)',
+          );
+        }
+
         // M1: node-role taxonomy. Upserts cluster_nodes from k8s every
         // 60s. Shares the same k8s tenant instance as mail reconcilers
         // to avoid re-reading the kubeconfig. Stops cleanly on app
