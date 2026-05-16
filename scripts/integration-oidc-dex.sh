@@ -233,7 +233,7 @@ test_provider() {
 
 log "Scenario 4: per-panel /auth/oidc/status"
 STATUS_ADMIN=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=admin")
-STATUS_CLIENT=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=client")
+STATUS_CLIENT=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=tenant")
 ADMIN_HAS_ADMIN_ID=$(echo "$STATUS_ADMIN" | jq -r --arg id "$ADMIN_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
 ADMIN_HAS_CLIENT_ID=$(echo "$STATUS_ADMIN" | jq -r --arg id "$CLIENT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
 CLIENT_HAS_CLIENT_ID=$(echo "$STATUS_CLIENT" | jq -r --arg id "$CLIENT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
@@ -421,7 +421,7 @@ log "Scenario 6: end-to-end Dex login → platform JWT (admin panel)"
 drive_dex_login admin "$ADMIN_PROVIDER_ID" "$DEX_ADMIN_USER" "$DEX_ADMIN_PW" "$ADMIN_HOST/login"
 
 log "Scenario 7: end-to-end Dex login → platform JWT (client panel)"
-drive_dex_login client "$CLIENT_PROVIDER_ID" "$DEX_CLIENT_USER" "$DEX_CLIENT_PW" "$ADMIN_HOST/tenant-login"
+drive_dex_login tenant "$CLIENT_PROVIDER_ID" "$DEX_CLIENT_USER" "$DEX_CLIENT_PW" "$ADMIN_HOST/tenant-login"
 
 # ─── Scenario 8: cross-panel token rejection ─────────────────────────────────
 
@@ -730,7 +730,7 @@ cleanup_providers
 trap 'rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-dex-*.headers 2>/dev/null' EXIT
 # Verify both providers gone
 STATUS_ADMIN=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=admin")
-STATUS_CLIENT=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=client")
+STATUS_CLIENT=$(curl -sk --max-time 5 "$ADMIN_HOST/api/v1/auth/oidc/status?panel=tenant")
 ADMIN_REMAINING=$(echo "$STATUS_ADMIN" | jq -r --arg id "$ADMIN_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
 CLIENT_REMAINING=$(echo "$STATUS_CLIENT" | jq -r --arg id "$CLIENT_PROVIDER_ID" '.data.providers // .data | map(select(.id == $id)) | length')
 [[ "$ADMIN_REMAINING" == "0" ]] && ok "admin provider deleted" || fail "admin provider still listed"
