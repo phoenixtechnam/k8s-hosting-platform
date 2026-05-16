@@ -23,6 +23,10 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Strip Accept-Encoding so platform-api sends plain JSON; nginx
+        # re-compresses on the way out. See admin-panel nginx.conf.template
+        # for the full incident note (double-gzip → content-length:0).
+        proxy_set_header Accept-Encoding "";
         # WebSocket support (log streaming, terminal)
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
