@@ -230,7 +230,6 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     } catch {
       // K8s not available — skip auto-provisioning
     }
-
     reply.status(201).send(success({
       ...tenant,
       tenantUser: {

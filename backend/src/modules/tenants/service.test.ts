@@ -48,7 +48,9 @@ describe('getTenantById', () => {
     const db = createMockDb({ selectResult: [tenant] });
 
     const result = await getTenantById(db, 'c1');
-    expect(result).toEqual(tenant);
+    // toTenantResponse() reshapes the row: adds nested billingAddress
+    // (null when any of the four billing_* columns is unset).
+    expect(result).toEqual({ ...tenant, billingAddress: null });
   });
 
   it('should throw CLIENT_NOT_FOUND when not found', async () => {
@@ -301,7 +303,7 @@ describe('updateTenant', () => {
     } as unknown as Parameters<typeof updateTenant>[0];
 
     const result = await updateTenant(db, 'c1', { name: 'Acme Updated' });
-    expect(result).toEqual(existingTenant);
+    expect(result).toEqual({ ...existingTenant, billingAddress: null });
     expect(updateFn).toHaveBeenCalled();
   });
 
@@ -319,7 +321,7 @@ describe('updateTenant', () => {
     } as unknown as Parameters<typeof updateTenant>[0];
 
     const result = await updateTenant(db, 'c1', {});
-    expect(result).toEqual(existingTenant);
+    expect(result).toEqual({ ...existingTenant, billingAddress: null });
     expect(updateFn).not.toHaveBeenCalled();
   });
 

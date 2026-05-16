@@ -3929,7 +3929,7 @@ STALWART_ADMIN_PASSWORD=${stalwart_admin_pw}
 # Stalwart 0.16 IMAP master-auth requires the FQDN form (verified
 # empirically 2026-05-07: short 'master' returns AUTHENTICATIONFAILED).
 # 2026-05-16: also CONFIRMED that Stalwart 0.16 blocks the .local TLD
-# entirely on auth (`AUTHENTICATIONFAILED master.local` even with
+# entirely on auth ('AUTHENTICATIONFAILED master.local' even with
 # correct password + Admin role) — anchor the master Account under
 # the platform's base domain instead, which is always a real TLD.
 # The master Account is provisioned by provision_stalwart_master_user().
@@ -5079,7 +5079,7 @@ spec:
           # 5c. Fire x:Task/set create AcmeRenewal — the JMAP-canonical
           # trigger for ACME cert acquisition in Stalwart 0.16.
           #
-          # CRITICAL: AcmeRenewal requires `domainId` (Stalwart 0.16
+          # CRITICAL: AcmeRenewal requires 'domainId' (Stalwart 0.16
           # validates with "Required: domainId" otherwise). Phase K
           # live-test on staging surfaced this — the earlier bootstrap
           # commit omitted domainId and the task fail with validation

@@ -38,6 +38,28 @@ async function validateWorkerPin(db: Database, value: string | null | undefined)
   return value;
 }
 
+/**
+ * Reshape a raw DB tenant row into the api-contract response shape:
+ * the four flat billing_* columns collapse into a nested billingAddress
+ * object (or null when any component is unset, which is the case for
+ * pre-rename legacy rows that hadn't filled them in).
+ *
+ * Use at every place the service returns a tenant row to a route
+ * handler. Routes serialize the result through Fastify's response
+ * JSON Schema, which expects the nested shape.
+ */
+type TenantRow = typeof tenants.$inferSelect;
+type TenantResponseShape = Omit<TenantRow, 'billingStreetAddress' | 'billingPostalAddress' | 'billingCity' | 'billingCountry'> & {
+  billingAddress: { streetAddress: string; postalAddress: string; city: string; country: string } | null;
+};
+export function toTenantResponse<T extends TenantRow>(row: T): TenantResponseShape & Omit<T, keyof TenantRow> {
+  const { billingStreetAddress, billingPostalAddress, billingCity, billingCountry, ...rest } = row;
+  const billingAddress = billingStreetAddress && billingPostalAddress && billingCity && billingCountry
+    ? { streetAddress: billingStreetAddress, postalAddress: billingPostalAddress, city: billingCity, country: billingCountry }
+    : null;
+  return { ...rest, billingAddress } as TenantResponseShape & Omit<T, keyof TenantRow>;
+}
+
 export async function createTenant(db: Database, input: CreateTenantInput, createdBy: string) {
   const id = crypto.randomUUID();
   const namespace = generateNamespace(input.name);
@@ -175,7 +197,7 @@ export async function createTenant(db: Database, input: CreateTenantInput, creat
     emailVerifiedAt: new Date(),
   });
 
-  return { ...created, _generatedPassword: generatedPassword, _clientUserId: tenantUserId };
+  return { ...toTenantResponse(created), _generatedPassword: generatedPassword, _clientUserId: tenantUserId };
 }
 
 function generateStrongPassword(): string {
@@ -188,7 +210,7 @@ function generateStrongPassword(): string {
 export async function getTenantById(db: Database, id: string) {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, id));
   if (!tenant) throw tenantNotFound(id);
-  return tenant;
+  return toTenantResponse(tenant);
 }
 
 /** One row per PVC returned by getTenantStoragePlacement. */
