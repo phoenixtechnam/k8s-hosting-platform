@@ -104,8 +104,8 @@ spec:
             - --email-domain=*
             - --provider=oidc
             - --oidc-issuer-url=$(OIDC_ISSUER_URL)
-            - --tenant-id=$(OAUTH2_PROXY_CLIENT_ID)
-            - --tenant-secret=$(OAUTH2_PROXY_CLIENT_SECRET)
+            - --client-id=$(OAUTH2_PROXY_CLIENT_ID)
+            - --client-secret=$(OAUTH2_PROXY_CLIENT_SECRET)
             - --cookie-secret=$(OAUTH2_PROXY_COOKIE_SECRET)
             - --cookie-secure=true
             - --cookie-samesite=lax
