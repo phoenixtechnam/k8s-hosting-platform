@@ -88,8 +88,25 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
               properties: {
                 id: { type: 'string' },
                 name: { type: 'string' },
+                contactName: { type: ['string', 'null'] },
                 primaryEmail: { type: 'string' },
+                secondaryEmail: { type: ['string', 'null'] },
+                phoneE164: { type: ['string', 'null'] },
+                billingAddress: {
+                  type: ['object', 'null'],
+                  properties: {
+                    streetAddress: { type: 'string' },
+                    postalAddress: { type: 'string' },
+                    city: { type: 'string' },
+                    country: { type: 'string' },
+                  },
+                },
+                kubernetesNamespace: { type: 'string' },
+                planId: { type: 'string' },
+                regionId: { type: 'string' },
                 status: { type: 'string' },
+                storageTier: { type: 'string' },
+                nodeName: { type: ['string', 'null'] },
                 createdAt: { type: 'string' },
                 // The auto-created tenant_admin user surfaces here on
                 // create (and only here — never on subsequent reads)
