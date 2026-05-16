@@ -105,7 +105,16 @@ export default function TaskCenterChip() {
 
   const onSelect = (task: TaskRow) => {
     if (task.target.type === 'modal') {
-      setSelectedModal({ modal: task.target.modal, props: task.target.modalProps ?? {} });
+      // Inject `taskId` into modalProps so progress modals that key
+      // off the task row itself (MailTaskProgressModal etc.) can
+      // resolve it without each backend writer duplicating the
+      // task's own id into modalProps. Per-target modalProps still
+      // win on key collision — useful for modals that want a
+      // different taskId surface name.
+      setSelectedModal({
+        modal: task.target.modal,
+        props: { taskId: task.id, ...(task.target.modalProps ?? {}) },
+      });
       setOpen(false);
       return;
     }
