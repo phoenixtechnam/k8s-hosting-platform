@@ -26,8 +26,8 @@ set -euo pipefail
 SURFACE_FILE_MARKERS=(
   # tenant-lifecycle transitions (admin + bulk + per-client)
   "backend/src/modules/tenant-lifecycle/registry/dispatcher.ts|tasks/service.js"
-  # bulk client ops parent fan-out
-  "backend/src/modules/clients/bulk.ts|createBulkParentTask"
+  # bulk tenant ops parent fan-out
+  "backend/src/modules/tenants/bulk.ts|createBulkParentTask"
   # storage ops
   "backend/src/modules/storage-lifecycle/service.ts|mirrorOpToTaskTracker"
   # Phase 2 surfaces (2026-05-03):
