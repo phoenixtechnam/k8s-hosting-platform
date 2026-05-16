@@ -5,29 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1775337738459,
-      "tag": "0000_worthless_zeigeist",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1775431969995,
-      "tag": "0001_flimsy_felicia_hardy",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1775478312828,
-      "tag": "0002_dns_provider_groups",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1775604130505,
-      "tag": "0003_chemical_overlord",
+      "when": 1778939728563,
+      "tag": "0000_tenant_rename",
       "breakpoints": true
     }
   ]
