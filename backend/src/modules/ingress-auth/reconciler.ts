@@ -186,7 +186,7 @@ async function markStateError(
 function buildOauth2ProxyConfig(
   primary: EnabledIngressAuthRow,
   cookieSecret: string,
-  tenantSecret: string,
+  clientSecret: string,
 ): string {
   // oauth2-proxy reads TOML. Booleans MUST be unquoted, strings MUST
   // be quoted. Durations are strings (`"3600s"`).
@@ -198,8 +198,8 @@ function buildOauth2ProxyConfig(
   const normalisedIssuer = provider.issuerUrl.replace(/\/+$/, '');
   lines.push(`provider="oidc"`);
   lines.push(`oidc_issuer_url="${normalisedIssuer}"`);
-  lines.push(`tenant_id="${provider.oauthClientId}"`);
-  lines.push(`tenant_secret="${tenantSecret}"`);
+  lines.push(`client_id="${provider.oauthClientId}"`);
+  lines.push(`client_secret="${clientSecret}"`);
   if (provider.usePkce) {
     lines.push(`code_challenge_method="S256"`);
   }
@@ -263,8 +263,8 @@ async function ensureTenantProxy(
     tenantId,
   );
   const primary = enabled[0]!;
-  const tenantSecret = decryptProviderSecret(primary.provider, deps.encryptionKey);
-  const oauth2ProxyCfg = buildOauth2ProxyConfig(primary, cookieSecret, tenantSecret);
+  const clientSecret = decryptProviderSecret(primary.provider, deps.encryptionKey);
+  const oauth2ProxyCfg = buildOauth2ProxyConfig(primary, cookieSecret, clientSecret);
   const needsValidator = tenantNeedsClaimValidator(enabled);
   const claimRulesJson = buildClaimRulesJson(enabled);
 
@@ -280,7 +280,7 @@ async function ensureTenantProxy(
 
   // Secret — currently empty (config inlines secrets via ConfigMap
   // for v1). When we add Secret-volume mounting in v2 we'll move
-  // tenant_secret + cookie_secret here for K8s-side encryption-at-rest.
+  // client_secret + cookie_secret here for K8s-side encryption-at-rest.
   await upsertSecret(deps.k8s.core, namespace);
 
   // NetworkPolicy — limit oauth2-proxy egress to OIDC issuer host +
@@ -406,7 +406,7 @@ async function upsertSecret(core: k8s.CoreV1Api, namespace: string): Promise<voi
     },
     type: 'Opaque',
     stringData: {
-      // Reserved for v2 — Secret-volume mount of tenant_secret +
+      // Reserved for v2 — Secret-volume mount of client_secret +
       // cookie_secret. v1 inlines them in oauth2_proxy.cfg via the
       // ConfigMap (acceptable because the ConfigMap is namespace-
       // scoped and access is restricted by RBAC).

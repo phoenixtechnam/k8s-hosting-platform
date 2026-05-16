@@ -242,8 +242,8 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request, reply) => {
     const input = request.body as unknown as SaveProviderInput;
-    if (!input.display_name || !input.issuer_url || !input.tenant_id || !input.tenant_secret || !input.panel_scope) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, issuer_url, tenant_id, tenant_secret, and panel_scope are required', 400);
+    if (!input.display_name || !input.issuer_url || !input.client_id || !input.client_secret || !input.panel_scope) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, issuer_url, client_id, client_secret, and panel_scope are required', 400);
     }
     const provider = await service.createProvider(app.db, input, encryptionKey);
     reply.status(201).send(success(provider));

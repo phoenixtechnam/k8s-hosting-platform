@@ -164,7 +164,7 @@ export async function listProviders(db: Database) {
     id: p.id,
     displayName: p.displayName,
     issuerUrl: p.issuerUrl,
-    tenantId: p.tenantId,
+    clientId: p.clientId,
     panelScope: p.panelScope,
     enabled: Boolean(p.enabled),
     backchannelLogoutEnabled: Boolean(p.backchannelLogoutEnabled),
@@ -187,8 +187,8 @@ export async function getProviderById(db: Database, id: string) {
 export interface SaveProviderInput {
   readonly display_name: string;
   readonly issuer_url: string;
-  readonly tenant_id: string;
-  readonly tenant_secret: string;
+  readonly client_id: string;
+  readonly client_secret: string;
   readonly panel_scope: 'admin' | 'tenant';
   readonly enabled?: boolean;
   readonly backchannel_logout_enabled?: boolean;
@@ -200,14 +200,14 @@ export interface SaveProviderInput {
 
 export async function createProvider(db: Database, input: SaveProviderInput, encryptionKey: string) {
   const discovery = await fetchDiscovery(input.issuer_url);
-  const encryptedSecret = encrypt(input.tenant_secret, encryptionKey);
+  const encryptedSecret = encrypt(input.client_secret, encryptionKey);
   const id = crypto.randomUUID();
 
   await db.insert(oidcProviders).values({
     id,
     displayName: input.display_name,
     issuerUrl: input.issuer_url,
-    tenantId: input.tenant_id,
+    clientId: input.client_id,
     clientSecretEncrypted: encryptedSecret,
     panelScope: input.panel_scope,
     enabled: input.enabled ? 1 : 0,
@@ -228,8 +228,8 @@ export async function updateProvider(db: Database, id: string, input: Partial<Sa
   const updateValues: Record<string, unknown> = {};
   if (input.display_name !== undefined) updateValues.displayName = input.display_name;
   if (input.issuer_url !== undefined) updateValues.issuerUrl = input.issuer_url;
-  if (input.tenant_id !== undefined) updateValues.tenantId = input.tenant_id;
-  if (input.tenant_secret) updateValues.clientSecretEncrypted = encrypt(input.tenant_secret, encryptionKey);
+  if (input.client_id !== undefined) updateValues.clientId = input.client_id;
+  if (input.client_secret) updateValues.clientSecretEncrypted = encrypt(input.client_secret, encryptionKey);
   if (input.panel_scope !== undefined) updateValues.panelScope = input.panel_scope;
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
   if (input.backchannel_logout_enabled !== undefined) updateValues.backchannelLogoutEnabled = input.backchannel_logout_enabled ? 1 : 0;
@@ -298,7 +298,7 @@ export async function buildAuthorizationUrl(
 
   const params = new URLSearchParams({
     response_type: 'code',
-    tenant_id: provider.tenantId,
+    client_id: provider.clientId,
     redirect_uri: callbackUrl,
     scope: 'openid email profile',
     state,
@@ -339,7 +339,7 @@ export async function exchangeCodeForTokens(
   encryptionKey: string,
 ): Promise<{ idToken: IdTokenClaims; rawIdToken: string; provider: typeof oidcProviders.$inferSelect }> {
   const provider = await getProviderById(db, providerId);
-  const tenantSecret = decrypt(provider.clientSecretEncrypted, encryptionKey);
+  const clientSecret = decrypt(provider.clientSecretEncrypted, encryptionKey);
 
   let discovery = provider.discoveryMetadata as OidcDiscovery | null;
   if (!discovery?.token_endpoint) {
@@ -350,8 +350,8 @@ export async function exchangeCodeForTokens(
     grant_type: 'authorization_code',
     code,
     redirect_uri: callbackUrl,
-    tenant_id: provider.tenantId,
-    tenant_secret: tenantSecret,
+    client_id: provider.clientId,
+    client_secret: clientSecret,
     code_verifier: codeVerifier,
   });
 

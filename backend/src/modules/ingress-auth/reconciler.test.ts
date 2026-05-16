@@ -43,7 +43,7 @@ const ENABLED_ROW = {
   },
   provider: {
     id: 'p-1',
-    tenantId: CLIENT_ID,
+    clientId: CLIENT_ID,
     name: 'Test provider',
     issuerUrl: 'https://idp.example.com/',
     oauthClientId: 'oauth-tenant-id',
@@ -281,8 +281,8 @@ describe('reconcileTenant — provisioning path', () => {
     expect(cfg).toContain('pass_authorization_header=true');
     expect(cfg).toContain('set_xauthrequest=true');
     expect(cfg).toContain('reverse_proxy=true');
-    expect(cfg).toContain('tenant_id="oauth-tenant-id"');
-    expect(cfg).toContain('tenant_secret="plaintext-secret"');
+    expect(cfg).toContain('client_id="oauth-tenant-id"');
+    expect(cfg).toContain('client_secret="plaintext-secret"');
     // Trailing slash must be stripped from issuer URL.
     expect(cfg).toContain('oidc_issuer_url="https://idp.example.com"');
     expect(cfg).not.toContain('oidc_issuer_url="https://idp.example.com/"');

@@ -8,6 +8,13 @@
       "when": 1778939728563,
       "tag": "0000_tenant_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778964000000,
+      "tag": "0001_rename_oidc_client_id",
+      "breakpoints": true
     }
   ]
 }

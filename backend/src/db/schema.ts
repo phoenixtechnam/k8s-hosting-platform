@@ -161,7 +161,12 @@ export const oidcProviders = pgTable('oidc_providers', {
   id: varchar('id', { length: 36 }).primaryKey(),
   displayName: varchar('display_name', { length: 255 }).notNull(),
   issuerUrl: varchar('issuer_url', { length: 500 }).notNull(),
-  tenantId: varchar('tenant_id', { length: 255 }).notNull(),
+  // OIDC protocol identifiers — DO NOT rename to tenant_*. These are
+  // the OAuth2 client_id / client_secret of the IdP-registered relying
+  // party (this platform). Bulk rename mistakenly renamed both to
+  // tenant_* on first commit; reverted here. Follow-up migration
+  // 0001_rename_oidc_client_id.sql renames the live column too.
+  clientId: varchar('client_id', { length: 255 }).notNull(),
   clientSecretEncrypted: varchar('client_secret_encrypted', { length: 500 }).notNull(),
   panelScope: panelScopeEnum().notNull(),
   enabled: integer('enabled').notNull().default(0),
