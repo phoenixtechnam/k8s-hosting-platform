@@ -379,12 +379,24 @@ REQUIRED:
 OPTIONS:
   --domain <FQDN>        Base domain (required for first server)
   --host-tenant-workloads <true|false>
-                         Whether this node accepts tenant pods. Default:
-                         false for servers, true for workers. When false
-                         on a server, applies the
-                         platform.phoenix-host.net/server-only:NoSchedule
-                         taint so only system pods (Flux, platform-api,
-                         etc.) land here. Not applicable to workers.
+                         Whether this node accepts tenant pods.
+                         Workers: defaults true (workers exist to run
+                         tenants).
+                         Servers: when UNSET (default), bootstrap leaves
+                         the platform.phoenix-host.net/host-tenant-
+                         workloads label unset and platform-api's
+                         k8s-sync reconciler stamps the label according
+                         to the admin Setting "New SERVER nodes host
+                         tenant workloads by default" (defaults ON).
+                         When set explicitly to `false` on a server,
+                         bootstrap stamps the label = false AND applies
+                         the platform.phoenix-host.net/server-only:
+                         NoSchedule taint so only system pods (Flux,
+                         platform-api, etc.) land here — this is the
+                         classic dedicated-control-plane setup.
+                         When set explicitly to `true` on a server,
+                         bootstrap stamps the label = true and removes
+                         any pre-existing server-only taint.
   --env <dev|staging|production> Environment (default: production)
   --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
   --with-monitoring      Install Prometheus + Loki
@@ -776,17 +788,39 @@ parse_args() {
     error "Missing or invalid --join-as: '${NODE_ROLE}'. Must be 'server' or 'worker'. Run with --help for examples."
   fi
 
-  # Resolve HOST_CLIENT_WORKLOADS default: servers default to refusing
-  # client pods (NoSchedule taint); workers accept them. Keep in sync
-  # with the cluster_nodes column default (migration 0046).
+  # Resolve HOST_CLIENT_WORKLOADS default.
+  #
+  # Workers: hardcoded true. Migration 0046's column default + the
+  # admin Setting `newServerHostsClientWorkloads` both default TRUE,
+  # and workers exist precisely to run tenant workloads.
+  #
+  # Servers: leave UNSET when the operator didn't pass an explicit
+  # --host-tenant-workloads. apply_node_labels_and_taints will then
+  # skip stamping the platform.phoenix-host.net/host-tenant-workloads
+  # label and the server-only NoSchedule taint, leaving the node
+  # unlabelled for platform-api's k8s-sync reconciler. That
+  # reconciler (backend/src/modules/nodes/k8s-sync.ts) reads the
+  # admin Setting + applies its boolean value to every server node
+  # without an explicit label. The Setting defaults to ON
+  # ("New SERVER nodes host client workloads by default") so a
+  # vanilla bootstrap produces a server that accepts tenant pods —
+  # matching what the admin UI promises.
+  #
+  # Historical note: prior to 2026-05-16, this block hardcoded
+  # HOST_CLIENT_WORKLOADS=false for the server role, which
+  # contradicted both the column default and the Setting toggle.
+  # The stamped label then prevented k8s-sync from ever applying the
+  # Setting (sync skips operator-stamped labels by design). Result:
+  # the admin UI toggle was effectively dead code for bootstrap-
+  # created nodes. Operators wanting the old behaviour now opt in
+  # explicitly with `--host-tenant-workloads=false`.
   if [[ -z "$HOST_CLIENT_WORKLOADS" ]]; then
-    if [[ "$NODE_ROLE" == "server" ]]; then
-      HOST_CLIENT_WORKLOADS="false"
-    else
+    if [[ "$NODE_ROLE" == "worker" ]]; then
       HOST_CLIENT_WORKLOADS="true"
     fi
+    # Server + unset: leave empty. Reconciler applies the Setting.
   fi
-  if [[ "$HOST_CLIENT_WORKLOADS" != "true" && "$HOST_CLIENT_WORKLOADS" != "false" ]]; then
+  if [[ -n "$HOST_CLIENT_WORKLOADS" && "$HOST_CLIENT_WORKLOADS" != "true" && "$HOST_CLIENT_WORKLOADS" != "false" ]]; then
     error "Invalid --host-tenant-workloads: ${HOST_CLIENT_WORKLOADS}. Must be 'true' or 'false'."
   fi
 
@@ -1976,31 +2010,41 @@ apply_node_labels_and_taints() {
 
   # Server path: kubeconfig is local, kubectl works.
   export KUBECONFIG
-  log "Labelling ${node_name}: role=${NODE_ROLE}, host-tenant-workloads=${HOST_CLIENT_WORKLOADS}"
 
-  # --overwrite makes this idempotent so re-bootstrap / upgrade runs
-  # silently no-op if the labels already match.
+  # The node-role label is ALWAYS stamped — it's the platform's source
+  # of truth for distinguishing servers from workers and is consumed by
+  # affinity rules across the platform. Idempotent via --overwrite.
   kubectl label node "${node_name}" \
     "platform.phoenix-host.net/node-role=${NODE_ROLE}" \
     --overwrite
-  kubectl label node "${node_name}" \
-    "platform.phoenix-host.net/host-tenant-workloads=${HOST_CLIENT_WORKLOADS}" \
-    --overwrite
 
-  # server + host-tenant-workloads=false → keep the NoSchedule taint so
-  # the scheduler refuses tenant pods. Any other combo → remove it
-  # (kubectl taint with a trailing - is the documented delete syntax,
-  # 0 status on deletion OR when the taint wasn't present).
-  if [[ "$HOST_CLIENT_WORKLOADS" == "false" ]]; then
-    log "Applying server-only taint (NoSchedule) — tenant pods will not schedule here."
-    kubectl taint node "${node_name}" \
-      "platform.phoenix-host.net/server-only=true:NoSchedule" \
-      --overwrite
+  # host-tenant-workloads label + server-only taint: stamp ONLY when
+  # the operator passed an explicit --host-tenant-workloads value.
+  # When unset (parse_args left HOST_CLIENT_WORKLOADS empty for the
+  # server role), defer to platform-api's k8s-sync reconciler which
+  # reads the admin Setting `newServerHostsTenantWorkloads` (defaults
+  # ON) and stamps the label on its next cycle. Stamping anything
+  # here would override the Setting permanently — see the
+  # `hasExplicitHostLabel` short-circuit in
+  # backend/src/modules/nodes/k8s-sync.ts.
+  if [[ -z "$HOST_CLIENT_WORKLOADS" ]]; then
+    log "Labelling ${node_name}: role=${NODE_ROLE} (host-tenant-workloads deferred to admin Setting via k8s-sync reconciler)"
   else
-    log "Removing any server-only taint — this server will accept tenant pods."
-    kubectl taint node "${node_name}" \
-      "platform.phoenix-host.net/server-only:NoSchedule-" \
-      2>/dev/null || true
+    log "Labelling ${node_name}: role=${NODE_ROLE}, host-tenant-workloads=${HOST_CLIENT_WORKLOADS} (explicit --host-tenant-workloads override)"
+    kubectl label node "${node_name}" \
+      "platform.phoenix-host.net/host-tenant-workloads=${HOST_CLIENT_WORKLOADS}" \
+      --overwrite
+    if [[ "$HOST_CLIENT_WORKLOADS" == "false" ]]; then
+      log "Applying server-only taint (NoSchedule) — tenant pods will not schedule here."
+      kubectl taint node "${node_name}" \
+        "platform.phoenix-host.net/server-only=true:NoSchedule" \
+        --overwrite
+    else
+      log "Removing any server-only taint — this server will accept tenant pods."
+      kubectl taint node "${node_name}" \
+        "platform.phoenix-host.net/server-only:NoSchedule-" \
+        2>/dev/null || true
+    fi
   fi
 
   # NOTE: the Longhorn node-tag step has moved out of this function.
@@ -4467,6 +4511,12 @@ wait_for_admission_webhooks() {
 # Roundcube reads its DB credentials from the `roundcube-secrets` Secret
 # (created by generate_platform_secrets). This function reads the same
 # password and runs ALTER ROLE so re-runs converge.
+#
+# 2026-05-16: an in-platform-api reconciler
+# (`modules/roundcube-db-reconciler/`) takes over runtime convergence —
+# it reads the Secret + ALTER ROLEs the live password on a 5-min tick.
+# Bootstrap still calls this function for the initial provision so a
+# fresh install has working webmail before platform-api comes up.
 #
 # Skipped when:
 #   - roundcube-secrets does not exist (mail stack not deployed)
