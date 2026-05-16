@@ -4468,6 +4468,12 @@ wait_for_admission_webhooks() {
 # (created by generate_platform_secrets). This function reads the same
 # password and runs ALTER ROLE so re-runs converge.
 #
+# 2026-05-16: an in-platform-api reconciler
+# (`modules/roundcube-db-reconciler/`) takes over runtime convergence —
+# it reads the Secret + ALTER ROLEs the live password on a 5-min tick.
+# Bootstrap still calls this function for the initial provision so a
+# fresh install has working webmail before platform-api comes up.
+#
 # Skipped when:
 #   - roundcube-secrets does not exist (mail stack not deployed)
 #   - platform postgres Cluster is not Ready within 300s
