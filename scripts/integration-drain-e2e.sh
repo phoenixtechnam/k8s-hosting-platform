@@ -219,7 +219,7 @@ provision_on_worker() {
   local depl_name="t$(date +%s%N | tail -c 9)"
   api POST "/tenants/$cid/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}" >/dev/null
   for _ in $(seq 1 30); do
-    local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || true)
+    local ns; ns=$(ssh_cp "kubectl get ns -l tenant=$cid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || true)
     [[ -n "$ns" ]] && break
     sleep 2
   done
@@ -245,8 +245,8 @@ HA_CID="${HA_INFO%%|*}"
 HA_DEPL="${HA_INFO##*|}"
 ok "HA client provisioned cid=$HA_CID depl=$HA_DEPL"
 
-LOCAL_NS=$(ssh_cp "kubectl get ns -l client=$LOCAL_CID -o jsonpath='{.items[0].metadata.name}'")
-HA_NS=$(ssh_cp "kubectl get ns -l client=$HA_CID -o jsonpath='{.items[0].metadata.name}'")
+LOCAL_NS=$(ssh_cp "kubectl get ns -l tenant=$LOCAL_CID -o jsonpath='{.items[0].metadata.name}'")
+HA_NS=$(ssh_cp "kubectl get ns -l tenant=$HA_CID -o jsonpath='{.items[0].metadata.name}'")
 LOCAL_PV=$(ssh_cp "kubectl -n $LOCAL_NS get pvc ${LOCAL_NS}-storage -o jsonpath='{.spec.volumeName}'")
 HA_PV=$(ssh_cp "kubectl -n $HA_NS get pvc ${HA_NS}-storage -o jsonpath='{.spec.volumeName}'")
 [[ -n "$LOCAL_PV" && -n "$HA_PV" ]] && ok "PVCs bound: local=$LOCAL_PV ha=$HA_PV" || { fail "PVCs not bound"; exit 1; }

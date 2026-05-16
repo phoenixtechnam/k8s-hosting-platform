@@ -99,7 +99,7 @@ for _ in $(seq 1 60); do
 done
 [[ "$STATUS" == "provisioned" ]] && ok "provisioningStatus=provisioned" || { fail "stuck at $STATUS"; exit 1; }
 
-NS=$(ssh_cp "kubectl get ns -l client=$CID -o jsonpath='{.items[0].metadata.name}'")
+NS=$(ssh_cp "kubectl get ns -l tenant=$CID -o jsonpath='{.items[0].metadata.name}'")
 PVNAME=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.volumeName}'")
 [[ -n "$PVNAME" ]] && ok "PV bound: $PVNAME" || { fail "PV not bound"; exit 1; }
 

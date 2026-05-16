@@ -196,7 +196,7 @@ scenario_lifecycle() {
 
   # Wait for namespace=Active first (orchestrator step 1).
   wait_for 90 "namespace provisioned" "Active" \
-    "ssh_cp 'kubectl get ns -l client=$cid --no-headers'" || return 1
+    "ssh_cp 'kubectl get ns -l tenant=$cid --no-headers'" || return 1
 
   # Then wait for the orchestrator to fully complete: PVC bound, FM
   # Deployment created at scale 0, ResourceQuota + NetworkPolicies
@@ -227,7 +227,7 @@ scenario_fm() {
   # terminate AND for Longhorn to detach the volume so the workload
   # we're about to create doesn't hit Multi-Attach.
   api POST "/tenants/$cid/files/stop" "" >/dev/null
-  local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
+  local ns; ns=$(ssh_cp "kubectl get ns -l tenant=$cid -o jsonpath='{.items[0].metadata.name}'")
   # Wait up to 120s for the FM pod to terminate AND its volume to
   # detach. Pods take ~30s to gracefully shut down; Longhorn detach
   # takes another 10-30s on top.
@@ -299,7 +299,7 @@ scenario_https() {
   ok "domain created dom_id=$dom_id name=$domain"
 
   # 3. Ingress in tenant ns
-  local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
+  local ns; ns=$(ssh_cp "kubectl get ns -l tenant=$cid -o jsonpath='{.items[0].metadata.name}'")
   [[ -n "$ns" ]] || { fail "could not resolve tenant namespace"; return 1; }
   wait_for 60 "Ingress exists in $ns with host=$domain" "$domain" \
     "ssh_cp 'kubectl -n $ns get ingress -o jsonpath={.items[*].spec.rules[*].host}'" || return 1
@@ -473,7 +473,7 @@ scenario_reaper() {
   echo "$cid" >> /tmp/integration.cids
 
   wait_for 90 "reaper: namespace provisioned" "Active" \
-    "ssh_cp 'kubectl get ns -l client=$cid --no-headers'" || return 1
+    "ssh_cp 'kubectl get ns -l tenant=$cid --no-headers'" || return 1
   wait_for 180 "reaper: client provisioned" '"provisioningStatus":"provisioned"' \
     "api GET '/tenants/$cid'" || return 1
 
@@ -490,7 +490,7 @@ scenario_reaper() {
     "api GET '/tenants/$cid/deployments/$depl_id'" || return 1
 
   # Find the namespace and the node the pod landed on
-  local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
+  local ns; ns=$(ssh_cp "kubectl get ns -l tenant=$cid -o jsonpath='{.items[0].metadata.name}'")
   [[ -n "$ns" ]] || { fail "reaper: could not resolve tenant namespace"; return 1; }
 
   local node_name; node_name=$(ssh_cp "kubectl -n $ns get pods -l app=$depl_name -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null || true)
@@ -776,7 +776,7 @@ for c in (items if isinstance(items, list) else []):
   if [[ "${RESTORE_INCLUDE_FILES:-}" == "1" ]]; then
     local marker_path="restore-marker-${stamp}.txt"
     local marker_content="restore-test-content-${stamp}"
-    local fns; fns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
+    local fns; fns=$(ssh_cp "kubectl get ns -l tenant=$cid -o jsonpath='{.items[0].metadata.name}'")
     [[ -n "$fns" ]] || { fail "restore/files: could not resolve client namespace"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
     local pv_name; pv_name=$(ssh_cp "kubectl -n $fns get pvc ${fns}-storage -o jsonpath='{.spec.volumeName}'" 2>/dev/null | tr -d '[:space:]')
 
@@ -803,7 +803,7 @@ for c in (items if isinstance(items, list) else []):
 
     # Stop FM so the capture Job's RWO mount doesn't race.
     api POST "/tenants/$cid/files/stop" "" >/dev/null
-    local fns; fns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
+    local fns; fns=$(ssh_cp "kubectl get ns -l tenant=$cid -o jsonpath='{.items[0].metadata.name}'")
     local fi=0 fpods=999
     while (( fi < 120 )); do
       fpods=$(ssh_cp "kubectl -n $fns get pods -l app=file-manager --no-headers 2>/dev/null | wc -l" | tr -d '[:space:]')

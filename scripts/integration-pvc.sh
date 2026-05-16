@@ -79,7 +79,7 @@ CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['dat
 # Wait for provisioning to settle (PVC bound, Volume CR present).
 NS=""
 for _ in $(seq 1 30); do
-  NS=$(ssh_cp "kubectl get ns -l client=$CID -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null || true)
+  NS=$(ssh_cp "kubectl get ns -l tenant=$CID -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null || true)
   [[ -n "$NS" ]] && break
   sleep 2
 done
@@ -147,7 +147,7 @@ CID2=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['da
 # Capture the namespace immediately so we can identify the PV later.
 NS2=""
 for _ in $(seq 1 10); do
-  NS2=$(ssh_cp "kubectl get ns -l client=$CID2 -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null || true)
+  NS2=$(ssh_cp "kubectl get ns -l tenant=$CID2 -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null || true)
   [[ -n "$NS2" ]] && break
   sleep 1
 done

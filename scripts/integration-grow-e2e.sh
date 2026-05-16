@@ -84,7 +84,7 @@ for _ in $(seq 1 60); do
 done
 [[ "$STATUS" == "provisioned" ]] && ok "provisioningStatus=provisioned" || { fail "stuck at $STATUS"; exit 1; }
 
-NS=$(ssh_cp "kubectl get ns -l client=$CID -o jsonpath='{.items[0].metadata.name}'")
+NS=$(ssh_cp "kubectl get ns -l tenant=$CID -o jsonpath='{.items[0].metadata.name}'")
 [[ -n "$NS" ]] && ok "namespace $NS" || { fail "no namespace"; exit 1; }
 
 # Initial PVC size — should be the plan default (~10 GiB).

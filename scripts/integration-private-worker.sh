@@ -182,7 +182,7 @@ phase1_provision() {
   # Wait for the namespace to exist before polling provisioningStatus —
   # without this the /clients/:id call may race the orchestrator.
   wait_for 90 "namespace exists for cid=$cid" "Active" \
-    "ssh_cp 'kubectl get ns -l client=$cid --no-headers 2>/dev/null'" || return 1
+    "ssh_cp 'kubectl get ns -l tenant=$cid --no-headers 2>/dev/null'" || return 1
 
   wait_for 180 "client provisioned" '"provisioningStatus":"provisioned"' \
     "api GET '/tenants/$cid'" || return 1
@@ -191,7 +191,7 @@ phase1_provision() {
   # `kubernetesNamespace` directly, but we use the cluster as
   # source-of-truth so the test catches drift between DB and cluster).
   local ns
-  ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null")
+  ns=$(ssh_cp "kubectl get ns -l tenant=$cid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null")
   if [[ -z "$ns" ]]; then
     fail "could not resolve namespace for cid=$cid"
     return 1

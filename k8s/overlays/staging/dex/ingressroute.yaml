@@ -1,0 +1,44 @@
+# Dex IngressRoute (staging) — exposes dex.${DOMAIN}/dex
+#
+# Without this, integration-oidc-dex.sh and any external OIDC login
+# flow cannot reach Dex's discovery / authorize / token endpoints.
+# The bootstrap test on testing.phoenix-host.net 2026-05-16 surfaced
+# this gap — Dex Service is ClusterIP, no Ingress in the staging
+# overlay, every OIDC request 404'd.
+#
+# Cert-manager: uses letsencrypt-prod-http01 directly (the staging
+# overlay's platform-cluster-config exposes DOMAIN but not
+# CLUSTER_ISSUER_NAME via substituteFrom — same gotcha as
+# stalwart-webadmin / longhorn-ui / webmail).
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: dex
+  namespace: platform
+spec:
+  secretName: dex-tls
+  issuerRef:
+    name: letsencrypt-prod-http01
+    kind: ClusterIssuer
+    group: cert-manager.io
+  commonName: dex.${DOMAIN}
+  dnsNames:
+    - dex.${DOMAIN}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: dex
+  namespace: platform
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`dex.${DOMAIN}`)
+      services:
+        - name: dex
+          port: 5556
+  tls:
+    secretName: dex-tls
