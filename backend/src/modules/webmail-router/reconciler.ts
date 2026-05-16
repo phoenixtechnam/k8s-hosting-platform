@@ -22,11 +22,18 @@
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
-import { MERGE_PATCH } from '../../shared/k8s-patch.js';
-import { getDefaultWebmailEngine, type WebmailEngine } from '../webmail-settings/service.js';
+import { MERGE_PATCH, applyRaw } from '../../shared/k8s-patch.js';
+import {
+  getDefaultWebmailEngine,
+  getDefaultWebmailUrl,
+  type WebmailEngine,
+} from '../webmail-settings/service.js';
 
 export const WEBMAIL_IR_NAME = 'platform-webmail-ingress';
 export const WEBMAIL_IR_NAMESPACE = 'mail';
+export const BULWARK_DEPLOY_NAME = 'bulwark';
+export const BULWARK_DEPLOY_NAMESPACE = 'mail';
+export const WEBMAIL_ROUTER_FIELD_MANAGER = 'platform-api-webmail-router';
 const TRAEFIK_GROUP = 'traefik.io';
 const TRAEFIK_VERSION = 'v1alpha1';
 const TRAEFIK_PLURAL = 'ingressroutes';
@@ -145,4 +152,140 @@ export async function reconcileWebmailIngress(
   );
 
   return { engine, expectedService, previousService, patched: true };
+}
+
+/**
+ * Normalise an arbitrary URL the operator typed into the admin panel
+ * to an origin (scheme + host + optional port, no path). Bulwark's
+ * /api/auth/stalwart-context expects the Origin header to be an exact
+ * origin string — trailing slashes and paths break the same-origin
+ * check on the SPA's subsequent /api/account/stalwart/jmap call.
+ *
+ * Returns `null` if the URL is not parseable so the caller can skip
+ * the env sync rather than push an invalid value into the Pod.
+ */
+export function originFromUrl(url: string | undefined | null): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return null;
+  }
+}
+
+export interface OriginReconcileResult {
+  readonly expectedOrigin: string;
+  readonly previousOrigin: string | null;
+  readonly patched: boolean;
+}
+
+/**
+ * Sync the Bulwark Deployment's impersonator container env
+ * `PUBLIC_ORIGIN` to match the platform's Default Webmail URL setting.
+ *
+ * Why this matters: Bulwark's Next.js backend treats `PUBLIC_ORIGIN`
+ * as the authoritative same-origin pin. Its `/api/auth/stalwart-context`
+ * endpoint binds the session cookie to that origin; any subsequent
+ * `/api/account/stalwart/jmap` call from a DIFFERENT origin gets 401
+ * "Not authenticated" even when the cookie is presented. Before this
+ * reconciler, PUBLIC_ORIGIN was a static `https://bulwark.<apex>` baked
+ * into the Deployment YAML; flipping the webmail URL via the admin
+ * panel to anything else (e.g. `https://webmail.<apex>` per the
+ * Phase 10 mutex model) left the impersonator's Origin header out of
+ * sync with the SPA's actual request origin, breaking webmail entirely.
+ *
+ * Uses Server-Side Apply with a dedicated field-manager so Flux's
+ * subsequent reconcile (with `kustomize.toolkit.fluxcd.io/ssa: Merge`
+ * on the Deployment) respects platform-api's ownership of just this
+ * env value.
+ *
+ * Failure to read the Deployment (e.g. fresh cluster, no mail stack)
+ * is non-fatal — the reconciler logs and returns null.
+ */
+export async function reconcileBulwarkOrigin(
+  db: Database,
+  kc: k8s.KubeConfig,
+  apps: k8s.AppsV1Api,
+  log: Pick<Logger, 'info' | 'warn' | 'error'>,
+): Promise<OriginReconcileResult | null> {
+  const webmailUrl = await getDefaultWebmailUrl(db);
+  const expectedOrigin = originFromUrl(webmailUrl);
+  if (!expectedOrigin) {
+    log.warn(
+      { webmailUrl },
+      'webmail-router: default_webmail_url is not a parseable URL — skipping origin sync',
+    );
+    return null;
+  }
+
+  let deploy: { spec?: { template?: { spec?: { containers?: ReadonlyArray<{
+    name?: string;
+    env?: ReadonlyArray<{ name?: string; value?: string }>;
+  }> } } } };
+  try {
+    deploy = (await apps.readNamespacedDeployment({
+      namespace: BULWARK_DEPLOY_NAMESPACE,
+      name: BULWARK_DEPLOY_NAME,
+    } as unknown as Parameters<typeof apps.readNamespacedDeployment>[0])) as never;
+  } catch (err) {
+    log.warn(
+      { err, name: BULWARK_DEPLOY_NAME, namespace: BULWARK_DEPLOY_NAMESPACE },
+      'webmail-router: Bulwark Deployment not found — skipping origin sync',
+    );
+    return null;
+  }
+
+  const impersonator = deploy.spec?.template?.spec?.containers?.find(
+    (c) => c.name === 'impersonator',
+  );
+  const previousOrigin =
+    impersonator?.env?.find((e) => e.name === 'PUBLIC_ORIGIN')?.value ?? null;
+
+  if (previousOrigin === expectedOrigin) {
+    return { expectedOrigin, previousOrigin, patched: false };
+  }
+
+  // SSA-apply just the impersonator container's env array. We list every
+  // PUBLIC_ORIGIN value we want to claim ownership of; everything else
+  // (BULWARK_HOST, JWT_SECRET, master-user secrets, ...) stays under
+  // Flux ownership.
+  const body = {
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    metadata: { name: BULWARK_DEPLOY_NAME, namespace: BULWARK_DEPLOY_NAMESPACE },
+    spec: {
+      template: {
+        spec: {
+          containers: [
+            {
+              name: 'impersonator',
+              env: [{ name: 'PUBLIC_ORIGIN', value: expectedOrigin }],
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  await applyRaw(
+    kc,
+    {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      namespace: BULWARK_DEPLOY_NAMESPACE,
+      name: BULWARK_DEPLOY_NAME,
+      resource: 'deployments',
+      apiPath: 'apis/apps/v1',
+    },
+    body,
+    { fieldManager: WEBMAIL_ROUTER_FIELD_MANAGER, force: true },
+  );
+
+  log.info(
+    { previousOrigin, newOrigin: expectedOrigin, webmailUrl },
+    'webmail-router: Bulwark PUBLIC_ORIGIN synced to platform default webmail URL',
+  );
+
+  return { expectedOrigin, previousOrigin, patched: true };
 }

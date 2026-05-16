@@ -24,6 +24,14 @@ metadata:
   annotations:
     # Roll on bulwark-secrets change (admin password, session secret).
     secret.reloader.stakater.com/reload: bulwark-secrets
+    # ADR-039 Phase 10: platform-api's webmail-router reconciler owns the
+    # impersonator container's PUBLIC_ORIGIN env, syncing it from
+    # platform_settings.default_webmail_url. Without SSA: Merge, Flux
+    # reverts the operator's URL change back to the YAML default ~60s
+    # later, breaking Bulwark's same-origin session check on the
+    # /api/account/stalwart/jmap proxy (session cookie bound to
+    # bulwark.<apex>, SPA's XHR uses webmail.<apex> → 401).
+    kustomize.toolkit.fluxcd.io/ssa: Merge
 spec:
   # Cut 3: replicas removed from manifest — owned by the
   # platform-storage-policy reconciler (mirrors Roundcube's contract,
@@ -180,8 +188,18 @@ spec:
               value: "3000"
             - name: PLATFORM_BASE_DOMAIN
               value: "${DOMAIN}"
+            # PUBLIC_ORIGIN is operator-tunable via the admin panel
+            # (Email Management → Settings → Webmail → Default Webmail URL).
+            # The webmail-router reconciler in platform-api syncs this env
+            # from platform_settings.default_webmail_url on every PATCH of
+            # that setting AND on platform-api startup. The YAML value
+            # below is the default shipped to fresh clusters; once the
+            # operator changes the setting, the reconciler SSA-applies
+            # the new value (field-manager: platform-api-webmail-router)
+            # and the kustomize.toolkit.fluxcd.io/ssa: Merge annotation
+            # on this Deployment tells Flux to respect that ownership.
             - name: PUBLIC_ORIGIN
-              value: "https://bulwark.${DOMAIN}"
+              value: "https://webmail.${DOMAIN}"
             - name: STALWART_JMAP_URL
               value: "https://stalwart.${DOMAIN}"
             - name: JWT_SECRET
