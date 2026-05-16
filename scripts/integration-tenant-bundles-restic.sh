@@ -203,13 +203,17 @@ for c in d:
 ")
   if [ -z "$CID" ]; then
     echo "  creating…"
-    # Pick the smallest plan that fits cluster capacity. Premium (200 GiB) tends
-    # to fail PROVISION_OVER_CAPACITY on lab clusters. Prefer 'starter'.
-    PLAN_ID=$(apij "$API_BASE/api/v1/plans?limit=10" | python3 -c "
+    # Always pick the Starter plan so the smallest PVC sizes are used.
+    # Premium (10+ GiB storage) tends to fail PROVISION_OVER_CAPACITY on
+    # lab clusters. Falls back to the smallest-storage plan if Starter
+    # is missing — keeps the test runnable post-rename.
+    PLAN_ID=$(apij "$API_BASE/api/v1/plans?limit=20" | python3 -c "
 import json, sys
 plans = json.load(sys.stdin)['data']
-for p in sorted(plans, key=lambda x: float(x['storageLimit'])):
-    print(p['id']); break
+starter = next((p for p in plans if p.get('name') == 'Starter'), None)
+if starter is None:
+    starter = sorted(plans, key=lambda x: float(x.get('storageLimit') or 0))[0]
+print(starter['id'])
 ")
     REGION_ID=$(apij "$API_BASE/api/v1/regions?limit=1" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')

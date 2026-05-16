@@ -72,13 +72,26 @@ if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
 fi
 
 # ─── Create/locate test tenant ──────────────────────────────────────────────
+# Base plan is Starter (smallest PVCs) so the test stays cheap. CPU and
+# memory are bumped via overrides — the burstable-QoS test specifically
+# needs cpu_limit_override=2 + memory_limit_override=4 to exercise the
+# burstable scheduling path.
 TENANT_NAME="qos-test-$(date +%s)"
-echo "→ Creating test tenant '$TENANT_NAME' with 2-CPU plan..."
+echo "→ Creating test tenant '$TENANT_NAME' (Starter plan + 2-CPU override)..."
+
+PLAN_ID=$(curl -sk -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/plans?limit=20" \
+  | jq -r '[.data[] | select(.name == "Starter")][0].id // .data[0].id // empty')
+REGION_ID=$(curl -sk -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/regions?limit=1" \
+  | jq -r '.data[0].id // empty')
+if [[ -z "$PLAN_ID" || -z "$REGION_ID" ]]; then
+  echo "ERROR: could not resolve Starter plan_id or region_id (plan=$PLAN_ID region=$REGION_ID)" >&2
+  exit 1
+fi
 
 CLIENT_RESP=$(curl -fsSL -X POST "$ADMIN_HOST/api/v1/tenants" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d "{\"name\":\"$TENANT_NAME\",\"email\":\"$TENANT_NAME@example.test\",\"cpu_limit\":2,\"memory_limit\":4}")
+  -d "{\"name\":\"$TENANT_NAME\",\"primary_email\":\"$TENANT_NAME@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"cpu_limit_override\":2,\"memory_limit_override\":4}")
 TENANT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id')
 NAMESPACE=$(echo "$CLIENT_RESP" | jq -r '.data.kubernetesNamespace')
 

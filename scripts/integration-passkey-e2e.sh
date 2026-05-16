@@ -218,8 +218,11 @@ if [[ -z "$ADMIN_TOKEN" ]]; then
 else
   # Create a fresh client just for this test so we know the credentials.
   STAMP=$(date +%s)
-  PLAN_ID=$(curl -sk -H "Authorization: Bearer $ADMIN_TOKEN" "$ADMIN_HOST/api/v1/plans" \
-    | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];p=sorted(d,key=lambda x:int(float(x.get('storageLimit') or 0)));print(p[0]['id'])" 2>/dev/null)
+  # Always pick the Starter plan so the smallest PVC sizes are used.
+  # Falls back to the smallest-storage plan if Starter is missing — keeps
+  # the test runnable on operators who renamed their seed plans.
+  PLAN_ID=$(curl -sk -H "Authorization: Bearer $ADMIN_TOKEN" "$ADMIN_HOST/api/v1/plans?limit=20" \
+    | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];s=next((p for p in d if p.get('name')=='Starter'),None);print((s or sorted(d,key=lambda x:float(x.get('storageLimit') or 0))[0])['id'])" 2>/dev/null)
   REGION_ID=$(curl -sk -H "Authorization: Bearer $ADMIN_TOKEN" "$ADMIN_HOST/api/v1/regions" \
     | python3 -c "import json,sys;print(json.load(sys.stdin)['data'][0]['id'])" 2>/dev/null)
   CREATE_RESP=$(curl -sk -X POST "$ADMIN_HOST/api/v1/tenants" \

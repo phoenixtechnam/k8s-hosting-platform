@@ -159,11 +159,21 @@ scenario_1_bootstrap() {
   local cname="mtls-e2e-$RUN_ID"
   local hostname="mtls-e2e-${RUN_ID}.${INGRESS_DOMAIN_BASE}"
 
+  # Resolve Starter plan + first region. Starter keeps the test cheap on
+  # shared lab clusters (smallest PVC sizes).
+  local plan_id region_id
+  plan_id=$(api GET "/plans?limit=20" \
+    | jq -r '[.data[] | select(.name == "Starter")][0].id // .data[0].id // empty')
+  region_id=$(api GET "/regions?limit=1" | jq -r '.data[0].id // empty')
+  [[ -n "$plan_id" && -n "$region_id" ]] \
+    || { fail "client create: could not resolve plan/region (plan=$plan_id region=$region_id)"; return; }
+
   local resp
-  resp=$(api POST "/tenants" "$(jq -nc --arg n "$cname" '{
-    companyName:$n, contactEmail:($n + "@e2e.test"),
-    timezone:"UTC", plan:"test"
-  }')")
+  resp=$(api POST "/tenants" "$(jq -nc \
+    --arg n "$cname" --arg p "$plan_id" --arg r "$region_id" '{
+      name:$n, primary_email:($n + "@e2e.test"),
+      plan_id:$p, region_id:$r, timezone:"UTC"
+    }')")
   TENANT_ID=$(jq -r '.data.id // empty' <<<"$resp")
   [[ -n "$TENANT_ID" ]] && ok "client $TENANT_ID" || { fail "client create: $resp"; return; }
 

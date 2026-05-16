@@ -533,9 +533,12 @@ log "Scenario 10: lifecycle-driven protected ingress route on $OIDC_TEST_HOST"
 # the test domain. Best-effort, never fails the harness.
 cleanup_orphan_test_clients
 
-# Resolve a Plan + Region. The harness picks the first available of each
-# — staging is seeded with at least one of both.
-PLAN_ID=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/plans?limit=1" | jq -r '.data[0].id // empty')
+# Resolve a Plan + Region. Always pick the Starter plan so the smallest
+# PVC sizes are used (consistent with every other integration harness).
+# Falls back to whatever the API returns first if Starter is missing — so
+# the scenario still runs on operators who renamed their seed plans.
+PLAN_ID=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/plans?limit=20" \
+  | jq -r '[.data[] | select(.name == "Starter")][0].id // .data[0].id // empty')
 REGION_ID=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/regions?limit=1" | jq -r '.data[0].id // empty')
 
 if [[ -z "$PLAN_ID" || -z "$REGION_ID" ]]; then
