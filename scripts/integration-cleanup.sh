@@ -104,4 +104,49 @@ while IFS=$'\t' read -r cid name; do
 done <<< "$TEST_CIDS"
 
 log "result: $DELETED deleted, $FAILED failed (cascade may still be in progress; re-run if needed)"
+
+# ─── Global-state sanity sweep ───────────────────────────────────────
+# Suites that mutate global toggles (OIDC proxy gate, Flux suspend
+# during PITR, oauth2-proxy provider config) must restore them in
+# their EXIT trap. If a trap fires too late or never fires, the next
+# suite locks operators out. Catch it here and reset.
+log "global-state sanity sweep"
+
+SETTINGS=$(curl -sS -k -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/admin/oidc/settings" 2>/dev/null || echo '{}')
+PROTECT_ADMIN=$(echo "$SETTINGS" | python3 -c "import json,sys;
+try: print(json.load(sys.stdin).get('data',{}).get('protectAdminViaProxy', False))
+except: print('?')" 2>/dev/null)
+PROTECT_TENANT=$(echo "$SETTINGS" | python3 -c "import json,sys;
+try: print(json.load(sys.stdin).get('data',{}).get('protectTenantViaProxy', False))
+except: print('?')" 2>/dev/null)
+PROVIDERS=$(curl -sS -k -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/admin/oidc/providers" 2>/dev/null \
+  | python3 -c "import json,sys;
+try:
+  d=json.load(sys.stdin).get('data',[]) or []
+  print(len([p for p in d if p.get('enabled')]))
+except: print(0)" 2>/dev/null)
+
+if [[ "$PROTECT_ADMIN" == "True" && "${PROVIDERS:-0}" -eq 0 ]]; then
+  warn "OIDC proxy ON for admin but ZERO enabled providers → admin panel locked out; clearing"
+  curl -sS -k -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"protect_admin_via_proxy":false,"protect_tenant_via_proxy":false,"disable_local_auth_admin":false,"disable_local_auth_tenant":false}' \
+    "$ADMIN_HOST/api/v1/admin/oidc/settings" >/dev/null 2>&1 || true
+  ok "reset admin proxy gate"
+elif [[ "$PROTECT_TENANT" == "True" && "${PROVIDERS:-0}" -eq 0 ]]; then
+  warn "OIDC proxy ON for tenant but ZERO enabled providers → tenant panel locked out; clearing"
+  curl -sS -k -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"protect_admin_via_proxy":false,"protect_tenant_via_proxy":false,"disable_local_auth_admin":false,"disable_local_auth_tenant":false}' \
+    "$ADMIN_HOST/api/v1/admin/oidc/settings" >/dev/null 2>&1 || true
+  ok "reset tenant proxy gate"
+else
+  ok "OIDC proxy gates consistent: admin=${PROTECT_ADMIN} tenant=${PROTECT_TENANT} enabled-providers=${PROVIDERS}"
+fi
+
+PANEL=$(curl -sk -m 10 -o /dev/null -w '%{http_code}' "${ADMIN_HOST}/" 2>/dev/null || echo "000")
+if [[ "$PANEL" == "200" ]]; then
+  ok "admin panel reachable (200)"
+else
+  warn "admin panel returned ${PANEL} after cleanup — manual intervention may be needed"
+fi
+
 [[ "$FAILED" -eq 0 ]]

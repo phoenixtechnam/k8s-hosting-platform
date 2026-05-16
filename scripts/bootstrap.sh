@@ -779,6 +779,7 @@ parse_args() {
       --backup-target-s3-region)   BACKUP_TARGET_S3_REGION="$2"; shift 2 ;;
       --backup-target-s3-prefix)   BACKUP_TARGET_S3_PREFIX="$2"; shift 2 ;;
       --backup-target-name)        BACKUP_TARGET_NAME="$2"; shift 2 ;;
+      --stalwart-external-ip)      STALWART_EXTERNAL_IP_OVERRIDE="$2"; shift 2 ;;
       --help|-h)         usage ;;
       *)                 error "Unknown option: $1" ;;
     esac
@@ -1223,6 +1224,7 @@ install_packages_apt() {
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext-base \
+    dnsutils \
     age \
     >/dev/null 2>&1
 }
@@ -1265,6 +1267,7 @@ install_packages_dnf() {
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext \
+    bind-utils \
     >/dev/null 2>&1
   if [[ "$OS_VARIANT" != "amzn2023" ]]; then
     # On RHEL/Rocky/Alma/CentOS-Stream, EPEL provides age; install it
@@ -2251,6 +2254,117 @@ detect_public_ipv4() {
   done < <(ip -4 -o addr show 2>/dev/null)
 
   return 1
+}
+
+# Detect THIS server's public IPv6 (best-effort). Returns the address
+# on stdout, exit 0; returns nothing + exit 1 if no global-scope v6 is
+# bound to a non-VPN interface. Used by select_cluster_issuer() to
+# decide whether LE-prod is safe.
+detect_public_ipv6() {
+  local vpn_re='^(wt[0-9]*|tailscale[0-9]*|wg[0-9]*|tun[0-9]*|tap[0-9]*|ipsec[0-9]*|ppp[0-9]*|gre[0-9]*|cali[0-9a-f]+|vxlan\.calico|wireguard\.calico|wireguard\.cali)$'
+  local line addr ifname
+  while IFS= read -r line; do
+    ifname=$(echo "$line" | awk '{print $2}')
+    addr=$(echo "$line" | awk '{print $4}' | cut -d/ -f1)
+    [[ -z "$ifname" || -z "$addr" ]] && continue
+    [[ "$ifname" =~ $vpn_re ]] && continue
+    # Skip loopback ::1, link-local fe80::/10, ULA fc00::/7.
+    case "$addr" in
+      ::1|fe80*|fc*|fd*) continue ;;
+    esac
+    if echo "$line" | grep -q "scope global"; then
+      echo "$addr"
+      return 0
+    fi
+  done < <(ip -6 -o addr show 2>/dev/null)
+  return 1
+}
+
+# Choose between LE production and LE staging based on whether the
+# operator-supplied --domain actually resolves (via public DNS) to
+# THIS server. Auto-promotion logic:
+#
+#   1. If --cluster-issuer was explicitly passed, honour it verbatim.
+#   2. If --env dev, return local-ca-issuer (no public ACME).
+#   3. Resolve the apex's A record (IPv4). Must include our own
+#      public IPv4. If not — fall back to LE staging because LE prod
+#      will fail the HTTP-01 challenge anyway, and repeated failures
+#      burn our prod rate-limit quota.
+#   4. If the operator's box has a global-scope IPv6 bound, the apex's
+#      AAAA record (if any) MUST also include it. Mismatch → LE staging.
+#      Apex without AAAA at all is acceptable (v4-only deployment).
+#   5. All checks pass → letsencrypt-prod-http01.
+#
+# Stdout: the chosen ClusterIssuer name.
+# Always returns 0 — falls back to LE staging on any check failure so a
+# typo'd --domain never bricks bootstrap.
+select_cluster_issuer() {
+  local domain="$1" env="$2"
+  # 1. Explicit override
+  if [[ -n "${CLUSTER_ISSUER_NAME:-}" ]]; then
+    echo "$CLUSTER_ISSUER_NAME"
+    return 0
+  fi
+  # 2. dev/local
+  if [[ "$env" == "dev" ]]; then
+    echo "local-ca-issuer"
+    return 0
+  fi
+  # 3+4. DNS-vs-server alignment
+  if ! command -v dig >/dev/null 2>&1 && ! command -v getent >/dev/null 2>&1; then
+    # No resolver tool available — be conservative
+    log "select_cluster_issuer: neither dig nor getent available; defaulting to LE-staging"
+    echo "letsencrypt-staging-http01"
+    return 0
+  fi
+
+  local server_v4 server_v6 apex_a apex_aaaa
+  server_v4=$(detect_public_ipv4 2>/dev/null || echo "")
+  server_v6=$(detect_public_ipv6 2>/dev/null || echo "")
+  if [[ -z "$server_v4" ]]; then
+    log "select_cluster_issuer: no public IPv4 on server; LE-staging (prod requires reachable server)"
+    echo "letsencrypt-staging-http01"
+    return 0
+  fi
+
+  # Resolve apex A records — use public DNS not the host's resolver
+  # (an /etc/hosts override on the bootstrap target would lie to us).
+  if command -v dig >/dev/null 2>&1; then
+    apex_a=$(dig +short +time=3 +tries=2 @1.1.1.1 A "$domain" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u || echo "")
+    apex_aaaa=$(dig +short +time=3 +tries=2 @1.1.1.1 AAAA "$domain" 2>/dev/null | grep -E ':' | sort -u || echo "")
+  else
+    apex_a=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u || echo "")
+    apex_aaaa=$(getent ahostsv6 "$domain" 2>/dev/null | awk '{print $1}' | sort -u || echo "")
+  fi
+
+  if [[ -z "$apex_a" ]]; then
+    log "select_cluster_issuer: apex ${domain} does not resolve (no A); LE-staging"
+    echo "letsencrypt-staging-http01"
+    return 0
+  fi
+
+  # A record must include our server IPv4
+  if ! echo "$apex_a" | grep -qFx "$server_v4"; then
+    log "select_cluster_issuer: apex ${domain} resolves to [$(echo "$apex_a" | tr '\n' ',' | sed 's/,$//')] but server is ${server_v4} → LE-staging"
+    echo "letsencrypt-staging-http01"
+    return 0
+  fi
+
+  # If server has a v6 AND apex has AAAA, they must match too. Apex
+  # without AAAA is fine (v4-only deployment is supported).
+  if [[ -n "$server_v6" && -n "$apex_aaaa" ]]; then
+    if ! echo "$apex_aaaa" | grep -qFx "$server_v6"; then
+      log "select_cluster_issuer: apex ${domain} AAAA [$(echo "$apex_aaaa" | tr '\n' ',' | sed 's/,$//')] but server is ${server_v6} → LE-staging"
+      echo "letsencrypt-staging-http01"
+      return 0
+    fi
+    log "select_cluster_issuer: DNS check PASSED — apex ${domain} resolves to ${server_v4} + ${server_v6} → LE-prod"
+  else
+    log "select_cluster_issuer: DNS check PASSED — apex ${domain} A=${server_v4}, AAAA=${apex_aaaa:-<none>} → LE-prod"
+  fi
+
+  echo "letsencrypt-prod-http01"
+  return 0
 }
 
 # Auto-detect a NetBird/Tailscale mesh interface and its CIDR. Both
@@ -4192,12 +4306,12 @@ BWEOF
 create_platform_configmap() {
   log "Creating platform-config ConfigMap (environment=${PLATFORM_ENV})..."
 
-  local issuer_name="${CLUSTER_ISSUER_NAME:-letsencrypt-prod-http01}"
-  if [[ "$PLATFORM_ENV" == "staging" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
-    issuer_name="letsencrypt-staging-http01"
-  elif [[ "$PLATFORM_ENV" == "dev" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
-    issuer_name="local-ca-issuer"
-  fi
+  # ClusterIssuer selection — auto-promote LE staging → LE prod when the
+  # operator's --domain apex resolves to THIS server's public IP(s).
+  # See select_cluster_issuer() comment for full algorithm.
+  local issuer_name
+  issuer_name=$(select_cluster_issuer "${PLATFORM_DOMAIN:-}" "${PLATFORM_ENV}")
+  log "ClusterIssuer for platform-config: ${issuer_name}"
 
   # Support-email default: reuse the operator's ACME email if available —
   # that's already a verified contact address, and the operator typically
@@ -5539,19 +5653,33 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   # in base manifests (e.g. cert-manager Certificate CRs alongside
   # Traefik IngressRoutes), so a single base manifest works across
   # dev/staging/production without per-overlay literal patches.
-  local cluster_issuer_for_cm="${CLUSTER_ISSUER_NAME:-letsencrypt-prod-http01}"
-  if [[ "$PLATFORM_ENV" == "staging" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
-    cluster_issuer_for_cm="letsencrypt-staging-http01"
-  elif [[ "$PLATFORM_ENV" == "dev" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
-    cluster_issuer_for_cm="local-ca-issuer"
+  # Mirror the platform-config issuer choice into platform-cluster-config
+  # so Flux postBuild substituteFrom resolves ${CLUSTER_ISSUER_NAME} to
+  # the same value bootstrap pinned into platform-config above.
+  local cluster_issuer_for_cm
+  cluster_issuer_for_cm=$(select_cluster_issuer "${PLATFORM_DOMAIN:-}" "${PLATFORM_ENV}")
+
+  # STALWART_EXTERNAL_IP — the node's public IPv4 that the staging
+  # stalwart-mail overlay binds to Service.spec.externalIPs. Detect it
+  # here so Flux postBuild substituteFrom can resolve ${STALWART_EXTERNAL_IP}
+  # per-cluster. Previously hardcoded to one server's IP in the overlay,
+  # which broke every re-bootstrap onto a new VPS until the literal was
+  # hand-edited. --stalwart-external-ip overrides detection.
+  local stalwart_external_ip="${STALWART_EXTERNAL_IP_OVERRIDE:-}"
+  if [[ -z "$stalwart_external_ip" ]]; then
+    stalwart_external_ip=$(detect_public_ipv4 2>/dev/null || echo "")
+  fi
+  if [[ -z "$stalwart_external_ip" ]]; then
+    warn "detect_public_ipv4 found no public IP — STALWART_EXTERNAL_IP key will be empty. The mail-externalip-reconciler CronJob will fill it in once a worker-role node is detected. Override with --stalwart-external-ip=<IP>."
   fi
 
-  log "Materialising ConfigMap platform-cluster-config (DOMAIN=${PLATFORM_DOMAIN}, ENV=${PLATFORM_ENV}, CLUSTER_ISSUER_NAME=${cluster_issuer_for_cm})..."
+  log "Materialising ConfigMap platform-cluster-config (DOMAIN=${PLATFORM_DOMAIN}, ENV=${PLATFORM_ENV}, CLUSTER_ISSUER_NAME=${cluster_issuer_for_cm}, STALWART_EXTERNAL_IP=${stalwart_external_ip:-<unset>})..."
   kctl create configmap platform-cluster-config \
     -n flux-system \
     --from-literal=DOMAIN="${PLATFORM_DOMAIN}" \
     --from-literal=ENV="${PLATFORM_ENV}" \
     --from-literal=CLUSTER_ISSUER_NAME="${cluster_issuer_for_cm}" \
+    --from-literal=STALWART_EXTERNAL_IP="${stalwart_external_ip}" \
     --dry-run=client -o yaml | kctl apply -f -
 
   # Dex config injection — only for overlays that ship Dex (dev/staging).
@@ -5989,6 +6117,63 @@ verify_install() {
     200|301|302) log "  admin panel: ${panel_code}" ;;
     *) warn "  admin panel returned ${panel_code} (expected 200/301/302)"; rc=1 ;;
   esac
+
+  # 4. Tenant panel reachability — same Ingress class, separate Service.
+  # 2026-05-16 audit: only admin was being checked; a broken tenant
+  # panel slipped through bootstrap.
+  local tenant_host="tenant.${PLATFORM_DOMAIN}"
+  log "  Probing https://${tenant_host}/ ..."
+  local tenant_code
+  tenant_code=$(curl -sk -m 15 -o /dev/null -w '%{http_code}' \
+                  -H "Host: ${tenant_host}" "https://127.0.0.1/" 2>/dev/null || echo "000")
+  case "$tenant_code" in
+    200|301|302) log "  tenant panel: ${tenant_code}" ;;
+    *) warn "  tenant panel returned ${tenant_code} (expected 200/301/302)"; rc=1 ;;
+  esac
+
+  # 5. External reachability — talk to the *public* DNS name without
+  # Host-header tricks. If the operator's --domain doesn't resolve to
+  # this server in public DNS, the panel will be unusable even though
+  # everything in the cluster is healthy. We only WARN on failure here
+  # (some deployments use split-horizon DNS and the bootstrap host
+  # itself can't see the public record). The matching DNS check in
+  # select_cluster_issuer is the authoritative gate.
+  log "  Probing external https://${admin_host}/ (no Host trick) ..."
+  local ext_admin_code
+  ext_admin_code=$(curl -sk -m 15 -o /dev/null -w '%{http_code}' \
+                     "https://${admin_host}/" 2>/dev/null || echo "000")
+  if [[ "$ext_admin_code" == "200" ]]; then
+    log "  external admin panel: 200 OK"
+  else
+    warn "  external admin panel returned ${ext_admin_code} — check DNS / TLS / cert"
+  fi
+
+  # 6. TLS chain inspection — confirm the cert served on admin.<domain>
+  # is a real Let's Encrypt cert (Issuer CN: R3/R10/R11/E5/E6/E8 etc),
+  # not Traefik's self-signed default. If we picked LE-prod via
+  # select_cluster_issuer, this MUST be a public CA. If LE-staging,
+  # the issuer string contains "STAGING" — also acceptable.
+  log "  Inspecting TLS chain on ${admin_host} ..."
+  local cert_info issuer_cn
+  cert_info=$(echo | openssl s_client -servername "$admin_host" \
+                -connect 127.0.0.1:443 -showcerts 2>/dev/null \
+                | openssl x509 -noout -issuer -subject -dates 2>/dev/null \
+                || echo "")
+  if [[ -z "$cert_info" ]]; then
+    warn "  could not parse TLS chain on ${admin_host}"
+  else
+    issuer_cn=$(echo "$cert_info" | awk -F'CN *= *' '/^issuer/{print $2}' | head -1)
+    if echo "$issuer_cn" | grep -qiE "TRAEFIK[ -]?DEFAULT|self.signed|untrusted"; then
+      warn "  TLS issuer is Traefik default '${issuer_cn}' — cert-manager has NOT issued a real cert yet"
+      rc=1
+    elif echo "$issuer_cn" | grep -qiE "STAGING"; then
+      log "  TLS issuer: ${issuer_cn} (LE-staging — fine for non-public installs)"
+    elif [[ -n "$issuer_cn" ]]; then
+      log "  TLS issuer: ${issuer_cn} (real CA)"
+    else
+      warn "  TLS issuer parse failed; cert_info=$cert_info"
+    fi
+  fi
 
   if (( rc == 0 )); then
     log "  ✓ verify_install: all checks passed."

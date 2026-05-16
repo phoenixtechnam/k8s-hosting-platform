@@ -156,11 +156,86 @@ except Exception:
 " 2>/dev/null)
 
 if [[ -z "$WORKER_NODE" || "${TENANT_NODE_COUNT:-0}" -lt 2 ]]; then
-  log "── drain suite SKIPPED ──"
-  log "  tenant-capable workers=${TENANT_NODE_COUNT:-0} (need ≥2 to drain anywhere)"
-  log "  This is correct for single-node clusters — drain has no destination."
+  log "── multi-node drain path SKIPPED (need ≥2 tenant-capable workers; have ${TENANT_NODE_COUNT:-0}) ──"
+  log "── exercising single-node guard probe instead ──"
+
+  # Even on a single-node cluster, drain-impact + drain endpoints MUST
+  # exist and refuse to cordon the lone node. Single-node was silent-
+  # passing before 2026-05-16 per operator audit — no assertion = no
+  # signal. Probe:
+  #   1. GET /admin/nodes → ≥1 node returned (API works)
+  #   2. Pick any node (control-plane or worker) and call drain-impact
+  #      to verify the endpoint is reachable; impact may be empty if
+  #      no tenants are pinned, which is fine.
+  #   3. POST /admin/nodes/<lone>/drain → 4xx with a meaningful error
+  #      (DRAIN_LAST_NODE / DRAIN_NO_DESTINATION / similar) — NOT a 5xx
+  #      crash, NOT a 200 success.
+  NODES_COUNT=$(echo "$NODES_JSON" | python3 -c "
+import json,sys
+try: print(len(json.load(sys.stdin).get('data') or []))
+except: print(0)
+" 2>/dev/null)
+  if [[ "${NODES_COUNT:-0}" -lt 1 ]]; then
+    fail "single-node drain guard: GET /admin/nodes returned zero nodes (API broken)"
+    trap - EXIT
+    exit 1
+  fi
+  ok "single-node drain guard: /admin/nodes returns $NODES_COUNT node(s)"
+
+  LONE_NODE=$(echo "$NODES_JSON" | python3 -c "
+import json,sys
+nodes=json.load(sys.stdin).get('data') or []
+print(nodes[0].get('name','') if nodes else '')
+" 2>/dev/null)
+
+  IMPACT_RESP=$(api GET "/admin/nodes/$LONE_NODE/drain-impact")
+  IMPACT_CODE=$(echo "$IMPACT_RESP" | python3 -c "
+import json,sys
+try:
+  d=json.load(sys.stdin)
+  if d.get('data') is not None: print('OK')
+  else: print((d.get('error') or {}).get('code',''))
+except: print('PARSE_FAIL')
+" 2>/dev/null)
+  if [[ "$IMPACT_CODE" == "OK" || "$IMPACT_CODE" == "" ]]; then
+    ok "single-node drain guard: drain-impact endpoint reachable on $LONE_NODE"
+  else
+    fail "single-node drain guard: drain-impact returned code=$IMPACT_CODE (expected OK or empty)"
+    trap - EXIT
+    exit 1
+  fi
+
+  # POST drain — must be rejected. If the API somehow lets us cordon
+  # the only tenant-capable node, the cluster ends up unable to host
+  # any tenant workload at all. That's the regression we want to catch.
+  DRAIN_RESP=$(api POST "/admin/nodes/$LONE_NODE/drain" "{\"forceLastReplica\":true,\"tenantPlacement\":{}}")
+  DRAIN_HTTP=$(curl -sk -o /dev/null -w "%{http_code}" -X POST "$ADMIN_HOST/api/v1/admin/nodes/$LONE_NODE/drain" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"forceLastReplica\":true,\"tenantPlacement\":{}}")
+  if [[ "$DRAIN_HTTP" =~ ^4 ]]; then
+    DRAIN_CODE=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;
+try:
+  d=json.load(sys.stdin); print((d.get('error') or {}).get('code',''))
+except: print('')" 2>/dev/null)
+    ok "single-node drain guard: drain on lone node rejected (http=$DRAIN_HTTP code=$DRAIN_CODE)"
+  elif [[ "$DRAIN_HTTP" =~ ^2 ]]; then
+    fail "single-node drain guard: drain on lone node returned $DRAIN_HTTP (expected 4xx). This would brick the cluster!"
+    # Try to undo
+    curl -sk -X PATCH "$ADMIN_HOST/api/v1/admin/nodes/$LONE_NODE" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d '{"cordoned":false,"canHostClientWorkloads":true}' >/dev/null 2>&1 || true
+    trap - EXIT
+    exit 1
+  else
+    fail "single-node drain guard: drain on lone node returned $DRAIN_HTTP (expected 4xx). resp=$DRAIN_RESP"
+    trap - EXIT
+    exit 1
+  fi
+
+  log "── drain suite: single-node guard PASSED (multi-node drain skipped) ──"
   trap - EXIT
-  exit 0
+  # 77 = autoconf SKIP — multi-node drain path was not exercised
+  exit 77
 fi
 ok "selected worker node W=$WORKER_NODE (tenantCapable=$TENANT_NODE_COUNT)"
 

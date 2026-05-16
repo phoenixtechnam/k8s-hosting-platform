@@ -81,26 +81,78 @@ suites=(
 
 passed_suites=()
 failed_suites=()
+skipped_suites=()
+reachability_breaks=()
+
+# After every suite, assert the admin panel is still reachable. A
+# suite that errors mid-flight and leaves protect_admin_via_proxy=true
+# or otherwise mutates global state was previously silent — the
+# remaining suites would all 401 with no signal, and the operator
+# learned about it only when manually checking. 2026-05-16 operator
+# audit: "Not even the admin panel is reachable, how could this be
+# missed?"
+ADMIN_HOST_FOR_PROBE="${ADMIN_HOST:-https://admin.staging.phoenix-host.net}"
+assert_admin_reachable() {
+  local label="$1" code
+  for _try in 1 2 3 4 5; do
+    code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 "${ADMIN_HOST_FOR_PROBE}/" 2>/dev/null || echo "000")
+    [[ "$code" == "200" ]] && return 0
+    sleep 3
+  done
+  reachability_breaks+=("$label (http=$code)")
+  warn "admin panel UNREACHABLE after $label (http=$code) — global state may be corrupted"
+  return 1
+}
+
+# Exit-code convention (autoconf SKIP = 77):
+#   0   → suite ran AND every assertion passed
+#   77  → suite intentionally skipped (precondition not met on this
+#         cluster shape — e.g. HA-tier flip on single-node). Distinct
+#         from a pass so the operator sees "this was not tested" rather
+#         than "this works." Was silent-passing as 0 prior to 2026-05-16
+#         and the user correctly called that out as a false positive.
+#   *   → real failure
+SKIP_RC=77
 
 for entry in "${suites[@]}"; do
   name="${entry%%:*}"
   cmd="${entry#*:}"
   log "Suite: $name"
   reset_admin_password
-  if ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/${cmd%% *}" ${cmd#* }; then
+  set +e
+  ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/${cmd%% *}" ${cmd#* }
+  rc=$?
+  set -e
+  if [[ $rc -eq 0 ]]; then
     pass "suite $name PASSED"
     passed_suites+=("$name")
+  elif [[ $rc -eq $SKIP_RC ]]; then
+    warn "suite $name SKIPPED (precondition not met on this cluster)"
+    skipped_suites+=("$name")
   else
-    fail "suite $name FAILED"
+    fail "suite $name FAILED (rc=$rc)"
     failed_suites+=("$name")
   fi
+  # Reachability sweep — must run regardless of suite outcome
+  assert_admin_reachable "$name" || true
 done
 
 log "Final results"
-printf '  %bpassed:%b %s\n' "$GREEN" "$RESET" "${#passed_suites[@]}"
-printf '  %bfailed:%b %s\n' "$RED" "$RESET" "${#failed_suites[@]}"
-for s in "${passed_suites[@]}"; do printf '    %b✓%b %s\n' "$GREEN" "$RESET" "$s"; done
-for s in "${failed_suites[@]}"; do printf '    %b✗%b %s\n' "$RED" "$RESET" "$s"; done
+printf '  %bpassed:%b  %s\n' "$GREEN" "$RESET" "${#passed_suites[@]}"
+printf '  %bskipped:%b %s  (precondition not met — NOT validated)\n' "$YELLOW" "$RESET" "${#skipped_suites[@]}"
+printf '  %bfailed:%b  %s\n' "$RED" "$RESET" "${#failed_suites[@]}"
+for s in "${passed_suites[@]}";  do printf '    %b✓%b %s\n'  "$GREEN"  "$RESET" "$s"; done
+for s in "${skipped_suites[@]}"; do printf '    %b⊝%b %s\n'  "$YELLOW" "$RESET" "$s"; done
+for s in "${failed_suites[@]}";  do printf '    %b✗%b %s\n'  "$RED"    "$RESET" "$s"; done
+
+if [[ ${#reachability_breaks[@]} -gt 0 ]]; then
+  fail "admin panel was unreachable after ${#reachability_breaks[@]} suite(s):"
+  for b in "${reachability_breaks[@]}"; do printf '    %b⚠%b %s\n' "$RED" "$RESET" "$b"; done
+  echo ""
+  echo "  A suite left global state in a broken condition (proxy gate enabled with no provider,"
+  echo "  Flux suspended, ingress misconfigured, etc.). Look at the named suite's EXIT trap."
+  echo ""
+fi
 
 # Always-run cleanup pass — drops any test clients that escaped the
 # per-suite EXIT traps (mid-suite SIGKILL, Ctrl+C between suites,
@@ -112,4 +164,5 @@ log "Post-suite cleanup pass (deletes leftover test clients via lifecycle API)"
 yes y | ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/integration-cleanup.sh" 2>&1 \
   | tail -20 || warn "integration-cleanup.sh reported errors — re-run manually if leaks persist"
 
-[[ ${#failed_suites[@]} -eq 0 ]] || exit 1
+# Real failures + reachability breaks both fatal.
+[[ ${#failed_suites[@]} -eq 0 && ${#reachability_breaks[@]} -eq 0 ]] || exit 1

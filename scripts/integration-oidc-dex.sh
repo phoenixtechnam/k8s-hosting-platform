@@ -746,7 +746,7 @@ log "Scenario 10: break-glass Ingress annotation — named PCRE captures (CVE-20
 # Read current proxy settings so we can restore them afterwards.
 ORIG_SETTINGS=$(curl -sk --max-time 10 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/admin/oidc/settings")
 ORIG_PROTECT_ADMIN=$(echo "$ORIG_SETTINGS" | jq -r '.data.protectAdminViaProxy // false')
-ORIG_PROTECT_CLIENT=$(echo "$ORIG_SETTINGS" | jq -r '.data.protectClientViaProxy // false')
+ORIG_PROTECT_TENANT=$(echo "$ORIG_SETTINGS" | jq -r '.data.protectTenantViaProxy // false')
 ORIG_BG_PATH=$(echo "$ORIG_SETTINGS" | jq -r '.data.breakGlassPath // ""')
 
 BG_TEST_PATH="e2e-bg-test-$(date +%s)"
@@ -759,10 +759,21 @@ restore_proxy_settings() {
     -H "Content-Type: application/json" \
     -d "$(jq -nc \
       --argjson pa "$ORIG_PROTECT_ADMIN" \
-      --argjson pc "$ORIG_PROTECT_CLIENT" \
+      --argjson pt "$ORIG_PROTECT_TENANT" \
       --arg bgp "$ORIG_BG_PATH" \
-      '{protect_admin_via_proxy:$pa, protect_client_via_proxy:$pc, break_glass_path:$bgp}')" \
+      '{protect_admin_via_proxy:$pa, protect_tenant_via_proxy:$pt, break_glass_path:$bgp}')" \
     "$ADMIN_HOST/api/v1/admin/oidc/settings" >/dev/null 2>&1 || true
+  # Post-restore reachability assertion — the panel MUST return 200
+  # after we restore. Was silently leaving 401 prior to 2026-05-16
+  # when a script errored before this trap could fire.
+  for _try in 1 2 3 4 5; do
+    code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 "${ADMIN_HOST}/" 2>/dev/null || echo "000")
+    [[ "$code" == "200" ]] && break
+    sleep 3
+  done
+  if [[ "$code" != "200" ]]; then
+    printf '\033[31m✗\033[0m teardown WARNING: admin panel returned %s after restore — manual intervention may be needed\n' "$code" >&2
+  fi
 }
 # Extend EXIT trap so the panel stays accessible even if the scenario errors.
 trap 'restore_proxy_settings; cleanup_providers; rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-dex-*.headers 2>/dev/null' EXIT
@@ -773,7 +784,7 @@ ENABLE_RES=$(curl -sk --max-time 15 -X PUT "${AUTH_H[@]}" \
   -H "Content-Type: application/json" \
   -d "$(jq -nc \
     --arg bgp "$BG_TEST_PATH" \
-    '{protect_admin_via_proxy:true, protect_client_via_proxy:false, break_glass_path:$bgp}')" \
+    '{protect_admin_via_proxy:true, protect_tenant_via_proxy:false, break_glass_path:$bgp}')" \
   "$ADMIN_HOST/api/v1/admin/oidc/settings")
 ENABLE_BG=$(echo "$ENABLE_RES" | jq -r '.data.breakGlassPath // empty')
 
