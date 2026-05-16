@@ -3055,47 +3055,60 @@ install_traefik() {
 
   log "Traefik v3 Ingress Controller installed."
 
-  # CNI portmap chain self-test (Calico+CNI portmap race mitigation,
-  # 2026-05-15): after install_traefik's --wait returns Ready, occasionally
-  # the local node's `nat CNI-HOSTPORT-DNAT` chain is missing the rule for
-  # the Traefik DS pod's :80/:443 hostPort binding — Calico Felix's
-  # dataplane refresh can win the install race over CNI portmap, leaving
-  # external :80/:443 traffic on that node Connection-refused even though
-  # the pod is Running. Detected on staging.phoenix-host.net 2026-05-15.
-  #
-  # Detection: grep for a "tcp dport 80 ... dnat to <pod>:8000" rule in
-  # the local nft nat table. If absent, recycle the local Traefik pod
-  # ONCE — that re-runs CNI portmap during the new pod's network setup
-  # and reliably installs the chain.
-  if command -v nft >/dev/null 2>&1; then
-    if ! nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
-      log "CNI portmap chain self-test: no :80 hostPort DNAT rule found on this node — recycling the local Traefik pod to force CNI portmap install."
-      local local_traefik_pod
-      local_traefik_pod=$(kubectl --kubeconfig="$KUBECONFIG" -n traefik get pod \
-        -l app.kubernetes.io/name=traefik \
-        --field-selector "spec.nodeName=$(hostname)" \
-        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-      if [[ -n "$local_traefik_pod" ]]; then
-        kctl -n traefik delete pod "$local_traefik_pod" --grace-period=10 >/dev/null 2>&1 || true
-        # Brief wait for the DS controller to spawn a replacement + CNI
-        # portmap to wire the new hostPort. 30s is enough on a healthy
-        # node; if longer, the next verify_install probe will surface it.
-        local _w
-        for _w in $(seq 1 15); do
-          if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
-            log "  CNI portmap chain installed on attempt $_w (after ${_w}×2s)."
-            break
-          fi
-          sleep 2
-        done
-        if ! nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
-          warn "  CNI portmap chain still missing after recycle — manual investigation needed. Try: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --field-selector spec.nodeName=$(hostname)"
-        fi
-      else
-        warn "  no local Traefik pod found via field-selector spec.nodeName=$(hostname); check DS rollout state"
-      fi
-    fi
+  ensure_traefik_cni_portmap "post-install"
+}
+
+# CNI portmap chain self-test (Calico+CNI portmap race mitigation,
+# 2026-05-15): occasionally the local node's `nat CNI-HOSTPORT-DNAT`
+# chain is missing the rule for the Traefik DS pod's :80/:443 hostPort
+# binding — Calico Felix's dataplane refresh can win the install race
+# over CNI portmap, leaving external :80/:443 traffic on that node
+# Connection-refused even though the pod is Running. Detected on
+# staging.phoenix-host.net 2026-05-15 and on testing.phoenix-host.net
+# 2026-05-16 — once after install_traefik (fresh cluster) and a second
+# time after Flux reconciled with image-pin updates that rolled the
+# Traefik DaemonSet pod.
+#
+# Detection: grep for a "tcp dport 80 ... dnat to <pod>:8000" rule in
+# the local nft nat table. If absent, recycle the local Traefik pod
+# ONCE — that re-runs CNI portmap during the new pod's network setup
+# and reliably installs the chain.
+#
+# Called from:
+#   - install_traefik (immediately after Helm --wait returns Ready)
+#   - verify_install   (after Flux's first reconcile, which can roll
+#                       the Traefik DS pod and drop the chain a second
+#                       time)
+ensure_traefik_cni_portmap() {
+  local caller="${1:-unknown}"
+  if ! command -v nft >/dev/null 2>&1; then
+    return 0
   fi
+  if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
+    return 0
+  fi
+  log "CNI portmap chain self-test (${caller}): no :80 hostPort DNAT rule found on this node — recycling the local Traefik pod to force CNI portmap install."
+  local local_traefik_pod
+  local_traefik_pod=$(kubectl --kubeconfig="$KUBECONFIG" -n traefik get pod \
+    -l app.kubernetes.io/name=traefik \
+    --field-selector "spec.nodeName=$(hostname)" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$local_traefik_pod" ]]; then
+    warn "  no local Traefik pod found via field-selector spec.nodeName=$(hostname); check DS rollout state"
+    return 0
+  fi
+  kctl -n traefik delete pod "$local_traefik_pod" --grace-period=10 >/dev/null 2>&1 || true
+  # Brief wait for the DS controller to spawn a replacement + CNI
+  # portmap to wire the new hostPort. 30s is enough on a healthy node.
+  local _w
+  for _w in $(seq 1 15); do
+    if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
+      log "  CNI portmap chain installed on attempt $_w (after ${_w}×2s)."
+      return 0
+    fi
+    sleep 2
+  done
+  warn "  CNI portmap chain still missing after recycle — manual investigation needed. Try: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --field-selector spec.nodeName=$(hostname)"
 }
 
 # Generate / load the per-cluster CrowdSec bouncer key and ensure it
@@ -5573,11 +5586,44 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   # ownership on first reconcile. --force-conflicts is needed because k8s
   # auto-managed labels register as conflicts on first SSA from a new
   # field manager. See project_testing_bootstrap_2026_05_08.md issue 3.
-  DOMAIN="${PLATFORM_DOMAIN}" \
-    kubectl --kubeconfig="$KUBECONFIG" kustomize "$overlay_dir" \
-    | DOMAIN="${PLATFORM_DOMAIN}" envsubst '${DOMAIN}' \
-    | kctl apply --server-side --force-conflicts \
-                 --field-manager=kustomize-controller -f -
+  # Retry the apply on transient webhook errors. The Longhorn + CNPG
+  # admission webhooks (which wait_for_admission_webhooks() blocks on
+  # above) can flicker AFTER the initial readiness probe — pod GC,
+  # control-plane scheduling, or k3s in-tree controller restarts can
+  # briefly drop the service endpoint between our endpoint check and
+  # the kubectl apply landing. Without retry, a single transient
+  # "no endpoints available for service longhorn-admission-webhook"
+  # aborts bootstrap under `set -e`. Caught on fresh re-imaged
+  # testing.phoenix-host.net 2026-05-16: the apply hit the race after
+  # wait_for_admission_webhooks returned green, requiring a manual
+  # bootstrap re-run.
+  #
+  # 6 attempts × 10s backoff = 1 min cap. Hard-fails after exhaustion
+  # with the underlying kubectl error.
+  local apply_attempt apply_err apply_ok=false
+  for apply_attempt in 1 2 3 4 5 6; do
+    if apply_err=$(
+        DOMAIN="${PLATFORM_DOMAIN}" \
+          kubectl --kubeconfig="$KUBECONFIG" kustomize "$overlay_dir" \
+          | DOMAIN="${PLATFORM_DOMAIN}" envsubst '${DOMAIN}' \
+          | kctl apply --server-side --force-conflicts \
+                       --field-manager=kustomize-controller -f - 2>&1
+    ); then
+      apply_ok=true
+      break
+    fi
+    # Webhook flake → retry. Any other error → fail fast.
+    if ! echo "$apply_err" | grep -qE 'failed calling webhook|no endpoints available for service'; then
+      echo "$apply_err" >&2
+      error "kubectl apply -k failed with non-retriable error"
+    fi
+    log "  apply attempt ${apply_attempt}/6 hit transient webhook error — retrying in 10s..."
+    sleep 10
+  done
+  if [[ "$apply_ok" != "true" ]]; then
+    echo "$apply_err" >&2
+    error "kubectl apply -k failed after 6 retries — the Longhorn or CNPG admission webhook never stabilised."
+  fi
   log "Platform manifests applied with domain ${PLATFORM_DOMAIN} (env=${PLATFORM_ENV})."
 }
 
@@ -5864,6 +5910,17 @@ verify_install() {
   local admin_host="admin.${PLATFORM_DOMAIN}"
   local creds_file="/etc/platform/admin-credentials"
   local rc=0
+
+  # CNI portmap chain self-heal — same check install_traefik runs at
+  # install time, repeated here because between install_traefik and
+  # verify_install we ran apply_platform_manifests (which can roll the
+  # Traefik DS pod via Flux's first reconcile) AND wait_for_platform_api
+  # (more time for races to happen). If Flux rolled the pod and CNI
+  # portmap didn't re-install the chain, all the curl probes below
+  # will fail with Connection-refused even though every pod is Running.
+  # Caught on testing.phoenix-host.net 2026-05-16 — manual operator
+  # recycle of the Traefik pod restored access; this call automates it.
+  ensure_traefik_cni_portmap "verify-install"
 
   # Wait up to 5 min for the platform-api Deployment to finish rolling
   # out — Helm/Flux may still be settling at this point.
