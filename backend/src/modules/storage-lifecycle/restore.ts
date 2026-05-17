@@ -105,6 +105,14 @@ export async function restoreTenantPVC(
     },
   };
 
+  // PSA baseline forbids inline hostPath on Pods in tenant namespaces.
+  // LocalHostPathStore now ships a PVC volumeSpec; ensure the cluster-
+  // scoped PV + namespace PVC exist before the Job is created. See
+  // snapshot.ts for the full rationale.
+  if (typeof opts.store.ensureJobMountResources === 'function') {
+    await opts.store.ensureJobMountResources(k8s, opts.namespace, opts.archivePath);
+  }
+
   await (k8s.batch as unknown as {
     createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
   }).createNamespacedJob({ namespace: opts.namespace, body: jobBody });

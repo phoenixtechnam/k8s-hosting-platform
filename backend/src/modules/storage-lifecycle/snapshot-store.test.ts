@@ -13,14 +13,20 @@ describe('LocalHostPathStore', () => {
     expect(s.reservePath('c2', 'snap1')).toBe('c2/snap1.tar.gz');
   });
 
-  it('mountTarget pairs a hostPath volume spec with the /snapshots mount', () => {
+  it('mountTarget returns a PVC volume spec (PSA baseline-safe) keyed on tenant id', () => {
+    // 2026-05-17: switched from inline hostPath to PVC volume because
+    // PodSecurity baseline forbids hostPath in tenant namespaces.
+    // The PVC's underlying PV is hostPath, which PSA allows because
+    // it inspects only Pod.spec.volumes (not the PV chain).
     const s = new LocalHostPathStore('/var/lib/platform/snapshots');
     const t = s.mountTarget('c1/snap1.tar.gz');
     expect(t.mountPath).toBe('/snapshots');
-    expect(t.relativePath).toBe('c1/snap1.tar.gz');
+    // relativePath drops the tenant-id segment because the PV is
+    // already tenant-scoped (hostPath = <root>/<tenant-id>).
+    expect(t.relativePath).toBe('snap1.tar.gz');
     expect(t.volumeSpec).toMatchObject({
       name: 'platform-snapshots',
-      hostPath: { path: '/var/lib/platform/snapshots', type: 'DirectoryOrCreate' },
+      persistentVolumeClaim: { claimName: 'platform-snapshots-c1' },
     });
   });
 
@@ -106,9 +112,17 @@ describe('getSnapshotStore factory', () => {
   });
 
   it('honours STORAGE_SNAPSHOT_HOST_ROOT override', () => {
+    // After the 2026-05-17 PSA-safety switch, mountTarget returns a
+    // PVC volumeSpec, so we can no longer assert against an inline
+    // hostPath. The hostRoot now appears on the PV that
+    // ensureJobMountResources creates — covered by the unit test on
+    // that method in this file. Here we just assert the override is
+    // accepted (constructor wires up `hostRoot`) and the factory
+    // returns a working LocalHostPathStore.
     const s = getSnapshotStore({ STORAGE_SNAPSHOT_HOST_ROOT: '/custom/root' });
-    const t = s.mountTarget('x');
-    expect((t.volumeSpec as { hostPath?: { path: string } }).hostPath?.path).toBe('/custom/root');
+    expect(s).toBeInstanceOf(LocalHostPathStore);
+    const t = s.mountTarget('c/x.tar.gz');
+    expect((t.volumeSpec as { persistentVolumeClaim?: { claimName: string } }).persistentVolumeClaim?.claimName).toBe('platform-snapshots-c');
   });
 
   it('throws on unknown backend name', () => {
