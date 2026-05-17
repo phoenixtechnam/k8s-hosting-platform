@@ -42,3 +42,22 @@ spec:
             # but no solver label are still ignored — see install_traefik
             # in scripts/bootstrap.sh).
             ingressClassName: traefik
+            # cert-manager creates the solver pod IN THE NAMESPACE of the
+            # Ingress being challenged — i.e. the tenant namespace for
+            # per-tenant certs. Tenant namespaces have a ResourceQuota
+            # (applyResourceQuota in backend/src/modules/k8s-provisioner/
+            # service.ts) scoped to PriorityClass=tenant-default, which is
+            # the cluster-wide globalDefault PriorityClass. Without an
+            # explicit priorityClassName the solver pod inherits
+            # tenant-default and gets counted against the tenant's plan
+            # quota → typical Starter plan (256Mi) is already 100% used by
+            # the tenant workload, so the 64Mi solver request is rejected
+            # with "exceeded quota". Stamp the solver pod with the
+            # platform-tenant-overhead PriorityClass (value=100) which the
+            # quota scopeSelector explicitly excludes — same pattern used
+            # by file-manager, snapshot, restore, and backup Pods.
+            # Caught on testing.phoenix-host.net 2026-05-17 HTTPS scenario
+            # (challenge stuck pending with "exceeded quota").
+            podTemplate:
+              spec:
+                priorityClassName: platform-tenant-overhead

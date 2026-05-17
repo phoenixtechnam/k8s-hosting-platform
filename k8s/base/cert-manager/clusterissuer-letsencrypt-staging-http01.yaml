@@ -29,3 +29,10 @@ spec:
             # for the full rationale (narrow ingressClass + labelSelector
             # hole on the Traefik kubernetesIngress provider).
             ingressClassName: traefik
+            # See clusterissuer-letsencrypt-http01.yaml for why solver
+            # Pods need platform-tenant-overhead — tenant ResourceQuota
+            # would otherwise reject the 64Mi solver under the
+            # tenant-default scope.
+            podTemplate:
+              spec:
+                priorityClassName: platform-tenant-overhead
