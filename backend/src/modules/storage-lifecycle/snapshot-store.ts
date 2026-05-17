@@ -232,8 +232,21 @@ export class LocalHostPathStore implements SnapshotStore {
       } catch { /* best-effort rebind */ }
     }
 
-    // 2. Tenant-namespace PVC bound to the PV. volumeName pins it so
-    // the dynamic provisioner doesn't spawn a fresh local-path volume.
+    // 2. Tenant-namespace PVC bound to the PV. volumeName pins the PVC
+    // to the cluster-scoped PV so the dynamic provisioner doesn't spawn
+    // a fresh local-path volume.
+    //
+    // requests.storage is INTENTIONALLY tiny (1Mi) because the tenant's
+    // `requests.storage` ResourceQuota (e.g. 2Gi on Starter) sums ALL
+    // PVCs in the namespace — and ResourceQuota does NOT have a
+    // scopeSelector that can exempt storage by label/priority. If we
+    // requested anything realistic (e.g. 500Gi) the PVC creation would
+    // be rejected on every tenant smaller than that. K8s only verifies
+    // `pvc.requests.storage <= pv.capacity.storage` for binding, so 1Mi
+    // against a 500Gi PV is fine — and 1Mi against a 2Gi tenant storage
+    // quota is negligible. Snapshot archives live on the host filesystem
+    // (not on this PVC's accounted "storage"), so the real cost
+    // accounting is operator-level node-disk monitoring, not K8s quota.
     try {
       await (k8s.core as unknown as {
         createNamespacedPersistentVolumeClaim: (args: { namespace: string; body: unknown }) => Promise<unknown>;
@@ -250,7 +263,7 @@ export class LocalHostPathStore implements SnapshotStore {
           spec: {
             accessModes: ['ReadWriteOnce'],
             storageClassName: '',
-            resources: { requests: { storage: '500Gi' } },
+            resources: { requests: { storage: '1Mi' } },
             volumeName: resourceName,
           },
         },
