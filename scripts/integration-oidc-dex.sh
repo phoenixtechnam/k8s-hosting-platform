@@ -23,10 +23,16 @@
 #      tenant-panel-only route; client JWT cannot call /admin/tenants.
 #   9. Cleanup: delete both providers — assert /auth/oidc/status returns
 #      empty arrays again so the next harness run starts clean.
-#  10. CVE-2026-42945 guard: enable proxy protection, verify the
-#      platform-break-glass-ingress carries named PCRE captures
-#      (?<rest>.*) and rewrite-target=/$rest (not /$2). Restores
-#      original settings on completion or error.
+#  10. Break-glass IngressRoute (Traefik-native): enable proxy
+#      protection with a known break-glass path, verify the
+#      platform-break-glass-ingress IngressRoute exists in the
+#      `platform` namespace with the right Host+PathPrefix match,
+#      references a stripPrefix Middleware, and points at the
+#      admin-panel service. The original CVE-2026-42945 named-PCRE-
+#      captures guard was nginx-specific; after the 2026-05-15
+#      Traefik migration the path-stripping is done by a declarative
+#      Middleware, not a rewrite-target annotation. Restores original
+#      settings on completion or error.
 #
 # USAGE: ADMIN_PASSWORD=<…> ./scripts/integration-oidc-dex.sh
 #
@@ -739,9 +745,9 @@ CLIENT_REMAINING=$(echo "$STATUS_CLIENT" | jq -r --arg id "$CLIENT_PROVIDER_ID" 
 [[ "$ADMIN_REMAINING" == "0" ]] && ok "admin provider deleted" || fail "admin provider still listed"
 [[ "$CLIENT_REMAINING" == "0" ]] && ok "client provider deleted" || fail "client provider still listed"
 
-# ─── Scenario 10: break-glass ingress uses named PCRE captures (CVE-2026-42945) ─
+# ─── Scenario 10: break-glass IngressRoute (Traefik-native, post-CVE-2026-42945) ─
 
-log "Scenario 10: break-glass Ingress annotation — named PCRE captures (CVE-2026-42945)"
+log "Scenario 10: break-glass IngressRoute — Traefik-native shape"
 
 # Read current proxy settings so we can restore them afterwards.
 ORIG_SETTINGS=$(curl -sk --max-time 10 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/admin/oidc/settings")
@@ -750,6 +756,20 @@ ORIG_PROTECT_TENANT=$(echo "$ORIG_SETTINGS" | jq -r '.data.protectTenantViaProxy
 ORIG_BG_PATH=$(echo "$ORIG_SETTINGS" | jq -r '.data.breakGlassPath // ""')
 
 BG_TEST_PATH="e2e-bg-test-$(date +%s)"
+
+# Scenario 10 enables proxy protection, which the platform-api rightly
+# refuses unless an enabled admin OIDC provider exists. Scenario 9 just
+# deleted the providers created in Scenario 2, so we need to register a
+# fresh temporary one here. Track the id so the EXIT trap cleans it up
+# even if the rest of this scenario errors.
+log "  registering temporary admin OIDC provider so proxy protection can be enabled"
+BG_TEMP_PROVIDER_RES=$(create_provider admin "$ADMIN_CLIENT_ID" "$ADMIN_CLIENT_SECRET" "Dex (integration-test break-glass)")
+BG_TEMP_PROVIDER_ID=$(echo "$BG_TEMP_PROVIDER_RES" | jq -r '.data.id // empty')
+if [[ -z "$BG_TEMP_PROVIDER_ID" || "$BG_TEMP_PROVIDER_ID" == "null" ]]; then
+  fail "could not register temp admin provider for break-glass scenario: $BG_TEMP_PROVIDER_RES"
+  # Continue anyway — the proxy-enable will fail next with NO_ADMIN_PROVIDER
+  # and the fail() count above is what surfaces the real cause to the operator.
+fi
 
 # Define restore function and register trap BEFORE any curl call that can fail,
 # so the EXIT trap always has restore_proxy_settings available — even if the
@@ -775,8 +795,17 @@ restore_proxy_settings() {
     printf '\033[31m✗\033[0m teardown WARNING: admin panel returned %s after restore — manual intervention may be needed\n' "$code" >&2
   fi
 }
+cleanup_bg_temp_provider() {
+  if [[ -n "${BG_TEMP_PROVIDER_ID:-}" && "$BG_TEMP_PROVIDER_ID" != "null" ]]; then
+    curl -sk --max-time 10 -X DELETE "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/admin/oidc/providers/$BG_TEMP_PROVIDER_ID" >/dev/null 2>&1 || true
+  fi
+}
+
 # Extend EXIT trap so the panel stays accessible even if the scenario errors.
-trap 'restore_proxy_settings; cleanup_providers; rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-dex-*.headers 2>/dev/null' EXIT
+# Restore order: restore proxy settings FIRST (so the panel returns to its
+# pre-test gate), then drop the temp provider, then the original cleanup_providers
+# (legacy no-op now that Scenario 9 already ran, but safe to re-call).
+trap 'restore_proxy_settings; cleanup_bg_temp_provider; cleanup_providers; rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-dex-*.headers 2>/dev/null' EXIT
 
 # Enable proxy protection with a known break-glass path so the Ingress is
 # created and we can inspect its annotations.
@@ -794,55 +823,108 @@ else
   ok "proxy enabled with break-glass path=$ENABLE_BG"
 fi
 
-# Verify the Ingress in the cluster via SSH + kubectl.
+# Verify the break-glass IngressRoute (Traefik-native CRD) in the
+# cluster via SSH + kubectl. After the 2026-05-15 Traefik migration the
+# platform-api emits an `IngressRoute` (group=traefik.io) — NOT a legacy
+# `kind: Ingress` — so the original CVE-2026-42945 test (named-PCRE-
+# captures on the nginx rewrite-target annotation) no longer applies to
+# the new path. The Traefik equivalent of nginx's rewrite-target is a
+# `stripPrefix` Middleware referenced in `spec.routes[*].middlewares`.
+# Validate THAT instead:
+#   - IngressRoute exists at platform-break-glass-ingress
+#   - spec.routes[0].match contains Host(`<admin-host>`) AND PathPrefix
+#     embedding the configured break-glass path
+#   - spec.routes[0].middlewares includes a stripPrefix middleware (the
+#     declarative replacement for nginx's `/$rest` rewrite-target)
+#   - The stripPrefix Middleware itself exists and has the right path
 local_ssh_host="${SSH_HOST:-root@89.167.3.56}"
 local_ssh_key="${SSH_KEY:-$HOME/hosting-platform.key}"
 if [[ -r "$local_ssh_key" ]]; then
   # Reconcile is async — poll up to 15 s.
-  BG_INGRESS_JSON=""
+  BG_INGRESSROUTE_JSON=""
   for attempt in 1 2 3; do
-    BG_INGRESS_JSON=$(ssh -i "$local_ssh_key" \
+    BG_INGRESSROUTE_JSON=$(ssh -i "$local_ssh_key" \
       -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q \
       "$local_ssh_host" \
-      "KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get ingress platform-break-glass-ingress -n platform -o json 2>/dev/null" \
+      "KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get ingressroute.traefik.io platform-break-glass-ingress -n platform -o json 2>/dev/null" \
       2>/dev/null || true)
-    [[ -n "$BG_INGRESS_JSON" ]] && break
+    [[ -n "$BG_INGRESSROUTE_JSON" ]] && break
     sleep 5
   done
 
-  if [[ -z "$BG_INGRESS_JSON" ]]; then
-    fail "platform-break-glass-ingress not found in cluster after 15s"
+  if [[ -z "$BG_INGRESSROUTE_JSON" ]]; then
+    fail "platform-break-glass-ingress IngressRoute not found in cluster after 15s"
   else
-    BG_PATH=$(echo "$BG_INGRESS_JSON" | jq -r '.spec.rules[0].http.paths[0].path // empty')
-    BG_REWRITE=$(echo "$BG_INGRESS_JSON" | jq -r '.metadata.annotations["nginx.ingress.kubernetes.io/rewrite-target"] // empty')
+    BG_MATCH=$(echo "$BG_INGRESSROUTE_JSON" | jq -r '.spec.routes[0].match // empty')
+    BG_MIDDLEWARE_NAMES=$(echo "$BG_INGRESSROUTE_JSON" | jq -r '.spec.routes[0].middlewares // [] | map(.name) | join(",")')
+    BG_SERVICE_NAME=$(echo "$BG_INGRESSROUTE_JSON" | jq -r '.spec.routes[0].services[0].name // empty')
 
-    # CVE-2026-42945 mitigation: must use named capture (?<name>...)
-    if echo "$BG_PATH" | grep -qF '(?<'; then
-      ok "break-glass path uses named PCRE capture: $BG_PATH"
+    # match string must embed both Host(`...`) AND PathPrefix with our
+    # break-glass path segment. The exact host depends on the test
+    # environment, so we just check for the path token.
+    if echo "$BG_MATCH" | grep -qF "PathPrefix"; then
+      ok "IngressRoute match uses PathPrefix: $BG_MATCH"
     else
-      fail "break-glass path uses unnamed capture (CVE-2026-42945 not mitigated): $BG_PATH"
+      fail "IngressRoute match has no PathPrefix: $BG_MATCH"
+    fi
+    if echo "$BG_MATCH" | grep -qF "$BG_TEST_PATH"; then
+      ok "IngressRoute match embeds the configured break-glass path"
+    else
+      fail "IngressRoute match '$BG_MATCH' does not contain '$BG_TEST_PATH'"
     fi
 
-    # Rewrite target must reference named capture \$rest, not positional \$2
-    if [[ "$BG_REWRITE" == '/$rest' ]]; then
-      ok "rewrite-target=/\$rest (named capture reference)"
+    # Stripping middleware must be present in routes[0].middlewares.
+    if echo "$BG_MIDDLEWARE_NAMES" | grep -qF "strip"; then
+      ok "route references a strip-prefix middleware: $BG_MIDDLEWARE_NAMES"
     else
-      fail "rewrite-target=$BG_REWRITE — expected /\$rest (named capture)"
+      fail "route middlewares do not include a strip-prefix entry: '$BG_MIDDLEWARE_NAMES'"
     fi
 
-    # Path must still embed the configured break-glass path segment
-    if echo "$BG_PATH" | grep -qF "$BG_TEST_PATH"; then
-      ok "break-glass path embeds the configured path segment"
+    # Service must point at the admin-panel (back-end of break-glass).
+    if [[ "$BG_SERVICE_NAME" == "admin-panel" ]]; then
+      ok "IngressRoute backs admin-panel service"
     else
-      fail "break-glass path '$BG_PATH' does not contain '$BG_TEST_PATH'"
+      fail "IngressRoute service is '$BG_SERVICE_NAME' — expected 'admin-panel'"
+    fi
+
+    # Verify the strip-prefix Middleware itself exists and references
+    # the configured break-glass path. The middleware name is derived
+    # by the platform — extract it from the IngressRoute we just read.
+    # The check MUST fail-on-empty: silently skipping when no `strip`-
+    # named entry is found in routes[0].middlewares would mask the
+    # primary security-relevant regression (platform-api stops emitting
+    # the stripPrefix middleware → admin-panel sees `/<bg-path>/...`
+    # instead of `/...` → routes break / leak the break-glass path
+    # token to the panel). Inverted to a hard fail per 2026-05-17
+    # review.
+    STRIP_MW_NAME=$(echo "$BG_INGRESSROUTE_JSON" | jq -r '.spec.routes[0].middlewares[]? | select(.name | contains("strip")) | .name' | head -1)
+    if [[ -z "$STRIP_MW_NAME" ]]; then
+      fail "no strip-prefix middleware reference found in IngressRoute routes[0] — admin-panel would receive the unstripped break-glass path"
+    else
+      STRIP_MW_JSON=$(ssh -i "$local_ssh_key" \
+        -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q \
+        "$local_ssh_host" \
+        "KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get middleware.traefik.io $STRIP_MW_NAME -n platform -o json 2>/dev/null" \
+        2>/dev/null || true)
+      if [[ -z "$STRIP_MW_JSON" ]]; then
+        fail "strip-prefix middleware $STRIP_MW_NAME referenced by IngressRoute does not exist in the cluster"
+      else
+        STRIP_PREFIXES=$(echo "$STRIP_MW_JSON" | jq -r '.spec.stripPrefix.prefixes // [] | join(",")')
+        if echo "$STRIP_PREFIXES" | grep -qF "$BG_TEST_PATH"; then
+          ok "strip-prefix Middleware $STRIP_MW_NAME has prefix containing '$BG_TEST_PATH' (prefixes=$STRIP_PREFIXES)"
+        else
+          fail "strip-prefix Middleware $STRIP_MW_NAME prefixes '$STRIP_PREFIXES' do not contain '$BG_TEST_PATH'"
+        fi
+      fi
     fi
   fi
 else
-  warn "skipping cluster Ingress annotation check — SSH key not readable (${local_ssh_key})"
+  warn "skipping cluster IngressRoute check — SSH key not readable (${local_ssh_key})"
 fi
 
 # Restore original settings (trap also fires on exit — belt-and-suspenders).
 restore_proxy_settings
+cleanup_bg_temp_provider
 
 # ─── Final summary ────────────────────────────────────────────────────────────
 
