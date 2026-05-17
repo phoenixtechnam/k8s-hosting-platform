@@ -300,29 +300,17 @@ scenario_https() {
 
   # 3. Routing object in tenant ns. After the Traefik migration the
   # platform-api emits Traefik-native IngressRoute CRDs (not legacy
-  # kind: Ingress). Probe both shapes — legacy Ingress hosts via
-  # jsonpath, IngressRoute hosts via a python3 parse on -o json (the
-  # match expression has the form ``Host(`<fqdn>`) [&& ...]``; jsonpath
-  # can't pull the inner literal out of that string). We don't bother
-  # ssh-escaping a regex through bash + ssh layers — easier to send the
-  # python over via heredoc-on-stdin, but wait_for needs a one-shot
-  # command, so inline the parser via python -c with single quotes.
+  # kind: Ingress). Probe both shapes — dump both as YAML and let
+  # wait_for's grep on $expect (the FQDN) find the host literal in
+  # either the Ingress's `host:` field OR the IngressRoute's
+  # ``match: Host(`<fqdn>`) [&& …]`` line. Keeping the probe at the
+  # raw-YAML level avoids the python-in-ssh-in-eval quoting that
+  # bit the earlier version (backticks inside re.finditer kept
+  # getting eaten by an outer shell expansion layer).
   local ns; ns=$(ssh_cp "kubectl get ns -l tenant=$cid -o jsonpath='{.items[0].metadata.name}'")
   [[ -n "$ns" ]] || { fail "could not resolve tenant namespace"; return 1; }
-  local _host_probe='import sys,json,re
-data=sys.stdin.read()
-try:
-  obj=json.loads(data) if data.strip() else {"items":[]}
-except Exception:
-  obj={"items":[]}
-hosts=[]
-for it in obj.get("items",[]):
-  for r in it.get("spec",{}).get("routes",[]):
-    for m in re.finditer(r"Host\\(`([^`]+)`\\)", r.get("match","")):
-      hosts.append(m.group(1))
-print(" ".join(hosts))'
   wait_for 60 "tenant ingress object in $ns advertises host=$domain" "$domain" \
-    "ssh_cp 'kubectl -n $ns get ingress -o jsonpath={.items[*].spec.rules[*].host} 2>/dev/null; echo; kubectl -n $ns get ingressroute -o json 2>/dev/null | python3 -c \"$_host_probe\"'" || return 1
+    "ssh_cp 'kubectl -n $ns get ingress,ingressroute.traefik.io -o yaml 2>/dev/null'" || return 1
 
   # 4. Cert ready. Let's Encrypt HTTP-01 issuance on this cluster
   # consistently lands in 6-10 min for a fresh tenant domain — the
