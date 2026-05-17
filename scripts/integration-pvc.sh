@@ -64,6 +64,28 @@ TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")
 [[ -n "$TOKEN" ]] || { echo "login failed"; exit 1; }
 
+# Track every tenant we create so the EXIT trap can DELETE them
+# even when an `exit 1` between create + delete short-circuits the
+# inline cleanup. Each CID is appended as it's allocated and removed
+# only after the inline DELETE has confirmed success.
+declare -a CREATED_CIDS=()
+track_cid()   { CREATED_CIDS+=("$1"); }
+untrack_cid() { CREATED_CIDS=("${CREATED_CIDS[@]/$1}"); }
+
+cleanup_tenants() {
+  local rc=$?
+  if [[ ${#CREATED_CIDS[@]} -gt 0 ]]; then
+    log "EXIT trap: deleting ${#CREATED_CIDS[@]} leftover tenant(s)"
+    for cid in "${CREATED_CIDS[@]}"; do
+      [[ -z "$cid" ]] && continue
+      curl -sk -m 30 -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" \
+        -H "Authorization: Bearer $TOKEN" -o /dev/null -w "  cleanup $cid → HTTP %{http_code}\n" || true
+    done
+  fi
+  exit "$rc"
+}
+trap cleanup_tenants EXIT
+
 PLAN_ID=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d['data'] if p['name']=='Starter'),''))")
 REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['data'][0]['id'])")
 [[ -n "$PLAN_ID" && -n "$REGION_ID" ]] || { echo "no plan/region"; exit 1; }
@@ -74,7 +96,7 @@ STAMP=$(date +%s)
 COMPANY="PVC Test L $STAMP"
 RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-l-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
-[[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
+[[ -n "$CID" ]] && { ok "client created cid=$CID"; track_cid "$CID"; } || { fail "create failed: $RESP"; exit 1; }
 
 # Wait for provisioning to settle (PVC bound, Volume CR present).
 NS=""
@@ -123,7 +145,7 @@ done
 # ─── scenario 3: client delete cascade fires ─────────────────────────
 log "── scenario: cascade cleans tenant PV ──"
 DEL=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
-echo "$DEL" | tail -1 | grep -qE "20[04]" && ok "tenant deleted (200|204)" || { fail "delete failed: $DEL"; exit 1; }
+echo "$DEL" | tail -1 | grep -qE "20[04]" && { ok "tenant deleted (200|204)"; untrack_cid "$CID"; } || { fail "delete failed: $DEL"; exit 1; }
 
 # Wait up to 90s for the orphan PV to disappear.
 GONE=0
@@ -142,7 +164,7 @@ STAMP=$(date +%s)
 COMPANY="PVC Race $STAMP"
 RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-race-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID2=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
-[[ -n "$CID2" ]] && ok "race client created cid=$CID2" || { fail "race create failed"; exit 1; }
+[[ -n "$CID2" ]] && { ok "race client created cid=$CID2"; track_cid "$CID2"; } || { fail "race create failed"; exit 1; }
 
 # Capture the namespace immediately so we can identify the PV later.
 NS2=""
@@ -157,7 +179,7 @@ done
 # the late-binding tracking in the pv-cleanup-released hook.
 sleep 1
 DEL2=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID2" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
-echo "$DEL2" | tail -1 | grep -qE "20[04]" && ok "race delete 20x" || fail "race delete failed: $DEL2"
+echo "$DEL2" | tail -1 | grep -qE "20[04]" && { ok "race delete 20x"; untrack_cid "$CID2"; } || fail "race delete failed: $DEL2"
 
 # After 90s, no PV should reference this namespace.
 sleep 3
