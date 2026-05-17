@@ -101,6 +101,20 @@ jobs:
       - name: Scan k8s/ for pinned apex literals
         run: ./scripts/ci-no-pinned-domains.sh
 
+  no-hardcoded-ips:
+    name: No hard-coded public IPs in K8s manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan k8s/ for literal IPv4 addresses
+        # 2026-05-16: testing.phoenix-host.net re-bootstrap revealed an
+        # IP literal hardcoded inside an inline kustomize patch for the
+        # mail Service externalIPs. Per-cluster IPs MUST come from the
+        # platform-cluster-config ConfigMap and be resolved by Flux
+        # postBuild substituteFrom. This guard fails the build on a
+        # regression. See scripts/ci-no-hardcoded-ips.sh header.
+        run: ./scripts/ci-no-hardcoded-ips.sh
+
   k8s-patch-check:
     name: K8s client patchNamespaced* Content-Type guard
     runs-on: ubuntu-latest

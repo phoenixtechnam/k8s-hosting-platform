@@ -157,17 +157,50 @@ log "7b) Poll status until orchestration completes (≤30 min for HA)"
 # success check long before the deadline.
 START_POLL=$(date +%s)
 LAST_PHASE=""
-for _ in {1..180}; do
+LAST_PHASE_CHANGE=$START_POLL
+HARD_BUDGET=1500       # 25 min absolute (was 30 min unbounded)
+STALL_BUDGET=420       # 7 min no phase change → declare stuck
+
+dump_diagnostics() {
+  echo ""
+  echo "── PITR diagnostics dump ──"
+  $KUBECTL get cluster -n platform system-db -o yaml 2>/dev/null | head -80 || true
+  echo "── pods in platform ns ──"
+  $KUBECTL get pod -n platform -l cnpg.io/cluster=system-db -o wide 2>/dev/null || true
+  echo "── recent events ──"
+  $KUBECTL get events -n platform --sort-by='.lastTimestamp' 2>/dev/null | tail -20 || true
+  echo "── postgres-restore status ──"
+  curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" 2>/dev/null | head -50 || true
+  echo ""
+}
+
+RESTORED=false
+while :; do
+  NOW=$(date +%s)
+  ELAPSED_POLL=$((NOW - START_POLL))
+  STALL=$((NOW - LAST_PHASE_CHANGE))
+
   IN_PROGRESS=$(curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["inProgress"])' 2>/dev/null || echo "unreachable")
   CLUSTER_PHASE=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
   if [[ "$CLUSTER_PHASE" != "$LAST_PHASE" ]]; then
-    echo "  [$(( $(date +%s) - START_POLL ))s] inProgress=$IN_PROGRESS  cluster.phase=$CLUSTER_PHASE"
+    echo "  [${ELAPSED_POLL}s] inProgress=$IN_PROGRESS  cluster.phase=$CLUSTER_PHASE"
     LAST_PHASE="$CLUSTER_PHASE"
+    LAST_PHASE_CHANGE=$NOW
   fi
-  # Done when status is idle AND cluster is healthy
   if [[ "$IN_PROGRESS" = "False" && "$CLUSTER_PHASE" = "Cluster in healthy state" ]]; then
-    pass "orchestration finished after $(( $(date +%s) - START_POLL ))s — cluster healthy + lock released"
+    pass "orchestration finished after ${ELAPSED_POLL}s — cluster healthy + lock released"
+    RESTORED=true
     break
+  fi
+  if [[ $ELAPSED_POLL -ge $HARD_BUDGET ]]; then
+    echo "  [${ELAPSED_POLL}s] HARD-TIMEOUT reached"
+    dump_diagnostics
+    fail "PITR hard-timeout: ${ELAPSED_POLL}s elapsed without completion (inProgress=$IN_PROGRESS phase=$CLUSTER_PHASE)"
+  fi
+  if [[ $STALL -ge $STALL_BUDGET ]]; then
+    echo "  [${ELAPSED_POLL}s] STALL: phase $CLUSTER_PHASE held ${STALL}s"
+    dump_diagnostics
+    fail "PITR stuck: cluster.phase=$CLUSTER_PHASE held for ${STALL}s with no change (inProgress=$IN_PROGRESS)"
   fi
   sleep 10
 done

@@ -33,11 +33,13 @@ patches:
   # servicelb, no MetalLB). externalIPs is the vendor-neutral path to
   # bind public-facing mail ports to the node's external IP.
   #
-  # MULTI-NODE NOTE: when staging grows past one node, extend the list
-  # to the additional nodes' public IPs. kube-proxy iptables mode SNATs
-  # cross-node traffic, so source-IP-based rate limits become per-node;
-  # see k8s/overlays/staging/stalwart/service-patch.yaml header for the
-  # full caveat (also applies here).
+  # The IP itself comes from the `platform-cluster-config` ConfigMap
+  # (key STALWART_EXTERNAL_IP, written by bootstrap.sh's
+  # detect_public_ipv4) and is resolved per-cluster by Flux's postBuild
+  # substituteFrom — no checked-in literal, no per-cluster fork. The
+  # mail-externalip-reconciler CronJob (k8s/base/mail-externalips) keeps
+  # the live Service.spec.externalIPs in sync with worker-role nodes on
+  # multi-node clusters.
   - patch: |
       apiVersion: v1
       kind: Service
@@ -48,7 +50,7 @@ patches:
         type: ClusterIP
         externalTrafficPolicy: Cluster
         externalIPs:
-          - 89.167.3.56
+          - ${STALWART_EXTERNAL_IP}
     target:
       kind: Service
       name: stalwart-mail

@@ -74,10 +74,53 @@ except Exception:
     print(0)
 " 2>/dev/null)
 if [[ "${TENANT_NODE_COUNT:-0}" -lt 3 ]]; then
-  log "── tier-flip suite SKIPPED ──"
-  log "  tenant-capable nodes=${TENANT_NODE_COUNT:-0} (<3); HA tier is not feasible on this cluster."
-  log "  This is the correct platform behaviour — see backend HA_REQUIRES_MULTI_NODE gate."
-  exit 0
+  log "── HA tier-flip path SKIPPED (need ≥3 tenant nodes; have ${TENANT_NODE_COUNT:-0}) ──"
+  log "── exercising the single-node guard path instead ──"
+
+  # Even on a single-node cluster, the API surface MUST exist and the
+  # gate MUST work. So: create a small-plan tenant, try to flip to HA,
+  # assert the API returns HA_REQUIRES_MULTI_NODE / 4xx (NOT a silent
+  # success), then clean up. This converts "no HA available, skip" into
+  # an actually meaningful assertion — single-node failure was silent
+  # before 2026-05-16 per operator audit.
+  STAMP=$(date +%s)
+  COMPANY="Single-Node Guard $STAMP"
+  RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"sn-guard-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
+  CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
+  if [[ -z "$CID" ]]; then
+    fail "create failed in single-node guard probe: $RESP"
+    exit 1
+  fi
+  ok "single-node guard: tenant created cid=$CID"
+  cleanup_sn() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
+  trap cleanup_sn EXIT
+
+  # Attempt the HA flip — must be rejected.
+  FLIP_RESP=$(api PATCH "/tenants/$CID" '{"storage_tier":"ha"}')
+  ERR_CODE=$(echo "$FLIP_RESP" | python3 -c "import json,sys;
+try:
+  d=json.load(sys.stdin); print((d.get('error') or {}).get('code',''))
+except: print('')" 2>/dev/null)
+  if [[ "$ERR_CODE" == "HA_REQUIRES_MULTI_NODE" || "$ERR_CODE" == "STORAGE_TIER_HA_UNAVAILABLE" ]]; then
+    ok "single-node guard rejected HA flip with code=$ERR_CODE"
+  else
+    fail "single-node guard FAILED: PATCH→HA returned code='$ERR_CODE' (expected HA_REQUIRES_MULTI_NODE). resp=$FLIP_RESP"
+    exit 1
+  fi
+
+  # Persisted tier must STILL be 'local'
+  AFTER=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storage_tier','?'))" 2>/dev/null)
+  if [[ "$AFTER" == "local" ]]; then
+    ok "single-node guard: persisted storage_tier still 'local' after rejected flip"
+  else
+    fail "single-node guard: persisted storage_tier=$AFTER (expected local)"
+    exit 1
+  fi
+
+  log "── tier-flip suite: single-node guard PASSED (HA path correctly skipped) ──"
+  # 77 = autoconf SKIP convention — tells integration-all.sh that the
+  # HA-tier path was not validated even though the guard probe passed.
+  exit 77
 fi
 
 # ─── reproduce the user's flow ───────────────────────────────────────
