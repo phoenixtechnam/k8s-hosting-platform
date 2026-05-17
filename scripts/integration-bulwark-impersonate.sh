@@ -83,7 +83,7 @@ warn()  { echo -e "  ${YELLOW}!${NC} $1"; }
 
 KCTL=(kubectl --namespace="$NAMESPACE")
 
-POD="$(${KCTL[@]} get pods -l app=bulwark -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+POD="$("${KCTL[@]}" get pods -l app=bulwark -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
 if [[ -z "$POD" ]]; then
   fail "no bulwark Pod found in namespace=$NAMESPACE — is it deployed?"
   exit 1
@@ -92,18 +92,18 @@ fi
 # Run a node script inside the bulwark container against 127.0.0.1:3000.
 # Captures structured JSON on stdout for shell parsing.
 in_pod() {
-  ${KCTL[@]} exec "$POD" -c bulwark -- node -e "$1"
+  "${KCTL[@]}" exec "$POD" -c bulwark -- node -e "$1"
 }
 
 # ── Phase A: pod + secret health ─────────────────────────────────────
 if [[ $NEG_ONLY -eq 0 ]]; then
   phase "A. Pod + secret health"
 
-  READY="$(${KCTL[@]} get pod "$POD" -o jsonpath='{.status.containerStatuses[?(@.name=="bulwark")].ready}')"
+  READY="$("${KCTL[@]}" get pod "$POD" -o jsonpath='{.status.containerStatuses[?(@.name=="bulwark")].ready}')"
   [[ "$READY" == "true" ]] && pass "A1 bulwark container Ready" || fail "A1 bulwark container NOT Ready"
 
   # No impersonator sidecar should be co-deployed (we retired it)
-  CONTAINERS="$(${KCTL[@]} get pod "$POD" -o jsonpath='{.spec.containers[*].name}')"
+  CONTAINERS="$("${KCTL[@]}" get pod "$POD" -o jsonpath='{.spec.containers[*].name}')"
   if echo "$CONTAINERS" | grep -qw impersonator; then
     fail "A1b impersonator sidecar still co-deployed (should be retired); containers=$CONTAINERS"
   else
@@ -114,7 +114,7 @@ if [[ $NEG_ONLY -eq 0 ]]; then
   [[ "$HEALTH" == "200" ]] && pass "A2 /api/health returns 200" || fail "A2 /api/health unexpected: $HEALTH"
 
   for env_name in BULWARK_JWT_AUTH_SECRET BULWARK_STALWART_MASTER_USER BULWARK_STALWART_MASTER_PASSWORD; do
-    if ${KCTL[@]} exec "$POD" -c bulwark -- sh -c "[ -n \"\$$env_name\" ]" 2>/dev/null; then
+    if "${KCTL[@]}" exec "$POD" -c bulwark -- sh -c "[ -n \"\$$env_name\" ]" 2>/dev/null; then
       pass "A3 $env_name is set"
     else
       fail "A3 $env_name is missing — impersonate route will 404"
@@ -155,12 +155,12 @@ console.log(h+'.'+p+'.'+s);
 }
 
 # Read the BULWARK_JWT_AUTH_SECRET from inside the pod (do NOT log it)
-JWT_SECRET="$(${KCTL[@]} exec "$POD" -c bulwark -- printenv BULWARK_JWT_AUTH_SECRET 2>/dev/null || true)"
+JWT_SECRET="$("${KCTL[@]}" exec "$POD" -c bulwark -- printenv BULWARK_JWT_AUTH_SECRET 2>/dev/null || true)"
 if [[ -z "$JWT_SECRET" || ${#JWT_SECRET} -lt 32 ]]; then
   fail "BULWARK_JWT_AUTH_SECRET unset or <32 chars — cannot mint JWTs"
   exit 1
 fi
-MAILBOX="${MAILBOX:-$(${KCTL[@]} exec "$POD" -c bulwark -- printenv BULWARK_STALWART_MASTER_USER 2>/dev/null || echo master@${DOMAIN})}"
+MAILBOX="${MAILBOX:-$("${KCTL[@]}" exec "$POD" -c bulwark -- printenv BULWARK_STALWART_MASTER_USER 2>/dev/null || echo master@${DOMAIN})}"
 
 # Single-call test helper. POSTs node script through kubectl exec; returns
 # JSON `{status, location, cookies, body}`.
@@ -236,7 +236,7 @@ catch { console.log(0); }
   fi
 
   # Audit log line (Bulwark's structured log)
-  if ${KCTL[@]} logs "$POD" -c bulwark --tail=200 2>/dev/null | grep -q "Impersonation session granted"; then
+  if "${KCTL[@]}" logs "$POD" -c bulwark --tail=200 2>/dev/null | grep -q "Impersonation session granted"; then
     pass "B4 audit log entry 'Impersonation session granted' present"
   else
     fail "B4 audit log entry missing — Bulwark didn't log the issuance"
@@ -347,7 +347,7 @@ STATUS="$(echo "$RESP" | node -e "console.log(JSON.parse(require('fs').readFileS
 # Roundcube's JWT_AUTH_SECRET must be rejected by Bulwark's
 # /api/auth/impersonate (proves separate HMAC keys are enforced).
 # Only runs if both env values are accessible.
-ROUNDCUBE_KEY="$(${KCTL[@]} get secret -n mail roundcube-secrets -o jsonpath='{.data.JWT_AUTH_SECRET}' 2>/dev/null | base64 -d || true)"
+ROUNDCUBE_KEY="$("${KCTL[@]}" get secret -n mail roundcube-secrets -o jsonpath='{.data.JWT_AUTH_SECRET}' 2>/dev/null | base64 -d || true)"
 if [[ -n "$ROUNDCUBE_KEY" && "$ROUNDCUBE_KEY" != "$JWT_SECRET" ]]; then
   NOW=$(date +%s); EXP=$((NOW+60))
   WRONG_KEY_JWT="$(mint_jwt "$ROUNDCUBE_KEY" "$MAILBOX" "rc-key-$(date +%s%N)-$$" "$NOW" "$EXP")"
@@ -377,8 +377,8 @@ if [[ $RUN_MUTEX -eq 1 ]]; then
     pass "D1 initial engine: $INITIAL_ENGINE"
 
     # Count Pods for both engines
-    BULWARK_PODS="$(${KCTL[@]} get pods -l app=bulwark --field-selector=status.phase=Running 2>/dev/null | tail -n +2 | wc -l)"
-    ROUNDCUBE_PODS="$(${KCTL[@]} get pods -l app=roundcube --field-selector=status.phase=Running -n mail 2>/dev/null | tail -n +2 | wc -l)"
+    BULWARK_PODS="$("${KCTL[@]}" get pods -l app=bulwark --field-selector=status.phase=Running 2>/dev/null | tail -n +2 | wc -l)"
+    ROUNDCUBE_PODS="$("${KCTL[@]}" get pods -l app=roundcube --field-selector=status.phase=Running -n mail 2>/dev/null | tail -n +2 | wc -l)"
     if [[ $INITIAL_ENGINE == "bulwark" ]]; then
       [[ $BULWARK_PODS -ge 1 && $ROUNDCUBE_PODS -eq 0 ]] \
         && pass "D1b mutex holding: bulwark=$BULWARK_PODS roundcube=$ROUNDCUBE_PODS" \
