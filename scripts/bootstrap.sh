@@ -4251,8 +4251,8 @@ RCEOF
   # ADR-039 Phase 8 — Bulwark webmail secrets.
   #
   # Bulwark verifies impersonation JWTs natively via its
-  # /api/auth/impersonate route (upstream issue #296, shipped on
-  # webmail-beta image). The route needs three envs sourced from
+  # /api/auth/impersonate route (upstream issue #296, landed in
+  # v1.6.7). The route needs three envs sourced from
   # `bulwark-secrets`:
   #
   #   BULWARK_JWT_AUTH_SECRET           — INDEPENDENT random secret

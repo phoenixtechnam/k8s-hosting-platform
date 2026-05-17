@@ -741,7 +741,7 @@ interface GenerateWebmailTokenOptions {
    *
    * Bulwark tokens carry `iss`/`jti`/`tenant_id`/`actor_user_id` and
    * are verified by Bulwark's own `/api/auth/impersonate` route
-   * (upstream issue #296 — shipped on webmail-beta image).
+   * (upstream issue #296 — landed in v1.6.7).
    */
   engine?: 'roundcube' | 'bulwark';
   /**
