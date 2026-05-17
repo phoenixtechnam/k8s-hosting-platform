@@ -31,12 +31,24 @@ import crypto from 'node:crypto';
 // in pod spec) remains a deferred hardening item — switching to
 // Secret-mounted credentials closes both leaks at once.
 //
-// Source:
+// Source (verified against rclone v1.66 master, fs/config/obscure/obscure.go):
 //   var crypt = []byte{0x9c, 0x93, 0x5b, 0x48, 0x73, 0x0a, 0x55, 0x4d,
 //                      0x6b, 0xfd, 0x7c, 0x63, 0xc8, 0x86, 0xa9, 0x2b,
 //                      0xd3, 0x90, 0x19, 0x8e, 0xb8, 0x12, 0x8a, 0xfb,
-//                      0xf6, 0x78, 0x9d, 0xe3, 0x1f, 0xc9, 0x91, 0x6c}
-const RCLONE_KEY_HEX = '9c935b48730a554d6bfd7c63c886a92bd390198eb8128afbf6789de31fc9916c';
+//                      0xf4, 0xde, 0x16, 0x2b, 0x8b, 0x95, 0xf6, 0x38}
+//
+// PRIOR BUG: the last 8 bytes were transcribed incorrectly (had
+// `0xf6, 0x78, 0x9d, 0xe3, 0x1f, 0xc9, 0x91, 0x6c` — NOT rclone's key).
+// Round-tripping through our own obscure+reveal worked because both
+// used the same wrong key. But rclone itself decrypts the value with
+// the REAL key and got binary garbage instead of the password,
+// surfacing as "logon invalid" against SMB and silent auth failures
+// against any remote that uses RCLONE_CONFIG_*_PASS (smb, ftp, http
+// basic, sftp-password, etc.). The unit test never caught this
+// because it only validated `reveal(obscure(x)) === x`, never that
+// rclone itself could decode our output. Added rclone-reveal cross-
+// check test (rclone-obscure.test.ts) to prevent regression.
+const RCLONE_KEY_HEX = '9c935b48730a554d6bfd7c63c886a92bd390198eb8128afbf4de162b8b95f638';
 const KEY = Buffer.from(RCLONE_KEY_HEX, 'hex');
 if (KEY.length !== 32) {
   // Sanity check at module load — if rclone ever changes the key,

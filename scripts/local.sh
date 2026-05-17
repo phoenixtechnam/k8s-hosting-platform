@@ -1226,6 +1226,41 @@ cmd_minio_status() {
   echo "════════════════════════════════════════════════"
 }
 
+# ─── samba (snapshot-storage overhaul, CIFS target) ───────────────────
+#
+# Dev-only SMB server so the CIFS streaming + Phase 11 read paths can
+# be exercised end-to-end. Same opt-in shape as minio.
+
+cmd_samba_up() {
+  echo "Deploying dev samba (CIFS/SMB backend for snapshot E2E)..."
+  docker cp "${PROJECT_DIR}/k8s/dev/samba/samba.yaml" "${K3S_CONTAINER}:/tmp/samba.yaml" >/dev/null
+  k3s_exec kubectl apply -f /tmp/samba.yaml >/dev/null
+  k3s_exec kubectl wait --for=condition=available --timeout=60s -n dev-samba deploy/samba
+  echo ""
+  echo "samba deployed."
+  echo "  SMB endpoint (cluster-internal): samba.dev-samba.svc.cluster.local:445"
+  echo "  Share: snapshots  (writable, smb2/smb3)"
+  echo "  User : smbtest"
+  echo "  Pass : smb-dev-password-1234"
+  echo ""
+  echo "Next: configure /settings/backups with these credentials (storage_type=cifs),"
+  echo "      then assign a snapshot class to it via /settings/snapshot-classes."
+}
+
+cmd_samba_down() {
+  echo "Removing dev samba..."
+  k3s_exec kubectl delete -f - --ignore-not-found < "${PROJECT_DIR}/k8s/dev/samba/samba.yaml" 2>/dev/null \
+    || k3s_exec kubectl delete namespace dev-samba --ignore-not-found
+}
+
+cmd_samba_status() {
+  echo "════════════════════════════════════════════════"
+  echo "  samba (snapshot-storage CIFS target)"
+  echo "════════════════════════════════════════════════"
+  k3s_exec kubectl get pods -n dev-samba 2>/dev/null | sed 's/^/    /' || echo "  Not deployed. Run: ./scripts/local.sh samba-up"
+  echo "════════════════════════════════════════════════"
+}
+
 # ─── Help & dispatch ─────────────────────────────────────────────────────────
 
 cmd_help() {
@@ -1263,6 +1298,9 @@ case "${1:-help}" in
   minio-up)       cmd_minio_up ;;
   minio-down)     cmd_minio_down ;;
   minio-status)   cmd_minio_status ;;
+  samba-up)       cmd_samba_up ;;
+  samba-down)     cmd_samba_down ;;
+  samba-status)   cmd_samba_status ;;
   help|-h)        cmd_help ;;
   *)              echo "Unknown command: $1"; cmd_help; exit 1 ;;
 esac

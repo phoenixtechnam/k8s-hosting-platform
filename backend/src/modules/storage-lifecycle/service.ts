@@ -1460,10 +1460,35 @@ export async function rollbackToSnapshot(
  */
 async function resolveRestoreStore(
   ctx: ServiceCtx,
-  snap: { id: string; targetId: string | null; snapshotClass: string },
+  snap: { id: string; targetId: string | null; snapshotClass: string; subsystem?: string | null },
 ): Promise<SnapshotStore> {
   if (!snap.targetId) {
-    // Pre-Phase-3 row — use whatever the legacy resolver gives us.
+    // target_id is NULL. Two ways this can happen:
+    //   (a) the row predates Phase 3 — column existed but was never
+    //       stamped because the snapshot was created before the
+    //       per-class resolver shipped. Detect this via `subsystem`,
+    //       which Phase 1 added with a NOT NULL default — pre-Phase-1
+    //       rows have it NULL.
+    //   (b) the row WAS stamped under Phase 3+ but the target was
+    //       since deleted (ON DELETE SET NULL fired). Surface as
+    //       TARGET_REMOVED so the operator knows the archive is in
+    //       an orphaned bucket that requires manual recovery.
+    //
+    // The previous silent fallback to `ctx.store` (the legacy single-
+    // active-target store) for case (b) led to mysterious restores
+    // pulling from the WRONG bucket — which an operator who'd
+    // deliberately retired a target would never expect.
+    if (snap.subsystem) {
+      // Phase 3+ row whose target_id was nulled → target deleted.
+      throw new ApiError(
+        'TARGET_REMOVED',
+        `Snapshot ${snap.id} was uploaded to a backup target that has since been deleted. ` +
+        `Manual recovery required: locate the archive in the original target's bucket/share, ` +
+        `re-create the backup-config pointing at that storage, then re-stamp this snapshot's target_id.`,
+        410,
+      );
+    }
+    // Pre-Phase-3 row (subsystem NULL) — keep the legacy fallback.
     return ctx.store;
   }
   const { resolveSnapshotStoreByTargetId } = await import('./snapshot-store.js');
@@ -1987,7 +2012,23 @@ export async function getOperation(db: Database, opId: string) {
 export async function deleteSnapshot(ctx: ServiceCtx, snapshotId: string): Promise<void> {
   const [snap] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapshotId));
   if (!snap) throw new ApiError('SNAPSHOT_NOT_FOUND', `Snapshot ${snapshotId} not found`, 404);
-  await ctx.store.delete(snap.archivePath).catch(() => {});
+  // Use the per-target resolver so the remote archive lands in (or out
+  // of) the SAME store that originally received the upload. The
+  // previous ctx.store.delete() call routed every delete to the legacy
+  // single-active-target store, which for Phase 3+ snapshots either
+  // silently no-op'd (wrong bucket) or deleted from an unrelated
+  // target. Phase 11 CIFS delete (one-shot rclone Job) was never
+  // reached this way.
+  try {
+    const store = await resolveRestoreStore(ctx, snap);
+    await store.delete(snap.archivePath).catch(() => { /* best-effort remote cleanup */ });
+  } catch (err) {
+    // TARGET_REMOVED 410 is acceptable here — the target's gone, so
+    // there's nothing remote to clean up. Still delete the DB row.
+    if (!(err instanceof ApiError && err.code === 'TARGET_REMOVED')) {
+      throw err;
+    }
+  }
   await ctx.db.delete(storageSnapshots).where(eq(storageSnapshots.id, snapshotId));
 }
 
@@ -2003,7 +2044,17 @@ export async function expireSnapshots(ctx: ServiceCtx): Promise<number> {
   let reaped = 0;
   for (const snap of due) {
     try {
-      await ctx.store.delete(snap.archivePath);
+      // Per-target delete (same rationale as deleteSnapshot above —
+      // legacy ctx.store would route every expire to the wrong bucket
+      // for Phase 3+ snapshots). TARGET_REMOVED means the target's
+      // gone; still flip the DB row to expired (no remote cleanup
+      // possible anyway).
+      try {
+        const store = await resolveRestoreStore(ctx, snap);
+        await store.delete(snap.archivePath);
+      } catch (err) {
+        if (!(err instanceof ApiError && err.code === 'TARGET_REMOVED')) throw err;
+      }
       await ctx.db.update(storageSnapshots).set({ status: 'expired' }).where(eq(storageSnapshots.id, snap.id));
       reaped += 1;
     } catch {
