@@ -236,16 +236,6 @@ export class LocalHostPathStore implements SnapshotStore {
     // to the cluster-scoped PV so the dynamic provisioner doesn't spawn
     // a fresh local-path volume.
     //
-    // backup-coverage: excluded:cluster-infrastructure
-    //   This PVC is a thin wiring object around the cluster-scoped
-    //   platform-snapshots PV (hostPath). It contains NO tenant data —
-    //   it's only the mount surface that the snapshot/restore Jobs use
-    //   to read/write the archive on the node's shared snapshot
-    //   directory. The actual tenant data lives on the source PVC
-    //   (covered by the `files` BundleComponent) and the archive
-    //   tarballs themselves live on the host filesystem (covered by
-    //   the system-backup snapshot path, not the tenant bundle).
-    //
     // requests.storage is INTENTIONALLY tiny (1Mi) because the tenant's
     // `requests.storage` ResourceQuota (e.g. 2Gi on Starter) sums ALL
     // PVCs in the namespace — and ResourceQuota does NOT have a
@@ -257,7 +247,6 @@ export class LocalHostPathStore implements SnapshotStore {
     // quota is negligible. Snapshot archives live on the host filesystem
     // (not on this PVC's accounted "storage"), so the real cost
     // accounting is operator-level node-disk monitoring, not K8s quota.
-    // backup-coverage: excluded:cluster-infrastructure
     try {
       await (k8s.core as unknown as {
         createNamespacedPersistentVolumeClaim: (args: { namespace: string; body: unknown }) => Promise<unknown>;
