@@ -1,26 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   reconcileWebmailIngress,
-  reconcileBulwarkOrigin,
   reconcileEngineDeployments,
   serviceNameForEngine,
-  originFromUrl,
   WEBMAIL_ENGINE_DISABLED_ANNOTATION,
 } from './reconciler.js';
 import type { Database } from '../../db/index.js';
 
 vi.mock('../webmail-settings/service.js', () => ({
   getDefaultWebmailEngine: vi.fn(),
-  getDefaultWebmailUrl: vi.fn(),
 }));
 
-vi.mock('../../shared/k8s-patch.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../shared/k8s-patch.js')>();
-  return { ...actual, applyRaw: vi.fn().mockResolvedValue({}) };
-});
-
-import { getDefaultWebmailEngine, getDefaultWebmailUrl } from '../webmail-settings/service.js';
-import { applyRaw } from '../../shared/k8s-patch.js';
+import { getDefaultWebmailEngine } from '../webmail-settings/service.js';
 
 function makeCustom(currentService: string | null, fluxAnnotated = true) {
   const metadata = fluxAnnotated
@@ -45,8 +36,8 @@ describe('serviceNameForEngine', () => {
   it('maps roundcube → roundcube', () => {
     expect(serviceNameForEngine('roundcube')).toBe('roundcube');
   });
-  it('maps bulwark → bulwark-impersonator', () => {
-    expect(serviceNameForEngine('bulwark')).toBe('bulwark-impersonator');
+  it('maps bulwark → bulwark (upstream /api/auth/impersonate, no sidecar)', () => {
+    expect(serviceNameForEngine('bulwark')).toBe('bulwark');
   });
 });
 
@@ -64,7 +55,7 @@ describe('reconcileWebmailIngress', () => {
 
     expect(result).toEqual({
       engine: 'bulwark',
-      expectedService: 'bulwark-impersonator',
+      expectedService: 'bulwark',
       previousService: 'roundcube',
       patched: true,
     });
@@ -72,21 +63,21 @@ describe('reconcileWebmailIngress', () => {
     const callArgs = custom.patchNamespacedCustomObject.mock.calls[0][0] as {
       body: { spec: { routes: Array<{ services: Array<{ name: string; port: number }> }> } };
     };
-    expect(callArgs.body.spec.routes[0].services[0].name).toBe('bulwark-impersonator');
+    expect(callArgs.body.spec.routes[0].services[0].name).toBe('bulwark');
     expect(callArgs.body.spec.routes[0].services[0].port).toBe(80);
   });
 
   it('no-ops when IR already targets the active engine', async () => {
     vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
-    const custom = makeCustom('bulwark-impersonator');
+    const custom = makeCustom('bulwark');
     const log = makeLog();
 
     const result = await reconcileWebmailIngress(db, custom as never, log);
 
     expect(result).toEqual({
       engine: 'bulwark',
-      expectedService: 'bulwark-impersonator',
-      previousService: 'bulwark-impersonator',
+      expectedService: 'bulwark',
+      previousService: 'bulwark',
       patched: false,
     });
     expect(custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
@@ -94,7 +85,7 @@ describe('reconcileWebmailIngress', () => {
 
   it('flips bulwark → roundcube symmetrically', async () => {
     vi.mocked(getDefaultWebmailEngine).mockResolvedValue('roundcube');
-    const custom = makeCustom('bulwark-impersonator');
+    const custom = makeCustom('bulwark');
     const log = makeLog();
 
     const result = await reconcileWebmailIngress(db, custom as never, log);
@@ -128,7 +119,7 @@ describe('reconcileWebmailIngress', () => {
     vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
     // Service already correct, but annotation missing — must re-patch
     // to lock the resource against Flux reconciliation.
-    const custom = makeCustom('bulwark-impersonator', false);
+    const custom = makeCustom('bulwark', false);
     const log = makeLog();
 
     const result = await reconcileWebmailIngress(db, custom as never, log);
@@ -179,127 +170,7 @@ describe('reconcileWebmailIngress', () => {
     expect(body.body.spec.routes[0].middlewares).toEqual([
       { name: 'compress', namespace: 'traefik' },
     ]);
-    expect(body.body.spec.routes[0].services[0].name).toBe('bulwark-impersonator');
-  });
-});
-
-describe('originFromUrl', () => {
-  it('strips path + trailing slash', () => {
-    expect(originFromUrl('https://webmail.example.com/')).toBe('https://webmail.example.com');
-    expect(originFromUrl('https://webmail.example.com/some/path')).toBe(
-      'https://webmail.example.com',
-    );
-  });
-
-  it('preserves explicit non-default ports', () => {
-    expect(originFromUrl('https://webmail.example.com:8443/')).toBe(
-      'https://webmail.example.com:8443',
-    );
-  });
-
-  it('returns null for unparseable input', () => {
-    expect(originFromUrl('not a url')).toBeNull();
-    expect(originFromUrl('')).toBeNull();
-    expect(originFromUrl(undefined)).toBeNull();
-    expect(originFromUrl(null)).toBeNull();
-  });
-});
-
-describe('reconcileBulwarkOrigin', () => {
-  function makeApps(currentOrigin: string | null) {
-    return {
-      readNamespacedDeployment: vi.fn().mockResolvedValue({
-        spec: {
-          template: {
-            spec: {
-              containers: [
-                {
-                  name: 'impersonator',
-                  env: currentOrigin
-                    ? [{ name: 'PUBLIC_ORIGIN', value: currentOrigin }]
-                    : [],
-                },
-              ],
-            },
-          },
-        },
-      }),
-    };
-  }
-  const kc = {} as never;
-
-  beforeEach(() => {
-    vi.mocked(getDefaultWebmailUrl).mockReset();
-    vi.mocked(applyRaw).mockReset();
-    vi.mocked(applyRaw).mockResolvedValue({});
-  });
-
-  it('SSA-applies the new origin when the current value differs', async () => {
-    vi.mocked(getDefaultWebmailUrl).mockResolvedValue('https://webmail.example.com/');
-    const apps = makeApps('https://bulwark.example.com');
-    const log = makeLog();
-
-    const result = await reconcileBulwarkOrigin({} as Database, kc, apps as never, log);
-
-    expect(result).toEqual({
-      expectedOrigin: 'https://webmail.example.com',
-      previousOrigin: 'https://bulwark.example.com',
-      patched: true,
-    });
-    expect(applyRaw).toHaveBeenCalledOnce();
-    const [, target, body, opts] = vi.mocked(applyRaw).mock.calls[0];
-    expect(target.name).toBe('bulwark');
-    expect(target.namespace).toBe('mail');
-    expect(opts.fieldManager).toBe('platform-api-webmail-router');
-    expect(opts.force).toBe(true);
-    const typedBody = body as {
-      spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } };
-    };
-    expect(typedBody.spec.template.spec.containers[0].env).toEqual([
-      { name: 'PUBLIC_ORIGIN', value: 'https://webmail.example.com' },
-    ]);
-  });
-
-  it('no-ops when the env already matches', async () => {
-    vi.mocked(getDefaultWebmailUrl).mockResolvedValue('https://webmail.example.com');
-    const apps = makeApps('https://webmail.example.com');
-    const log = makeLog();
-
-    const result = await reconcileBulwarkOrigin({} as Database, kc, apps as never, log);
-
-    expect(result).toEqual({
-      expectedOrigin: 'https://webmail.example.com',
-      previousOrigin: 'https://webmail.example.com',
-      patched: false,
-    });
-    expect(applyRaw).not.toHaveBeenCalled();
-  });
-
-  it('returns null when the webmail URL is unparseable (skips patch)', async () => {
-    vi.mocked(getDefaultWebmailUrl).mockResolvedValue('garbage');
-    const apps = makeApps('https://webmail.example.com');
-    const log = makeLog();
-
-    const result = await reconcileBulwarkOrigin({} as Database, kc, apps as never, log);
-
-    expect(result).toBeNull();
-    expect(applyRaw).not.toHaveBeenCalled();
-  });
-
-  it('returns null when Bulwark Deployment is missing (non-fatal)', async () => {
-    vi.mocked(getDefaultWebmailUrl).mockResolvedValue('https://webmail.example.com');
-    const apps = {
-      readNamespacedDeployment: vi.fn().mockRejectedValue(
-        Object.assign(new Error('not found'), { statusCode: 404 }),
-      ),
-    };
-    const log = makeLog();
-
-    const result = await reconcileBulwarkOrigin({} as Database, kc, apps as never, log);
-
-    expect(result).toBeNull();
-    expect(applyRaw).not.toHaveBeenCalled();
-    expect(log.warn).toHaveBeenCalled();
+    expect(body.body.spec.routes[0].services[0].name).toBe('bulwark');
   });
 });
 

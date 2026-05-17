@@ -33,10 +33,11 @@ resources:
   # ADR-039 — Bulwark webmail (JMAP-native) coexists with Roundcube.
   # `platform_settings.default_webmail_engine` selects which engine
   # new tenants get. Existing tenants keep their current engine.
-  # Secrets (bulwark-secrets + bulwark-impersonator-secrets)
-  # operator-provisioned by scripts/bootstrap.sh:generate_bulwark_secrets.
+  # Secrets (bulwark-secrets) operator-provisioned by
+  # scripts/bootstrap.sh:generate_bulwark_secrets. The
+  # BULWARK_JWT_AUTH_SECRET key MUST equal platform-api's
+  # WEBMAIL_JWT_SECRET (bootstrap.sh generates one shared value).
   - bulwark/
-  - bulwark-impersonator/
   # Cross-namespace NetworkPolicy so Stalwart (mail ns) can reach
   # Postgres (platform ns). Lives at the overlay root, not under
   # stalwart/, because it targets the platform namespace and the

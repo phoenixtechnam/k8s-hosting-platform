@@ -54,10 +54,10 @@ export function registerAllLifecycleHooks(): void {
   // tenant suspend/restore so tenant workloads stop consuming resources.
   registerCustomDeploymentsScaleHook();
 
-  // ADR-039 Phase 8: archive → unlink per-mailbox Bulwark settings
-  // files via the bulwark-impersonator admin endpoint. Order=210 so
-  // it runs BEFORE mailboxes-status (220) which deletes the rows.
-  // blocking=continue + kill-switch
-  // (`LIFECYCLE_HOOK_BULWARK_SETTINGS_PURGE=disable`) per ADR-039.
+  // ADR-039 Phase 8 (retired 2026-05-17): hook is now a no-op since
+  // the bulwark-impersonator sidecar that owned the cleanup endpoint
+  // was removed when Bulwark's upstream /api/auth/impersonate
+  // shipped. Orphan settings files are inert; see
+  // bulwark-settings-purge.ts for the retire rationale.
   registerBulwarkSettingsPurgeHook();
 }

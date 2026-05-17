@@ -4,7 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'mailboxes' });
-import { mailboxes, mailboxAccess, emailDomains, domains, users, tenants } from '../../db/schema.js';
+import { mailboxes, mailboxAccess, emailDomains, domains, users, tenants, auditLogs } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getTenantMailboxLimit, getTenantMailboxCount } from './limit.js';
 import { notifyTenantMailboxLimitReached } from '../notifications/events.js';
@@ -740,12 +740,27 @@ interface GenerateWebmailTokenOptions {
    * the default for new tenants.
    *
    * Bulwark tokens carry `iss`/`jti`/`tenant_id`/`actor_user_id` and
-   * are validated by the bulwark-impersonator sidecar.
+   * are verified by Bulwark's own `/api/auth/impersonate` route
+   * (upstream issue #296 — shipped on webmail-beta image).
    */
   engine?: 'roundcube' | 'bulwark';
-  /** Tenant ID stamped on Bulwark JWTs for audit. Defaults to the user's tenantId. */
+  /**
+   * Tenant ID stamped on Bulwark JWTs for audit.
+   *
+   * SECURITY: callers MUST pass the tenantId derived from the
+   * authenticated session (JWT `tenantId` claim), never a value from
+   * request body. The audit row is rendered to operators verbatim.
+   */
   tenantId?: string;
-  /** Actor user ID stamped on Bulwark JWTs for audit. Defaults to the calling userId. */
+  /**
+   * Actor user ID stamped on Bulwark JWTs for audit.
+   *
+   * SECURITY: callers MUST pass `user.sub` from the authenticated
+   * session JWT, never a value from request body. A misrouted
+   * caller-controlled value would spoof both the JWT `actor_user_id`
+   * claim AND the audit-log row. Defaults to the authenticated
+   * userId when omitted.
+   */
   actorUserId?: string;
 }
 
@@ -820,45 +835,44 @@ export async function generateWebmailToken(
   // enough for the redirect chain, short enough to minimise risk if the URL
   // leaks via logs, browser history, or Referer headers.
   //
-  // We sign this with a DEDICATED secret (WEBMAIL_JWT_SECRET) that is
-  // independent of the API JWT secret, so a leak of one secret cannot forge
-  // the other class of token. Falls back to the API JWT_SECRET when the
-  // dedicated secret is not configured, which matches current dev overlays;
-  // production overlays MUST set both to independent random values.
-  const webmailSecret = process.env.WEBMAIL_JWT_SECRET ?? process.env.JWT_SECRET;
-  if (!webmailSecret || webmailSecret.length < 16) {
-    app.log?.error?.('Webmail JWT signing secret is not configured');
-    throw new ApiError(
-      'INTERNAL_ERROR',
-      'Webmail JWT signing secret is not configured',
-      500,
-    );
-  }
-  if (!process.env.WEBMAIL_JWT_SECRET) {
-    app.log?.warn?.(
-      'WEBMAIL_JWT_SECRET not set — falling back to JWT_SECRET. '
-      + 'For production, set WEBMAIL_JWT_SECRET to an independent random value.',
-    );
-  }
+  // 2026-05-17 security fix (review #C1): per-engine HMAC keys to
+  // eliminate cross-engine token replay. A Bulwark JWT contains an
+  // `iss` claim that Roundcube's `jwt_auth.php` plugin ignores; under
+  // the previous shared-key model a Bulwark token replayed at
+  // `?_task=login&_jwt=` would have authenticated to Roundcube. The
+  // engine-distinct keys make any such replay fail signature
+  // verification on the OTHER engine.
+  //
+  // - Roundcube uses `WEBMAIL_JWT_SECRET` (mirror of
+  //   roundcube-secrets/JWT_AUTH_SECRET)
+  // - Bulwark uses `BULWARK_WEBMAIL_JWT_SECRET` (mirror of
+  //   bulwark-secrets/BULWARK_JWT_AUTH_SECRET)
+  // - For the legacy single-secret deployment, BULWARK_WEBMAIL_JWT_SECRET
+  //   falls back to WEBMAIL_JWT_SECRET with a loud startup warning.
+  //   That fallback is intentional ONLY for upgrade ergonomics — once
+  //   the operator runs the next bootstrap.sh both Secrets get
+  //   independent random values.
+  // - In dev (JWT_SECRET unset, WEBMAIL_JWT_SECRET unset) we fall back
+  //   to the API JWT_SECRET — that's the dev-only shortcut.
+
   // ─── Engine-aware JWT minting + URL composition ───────────────────
   //
   // Roundcube path  → JWT `{ mailbox, iat, exp }` + URL `?_task=login&_jwt=…`
-  //                   The Roundcube jwt_auth plugin reads `?_jwt=` query.
+  //                   Signed with WEBMAIL_JWT_SECRET. The Roundcube
+  //                   jwt_auth plugin reads `?_jwt=` query.
   // Bulwark path    → JWT `{ iss, mailbox, jti, tenant_id, actor_user_id,
-  //                          iat, exp }` + URL `/_impersonate?token=…`
-  //                   The bulwark-impersonator sidecar enforces `iss`,
-  //                   `iat`, single-use `jti`, and TTL ceiling (≤300s).
-  //                   Mirrors Roundcube's master-user pattern but lives
-  //                   in a separate JMAP-native code path (ADR-039).
+  //                          iat, exp }` + URL `/api/auth/impersonate?token=…`
+  //                   Signed with BULWARK_WEBMAIL_JWT_SECRET (distinct
+  //                   key — review fix C1 prevents cross-engine replay
+  //                   where a Bulwark token would also pass Roundcube's
+  //                   `jwt_auth.php` claim-set checks). Bulwark's native
+  //                   route (upstream issue #296) enforces `iss`, `iat`,
+  //                   single-use `jti`, lifetime ≤300s, and mailbox
+  //                   without `%` or `:`.
   //
-  // The two formats coexist by design — both consume the same
-  // WEBMAIL_JWT_SECRET so the operator only has to manage one secret.
-  // Phase 10 (`platform_config.default_webmail_engine`) will let the
-  // operator flip the default for new tenants.
   // Engine resolution precedence:
   //   1. explicit caller override (options.engine)
   //   2. platform-wide `default_webmail_engine` setting
-  //      (managed by super_admin via webmail-settings)
   //   3. hardcoded 'roundcube' (back-compat for fresh installs)
   let engine: 'roundcube' | 'bulwark';
   if (options?.engine) {
@@ -871,6 +885,44 @@ export async function generateWebmailToken(
       engine = 'roundcube';
     }
   }
+
+  // Resolve per-engine HMAC key. Distinct keys eliminate cross-engine
+  // token replay (Bulwark JWT spuriously passing Roundcube's claim
+  // checks because both share the same secret).
+  let webmailSecret: string | undefined;
+  if (engine === 'bulwark') {
+    webmailSecret = process.env.BULWARK_WEBMAIL_JWT_SECRET
+      ?? process.env.WEBMAIL_JWT_SECRET
+      ?? process.env.JWT_SECRET;
+    if (!process.env.BULWARK_WEBMAIL_JWT_SECRET && process.env.WEBMAIL_JWT_SECRET) {
+      // Legacy single-secret deployment — fall back to the Roundcube
+      // key but warn. Operators upgrading from pre-2026-05-17 builds
+      // hit this once on first deploy; bootstrap.sh's next run
+      // provisions an independent BULWARK_JWT_AUTH_SECRET.
+      app.log?.warn?.(
+        'BULWARK_WEBMAIL_JWT_SECRET not set — falling back to WEBMAIL_JWT_SECRET. '
+        + 'This enables cross-engine token replay. Run bootstrap.sh to provision '
+        + 'independent keys for Roundcube + Bulwark.',
+      );
+    }
+  } else {
+    webmailSecret = process.env.WEBMAIL_JWT_SECRET ?? process.env.JWT_SECRET;
+    if (!process.env.WEBMAIL_JWT_SECRET) {
+      app.log?.warn?.(
+        'WEBMAIL_JWT_SECRET not set — falling back to JWT_SECRET. '
+        + 'For production, set WEBMAIL_JWT_SECRET to an independent random value.',
+      );
+    }
+  }
+  if (!webmailSecret || webmailSecret.length < 16) {
+    app.log?.error?.({ engine }, 'Webmail JWT signing secret is not configured');
+    throw new ApiError(
+      'INTERNAL_ERROR',
+      'Webmail JWT signing secret is not configured',
+      500,
+    );
+  }
+
   const tenantId = options?.tenantId ?? user.tenantId;
   const actorUserId = options?.actorUserId ?? userId;
 
@@ -880,7 +932,7 @@ export async function generateWebmailToken(
   // Resolve the webmail base URL. Both engines share the same URL —
   // webmail.<apex> serves whichever engine is currently active (the
   // platform-webmail-ingress reconciler points it at roundcube OR
-  // bulwark-impersonator based on default_webmail_engine).
+  // bulwark based on default_webmail_engine).
   //
   // Per-tenant Roundcube subdomains (webmail.<clientdomain>) are still
   // preferred for Roundcube so the cert in the address bar matches the
@@ -906,10 +958,14 @@ export async function generateWebmailToken(
   baseUrl = baseUrl ?? process.env.WEBMAIL_URL ?? 'https://webmail.example.com';
 
   if (engine === 'bulwark') {
-    // Bulwark impersonator JWT — must match the schema enforced by
-    // k8s/base/bulwark-impersonator/configmap.yaml. `iss`, `jti`,
-    // and `iat` are required; max TTL 300s; mailbox must be strict
-    // email format (the impersonator rejects %/: chars).
+    // Bulwark impersonation JWT — verified by Bulwark's native
+    // /api/auth/impersonate route (upstream issue #296). The route
+    // requires HS256, iss/iat/exp/jti/mailbox claims, lifetime ≤300s,
+    // and rejects `mailbox` claims containing `%` or `:` (defense
+    // against caller smuggling master-user syntax into the claim).
+    // Bulwark itself builds the `<mailbox>%<masterUser>` Basic auth
+    // header server-side from BULWARK_STALWART_MASTER_USER /
+    // BULWARK_STALWART_MASTER_PASSWORD envs.
     const jti = crypto.randomUUID();
     token = signWebmailJwt(
       {
@@ -920,19 +976,55 @@ export async function generateWebmailToken(
         actor_user_id: actorUserId,
       },
       webmailSecret,
-      // Keep the 30s window we use for Roundcube — short enough to
-      // limit blast radius on a leaked Referer / access log entry.
+      // 30s window — short enough to limit blast radius on a leaked
+      // Referer or access-log entry. Bulwark's own lifetime ceiling
+      // is 300s; we sign tighter than the verifier accepts.
       30,
     );
-    // Strip trailing slash on baseUrl so concat doesn't produce `//_impersonate`.
-    // Bulwark's Next.js router treats // as the same path but logs are cleaner.
+    // Strip trailing slash so concat doesn't produce `//api/auth/impersonate`.
+    // Next.js routes the doubled slash to the same handler but logs
+    // are cleaner this way.
     const trimmed = baseUrl.replace(/\/+$/, '');
-    webmailUrl = `${trimmed}/_impersonate?token=${encodeURIComponent(token)}`;
+    webmailUrl = `${trimmed}/api/auth/impersonate?token=${encodeURIComponent(token)}`;
   } else {
     // Roundcube path — unchanged from before this commit.
     token = signWebmailJwt({ mailbox: mailbox.fullAddress }, webmailSecret, 30);
     const trimmed = baseUrl.replace(/\/+$/, '');
     webmailUrl = `${trimmed}/?_task=login&_jwt=${encodeURIComponent(token)}`;
+  }
+
+  // Audit-log every webmail token issuance. Bulwark impersonation is
+  // a sensitive operation (operator gains full mailbox access without
+  // entering the mailbox's password) so we record the actor, target,
+  // engine, and issuance time. Failure to write the audit row MUST
+  // NOT silently succeed the token — surface as INTERNAL_ERROR so the
+  // operator retries instead of getting a token without an audit
+  // trail.
+  try {
+    await db.insert(auditLogs).values({
+      id: crypto.randomUUID(),
+      tenantId,
+      actionType: engine === 'bulwark' ? 'mail.webmail_impersonate' : 'mail.webmail_sso',
+      resourceType: 'mailbox',
+      resourceId: mailbox.id,
+      actorId: actorUserId,
+      actorType: 'user',
+      httpMethod: 'POST',
+      httpPath: '/api/v1/email/webmail-token',
+      httpStatus: 200,
+      changes: {
+        engine,
+        mailbox: mailbox.fullAddress,
+        token_ttl_seconds: 30,
+      },
+    });
+  } catch (err) {
+    app.log?.error?.({ err, mailboxId: mailbox.id, engine }, 'webmail token audit write failed');
+    throw new ApiError(
+      'INTERNAL_ERROR',
+      'Failed to record audit entry for webmail token',
+      500,
+    );
   }
 
   return {

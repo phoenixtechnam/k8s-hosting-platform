@@ -24,12 +24,11 @@ spec:
     - kind: Rule
       match: Host(`bulwark.${DOMAIN}`)
       services:
-        # Route through the impersonator Service — it transparently
-        # proxies all traffic to Bulwark + intercepts /_impersonate
-        # for the tenant-panel JWT handoff (ADR-039). The Service
-        # selects the bulwark Pod and targets its impersonator
-        # sidecar container's :8081 (named port `imp-http`).
-        - name: bulwark-impersonator
+        # Bulwark Service (port 80 → container :3000). Master-user
+        # impersonation is handled by Bulwark's own
+        # /api/auth/impersonate route (upstream issue #296). No
+        # sidecar in between.
+        - name: bulwark
           port: 80
   tls:
     secretName: bulwark-dev-tls

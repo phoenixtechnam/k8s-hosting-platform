@@ -730,27 +730,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => stopWebmailReconciler(webmailReconTimer));
 
         // ADR-039 Phase 10: on boot, ensure the platform-webmail-ingress
-        // IngressRoute targets whichever engine the DB says is active,
-        // AND that the Bulwark impersonator's PUBLIC_ORIGIN env matches
-        // the platform's default webmail URL. Idempotent — no-op if
-        // already correct. Non-blocking so a missing IR or transient
-        // k8s error doesn't gate platform-api startup; the same
-        // reconcile runs again on every engine/URL flip via
-        // /admin/webmail-settings.
+        // IngressRoute targets whichever engine the DB says is active.
+        // Idempotent — no-op if already correct. Non-blocking so a
+        // missing IR or transient k8s error doesn't gate platform-api
+        // startup; the same reconcile runs again on every engine flip
+        // via /admin/webmail-settings.
         try {
           const {
             reconcileWebmailIngress,
-            reconcileBulwarkOrigin,
             reconcileEngineDeployments,
           } = await import('./modules/webmail-router/reconciler.js');
           await reconcileWebmailIngress(app.db, k8sForImapsync.custom, app.log);
-          // KubeConfig instance for the SSA-apply path (applyRaw uses
-          // its server URL + auth directly).
-          const k8sNode = await import('@kubernetes/client-node');
-          const kc = new k8sNode.KubeConfig();
-          if (kubePath) kc.loadFromFile(kubePath);
-          else kc.loadFromCluster();
-          await reconcileBulwarkOrigin(app.db, kc, k8sForImapsync.apps, app.log);
           // 2026-05-16: mutex engine Pods. Idempotent — scales the
           // inactive engine Deployment to 0 and stamps it with the
           // disabled annotation so storage-policy leaves it alone.

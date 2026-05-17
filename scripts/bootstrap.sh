@@ -4250,65 +4250,119 @@ RCEOF
 
   # ADR-039 Phase 8 — Bulwark webmail secrets.
   #
-  # Bulwark coexists with Roundcube; both use the same Stalwart
-  # master-user for tenant-panel "Open Webmail" handoff so the
-  # master password is SHARED across them. JWT_SECRET is also
-  # shared (=WEBMAIL_JWT_SECRET set above for Roundcube) so the
-  # bulwark-impersonator sidecar verifies the same platform-minted
-  # tokens. Separate secrets:
+  # Bulwark verifies impersonation JWTs natively via its
+  # /api/auth/impersonate route (upstream issue #296, shipped on
+  # webmail-beta image). The route needs three envs sourced from
+  # `bulwark-secrets`:
   #
-  #   bulwark-secrets              — Bulwark's own admin dashboard
-  #                                  password + cookie SESSION_SECRET
-  #   bulwark-impersonator-secrets — JWT_SECRET (mirror of rc_jwt) +
-  #                                  STALWART_MASTER_USER/PASSWORD +
-  #                                  IMPERSONATOR_ADMIN_TOKEN
+  #   BULWARK_JWT_AUTH_SECRET           — INDEPENDENT random secret
+  #                                       (NOT shared with Roundcube's
+  #                                       JWT_AUTH_SECRET — security
+  #                                       review C1: distinct keys per
+  #                                       engine prevent cross-engine
+  #                                       token replay). Mirrored into
+  #                                       platform-api as
+  #                                       BULWARK_WEBMAIL_JWT_SECRET.
+  #   BULWARK_STALWART_MASTER_USER      — same master account Roundcube uses
+  #   BULWARK_STALWART_MASTER_PASSWORD  — same master password (or
+  #                                       freshly generated if Roundcube
+  #                                       isn't deployed)
+  #
+  # Plus Bulwark's own admin dashboard creds:
+  #   ADMIN_PASSWORD   — Bulwark /admin/login
+  #   SESSION_SECRET   — cookie encryption key
   if kctl get secret -n mail bulwark-secrets &>/dev/null 2>&1; then
-    log "bulwark-secrets already exists, skipping."
+    log "bulwark-secrets already exists, skipping initial provision."
   else
-    local bw_admin_pw bw_session
+    local bw_admin_pw bw_session bw_jwt bw_master_pw bw_master_user
     bw_admin_pw="$(openssl rand -hex 16)"
     bw_session="$(openssl rand -base64 32 | tr -d '\n')"
-    kctl create secret generic bulwark-secrets \
-      --namespace=mail \
+    # Independent HMAC secret — NOT the same as Roundcube's.
+    bw_jwt="$(openssl rand -hex 32)"
+    # Master password: reuse Roundcube's if available so the Stalwart
+    # master account can authenticate from both engines; generate a
+    # fresh one otherwise. Operator-installed Stalwart later updates
+    # the master account's password to match.
+    bw_master_pw="$(kctl get secret -n mail roundcube-secrets \
+      -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' 2>/dev/null | base64 -d || true)"
+    if [[ -z "$bw_master_pw" ]]; then
+      bw_master_pw="$(openssl rand -base64 32 | tr -d '\n')"
+      log "roundcube-secrets not found — generated fresh Stalwart master password for Bulwark-only deployment."
+    fi
+    bw_master_user="${BULWARK_MASTER_USER:-master@${PLATFORM_DOMAIN}}"
+    # Pipe stringData via stdin to avoid placing the HMAC secret in the
+    # process command-line (visible in /proc/<pid>/cmdline for the
+    # duration of kubectl create — review fix H2).
+    kctl create secret generic bulwark-secrets --namespace=mail \
       --from-literal=ADMIN_PASSWORD="$bw_admin_pw" \
-      --from-literal=SESSION_SECRET="$bw_session"
-    log "bulwark-secrets created."
+      --from-literal=SESSION_SECRET="$bw_session" \
+      --from-literal=BULWARK_JWT_AUTH_SECRET="$bw_jwt" \
+      --from-literal=BULWARK_STALWART_MASTER_USER="$bw_master_user" \
+      --from-literal=BULWARK_STALWART_MASTER_PASSWORD="$bw_master_pw"
+    log "bulwark-secrets created (independent HMAC; master user=${bw_master_user})."
+    # Mirror the Bulwark HMAC into a platform-api Secret so the API
+    # signs with the matching key. Separate Secret keeps Bulwark and
+    # platform-api Secrets independent for reloader-driven rotation.
+    if ! kctl get secret -n platform platform-bulwark-jwt &>/dev/null 2>&1; then
+      kctl create secret generic platform-bulwark-jwt --namespace=platform \
+        --from-literal=BULWARK_WEBMAIL_JWT_SECRET="$bw_jwt"
+      log "platform-bulwark-jwt created in platform ns (mirrors bulwark HMAC)."
+    fi
     cat >> /etc/platform/roundcube-credentials <<BWEOF
 # ADR-039 — Bulwark webmail admin (Bulwark's own admin dashboard at /admin/)
 BULWARK_ADMIN_PASSWORD=${bw_admin_pw}
 BWEOF
+    unset bw_admin_pw bw_session bw_jwt bw_master_pw
   fi
 
-  if kctl get secret -n mail bulwark-impersonator-secrets &>/dev/null 2>&1; then
-    log "bulwark-impersonator-secrets already exists, skipping."
-  else
-    local bw_admin_token bw_jwt bw_master_pw
-    bw_admin_token="$(openssl rand -hex 32)"
-    # Read the shared JWT secret + master password back from the
-    # already-existing roundcube-secrets — idempotent across rerun
-    # paths where this function fires AFTER roundcube already
-    # bootstrapped. The two secrets MUST share these values so the
-    # impersonator verifies the same JWT platform-api signs and
-    # opens the same Stalwart master session Roundcube uses.
-    bw_jwt="$(kctl get secret -n mail roundcube-secrets \
-      -o jsonpath='{.data.JWT_AUTH_SECRET}' | base64 -d)"
-    bw_master_pw="$(kctl get secret -n mail roundcube-secrets \
-      -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d)"
-    if [[ -z "$bw_jwt" || -z "$bw_master_pw" ]]; then
-      warn "Cannot create bulwark-impersonator-secrets: roundcube-secrets is missing JWT_AUTH_SECRET or STALWART_MASTER_PASSWORD."
-      warn "Recreate roundcube-secrets (kubectl delete secret -n mail roundcube-secrets) then re-run bootstrap.sh."
-      exit 1
+  # Idempotent migration: a cluster bootstrapped before the upstream
+  # impersonation route shipped has the legacy `bulwark-impersonator-
+  # secrets` Secret and a `bulwark-secrets` missing the three new
+  # keys. Detect that state and migrate forward.
+  if kctl get secret -n mail bulwark-secrets &>/dev/null 2>&1; then
+    local has_jwt_key
+    has_jwt_key="$(kctl get secret -n mail bulwark-secrets \
+      -o jsonpath='{.data.BULWARK_JWT_AUTH_SECRET}' 2>/dev/null || true)"
+    if [[ -z "$has_jwt_key" ]]; then
+      log "Migrating bulwark-secrets: adding BULWARK_JWT_AUTH_SECRET keys (upstream impersonation route)."
+      local mig_jwt mig_master_pw mig_master_user
+      mig_jwt="$(openssl rand -hex 32)"
+      mig_master_pw="$(kctl get secret -n mail roundcube-secrets \
+        -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' 2>/dev/null | base64 -d || true)"
+      if [[ -z "$mig_master_pw" ]]; then
+        warn "roundcube-secrets missing STALWART_MASTER_PASSWORD — skipping bulwark-secrets migration."
+        warn "Provision STALWART_MASTER_PASSWORD on roundcube-secrets OR provide BULWARK_STALWART_MASTER_PASSWORD env to bootstrap.sh, then re-run."
+      else
+        mig_master_user="${BULWARK_MASTER_USER:-master@${PLATFORM_DOMAIN}}"
+        # Stream the new keys via stdin (avoid leaking the HMAC in `ps`).
+        local mig_patch
+        mig_patch=$(cat <<PATCH
+stringData:
+  BULWARK_JWT_AUTH_SECRET: "${mig_jwt}"
+  BULWARK_STALWART_MASTER_USER: "${mig_master_user}"
+  BULWARK_STALWART_MASTER_PASSWORD: "${mig_master_pw}"
+PATCH
+        )
+        printf '%s' "$mig_patch" | kctl patch secret -n mail bulwark-secrets \
+          --type=merge --patch-file=/dev/stdin
+        log "bulwark-secrets migrated — pod restart will pick up new envs."
+        # Mirror to platform-api
+        if ! kctl get secret -n platform platform-bulwark-jwt &>/dev/null 2>&1; then
+          kctl create secret generic platform-bulwark-jwt --namespace=platform \
+            --from-literal=BULWARK_WEBMAIL_JWT_SECRET="$mig_jwt"
+          log "platform-bulwark-jwt created (matches migrated bulwark HMAC)."
+        fi
+        unset mig_jwt mig_master_pw mig_patch
+      fi
     fi
-    kctl create secret generic bulwark-impersonator-secrets \
-      --namespace=mail \
-      --from-literal=JWT_SECRET="$bw_jwt" \
-      --from-literal=STALWART_MASTER_USER="master@${PLATFORM_DOMAIN}" \
-      --from-literal=STALWART_MASTER_PASSWORD="$bw_master_pw" \
-      --from-literal=IMPERSONATOR_ADMIN_TOKEN="$bw_admin_token"
-    log "bulwark-impersonator-secrets created."
-    cat >> /etc/platform/roundcube-credentials <<BWEOF
-BULWARK_IMPERSONATOR_ADMIN_TOKEN=${bw_admin_token}
-BWEOF
+  fi
+
+  # Legacy cleanup: the bulwark-impersonator-secrets Secret was used
+  # by the retired sidecar. Safe to delete on fresh-bootstrap paths
+  # (Flux reconciler no longer ships the sidecar manifests).
+  if kctl get secret -n mail bulwark-impersonator-secrets &>/dev/null 2>&1; then
+    log "Deleting legacy bulwark-impersonator-secrets Secret (sidecar retired)."
+    kctl delete secret -n mail bulwark-impersonator-secrets --ignore-not-found
   fi
 }
 

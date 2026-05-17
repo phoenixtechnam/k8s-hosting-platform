@@ -17,10 +17,10 @@ metadata:
   annotations:
     # ADR-039 Phase 10: platform-api's webmail-router reconciler owns
     # this resource's services[0].name field, flipping it between
-    # `roundcube` and `bulwark-impersonator` based on
+    # `roundcube` and `bulwark` based on
     # platform_settings.default_webmail_engine. Without this annotation
     # Flux would revert the patch ~60s later from this manifest,
-    # producing a 403 from Roundcube on the bulwark /_impersonate URL.
+    # producing a 403 on Bulwark impersonation URLs.
     # See backend/src/modules/webmail-router/reconciler.ts.
     kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:

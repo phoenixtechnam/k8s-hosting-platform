@@ -11,29 +11,22 @@
 #   1. Service ClusterIP → NodePort 30028 (mapped to host :2028 by
 #      docker-compose.local.yml — published only for diagnostics; the
 #      Traefik ingress on :2011 is the working path).
-#   2. Plaintext dev Secret (bulwark-secrets).
+#   2. Plaintext dev Secret (bulwark-secrets) with all 5 keys including
+#      BULWARK_JWT_AUTH_SECRET that must match platform-api's
+#      WEBMAIL_JWT_SECRET in .env.local.
 #   3. Traefik IngressRoute for bulwark.${DOMAIN} + cert.
 #   4. JMAP_SERVER_URL overridden to include :2011 (DinD topology).
 #   5. stalwart-url-rewriter sidecar Deployment + NetPol — DinD-only.
-#      Required for two reasons that disappear in production:
-#        a) Stalwart's apiUrl emits a port-free hostname; DinD needs
-#           :2011 injected.
-#        b) Stalwart's CORS headers are only on OPTIONS preflights;
-#           rewriter adds credentialed-CORS on every response.
-#      Phase 2/3 of the integration roadmap eliminate both gaps;
-#      then the rewriter goes away in production overlays.
+#      Required because Stalwart's apiUrl emits a port-free hostname;
+#      the rewriter injects :2011. Also adds credentialed-CORS on every
+#      response (Stalwart's CORS headers are only on OPTIONS preflight).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 namespace: mail
 
 resources:
-  # base/bulwark now embeds the impersonator as a sidecar container in
-  # the Bulwark Pod (ADR-039 Phase 8). The impersonator Service +
-  # ConfigMap + NetworkPolicy are contributed by the chained
-  # `../bulwark-impersonator` overlay below.
   - ../../../base/bulwark
-  - ../bulwark-impersonator
   - secret.yaml
   - ingress.yaml
   - netpol.yaml
@@ -45,14 +38,6 @@ patches:
       kind: Service
       name: bulwark
   - path: oauth-patch.yaml
-    target:
-      kind: Deployment
-      name: bulwark
-  # Override impersonator sidecar env to use the DinD-host-published
-  # :2011 in URLs that the SPA hands to the browser. The patch
-  # targets the same Bulwark Deployment because the impersonator
-  # lives there as a sidecar.
-  - path: impersonator-env-patch.yaml
     target:
       kind: Deployment
       name: bulwark

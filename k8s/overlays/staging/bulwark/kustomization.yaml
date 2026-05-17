@@ -5,10 +5,10 @@
 # tenants get; super_admin flips via the platform admin UI.
 #
 # Secrets (operator-bootstrapped by scripts/bootstrap.sh):
-#   bulwark-secrets               — ADMIN_PASSWORD + SESSION_SECRET
-#   bulwark-impersonator-secrets  — JWT_SECRET + STALWART_MASTER_USER
-#                                   + STALWART_MASTER_PASSWORD
-#                                   + IMPERSONATOR_ADMIN_TOKEN
+#   bulwark-secrets  — ADMIN_PASSWORD + SESSION_SECRET +
+#                      BULWARK_JWT_AUTH_SECRET (mirrors platform-api
+#                      WEBMAIL_JWT_SECRET) + BULWARK_STALWART_MASTER_USER
+#                      + BULWARK_STALWART_MASTER_PASSWORD
 #
 # Production wiring differences from dev/bulwark:
 #   - Real Let's Encrypt cert via cert-manager (no local-ca)
