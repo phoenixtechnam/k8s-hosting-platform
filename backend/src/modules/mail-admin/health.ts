@@ -260,17 +260,20 @@ interface JmapProbeShape {
 /**
  * JMAP probe — exec curl inside the Stalwart pod.
  *
- * Why exec instead of fetch: Stalwart 0.16's HTTP listener at :8080
- * does PROXY-v2 protocol sniffing on every non-loopback connection
- * whose source IP is in `SystemSettings.proxyTrustedNetworks`. Since
- * the cluster pod/service CIDRs (10.42.0.0/16 + 10.43.0.0/16) are in
- * that trust list — necessary for haproxy DS forwarding mail traffic
- * — cross-pod plain HTTP from platform-api to `stalwart-mgmt:8080`
- * gets dropped with "fetch failed cause=other side closed". The only
- * source IP that bypasses PROXY-v2 sniff is 127.0.0.1.
+ * Why exec instead of fetch: defense-in-depth against Stalwart 0.16's
+ * PROXY-v2 sniffing on the HTTP listener at :8080. As of 2026-05-17
+ * the proxy-networks-reconciler trims the per-listener trust list to
+ * server-node IPs only (cluster CIDRs were removed because haproxy DS
+ * runs hostNetwork, so its source IP is the node IP — including
+ * 10.42/16 + 10.43/16 just forced sniffing on every cross-pod probe
+ * and broke them). Cross-pod plain HTTP from platform-api to
+ * `stalwart-mgmt:8080` SHOULD now work directly — but the exec-via-
+ * 127.0.0.1 path is immune to any future trust-list regression because
+ * loopback always bypasses the sniff. Same pattern as
+ * proxy-networks-reconciler.ts:jmapPost.
  *
- * Same pattern as proxy-networks-reconciler.ts:jmapPost. The pod-name
- * comes from the pod probe; if that returns null we skip the JMAP probe.
+ * The pod-name comes from the pod probe; if that returns null we skip
+ * the JMAP probe.
  */
 async function probeJmap(deps: MailHealthDeps, podName: string | null): Promise<JmapProbeShape> {
   if (!deps.jmapAdminCredentials) {
@@ -543,19 +546,22 @@ function defaultTcpProbe(
 /**
  * Cert probe — exec openssl s_tenant inside the Stalwart pod.
  *
- * Same PROXY-v2-sniff rationale as probeJmap: a TLS handshake from
- * platform-api (cluster pod CIDR source IP) to Stalwart's :465/:993
- * via ClusterIP triggers Stalwart's PROXY-v2 sniff because the source
- * IP is in `proxyTrustedNetworks`. Stalwart waits for a PROXY-v2 frame
- * and resets when the TLS handshake comes instead (`read ECONNRESET`).
+ * Same defense-in-depth rationale as probeJmap. As of 2026-05-17 the
+ * proxy-networks-reconciler keeps cluster CIDRs OUT of the trust list
+ * (haproxy DS uses hostNetwork, so its source IP is the node IP — the
+ * cluster CIDR entries that used to be in the list just forced
+ * Stalwart's PROXY-v2 sniff on every cross-pod probe and broke them).
+ * A direct TLS handshake from platform-api to Stalwart's :465/:993 via
+ * the Service SHOULD now succeed — but exec-via-127.0.0.1 stays the
+ * canonical path: loopback always bypasses the sniff, so this probe
+ * is immune to any future trust-list regression and to any per-listener
+ * override drift.
  *
- * Loopback (127.0.0.1) bypasses the sniff, so we exec openssl inside
- * the Stalwart pod and connect to its own port. The cert returned is
- * the same one external tenants would see (Stalwart serves a single
- * cert per port regardless of source). What this probe DOESN'T cover:
- * "haproxy forwards correctly + serves the cert end-to-end" — that
- * lives in the integration harness Phase A5, which probes from a
- * server-role node IP via haproxy.
+ * The cert returned is the same one external tenants would see
+ * (Stalwart serves a single cert per port regardless of source). What
+ * this probe DOESN'T cover: "haproxy forwards correctly + serves the
+ * cert end-to-end" — that lives in the integration harness Phase A5,
+ * which probes from a server-role node IP via haproxy.
  */
 async function probeCert(
   deps: MailHealthDeps,
