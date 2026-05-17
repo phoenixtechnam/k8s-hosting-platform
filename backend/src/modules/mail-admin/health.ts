@@ -46,6 +46,7 @@ import {
   mailHealthResponseSchema,
 } from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { probeDeliverability, type DeliverabilityDeps } from './deliverability.js';
 
 const MAIL_NAMESPACE = 'mail';
 const STALWART_LABEL = 'app=stalwart-mail';
@@ -109,6 +110,15 @@ export interface MailHealthDeps {
   readonly jmapExec?: (podName: string, kubeconfigPath: string | undefined, authHeader: string) => Promise<number>;
   /** Visible for tests: override the cert exec probe. */
   readonly certExec?: (podName: string, kubeconfigPath: string | undefined, port: number, sni: string) => Promise<{ subject: string | null; issuer: string | null; notAfter: string | null; error: string | null }>;
+  /**
+   * Server-role node IPs the cluster believes serve mail. Used by the
+   * deliverability probes (forward DNS, reverse DNS / FCrDNS, DNSBL).
+   * Resolved by the route from listNode + node-role label; null/empty
+   * makes deliverability report `not_implemented`.
+   */
+  readonly serverNodeIps?: ReadonlyArray<string>;
+  /** Visible for tests: override the deliverability probe set wholesale. */
+  readonly deliverabilityOverrides?: Partial<Omit<DeliverabilityDeps, 'hostname' | 'serverNodeIps' | 'clock'>>;
 }
 
 export interface GetMailHealthOpts {
@@ -127,12 +137,17 @@ export async function getMailHealth(
   }
 
   // Pod probe runs first — its result feeds the exec-based probes
-  // (rocksdb, jmap, cert) which need a pod name. TCP probe is the only
-  // truly independent one (no pod-name dep) so it runs in parallel with
-  // pod.
-  const [pod, tcp] = await Promise.all([
+  // (rocksdb, jmap, cert) which need a pod name. TCP probe + deliverability
+  // are independent (no pod-name dep) so they run in parallel with pod.
+  const [pod, tcp, deliverability] = await Promise.all([
     probePod(deps),
     probeTcp(deps),
+    probeDeliverability({
+      hostname: deps.mailHostname,
+      serverNodeIps: deps.serverNodeIps ?? [],
+      clock: deps.clock,
+      ...deps.deliverabilityOverrides,
+    }),
   ]);
   // Exec-based probes need pod.podName. They run in parallel with each other.
   const [jmap, rocksdb, cert] = await Promise.all([
@@ -146,10 +161,11 @@ export async function getMailHealth(
     && jmap.healthy
     && rocksdb.healthy
     && cert.healthy
-    && tcp.healthy;
+    && tcp.healthy
+    && deliverability.healthy;
   const response = mailHealthResponseSchema.parse({
     healthy,
-    components: { pod, jmap, rocksdb, cert, tcp },
+    components: { pod, jmap, rocksdb, cert, tcp, deliverability },
     checkedAt: new Date(now).toISOString(),
     cachedFor: Math.floor(CACHE_TTL_MS / 1000),
   });

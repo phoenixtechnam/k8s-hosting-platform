@@ -76,6 +76,41 @@ import {
   mailFailbackRequestSchema,
 } from '@k8s-hosting/api-contracts';
 
+const NODE_ROLE_LABEL_KEY = 'platform.phoenix-host.net/node-role';
+
+/**
+ * Resolve the list of node IPs that serve mail. In allServerNodes mode
+ * this is every server-role node; in thisNodeOnly mode it's still the
+ * whole server-role pool (deliverability checks every potential mail IP
+ * so an operator can verify rDNS is set for all of them ahead of a
+ * failover, not just whichever one happens to be pinned right now).
+ *
+ * Returns external IPs when available (these are the public mail-facing
+ * IPs that DNSBLs see); falls back to internal IPs in dev clusters
+ * where ExternalIP isn't populated.
+ */
+async function resolveServerNodeIps(k8s: { core: { listNode: (q?: object) => Promise<unknown> } }): Promise<string[]> {
+  type NodeAddress = { type?: string; address?: string };
+  type Node = {
+    metadata?: { labels?: Record<string, string> };
+    status?: { addresses?: NodeAddress[] };
+  };
+  const list = await k8s.core.listNode({}) as { items?: Node[] };
+  const items = list.items ?? [];
+  const ips: string[] = [];
+  for (const node of items) {
+    const role = node.metadata?.labels?.[NODE_ROLE_LABEL_KEY] ?? '';
+    if (role !== 'server') continue;
+    const addrs = node.status?.addresses ?? [];
+    // Prefer ExternalIP; fall back to InternalIP if no external.
+    const ext = addrs.find((a) => a.type === 'ExternalIP')?.address;
+    const internal = addrs.find((a) => a.type === 'InternalIP')?.address;
+    const chosen = ext ?? internal;
+    if (chosen && !ips.includes(chosen)) ips.push(chosen);
+  }
+  return ips;
+}
+
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'support'));
@@ -149,9 +184,17 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       } catch {
         mailHostname = null;
       }
+      // Server-role node IPs feed the deliverability probes (forward DNS
+      // must cover them, each needs a PTR, each is checked against DNSBLs).
+      // Read external IPs first; fall back to internal IPs in dev clusters.
+      // Best-effort: empty list makes deliverability report `not_implemented`.
+      const serverNodeIps = await resolveServerNodeIps(k8s).catch((err) => {
+        app.log.warn({ err }, 'mail-admin: serverNodeIps lookup failed; deliverability probes skipped');
+        return [] as string[];
+      });
       const refresh = ((req.query as { refresh?: string } | undefined)?.refresh ?? '') === '1';
       const result = await getMailHealth(
-        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath },
+        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, serverNodeIps },
         { refresh },
       );
       return success(result);

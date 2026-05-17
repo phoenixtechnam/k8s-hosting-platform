@@ -6,7 +6,9 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronRight,
+  Maximize2,
 } from 'lucide-react';
+import MailHealthDetailsModal from './MailHealthDetailsModal';
 import { useMailHealth, useRefreshMailHealth } from '@/hooks/use-mail-health';
 import type {
   MailHealthResponse,
@@ -40,6 +42,7 @@ export default function MailHealthBanner() {
   const { data, isLoading, isError, error } = useMailHealth();
   const refresh = useRefreshMailHealth();
   const [open, setOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -105,6 +108,16 @@ export default function MailHealthBanner() {
         </button>
         <button
           type="button"
+          onClick={() => setDetailsOpen(true)}
+          className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 shrink-0"
+          data-testid="mail-health-details"
+          title="Open full probe details (deliverability, DNSBL, banner, cert SAN)"
+        >
+          <Maximize2 size={11} className="inline mr-1" />
+          Details
+        </button>
+        <button
+          type="button"
           onClick={() => refresh.mutate()}
           disabled={refresh.isPending}
           className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 shrink-0"
@@ -131,11 +144,50 @@ export default function MailHealthBanner() {
           <RocksdbRow data={r.components.rocksdb} />
           <CertRow data={r.components.cert} />
           <TcpRow data={r.components.tcp} />
+          {r.components.deliverability && (
+            <DeliverabilityRow data={r.components.deliverability} onOpenDetails={() => setDetailsOpen(true)} />
+          )}
           <div className="pt-2 text-xs text-gray-500 dark:text-gray-400">
             Checked {timeAgo(r.checkedAt)} • Cached for {r.cachedFor}s • Use Re-check to bypass.
           </div>
       </div>
+      {detailsOpen && <MailHealthDetailsModal onClose={() => setDetailsOpen(false)} />}
     </div>
+  );
+}
+
+function DeliverabilityRow({
+  data: d,
+  onOpenDetails,
+}: {
+  readonly data: NonNullable<MailHealthResponse['components']['deliverability']>;
+  readonly onOpenDetails: () => void;
+}) {
+  if (d.status === 'not_implemented') {
+    return (
+      <Row label="Deliv." healthy={null} error={null}>
+        <span className="text-gray-400 italic">deliverability probes skipped — set mail hostname</span>
+      </Row>
+    );
+  }
+  const { ok, warning, fail, advisory, skipped } = d.summary;
+  return (
+    <Row label="Deliv." healthy={d.healthy} error={d.error}>
+      <span>
+        {ok} ok
+        {warning > 0 && <> • <span className="text-amber-600 dark:text-amber-400">{warning} warning</span></>}
+        {fail > 0 && <> • <span className="text-red-600 dark:text-red-400">{fail} fail</span></>}
+        {advisory > 0 && <> • {advisory} advisory</>}
+        {skipped > 0 && <> • {skipped} skipped</>}
+      </span>
+      <button
+        type="button"
+        onClick={onOpenDetails}
+        className="ml-2 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+      >
+        View
+      </button>
+    </Row>
   );
 }
 
@@ -154,7 +206,14 @@ function summaryLine(r: MailHealthResponse): string {
   return firstFail ?? 'one or more components unhealthy';
 }
 
-function timeAgo(iso: string): string {
+/**
+ * Short relative-time label tuned for cache-window labelling on the
+ * mail-health surface (second-level resolution for "X seconds ago"
+ * because operators care whether the probe is 5s or 25s into a 30s
+ * cache window). Exported so MailHealthDetailsModal can reuse without
+ * duplicating the formula.
+ */
+export function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s ago`;
   return `${Math.round(ms / 60_000)}m ago`;
