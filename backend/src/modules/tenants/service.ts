@@ -1037,12 +1037,14 @@ export async function updateTenant(
         const { resolveSnapshotStoreForClass } = await import('../storage-lifecycle/snapshot-store.js');
         const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
         const k8s = opts.k8sTenants ?? createK8sClients(process.env.KUBECONFIG_PATH);
+        const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
         const bundle = await resolveSnapshotStoreForClass(
           db,
           process.env as Record<string, unknown>,
           'tenant_snapshot',
+          // Phase 11: k8s ctx for CIFS read paths.
+          { k8sCtx: { k8s, namespace: platformNamespace } },
         );
-        const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
         const retentionDays = input.archive_retention_days
           ?? (await loadPreArchiveRetentionDays(db));
         const { operationId } = await archiveTenant(

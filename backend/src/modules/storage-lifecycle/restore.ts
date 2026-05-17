@@ -87,10 +87,12 @@ export async function restoreTenantPVC(
       return baseScript.join('\n');
     })();
 
+  // Phase 12: streaming branch — public env inline, credentials via
+  // ephemeral Secret. Legacy branch unchanged.
   const containerEnv = streamEnvelope
     ? [
         { name: 'REMOTE_URI', value: streamEnvelope.remoteUri },
-        ...streamEnvelope.envVars,
+        ...streamEnvelope.publicEnv,
       ]
     : [
         { name: 'ARCHIVE', value: `${mount!.mountPath}/${mount!.relativePath}` },
@@ -126,6 +128,20 @@ export async function restoreTenantPVC(
         limits: { cpu: '500m', memory: '512Mi' },
       };
 
+  // Phase 12: ephemeral credentials Secret for streaming restore Jobs.
+  const { createEphemeralCredentialsSecret, attachOwnerToSecret, deleteSecretBestEffort, buildEnvFromSecret, credSecretNameFor } =
+    await import('./streaming-store.js');
+  const credSecretName = streamEnvelope ? credSecretNameFor(jobName) : null;
+  const hasSecretEnv = streamEnvelope && Object.keys(streamEnvelope.secretEnv).length > 0;
+  if (streamEnvelope && hasSecretEnv && credSecretName) {
+    await createEphemeralCredentialsSecret(
+      k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
+      opts.namespace,
+      credSecretName,
+      streamEnvelope.secretEnv,
+    );
+  }
+
   const jobBody = {
     metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'restore', 'platform.io/tenant-id': opts.tenantId, 'platform.io/pipeline': streamEnvelope ? 'streaming-rclone' : 'legacy' } },
     spec: {
@@ -146,6 +162,9 @@ export async function restoreTenantPVC(
             imagePullPolicy: 'IfNotPresent',
             command,
             env: containerEnv,
+            envFrom: (streamEnvelope && hasSecretEnv && credSecretName)
+              ? buildEnvFromSecret(credSecretName)
+              : undefined,
             resources,
             volumeMounts: containerVolumeMounts,
           }],
@@ -155,9 +174,34 @@ export async function restoreTenantPVC(
     },
   };
 
-  await (k8s.batch as unknown as {
-    createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-  }).createNamespacedJob({ namespace: opts.namespace, body: jobBody });
+  let createdJobResp: unknown;
+  try {
+    createdJobResp = await (k8s.batch as unknown as {
+      createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+    }).createNamespacedJob({ namespace: opts.namespace, body: jobBody });
+  } catch (err) {
+    if (credSecretName && hasSecretEnv) {
+      await deleteSecretBestEffort(
+        k8s as unknown as Parameters<typeof deleteSecretBestEffort>[0],
+        opts.namespace,
+        credSecretName,
+      );
+    }
+    throw err;
+  }
+  // Bind the Secret to the Job for cascade GC.
+  if (credSecretName && hasSecretEnv) {
+    const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
+      ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
+    if (jobUid) {
+      await attachOwnerToSecret(
+        k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
+        opts.namespace,
+        credSecretName,
+        { name: jobName, uid: jobUid },
+      ).catch(() => { /* cron picks up */ });
+    }
+  }
 
   const start = Date.now();
   // eslint-disable-next-line no-constant-condition

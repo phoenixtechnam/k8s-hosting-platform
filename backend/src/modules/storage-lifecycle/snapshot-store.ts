@@ -480,6 +480,14 @@ export async function resolveSnapshotStoreForClass(
     readonly STORAGE_SNAPSHOT_LOCAL_ROOT?: string;
   },
   snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass,
+  /**
+   * Phase 11: optional k8s context for stores that need to spawn
+   * one-shot Jobs (CIFS stat/delete/readSidecar). Callers in the
+   * service / scheduler / routes layers have a K8sClients + namespace
+   * handy; pass it through so CIFS read paths work. Omit in unit
+   * tests — CIFS read methods will throw a clear error if invoked.
+   */
+  opts?: { readonly k8sCtx?: { readonly k8s: unknown; readonly namespace: string } },
 ): Promise<ResolvedSnapshotStoreBundle> {
   const { resolveTargetFor } = await import('./target-resolver.js');
   const { getRawBackupConfig } = await import('../backup-config/service.js');
@@ -617,6 +625,13 @@ export async function resolveSnapshotStoreForClass(
       domain: cfg.cifsDomain ?? undefined,
       basePath,
     });
+    // Phase 11: attach k8s context so stat/delete/readSidecar can spawn
+    // one-shot rclone Jobs. Falls back to "no context" when the caller
+    // (a unit test or a non-k8s-aware path) didn't pass one — the read
+    // methods throw a clear error in that case.
+    if (opts?.k8sCtx) {
+      cifsStream.setK8sContext(opts.k8sCtx);
+    }
     return {
       store: cifsStream,
       targetId: resolved.targetId,
@@ -659,11 +674,17 @@ export async function resolveSnapshotStoreByTargetId(
   db: import('../../db/index.js').Database,
   targetId: string,
   snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass,
+  /**
+   * Phase 11: optional k8s context for CIFS read paths during restore.
+   * Restore service plumbs this through from its ServiceCtx.
+   */
+  opts?: { readonly k8sCtx?: { readonly k8s: unknown; readonly namespace: string } },
 ): Promise<SnapshotStore | null> {
   const { getRawBackupConfig } = await import('../backup-config/service.js');
   const { decrypt } = await import('../oidc/crypto.js');
   const { ApiError } = await import('../../shared/errors.js');
-  const { S3StreamingStore } = await import('./streaming-store.js');
+  const { S3StreamingStore, CifsStreamingStore } = await import('./streaming-store.js');
+  const { rcloneObscure } = await import('./rclone-obscure.js');
 
   const key = process.env.PLATFORM_ENCRYPTION_KEY;
   if (!key) {
@@ -720,8 +741,35 @@ export async function resolveSnapshotStoreByTargetId(
     return composeStreamingStore(sdkStore, streamStore);
   }
 
-  // SSH/CIFS restore via stamped target_id is gated until Phase 5/6
-  // unblocks them in resolveSnapshotStoreForClass.
+  if (cfg.storageType === 'cifs') {
+    // Phase 11: restore + stat/delete/sidecar against CIFS-backed
+    // snapshots. Same env-var + obscured-password flow as
+    // resolveSnapshotStoreForClass, plus the k8s ctx for one-shot Job
+    // reads.
+    if (!cfg.cifsHost || !cfg.cifsShare || !cfg.cifsUser || !cfg.cifsPasswordEncrypted) {
+      throw new ApiError('TARGET_INCOMPLETE', `CIFS target ${cfg.name} is missing required fields`, 400);
+    }
+    const plainPassword = decrypt(cfg.cifsPasswordEncrypted, key);
+    const obscuredPassword = rcloneObscure(plainPassword);
+    const basePath = cfg.cifsPath
+      ? `${cfg.cifsPath.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
+      : `snapshots/${snapshotClass}`;
+    const cifsStream = new CifsStreamingStore({
+      host: cfg.cifsHost,
+      port: cfg.cifsPort ?? 445,
+      share: cfg.cifsShare,
+      user: cfg.cifsUser,
+      password: obscuredPassword,
+      domain: cfg.cifsDomain ?? undefined,
+      basePath,
+    });
+    if (opts?.k8sCtx) {
+      cifsStream.setK8sContext(opts.k8sCtx);
+    }
+    return cifsStream;
+  }
+
+  // SSH restore via stamped target_id remains gated until Phase 5.5.
   throw new ApiError(
     'TARGET_KIND_UNSUPPORTED',
     `Restore from ${cfg.storageType} target is not yet supported`,

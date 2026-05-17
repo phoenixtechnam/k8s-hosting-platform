@@ -39,10 +39,25 @@ export interface StreamingJobEnvelope {
    *
    * Two env vars are guaranteed in scope: `REMOTE_URI`, `SHA_URI`.
    * Additional rclone config env vars (RCLONE_CONFIG_REMOTE_*) come
-   * from `envVars` below.
+   * from `publicEnv` + `secretEnv` below.
    */
   readonly script: string;
-  readonly envVars: Array<{ name: string; value?: string; valueFrom?: { secretKeyRef: { name: string; key: string } } }>;
+  /**
+   * Phase 12: env vars split by visibility.
+   *
+   * - `publicEnv` is plaintext and ends up inline in the Pod spec
+   *   (visible via `kubectl get pod -o yaml`). Use for connection
+   *   metadata only — host, port, region, bucket name, etc.
+   * - `secretEnv` is mounted via an ephemeral k8s Secret that the
+   *   Job orchestrator creates BEFORE the Job and binds via owner
+   *   references for cascade GC. Use for credentials —
+   *   RCLONE_CONFIG_REMOTE_{ACCESS_KEY_ID,SECRET_ACCESS_KEY,USER,PASS}.
+   *
+   * `runRcloneOneShot` and the snapshot/restore/speedtest Job builders
+   * all honour this split.
+   */
+  readonly publicEnv: Array<{ name: string; value: string }>;
+  readonly secretEnv: Record<string, string>;
   readonly remoteUri: string;
   readonly shaUri: string;
 }
@@ -121,7 +136,12 @@ export class S3StreamingStore implements StreamingSnapshotStore {
     const shaUri = `REMOTE:${this.config.bucket}/${key}.sha256`;
     // rclone env-var config — bypass on-disk rclone.conf entirely.
     // See https://rclone.org/docs/#environment-variables
-    const envVars: StreamingJobEnvelope['envVars'] = [
+    //
+    // Phase 12: publicEnv stays inline in the Pod spec; secretEnv is
+    // mounted via an ephemeral k8s Secret created by the Job
+    // orchestrator before the Job, bound via ownerReferences for
+    // cascade GC when the Job's TTL fires.
+    const publicEnv: Array<{ name: string; value: string }> = [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 's3' },
       { name: 'RCLONE_CONFIG_REMOTE_PROVIDER', value: 'Other' },
       { name: 'RCLONE_CONFIG_REMOTE_REGION', value: this.config.region },
@@ -135,42 +155,23 @@ export class S3StreamingStore implements StreamingSnapshotStore {
       { name: 'RCLONE_STATS', value: '15s' },
       { name: 'RCLONE_STATS_ONE_LINE', value: 'true' },
       // Connect + IO timeouts: prevent silent stalls on backend 5xx
-      // loops or stuck TCP. Code-review MEDIUM gap. 60s connect + 5min
-      // single-request timeout gives faster failure than waiting for
-      // the 6h activeDeadlineSeconds backstop.
+      // loops or stuck TCP. 60s connect + 5min single-request timeout
+      // gives faster failure than waiting for the 6h
+      // activeDeadlineSeconds backstop.
       { name: 'RCLONE_CONTIMEOUT', value: '60s' },
       { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];
     if (this.config.endpoint) {
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_ENDPOINT', value: this.config.endpoint });
+      publicEnv.push({ name: 'RCLONE_CONFIG_REMOTE_ENDPOINT', value: this.config.endpoint });
       // Hetzner / minio / Backblaze need path-style addressing.
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_FORCE_PATH_STYLE', value: 'true' });
+      publicEnv.push({ name: 'RCLONE_CONFIG_REMOTE_FORCE_PATH_STYLE', value: 'true' });
     }
-    if (this.config.credentialsSecret) {
-      envVars.push({
-        name: 'RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID',
-        valueFrom: { secretKeyRef: { name: this.config.credentialsSecret.name, key: this.config.credentialsSecret.accessKeyKey } },
-      });
-      envVars.push({
-        name: 'RCLONE_CONFIG_REMOTE_SECRET_ACCESS_KEY',
-        valueFrom: { secretKeyRef: { name: this.config.credentialsSecret.name, key: this.config.credentialsSecret.secretKeyKey } },
-      });
-    } else {
-      // KNOWN GAP (code-review HIGH #1, deferred to Phase 4.5/5):
-      // plaintext credentials in the Job pod spec are visible in
-      // `kubectl get pod -o yaml`. In our model the tenant namespace
-      // doesn't grant pod-list to tenant users (only platform-admin SA
-      // + admin users — who already have backup_configurations
-      // decrypt access via PLATFORM_ENCRYPTION_KEY), so the leak
-      // surface is admin-only. Audit-log capture is the remaining
-      // concern. To close: wire `credentialsSecret` from a per-Job
-      // ephemeral Secret created by snapshot.ts before Job submission
-      // and deleted on Job completion.
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID', value: this.config.accessKeyId });
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_SECRET_ACCESS_KEY', value: this.config.secretAccessKey });
-    }
+    const secretEnv: Record<string, string> = {
+      RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID: this.config.accessKeyId,
+      RCLONE_CONFIG_REMOTE_SECRET_ACCESS_KEY: this.config.secretAccessKey,
+    };
 
-    return { image: RCLONE_IMAGE, script: buildStreamingScript(), envVars, remoteUri, shaUri };
+    return { image: RCLONE_IMAGE, script: buildStreamingScript(), publicEnv, secretEnv, remoteUri, shaUri };
   }
 
   /**
@@ -185,7 +186,8 @@ export class S3StreamingStore implements StreamingSnapshotStore {
     return {
       image: RCLONE_IMAGE,
       script: buildStreamingRestoreScript(),
-      envVars: upload.envVars,
+      publicEnv: upload.publicEnv,
+      secretEnv: upload.secretEnv,
       remoteUri: upload.remoteUri,
       shaUri: upload.shaUri,
     };
@@ -239,11 +241,15 @@ export class SshStreamingStore implements StreamingSnapshotStore {
     const remotePath = this.config.basePath.replace(/\/+$/, '') + '/' + archivePath;
     const remoteUri = `REMOTE:${remotePath}`;
     const shaUri = `REMOTE:${remotePath}.sha256`;
-    const envVars: StreamingJobEnvelope['envVars'] = [
+    // Phase 12: split public env (connection metadata) from secret env
+    // (host-user + key-file path). The PRIVATE KEY itself is mounted
+    // via a separate Secret volume by the Job orchestrator (see
+    // sshKeyFile field in StreamingJobEnvelope.secretFiles when
+    // Phase 5.5 lands).
+    const publicEnv: Array<{ name: string; value: string }> = [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'sftp' },
       { name: 'RCLONE_CONFIG_REMOTE_HOST', value: this.config.host },
       { name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(this.config.port) },
-      { name: 'RCLONE_CONFIG_REMOTE_USER', value: this.config.user },
       // Key path inside the container — the Job spec must mount the
       // Secret at /etc/rclone/ssh_key (read-only).
       { name: 'RCLONE_CONFIG_REMOTE_KEY_FILE', value: '/etc/rclone/ssh_key' },
@@ -258,7 +264,10 @@ export class SshStreamingStore implements StreamingSnapshotStore {
       { name: 'RCLONE_CONTIMEOUT', value: '60s' },
       { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];
-    return { image: RCLONE_IMAGE, script: buildStreamingScript(), envVars, remoteUri, shaUri };
+    const secretEnv: Record<string, string> = {
+      RCLONE_CONFIG_REMOTE_USER: this.config.user,
+    };
+    return { image: RCLONE_IMAGE, script: buildStreamingScript(), publicEnv, secretEnv, remoteUri, shaUri };
   }
 
   getStreamingRestoreJob(archivePath: string): StreamingJobEnvelope {
@@ -266,7 +275,8 @@ export class SshStreamingStore implements StreamingSnapshotStore {
     return {
       image: RCLONE_IMAGE,
       script: buildStreamingRestoreScript(),
-      envVars: upload.envVars,
+      publicEnv: upload.publicEnv,
+      secretEnv: upload.secretEnv,
       remoteUri: upload.remoteUri,
       shaUri: upload.shaUri,
     };
@@ -320,48 +330,37 @@ export class CifsStreamingStore implements StreamingSnapshotStore {
     const remotePath = `${prefix}${archivePath}`;
     const remoteUri = `REMOTE:${remotePath}`;
     const shaUri = `REMOTE:${remotePath}.sha256`;
-    const envVars: StreamingJobEnvelope['envVars'] = [
+    // Phase 12: split into public + secret env. Credentials (user +
+    // obscured password) go via ephemeral k8s Secret.
+    const publicEnv: Array<{ name: string; value: string }> = [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'smb' },
       { name: 'RCLONE_CONFIG_REMOTE_HOST', value: this.config.host },
-      // rclone smb wants the share via the bucket-style accessor in the
-      // remote URI (REMOTE:share/path), but its config is set via the
-      // host alone — share goes in the path. We pre-prepend it here.
       { name: 'RCLONE_LOW_LEVEL_RETRIES', value: '3' },
       { name: 'RCLONE_USE_JSON_LOG', value: 'true' },
       { name: 'RCLONE_STATS', value: '15s' },
       { name: 'RCLONE_STATS_ONE_LINE', value: 'true' },
+      { name: 'RCLONE_CONTIMEOUT', value: '60s' },
+      { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];
     if (this.config.domain) {
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_DOMAIN', value: this.config.domain });
+      publicEnv.push({ name: 'RCLONE_CONFIG_REMOTE_DOMAIN', value: this.config.domain });
     }
-    if (this.config.credentialsSecret) {
-      envVars.push({
-        name: 'RCLONE_CONFIG_REMOTE_USER',
-        valueFrom: { secretKeyRef: { name: this.config.credentialsSecret.name, key: this.config.credentialsSecret.userKey } },
-      });
-      envVars.push({
-        name: 'RCLONE_CONFIG_REMOTE_PASS',
-        valueFrom: { secretKeyRef: { name: this.config.credentialsSecret.name, key: this.config.credentialsSecret.passwordKey } },
-      });
-    } else {
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_USER', value: this.config.user });
-      // rclone's RCLONE_CONFIG_REMOTE_PASS requires the password in
-      // rclone-obscured form (NOT plaintext) — `config.password` MUST
-      // already be obscured by the caller (`resolveSnapshotStoreForClass`
-      // runs `rcloneObscure()` on the decrypted plaintext). Passing
-      // plaintext here makes rclone mis-decode the value as garbage
-      // and the SMB auth fails with cryptic errors.
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_PASS', value: this.config.password });
-    }
-    // SMB port — rclone defaults to 445 but operator may override.
     if (this.config.port && this.config.port !== 445) {
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(this.config.port) });
+      publicEnv.push({ name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(this.config.port) });
     }
+    // rclone's RCLONE_CONFIG_REMOTE_PASS requires the password in
+    // rclone-obscured form (NOT plaintext) — `config.password` MUST
+    // already be obscured by the caller (`resolveSnapshotStoreForClass`
+    // runs `rcloneObscure()` on the decrypted plaintext).
+    const secretEnv: Record<string, string> = {
+      RCLONE_CONFIG_REMOTE_USER: this.config.user,
+      RCLONE_CONFIG_REMOTE_PASS: this.config.password,
+    };
     // SMB path: REMOTE: prefix maps to REMOTE_HOST. Share is the first
     // path component. We pre-pend the share in the URI.
     const finalRemote = remoteUri.replace('REMOTE:', `REMOTE:${this.config.share}/`);
     const finalSha = shaUri.replace('REMOTE:', `REMOTE:${this.config.share}/`);
-    return { image: RCLONE_IMAGE, script: buildStreamingScript(), envVars, remoteUri: finalRemote, shaUri: finalSha };
+    return { image: RCLONE_IMAGE, script: buildStreamingScript(), publicEnv, secretEnv, remoteUri: finalRemote, shaUri: finalSha };
   }
 
   getStreamingRestoreJob(archivePath: string): StreamingJobEnvelope {
@@ -369,21 +368,329 @@ export class CifsStreamingStore implements StreamingSnapshotStore {
     return {
       image: RCLONE_IMAGE,
       script: buildStreamingRestoreScript(),
-      envVars: upload.envVars,
+      publicEnv: upload.publicEnv,
+      secretEnv: upload.secretEnv,
       remoteUri: upload.remoteUri,
       shaUri: upload.shaUri,
     };
   }
 
-  async stat(_archivePath: string): Promise<{ sizeBytes: number } | null> {
-    throw new Error('CifsStreamingStore.stat — read path not yet implemented (Phase 5)');
+  // ─── CIFS read paths (Phase 11) ────────────────────────────────────
+  //
+  // SMB has no SDK in Node-land that we can use directly, so stat /
+  // delete / readSidecar each spawn a short-lived rclone Job in the
+  // platform namespace. ~5-8s per call (Job startup + rclone), but
+  // these run from cron (expireSnapshots, every 6h) and from operator
+  // actions (manual delete) — never on the hot path.
+  //
+  // The fallback "throw not implemented" lets unit tests that don't
+  // pass k8s context still construct a store; in production
+  // resolveSnapshotStoreForClass attaches a k8s context via setter.
+
+  /** Set by resolveSnapshotStoreForClass at construction time. Lazy
+   *  because the store constructor signature must stay synchronous and
+   *  not require importing K8sClients. */
+  private k8sCtx: { k8s: unknown; namespace: string } | null = null;
+  setK8sContext(ctx: { k8s: unknown; namespace: string }): void {
+    this.k8sCtx = ctx;
   }
-  async delete(_archivePath: string): Promise<boolean> {
-    throw new Error('CifsStreamingStore.delete — read path not yet implemented (Phase 5)');
+
+  private buildRemoteUri(archivePath: string): string {
+    const prefix = this.config.basePath ? `${this.config.basePath.replace(/\/+$/, '')}/` : '';
+    return `REMOTE:${this.config.share}/${prefix}${archivePath}`;
   }
-  async readSidecar(_archivePath: string, _suffix: string): Promise<string | null> {
-    throw new Error('CifsStreamingStore.readSidecar — read path not yet implemented (Phase 5)');
+
+  /**
+   * Plain-env vars (NOT secret) needed by every CIFS rclone invocation.
+   * The credentials env (USER + PASS) is in `buildSecretEnv` — kept
+   * separate so Phase 12's Secret-mounting refactor only needs to
+   * change credential delivery, not the public config.
+   */
+  private buildPublicEnv(): Array<{ name: string; value: string }> {
+    const env: Array<{ name: string; value: string }> = [
+      { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'smb' },
+      { name: 'RCLONE_CONFIG_REMOTE_HOST', value: this.config.host },
+      { name: 'RCLONE_LOW_LEVEL_RETRIES', value: '3' },
+      { name: 'RCLONE_CONTIMEOUT', value: '60s' },
+      { name: 'RCLONE_TIMEOUT', value: '300s' },
+    ];
+    if (this.config.port && this.config.port !== 445) {
+      env.push({ name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(this.config.port) });
+    }
+    if (this.config.domain) {
+      env.push({ name: 'RCLONE_CONFIG_REMOTE_DOMAIN', value: this.config.domain });
+    }
+    return env;
   }
+
+  private buildSecretEnv(): Array<{ name: string; value: string }> {
+    return [
+      { name: 'RCLONE_CONFIG_REMOTE_USER', value: this.config.user },
+      { name: 'RCLONE_CONFIG_REMOTE_PASS', value: this.config.password },
+    ];
+  }
+
+  async stat(archivePath: string): Promise<{ sizeBytes: number } | null> {
+    if (!this.k8sCtx) {
+      throw new Error('CifsStreamingStore.stat — no k8s context attached (call setK8sContext)');
+    }
+    const remoteUri = this.buildRemoteUri(archivePath);
+    const result = await runRcloneOneShot(this.k8sCtx, {
+      name: `cifs-stat-${shortId(archivePath)}`,
+      publicEnv: this.buildPublicEnv(),
+      secretEnv: this.buildSecretEnv(),
+      // `rclone size --json` prints `{"count":N,"bytes":N}` to stdout.
+      // For a missing file rclone exits non-zero — we treat that as null.
+      args: ['size', '--json', remoteUri],
+      timeoutMs: 60_000,
+    });
+    if (result.exitCode !== 0) {
+      // Most likely "object not found" — treat as missing for the
+      // expireSnapshots cron's idempotency.
+      return null;
+    }
+    const m = result.stdout.match(/"bytes":\s*(\d+)/);
+    if (!m) return null;
+    return { sizeBytes: Number(m[1]) };
+  }
+
+  async delete(archivePath: string): Promise<boolean> {
+    if (!this.k8sCtx) {
+      throw new Error('CifsStreamingStore.delete — no k8s context attached');
+    }
+    const remoteUri = this.buildRemoteUri(archivePath);
+    const result = await runRcloneOneShot(this.k8sCtx, {
+      name: `cifs-del-${shortId(archivePath)}`,
+      publicEnv: this.buildPublicEnv(),
+      secretEnv: this.buildSecretEnv(),
+      // `deletefile` exits 0 on success, non-zero if missing. Wrap so
+      // a missing file is a no-op (matches LocalHostPathStore + S3Store
+      // semantics).
+      args: ['deletefile', remoteUri],
+      timeoutMs: 60_000,
+    });
+    const existed = result.exitCode === 0;
+    // Best-effort sidecar delete — same Job ttl, never block on this.
+    try {
+      await runRcloneOneShot(this.k8sCtx, {
+        name: `cifs-del-sc-${shortId(archivePath)}`,
+        publicEnv: this.buildPublicEnv(),
+        secretEnv: this.buildSecretEnv(),
+        args: ['deletefile', `${remoteUri}.sha256`],
+        timeoutMs: 60_000,
+      });
+    } catch { /* ignore */ }
+    return existed;
+  }
+
+  async readSidecar(archivePath: string, suffix: string): Promise<string | null> {
+    if (!this.k8sCtx) {
+      throw new Error('CifsStreamingStore.readSidecar — no k8s context attached');
+    }
+    const remoteUri = this.buildRemoteUri(archivePath) + suffix;
+    const result = await runRcloneOneShot(this.k8sCtx, {
+      name: `cifs-cat-${shortId(archivePath + suffix)}`,
+      publicEnv: this.buildPublicEnv(),
+      secretEnv: this.buildSecretEnv(),
+      args: ['cat', remoteUri],
+      timeoutMs: 60_000,
+    });
+    if (result.exitCode !== 0) return null;
+    const trimmed = result.stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+}
+
+// ─── One-shot rclone Job helper (Phase 11) ──────────────────────────────
+//
+// Used by CifsStreamingStore for stat/delete/readSidecar. Could also be
+// used by Phase 11.5 SSH read paths and any other rclone-driven micro-op.
+//
+// Creates a Job → polls → reads pod log → cleans up Job (TTL handles
+// it eventually, but explicit delete on success/timeout speeds the
+// next call). Returns stdout + stderr + exitCode.
+//
+// Phase 12 will refactor this to mount credentials via an ephemeral
+// k8s Secret (envFrom + ownerReferences cascade GC) instead of inline
+// env values.
+
+interface RcloneOneShotOpts {
+  readonly name: string;
+  readonly publicEnv: Array<{ name: string; value: string }>;
+  readonly secretEnv: Array<{ name: string; value: string }>;
+  readonly args: string[];
+  readonly timeoutMs?: number;
+}
+
+interface RcloneOneShotResult {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number;
+}
+
+async function runRcloneOneShot(
+  k8sCtx: { k8s: unknown; namespace: string },
+  opts: RcloneOneShotOpts,
+): Promise<RcloneOneShotResult> {
+  // Cast the lazy-typed k8s context once at entry — the caller (the
+  // resolver) knows the real K8sClients shape; we keep it opaque here
+  // so streaming-store.ts doesn't import k8s-provisioner.
+  const k8s = k8sCtx.k8s as {
+    batch: {
+      createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } } | { body?: { metadata?: { uid?: string } } } | unknown>;
+      readNamespacedJob: (args: { name: string; namespace: string }) => Promise<{
+        status?: { conditions?: Array<{ type: string; status: string }>; succeeded?: number; failed?: number };
+        metadata?: { uid?: string };
+      }>;
+      deleteNamespacedJob: (args: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+    };
+    core: {
+      createNamespacedSecret: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+      patchNamespacedSecret?: (args: { name: string; namespace: string; body: unknown; headers?: Record<string, string> }) => Promise<unknown>;
+      deleteNamespacedSecret?: (args: { name: string; namespace: string }) => Promise<unknown>;
+      listNamespacedPod: (args: { namespace: string; labelSelector?: string }) => Promise<{
+        items: Array<{ metadata?: { name?: string } }>;
+      }>;
+      readNamespacedPodLog: (args: { name: string; namespace: string; tailLines?: number }) => Promise<string>;
+    };
+  };
+
+  const jobName = opts.name.slice(0, 63);
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+
+  // Phase 12: split secretEnv into a per-Job Secret + envFrom binding.
+  // Create the Secret FIRST so the Job's envFrom resolves at startup.
+  const secretName = credSecretNameFor(jobName);
+  const secretData: Record<string, string> = {};
+  for (const e of opts.secretEnv) {
+    secretData[e.name] = e.value;
+  }
+  let secretCreated = false;
+  if (Object.keys(secretData).length > 0) {
+    await createEphemeralCredentialsSecret(k8s, k8sCtx.namespace, secretName, secretData);
+    secretCreated = true;
+  }
+
+  const jobBody = {
+    metadata: {
+      name: jobName,
+      namespace: k8sCtx.namespace,
+      labels: { 'platform.io/component': 'rclone-oneshot' },
+    },
+    spec: {
+      backoffLimit: 0,
+      // Auto-cleanup after 5 min so the platform namespace doesn't
+      // accumulate completed Jobs from a high-frequency expire cron.
+      // The owned Secret cascades with the Job's GC.
+      ttlSecondsAfterFinished: 300,
+      activeDeadlineSeconds: Math.floor(timeoutMs / 1000),
+      template: {
+        metadata: { labels: { 'platform.io/component': 'rclone-oneshot' } },
+        spec: {
+          restartPolicy: 'Never',
+          containers: [{
+            name: 'rclone',
+            image: RCLONE_IMAGE,
+            imagePullPolicy: 'IfNotPresent',
+            command: ['rclone', ...opts.args],
+            env: opts.publicEnv,
+            envFrom: secretCreated ? buildEnvFromSecret(secretName) : undefined,
+            resources: {
+              requests: { cpu: '50m', memory: '64Mi' },
+              limits: { cpu: '500m', memory: '256Mi' },
+            },
+          }],
+        },
+      },
+    },
+  };
+
+  let createdJob: { metadata?: { uid?: string } } | undefined;
+  try {
+    const resp = await k8s.batch.createNamespacedJob({ namespace: k8sCtx.namespace, body: jobBody });
+    createdJob = (resp as { body?: { metadata?: { uid?: string } } }).body ?? (resp as { metadata?: { uid?: string } });
+  } catch (err) {
+    // Clean up the orphan Secret on Job-create failure — TTL cascade
+    // can't fire because no owning Job exists yet.
+    if (secretCreated) {
+      await deleteSecretBestEffort(k8s, k8sCtx.namespace, secretName);
+    }
+    throw err;
+  }
+
+  // Bind the Secret to the Job via ownerReferences so GC cascades.
+  // Best-effort: orphan-cleanup cron is the safety net.
+  if (secretCreated && createdJob?.metadata?.uid) {
+    await attachOwnerToSecret(k8s, k8sCtx.namespace, secretName, {
+      name: jobName,
+      uid: createdJob.metadata.uid,
+    }).catch(() => { /* cron will pick it up */ });
+  }
+
+  // Poll until terminal.
+  const start = Date.now();
+  let succeeded = false;
+  let failed = false;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const job = await k8s.batch.readNamespacedJob({ name: jobName, namespace: k8sCtx.namespace });
+    const conds = job.status?.conditions ?? [];
+    if (conds.find((c) => c.type === 'Complete' && c.status === 'True') || (job.status?.succeeded ?? 0) > 0) {
+      succeeded = true;
+      break;
+    }
+    if (conds.find((c) => c.type === 'Failed' && c.status === 'True') || (job.status?.failed ?? 0) > 0) {
+      failed = true;
+      break;
+    }
+    if (Date.now() - start > timeoutMs) {
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  // Read pod log — the Job may have produced output before terminating.
+  let stdout = '';
+  try {
+    const pods = await k8s.core.listNamespacedPod({
+      namespace: k8sCtx.namespace,
+      labelSelector: `job-name=${jobName}`,
+    });
+    const pod = pods.items?.[0]?.metadata?.name;
+    if (pod) {
+      stdout = await k8s.core.readNamespacedPodLog({
+        name: pod,
+        namespace: k8sCtx.namespace,
+        tailLines: 200,
+      });
+    }
+  } catch { /* best-effort */ }
+
+  // Best-effort Job delete — TTL would handle it but we want the
+  // namespace tidy for the next call.
+  try {
+    await k8s.batch.deleteNamespacedJob({
+      name: jobName,
+      namespace: k8sCtx.namespace,
+      propagationPolicy: 'Background',
+    });
+  } catch { /* ignore */ }
+
+  return {
+    stdout,
+    stderr: '',
+    exitCode: succeeded ? 0 : (failed ? 1 : 124 /* timeout */),
+  };
+}
+
+// Short, k8s-name-safe slug derived from an archive path. Used to make
+// per-call Job names unique enough to avoid 60-second-window collisions
+// across concurrent stat/delete invocations.
+function shortId(s: string): string {
+  // Lower-case alphanumerics only; replace everything else with '-'.
+  const slug = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const ts = Date.now().toString(36);
+  return `${slug.slice(0, 30)}-${ts}`;
 }
 
 // ─── Streaming pipeline script ──────────────────────────────────────────
@@ -519,3 +826,142 @@ function buildStreamingRestoreScript(): string {
     'echo "[restore] complete"',
   ].join('\n');
 }
+
+// ─── Ephemeral per-Job Secret helpers (Phase 12) ─────────────────────
+//
+// The streaming snapshot / restore / speedtest Jobs all need rclone
+// credentials in env form. To avoid leaking those credentials into
+// `kubectl get pod -o yaml` (Phase 4 HIGH code-review finding), we
+// mount them via an ephemeral k8s Secret bound by ownerReferences to
+// the Job. When the Job's `ttlSecondsAfterFinished` fires, k8s
+// cascades the GC to the Secret automatically.
+//
+// Flow:
+//   1. createEphemeralCredentialsSecret(k8s, ns, name, data)
+//   2. create Job with envFrom: [{ secretRef: { name } }]
+//   3. (after Job creation returns) attachOwnerToSecret(k8s, ns, name, jobUid)
+//   4. delete the Secret manually only on the failure path before owner
+//      is attached — TTL cascade handles the happy path.
+//
+// Orphan cleanup: a cron walks Secrets older than 1h with the
+// `platform.io/component=rclone-creds` label and no ownerReferences
+// → deletes (covers the step-2-failed-before-step-3 edge case).
+
+type K8sLike = {
+  core: {
+    createNamespacedSecret: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+    // The Kubernetes JS SDK's patchNamespacedSecret takes the body
+    // object first, then an Options/middleware arg as second positional
+    // — that's where the Content-Type is set. We import MERGE_PATCH
+    // from shared/k8s-patch to pin it to RFC-7396 (which is what the
+    // apiserver wants for an ownerReferences merge — JSON-patch op
+    // arrays don't fit cleanly here).
+    patchNamespacedSecret?: (args: { name: string; namespace: string; body: unknown }, options: unknown) => Promise<unknown>;
+    deleteNamespacedSecret?: (args: { name: string; namespace: string }) => Promise<unknown>;
+  };
+};
+
+const RCLONE_CREDS_LABEL = 'platform.io/component';
+const RCLONE_CREDS_LABEL_VALUE = 'rclone-creds';
+
+/**
+ * Create an ephemeral Secret holding rclone credentials. Returns the
+ * secret name on success. The Secret has NO ownerReference yet —
+ * call `attachOwnerToSecret` AFTER the consuming Job is created so
+ * we get its UID.
+ */
+export async function createEphemeralCredentialsSecret(
+  k8s: K8sLike,
+  namespace: string,
+  secretName: string,
+  data: Record<string, string>,
+): Promise<string> {
+  await k8s.core.createNamespacedSecret({
+    namespace,
+    body: {
+      metadata: {
+        name: secretName,
+        namespace,
+        labels: { [RCLONE_CREDS_LABEL]: RCLONE_CREDS_LABEL_VALUE },
+      },
+      type: 'Opaque',
+      stringData: data,
+    },
+  });
+  return secretName;
+}
+
+/**
+ * Patch the Secret's `metadata.ownerReferences` so the cluster GC
+ * cascades the delete when the Job's TTL fires. Best-effort — if this
+ * fails (e.g. RBAC), the orphan-cleanup cron handles it within an hour.
+ */
+export async function attachOwnerToSecret(
+  k8s: K8sLike,
+  namespace: string,
+  secretName: string,
+  ownerJob: { name: string; uid: string },
+): Promise<void> {
+  if (!k8s.core.patchNamespacedSecret) {
+    // SDK shape doesn't expose patch — operator-cleanup cron will GC.
+    return;
+  }
+  const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
+  const body = {
+    metadata: {
+      ownerReferences: [{
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        name: ownerJob.name,
+        uid: ownerJob.uid,
+        // controller=false because the Job doesn't manage Secret state
+        // beyond GC; blockOwnerDeletion=false so deleting the Job
+        // doesn't block on Secret finalizers.
+        controller: false,
+        blockOwnerDeletion: false,
+      }],
+    },
+  };
+  await k8s.core.patchNamespacedSecret(
+    { name: secretName, namespace, body },
+    MERGE_PATCH,
+  );
+}
+
+/**
+ * Best-effort Secret delete. Used on the failure-mid-orchestration
+ * path (Secret created but Job creation threw, so cascade GC won't
+ * fire). The orphan cron is the safety net if this also fails.
+ */
+export async function deleteSecretBestEffort(
+  k8s: K8sLike,
+  namespace: string,
+  secretName: string,
+): Promise<void> {
+  if (!k8s.core.deleteNamespacedSecret) return;
+  try {
+    await k8s.core.deleteNamespacedSecret({ name: secretName, namespace });
+  } catch { /* ignore */ }
+}
+
+/**
+ * Build the Job's `envFrom` block from a secret name. Pair with
+ * publicEnv via `env` for the inline (non-sensitive) parts.
+ */
+export function buildEnvFromSecret(secretName: string): Array<{ secretRef: { name: string } }> {
+  return [{ secretRef: { name: secretName } }];
+}
+
+/**
+ * Deterministic Secret name derived from a Job name. Same length cap
+ * as Job names (63 chars). Reusable across snapshot / restore /
+ * speedtest / cifs-oneshot.
+ */
+export function credSecretNameFor(jobName: string): string {
+  // Suffix is short + deterministic so a stuck Job's leftover Secret
+  // can be matched and reused on the next attempt.
+  const base = `${jobName}-creds`;
+  return base.length <= 63 ? base : base.slice(0, 63);
+}
+
+export const RCLONE_CREDS_LABEL_SELECTOR = `${RCLONE_CREDS_LABEL}=${RCLONE_CREDS_LABEL_VALUE}`;

@@ -119,12 +119,15 @@ export async function snapshotTenantPVC(
     })();
 
   // Container env: streaming pipelines get REMOTE_URI/SHA_URI + rclone
-  // config env vars; legacy pipelines get ARCHIVE + optional S3 URLs.
+  // public config env vars inline; rclone CREDENTIALS come via the
+  // ephemeral Secret mounted in `envFrom` (Phase 12). Legacy pipelines
+  // get ARCHIVE + optional S3 presigned URLs inline (those URLs are
+  // short-lived).
   const containerEnv = streamEnvelope
     ? [
         { name: 'REMOTE_URI', value: streamEnvelope.remoteUri },
         { name: 'SHA_URI', value: streamEnvelope.shaUri },
-        ...streamEnvelope.envVars,
+        ...streamEnvelope.publicEnv,
       ]
     : [
         { name: 'ARCHIVE', value: `${mount!.mountPath}/${mount!.relativePath}` },
@@ -166,12 +169,30 @@ export async function snapshotTenantPVC(
         limits: { cpu: '500m', memory: '512Mi' },
       };
 
+  // Phase 12: for streaming Jobs, create the credentials Secret BEFORE
+  // the Job so the Pod's envFrom resolves at startup. The Secret is
+  // bound to the Job via ownerReferences post-creation so cluster GC
+  // cascades the delete when the Job's TTL fires.
+  const { createEphemeralCredentialsSecret, attachOwnerToSecret, deleteSecretBestEffort, buildEnvFromSecret, credSecretNameFor } =
+    await import('./streaming-store.js');
+  const credSecretName = streamEnvelope ? credSecretNameFor(jobName) : null;
+  const hasSecretEnv = streamEnvelope && Object.keys(streamEnvelope.secretEnv).length > 0;
+  if (streamEnvelope && hasSecretEnv && credSecretName) {
+    await createEphemeralCredentialsSecret(
+      k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
+      opts.namespace,
+      credSecretName,
+      streamEnvelope.secretEnv,
+    );
+  }
+
   const jobBody = {
     metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'snapshot', 'platform.io/tenant-id': opts.tenantId, 'platform.io/pipeline': streamEnvelope ? 'streaming-rclone' : 'legacy' } },
     spec: {
       backoffLimit: 0, // don't retry on failure — fail fast, orchestrator decides
       // Streaming Jobs may run for hours; bump the auto-cleanup TTL so
       // the operator can inspect the pod log post-mortem on a failure.
+      // When TTL fires, k8s GC cascades to the owned credentials Secret.
       ttlSecondsAfterFinished: streamEnvelope ? 3600 : 600,
       // Phase 4: cap Job runtime at 6h ceiling. Legacy stays at 30 min
       // (the previous default) since it requires the scratch volume to
@@ -191,6 +212,9 @@ export async function snapshotTenantPVC(
             imagePullPolicy: 'IfNotPresent',
             command,
             env: containerEnv,
+            envFrom: (streamEnvelope && hasSecretEnv && credSecretName)
+              ? buildEnvFromSecret(credSecretName)
+              : undefined,
             resources,
             volumeMounts: containerVolumeMounts,
           }],
@@ -200,9 +224,38 @@ export async function snapshotTenantPVC(
     },
   };
 
-  await (k8s.batch as unknown as {
-    createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-  }).createNamespacedJob({ namespace: opts.namespace, body: jobBody });
+  let createdJobResp: unknown;
+  try {
+    createdJobResp = await (k8s.batch as unknown as {
+      createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+    }).createNamespacedJob({ namespace: opts.namespace, body: jobBody });
+  } catch (err) {
+    // Phase 12: Job creation failed AFTER we created the credentials
+    // Secret — cascade GC won't fire, so explicitly clean up.
+    if (credSecretName && hasSecretEnv) {
+      await deleteSecretBestEffort(
+        k8s as unknown as Parameters<typeof deleteSecretBestEffort>[0],
+        opts.namespace,
+        credSecretName,
+      );
+    }
+    throw err;
+  }
+
+  // Phase 12: bind the Secret to the Job so cluster GC cascades on TTL.
+  // Best-effort — the orphan-cleanup cron handles failure here.
+  if (credSecretName && hasSecretEnv) {
+    const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
+      ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
+    if (jobUid) {
+      await attachOwnerToSecret(
+        k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
+        opts.namespace,
+        credSecretName,
+        { name: jobName, uid: jobUid },
+      ).catch(() => { /* cron picks up orphans */ });
+    }
+  }
 
   // Poll Job status until complete or timeout.
   const start = Date.now();

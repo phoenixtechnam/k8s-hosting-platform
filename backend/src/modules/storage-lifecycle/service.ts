@@ -1468,7 +1468,10 @@ async function resolveRestoreStore(
   }
   const { resolveSnapshotStoreByTargetId } = await import('./snapshot-store.js');
   const cls = snap.snapshotClass as import('@k8s-hosting/api-contracts').SnapshotClass;
-  const store = await resolveSnapshotStoreByTargetId(ctx.db, snap.targetId, cls);
+  // Phase 11: pass k8s ctx so CIFS-backed restore can do stat/delete/sidecar.
+  const store = await resolveSnapshotStoreByTargetId(ctx.db, snap.targetId, cls, {
+    k8sCtx: { k8s: ctx.k8s, namespace: ctx.platformNamespace },
+  });
   if (!store) {
     throw new ApiError(
       'TARGET_REMOVED',

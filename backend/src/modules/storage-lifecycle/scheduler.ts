@@ -87,16 +87,19 @@ export function startStorageLifecycleScheduler(
     snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass,
   ) => {
     const { resolveSnapshotStoreForClass } = await import('./snapshot-store.js');
+    const platformNamespace = (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
     const bundle = await resolveSnapshotStoreForClass(
       db,
       config as Record<string, string | undefined>,
       snapshotClass,
+      // Phase 11: k8s ctx for CIFS read paths.
+      { k8sCtx: { k8s, namespace: platformNamespace } },
     );
     return {
       db,
       k8s,
       store: bundle.store,
-      platformNamespace: (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform',
+      platformNamespace,
       targetId: bundle.targetId,
       snapshotClass,
     };
@@ -224,10 +227,66 @@ export function startStorageLifecycleScheduler(
     if (!stopped) integrityTimer = setTimeout(runIntegrity, INTEGRITY_INTERVAL_MS);
   };
 
+  // Phase 12: orphan-Secret reaper.
+  //
+  // Streaming Jobs (snapshot / restore / speedtest / cifs-oneshot) create
+  // an ephemeral credentials Secret BEFORE the Job, then patch
+  // ownerReferences AFTER the Job is created so cascade GC fires on
+  // TTL expiry. If the orchestrator crashes between those two steps,
+  // a Secret can be orphaned (no owner → no cascade). This sweep finds
+  // them by label + age and deletes them.
+  //
+  // Frequency: every 1h. Threshold: 2× the longest Job
+  // activeDeadlineSeconds (6h streaming Jobs → 12h cutoff) so we never
+  // delete a Secret a slow Job still needs.
+  const ORPHAN_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // 1h
+  const ORPHAN_SECRET_MIN_AGE_MS = 12 * 60 * 60 * 1000; // 12h
+  let orphanSecretTimer: NodeJS.Timeout | null = null;
+
+  const runOrphanSecretSweep = async () => {
+    if (stopped) return;
+    try {
+      const platformNamespace = (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
+      const { RCLONE_CREDS_LABEL_SELECTOR } = await import('./streaming-store.js');
+      const list = await (k8s.core as unknown as {
+        listNamespacedSecret: (args: { namespace: string; labelSelector?: string }) => Promise<{
+          items: Array<{
+            metadata?: { name?: string; ownerReferences?: unknown[]; creationTimestamp?: string };
+          }>;
+        }>;
+      }).listNamespacedSecret({ namespace: platformNamespace, labelSelector: RCLONE_CREDS_LABEL_SELECTOR });
+      const now = Date.now();
+      let reaped = 0;
+      for (const sec of list.items ?? []) {
+        const name = sec.metadata?.name;
+        if (!name) continue;
+        const hasOwner = (sec.metadata?.ownerReferences ?? []).length > 0;
+        if (hasOwner) continue; // cascade GC will handle it
+        const created = sec.metadata?.creationTimestamp ? new Date(sec.metadata.creationTimestamp).getTime() : 0;
+        if (created === 0 || now - created < ORPHAN_SECRET_MIN_AGE_MS) continue;
+        try {
+          await (k8s.core as unknown as {
+            deleteNamespacedSecret: (args: { name: string; namespace: string }) => Promise<unknown>;
+          }).deleteNamespacedSecret({ name, namespace: platformNamespace });
+          reaped += 1;
+        } catch (err) {
+          console.warn(`[orphan-secret-sweep] delete failed for ${name}: ${(err as Error).message}`);
+        }
+      }
+      if (reaped > 0) {
+        console.log(`[orphan-secret-sweep] reaped ${reaped} orphan rclone-creds Secret(s)`);
+      }
+    } catch (err) {
+      console.error('[orphan-secret-sweep] cycle failed:', (err as Error).message);
+    }
+    if (!stopped) orphanSecretTimer = setTimeout(runOrphanSecretSweep, ORPHAN_SWEEP_INTERVAL_MS);
+  };
+
   expiryTimer = setTimeout(runExpiry, INITIAL_DELAY_MS);
   auditTimer = setTimeout(runAudit, INITIAL_DELAY_MS + 30_000);
   lifecycleTimer = setTimeout(runLifecycle, INITIAL_DELAY_MS + 60_000);
   integrityTimer = setTimeout(runIntegrity, INITIAL_DELAY_MS + 90_000);
+  orphanSecretTimer = setTimeout(runOrphanSecretSweep, INITIAL_DELAY_MS + 120_000);
 
   return {
     stop: () => {
@@ -236,6 +295,7 @@ export function startStorageLifecycleScheduler(
       if (auditTimer) clearTimeout(auditTimer);
       if (lifecycleTimer) clearTimeout(lifecycleTimer);
       if (integrityTimer) clearTimeout(integrityTimer);
+      if (orphanSecretTimer) clearTimeout(orphanSecretTimer);
     },
   };
 }

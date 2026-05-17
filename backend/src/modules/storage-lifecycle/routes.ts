@@ -58,13 +58,16 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   async function snapshotCtx(snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass) {
     const kcfg = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kcfg);
+    const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
     const { resolveSnapshotStoreForClass } = await import('./snapshot-store.js');
     const bundle = await resolveSnapshotStoreForClass(
       app.db,
       app.config as Record<string, unknown>,
       snapshotClass,
+      // Phase 11: pass k8s ctx so CIFS stores can spawn one-shot Jobs
+      // for stat/delete/readSidecar during housekeeping + restore.
+      { k8sCtx: { k8s, namespace: platformNamespace } },
     );
-    const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
     return {
       db: app.db,
       k8s,

@@ -116,9 +116,28 @@ export async function runSpeedtest(
 
   try {
     // Build the rclone env block + script for the resolved target type.
-    const { envVars, remoteRef, kindLabel } = buildRcloneEnv(target, key);
+    const { publicEnv, secretEnv, remoteRef, kindLabel } = buildRcloneEnv(target, key);
 
     const script = buildSpeedtestScript({ payloadBytes, remoteFile, remoteRef });
+
+    // Phase 12: ephemeral credentials Secret, GC'd via Job ownerRef.
+    const {
+      createEphemeralCredentialsSecret,
+      attachOwnerToSecret,
+      deleteSecretBestEffort,
+      buildEnvFromSecret,
+      credSecretNameFor,
+    } = await import('../storage-lifecycle/streaming-store.js');
+    const credSecretName = credSecretNameFor(jobName);
+    const hasSecretEnv = Object.keys(secretEnv).length > 0;
+    if (hasSecretEnv) {
+      await createEphemeralCredentialsSecret(
+        k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
+        PLATFORM_NAMESPACE,
+        credSecretName,
+        secretEnv,
+      );
+    }
 
     const jobBody = {
       metadata: {
@@ -148,7 +167,8 @@ export async function runSpeedtest(
               image: RCLONE_IMAGE,
               imagePullPolicy: 'IfNotPresent',
               command: ['sh', '-c', script],
-              env: envVars,
+              env: publicEnv,
+              envFrom: hasSecretEnv ? buildEnvFromSecret(credSecretName) : undefined,
               resources: {
                 requests: { cpu: '100m', memory: '128Mi' },
                 limits: { cpu: '500m', memory: '256Mi' },
@@ -164,9 +184,33 @@ export async function runSpeedtest(
       text: toSafeText('Provisioning Job'),
     });
 
-    await (k8s.batch as unknown as {
-      createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-    }).createNamespacedJob({ namespace: PLATFORM_NAMESPACE, body: jobBody });
+    let createdJobResp: unknown;
+    try {
+      createdJobResp = await (k8s.batch as unknown as {
+        createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+      }).createNamespacedJob({ namespace: PLATFORM_NAMESPACE, body: jobBody });
+    } catch (err) {
+      if (hasSecretEnv) {
+        await deleteSecretBestEffort(
+          k8s as unknown as Parameters<typeof deleteSecretBestEffort>[0],
+          PLATFORM_NAMESPACE,
+          credSecretName,
+        );
+      }
+      throw err;
+    }
+    if (hasSecretEnv) {
+      const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
+        ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
+      if (jobUid) {
+        await attachOwnerToSecret(
+          k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
+          PLATFORM_NAMESPACE,
+          credSecretName,
+          { name: jobName, uid: jobUid },
+        ).catch(() => { /* cron picks up */ });
+      }
+    }
 
     // Poll the Job until terminal or timeout.
     let lastPct = 10;
@@ -271,7 +315,14 @@ export async function runSpeedtest(
 function buildRcloneEnv(
   target: typeof backupConfigurations.$inferSelect,
   encryptionKey: string,
-): { envVars: Array<{ name: string; value: string }>; remoteRef: string; kindLabel: string } {
+): {
+  // Phase 12: split into publicEnv (inline, visible in pod spec) +
+  // secretEnv (mounted via ephemeral Secret).
+  publicEnv: Array<{ name: string; value: string }>;
+  secretEnv: Record<string, string>;
+  remoteRef: string;
+  kindLabel: string;
+} {
   if (target.storageType === 's3') {
     if (!target.s3Bucket || !target.s3Region || !target.s3AccessKeyEncrypted || !target.s3SecretKeyEncrypted) {
       throw new ApiError('TARGET_INCOMPLETE', `S3 target ${target.name} is missing bucket/region/credentials`, 400);
@@ -279,23 +330,25 @@ function buildRcloneEnv(
     const accessKey = decrypt(target.s3AccessKeyEncrypted, encryptionKey);
     const secretKey = decrypt(target.s3SecretKeyEncrypted, encryptionKey);
     const prefix = (target.s3Prefix ?? '').replace(/^\/+|\/+$/g, '');
-    const envVars: Array<{ name: string; value: string }> = [
+    const publicEnv: Array<{ name: string; value: string }> = [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 's3' },
       { name: 'RCLONE_CONFIG_REMOTE_PROVIDER', value: 'Other' },
       { name: 'RCLONE_CONFIG_REMOTE_REGION', value: target.s3Region },
-      { name: 'RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID', value: accessKey },
-      { name: 'RCLONE_CONFIG_REMOTE_SECRET_ACCESS_KEY', value: secretKey },
       { name: 'RCLONE_S3_CHUNK_SIZE', value: '16M' },
       { name: 'RCLONE_S3_UPLOAD_CONCURRENCY', value: '8' },
       { name: 'RCLONE_CONTIMEOUT', value: '60s' },
       { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];
     if (target.s3Endpoint) {
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_ENDPOINT', value: target.s3Endpoint });
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_FORCE_PATH_STYLE', value: 'true' });
+      publicEnv.push({ name: 'RCLONE_CONFIG_REMOTE_ENDPOINT', value: target.s3Endpoint });
+      publicEnv.push({ name: 'RCLONE_CONFIG_REMOTE_FORCE_PATH_STYLE', value: 'true' });
     }
+    const secretEnv: Record<string, string> = {
+      RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID: accessKey,
+      RCLONE_CONFIG_REMOTE_SECRET_ACCESS_KEY: secretKey,
+    };
     const remoteRef = `REMOTE:${target.s3Bucket}${prefix ? `/${prefix}` : ''}`;
-    return { envVars, remoteRef, kindLabel: 's3' };
+    return { publicEnv, secretEnv, remoteRef, kindLabel: 's3' };
   }
   if (target.storageType === 'cifs') {
     if (!target.cifsHost || !target.cifsShare || !target.cifsUser || !target.cifsPasswordEncrypted) {
@@ -303,23 +356,25 @@ function buildRcloneEnv(
     }
     const plainPassword = decrypt(target.cifsPasswordEncrypted, encryptionKey);
     const obscured = rcloneObscure(plainPassword);
-    const envVars: Array<{ name: string; value: string }> = [
+    const publicEnv: Array<{ name: string; value: string }> = [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'smb' },
       { name: 'RCLONE_CONFIG_REMOTE_HOST', value: target.cifsHost },
-      { name: 'RCLONE_CONFIG_REMOTE_USER', value: target.cifsUser },
-      { name: 'RCLONE_CONFIG_REMOTE_PASS', value: obscured },
       { name: 'RCLONE_CONTIMEOUT', value: '60s' },
       { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];
     if (target.cifsPort && target.cifsPort !== 445) {
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(target.cifsPort) });
+      publicEnv.push({ name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(target.cifsPort) });
     }
     if (target.cifsDomain) {
-      envVars.push({ name: 'RCLONE_CONFIG_REMOTE_DOMAIN', value: target.cifsDomain });
+      publicEnv.push({ name: 'RCLONE_CONFIG_REMOTE_DOMAIN', value: target.cifsDomain });
     }
+    const secretEnv: Record<string, string> = {
+      RCLONE_CONFIG_REMOTE_USER: target.cifsUser,
+      RCLONE_CONFIG_REMOTE_PASS: obscured,
+    };
     const basePath = target.cifsPath ? `${target.cifsPath.replace(/\/+$/, '')}` : '';
     const remoteRef = `REMOTE:${target.cifsShare}${basePath ? basePath : ''}`;
-    return { envVars, remoteRef, kindLabel: 'cifs' };
+    return { publicEnv, secretEnv, remoteRef, kindLabel: 'cifs' };
   }
   throw new ApiError(
     'TARGET_KIND_UNSUPPORTED',
