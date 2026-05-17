@@ -225,7 +225,13 @@ export async function runSpeedtest(
       const failed = (status.conditions ?? []).find((c) => c.type === 'Failed' && c.status === 'True');
       if (completed || (status.succeeded ?? 0) > 0) break;
       if (failed || (status.failed ?? 0) > 0) {
-        throw new ApiError('SPEEDTEST_FAILED', `Speedtest Job ${jobName} failed`, 502);
+        // Try to extract the actual rclone error from the pod log
+        // (script emits `SPEEDTEST_FAILED=<stage>: <reason>` on the
+        // failure path) so the operator sees the real cause instead of
+        // a generic "Job failed".
+        const failedLog = await parseSpeedtestLog(k8s, jobName).catch(() => ({ kind: 'none' as const }));
+        const reason = failedLog.kind === 'failed' ? failedLog.reason : `Job ${jobName} failed`;
+        throw new ApiError('SPEEDTEST_FAILED', reason, 502);
       }
       if (Date.now() - startedAt > SPEEDTEST_JOB_TIMEOUT_MS) {
         throw new ApiError('SPEEDTEST_TIMEOUT', `Speedtest Job ${jobName} timed out`, 504);
@@ -243,10 +249,16 @@ export async function runSpeedtest(
     }
 
     // Parse the Job pod's logs for the result JSON line.
-    const parsed = await parseSpeedtestLog(k8s, jobName);
-    if (!parsed) {
+    const parsedEnvelope = await parseSpeedtestLog(k8s, jobName);
+    if (parsedEnvelope.kind === 'failed') {
+      // Job exited 0 but the script chose to fail explicitly (e.g.
+      // cleanup-only failure path) — surface the actual reason.
+      throw new ApiError('SPEEDTEST_FAILED', parsedEnvelope.reason, 502);
+    }
+    if (parsedEnvelope.kind !== 'result') {
       throw new ApiError('SPEEDTEST_NO_RESULT', `Speedtest Job ${jobName} completed but emitted no parseable result`, 500);
     }
+    const parsed = parsedEnvelope.result;
 
     result = {
       payloadBytes,
@@ -372,8 +384,13 @@ function buildRcloneEnv(
       RCLONE_CONFIG_REMOTE_USER: target.cifsUser,
       RCLONE_CONFIG_REMOTE_PASS: obscured,
     };
-    const basePath = target.cifsPath ? `${target.cifsPath.replace(/\/+$/, '')}` : '';
-    const remoteRef = `REMOTE:${target.cifsShare}${basePath ? basePath : ''}`;
+    // Strip any leading and trailing slashes from cifsPath, then always
+    // reattach a single leading "/" between share and path. Without this
+    // a path like "speedtest-1779…" was concatenated directly onto the
+    // share name, and rclone read "u335-sub10speedtest-1779…" as a new
+    // (non-existent) share.
+    const basePath = target.cifsPath ? target.cifsPath.replace(/^\/+|\/+$/g, '') : '';
+    const remoteRef = `REMOTE:${target.cifsShare}${basePath ? `/${basePath}` : ''}`;
     return { publicEnv, secretEnv, remoteRef, kindLabel: 'cifs' };
   }
   throw new ApiError(
@@ -385,7 +402,18 @@ function buildRcloneEnv(
 
 /**
  * Pipeline script — emits a single JSON line `SPEEDTEST_RESULT={...}`
- * at the end which the platform-api parses out of the pod log.
+ * (or `SPEEDTEST_FAILED=<reason>`) which the platform-api parses out
+ * of the pod log.
+ *
+ * Runs under busybox `sh` inside `rclone/rclone:1.66`. Two non-obvious
+ * busybox constraints drive the shape of this script:
+ *
+ * 1. `date +%s%N` drops `%N` silently and emits only whole seconds —
+ *    so we use `/proc/uptime` (centisecond resolution) for timing.
+ * 2. `set -e` alone is not enough to catch failures through a pipe;
+ *    `set -o pipefail` is also required, and we capture rclone's
+ *    exit code explicitly via `RC=$?` after `|| true` for any path
+ *    that has fallback semantics.
  */
 function buildSpeedtestScript(opts: {
   payloadBytes: number;
@@ -395,41 +423,77 @@ function buildSpeedtestScript(opts: {
   return [
     '#!/bin/sh',
     'set -e',
+    // Without pipefail, `rclone ... 2>&1 | tail -3` masks rclone's
+    // non-zero exit and the script reports bogus success.
+    'set -o pipefail',
+    '',
+    '# Helper: sub-second timestamp from /proc/uptime (busybox-safe).',
+    'now() { awk "{print \\$1}" /proc/uptime; }',
+    '',
+    '# Helper: emit a failure line + non-zero exit. Always called via',
+    '# `fail "stage" "$LOG"` so the parser sees one canonical line.',
+    'fail() {',
+    '  STAGE="$1"; REASON="$(printf %s "$2" | tail -3 | tr "\\n" " " | head -c 400)"',
+    '  echo "SPEEDTEST_FAILED=${STAGE}: ${REASON}"',
+    '  exit 1',
+    '}',
+    '',
     '# Generate random payload (deterministic size, /dev/urandom for entropy).',
     `dd if=/dev/urandom of=/tmp/speedtest.bin bs=1024 count=${Math.ceil(opts.payloadBytes / 1024)} 2>/dev/null`,
     'ACTUAL_BYTES=$(wc -c < /tmp/speedtest.bin)',
     'echo "[speedtest] payload generated: $ACTUAL_BYTES bytes"',
     '',
-    '# Latency probe: rclone size of the remote root (cheap RTT measure).',
-    'LATENCY_START=$(date +%s%N)',
+    '# Latency probe: rclone size of the remote root. Best-effort; even',
+    '# auth failures here are tolerated so the real upload/download',
+    '# failures surface with their full error rather than masking under',
+    '# an early latency error.',
+    'LATENCY_START=$(now)',
     `rclone size --max-depth 1 "${opts.remoteRef}" >/dev/null 2>&1 || true`,
-    'LATENCY_END=$(date +%s%N)',
-    'LATENCY_MS=$(( (LATENCY_END - LATENCY_START) / 1000000 ))',
+    'LATENCY_END=$(now)',
+    'LATENCY_MS=$(awk "BEGIN{printf \\"%d\\", (${LATENCY_END} - ${LATENCY_START}) * 1000}")',
     'echo "[speedtest] latency: ${LATENCY_MS}ms"',
     '',
-    '# Upload — time the round-trip + compute MB/s.',
+    '# Upload — capture rclone exit explicitly. If it failed, surface',
+    '# the actual error instead of reporting fabricated throughput.',
+    '#',
+    '# We use `if cmd > log; then RC=0; else RC=$?; fi` instead of',
+    '# `VAR=$(cmd); RC=$?` because under busybox ash + `set -e`, a',
+    '# command-substitution assignment whose inner command exits',
+    '# non-zero terminates the whole script BEFORE `RC=$?` can run',
+    '# (verified empirically — without this dance, rclone auth-fail',
+    '# kills the script silently and our `fail` helper never runs).',
     'echo "[speedtest] uploading..."',
-    'UPLOAD_START=$(date +%s%N)',
-    `rclone copyto /tmp/speedtest.bin "${opts.remoteRef}/${opts.remoteFile}" 2>&1 | tail -3`,
-    'UPLOAD_END=$(date +%s%N)',
-    'UPLOAD_MS=$(( (UPLOAD_END - UPLOAD_START) / 1000000 ))',
-    '[ "$UPLOAD_MS" -lt 1 ] && UPLOAD_MS=1',
-    '# Mbps = (bytes * 8 / 1000000) / (ms / 1000) — i.e. (bytes*8) / (ms*1000)',
-    '# Use awk for floating point in busybox sh.',
-    'UPLOAD_MBPS=$(awk "BEGIN { printf \\"%.2f\\", ($ACTUAL_BYTES * 8) / ($UPLOAD_MS * 1000) }")',
-    'echo "[speedtest] upload: ${UPLOAD_MBPS} Mbps (${UPLOAD_MS}ms)"',
+    'UPLOAD_START=$(now)',
+    `if rclone copyto /tmp/speedtest.bin "${opts.remoteRef}/${opts.remoteFile}" > /tmp/upload.log 2>&1; then`,
+    '  UPLOAD_RC=0',
+    'else',
+    '  UPLOAD_RC=$?',
+    'fi',
+    'UPLOAD_END=$(now)',
+    '[ "$UPLOAD_RC" -ne 0 ] && fail "upload" "$(cat /tmp/upload.log)"',
+    'UPLOAD_SEC=$(awk "BEGIN{printf \\"%.3f\\", ${UPLOAD_END} - ${UPLOAD_START}}")',
+    '# Floor at 10ms (one /proc/uptime tick) to avoid div-by-zero on',
+    '# trivially small transfers — still smaller than any real WAN RTT.',
+    'UPLOAD_MBPS=$(awk "BEGIN{ s=${UPLOAD_SEC}; if (s<0.01) s=0.01; printf \\"%.2f\\", (${ACTUAL_BYTES} * 8) / (s * 1000000) }")',
+    'echo "[speedtest] upload: ${UPLOAD_MBPS} Mbps (${UPLOAD_SEC}s)"',
     '',
-    '# Download — same payload back from the remote.',
+    '# Download — same shape as upload (see comment above for why we',
+    '# avoid the assignment-of-command-substitution pattern under set -e).',
     'echo "[speedtest] downloading..."',
-    'DOWNLOAD_START=$(date +%s%N)',
-    `rclone copyto "${opts.remoteRef}/${opts.remoteFile}" /tmp/download.bin 2>&1 | tail -3`,
-    'DOWNLOAD_END=$(date +%s%N)',
-    'DOWNLOAD_MS=$(( (DOWNLOAD_END - DOWNLOAD_START) / 1000000 ))',
-    '[ "$DOWNLOAD_MS" -lt 1 ] && DOWNLOAD_MS=1',
-    'DOWNLOAD_MBPS=$(awk "BEGIN { printf \\"%.2f\\", ($ACTUAL_BYTES * 8) / ($DOWNLOAD_MS * 1000) }")',
-    'echo "[speedtest] download: ${DOWNLOAD_MBPS} Mbps (${DOWNLOAD_MS}ms)"',
+    'DOWNLOAD_START=$(now)',
+    `if rclone copyto "${opts.remoteRef}/${opts.remoteFile}" /tmp/download.bin > /tmp/download.log 2>&1; then`,
+    '  DOWNLOAD_RC=0',
+    'else',
+    '  DOWNLOAD_RC=$?',
+    'fi',
+    'DOWNLOAD_END=$(now)',
+    '[ "$DOWNLOAD_RC" -ne 0 ] && fail "download" "$(cat /tmp/download.log)"',
+    'DOWNLOAD_SEC=$(awk "BEGIN{printf \\"%.3f\\", ${DOWNLOAD_END} - ${DOWNLOAD_START}}")',
+    'DOWNLOAD_MBPS=$(awk "BEGIN{ s=${DOWNLOAD_SEC}; if (s<0.01) s=0.01; printf \\"%.2f\\", (${ACTUAL_BYTES} * 8) / (s * 1000000) }")',
+    'echo "[speedtest] download: ${DOWNLOAD_MBPS} Mbps (${DOWNLOAD_SEC}s)"',
     '',
-    '# Cleanup — delete the remote test file.',
+    '# Cleanup — delete the remote test file. Cleanup failures are not',
+    '# fatal (the orphan-sweep cron + per-target retention catch them).',
     `rclone deletefile "${opts.remoteRef}/${opts.remoteFile}" 2>&1 | tail -2 || echo "[speedtest] cleanup warning (file may remain)"`,
     '',
     '# Emit the final result as a single parseable line.',
@@ -443,8 +507,12 @@ interface ParsedResult {
   readonly latencyMs: number;
 }
 
-async function parseSpeedtestLog(k8s: K8sClients, jobName: string): Promise<ParsedResult | null> {
-  // Find the pod for this Job and read its log.
+type ParsedLog =
+  | { kind: 'result'; result: ParsedResult }
+  | { kind: 'failed'; reason: string }
+  | { kind: 'none' };
+
+async function readSpeedtestLog(k8s: K8sClients, jobName: string): Promise<string | null> {
   const pods = await (k8s.core as unknown as {
     listNamespacedPod: (args: { namespace: string; labelSelector?: string }) => Promise<{
       items: Array<{ metadata?: { name?: string } }>;
@@ -456,23 +524,45 @@ async function parseSpeedtestLog(k8s: K8sClients, jobName: string): Promise<Pars
   const logResp = await (k8s.core as unknown as {
     readNamespacedPodLog: (args: { name: string; namespace: string; tailLines?: number }) => Promise<string>;
   }).readNamespacedPodLog({ name: pod.metadata.name, namespace: PLATFORM_NAMESPACE, tailLines: 50 });
+  return logResp ?? null;
+}
 
-  const lines = (logResp ?? '').split('\n');
+function parseSpeedtestLogText(logText: string | null): ParsedLog {
+  if (!logText) return { kind: 'none' };
+  const lines = logText.split('\n');
+  // Prefer SPEEDTEST_RESULT (success). If absent, surface the FAILED
+  // line so operators see the actual rclone error instead of a generic
+  // "Job failed".
   for (const line of lines) {
     const m = line.match(/SPEEDTEST_RESULT=(\{.+\})/);
     if (!m) continue;
     try {
       const parsed = JSON.parse(m[1]);
-      if (typeof parsed.uploadMbps === 'number' && typeof parsed.downloadMbps === 'number' && typeof parsed.latencyMs === 'number') {
+      if (
+        typeof parsed.uploadMbps === 'number'
+        && typeof parsed.downloadMbps === 'number'
+        && typeof parsed.latencyMs === 'number'
+      ) {
         return {
-          uploadMbps: parsed.uploadMbps,
-          downloadMbps: parsed.downloadMbps,
-          latencyMs: parsed.latencyMs,
+          kind: 'result',
+          result: {
+            uploadMbps: parsed.uploadMbps,
+            downloadMbps: parsed.downloadMbps,
+            latencyMs: parsed.latencyMs,
+          },
         };
       }
     } catch { /* fall through to next line */ }
   }
-  return null;
+  for (const line of lines) {
+    const f = line.match(/SPEEDTEST_FAILED=(.+)/);
+    if (f) return { kind: 'failed', reason: f[1].trim().slice(0, 500) };
+  }
+  return { kind: 'none' };
+}
+
+async function parseSpeedtestLog(k8s: K8sClients, jobName: string): Promise<ParsedLog> {
+  return parseSpeedtestLogText(await readSpeedtestLog(k8s, jobName));
 }
 
 function formatBytes(bytes: number): string {

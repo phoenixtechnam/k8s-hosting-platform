@@ -593,7 +593,12 @@ async function runRcloneOneShot(
             image: RCLONE_IMAGE,
             imagePullPolicy: 'IfNotPresent',
             command: ['rclone', ...opts.args],
-            env: opts.publicEnv,
+            // RCLONE_LOG_LEVEL=ERROR silences NOTICE lines (e.g. the
+            // "Config file not found - using defaults" notice that
+            // would otherwise pollute the pod log and bleed into
+            // readSidecar's return value — the caller stores .stdout
+            // directly as the sha256 sidecar contents.
+            env: [...opts.publicEnv, { name: 'RCLONE_LOG_LEVEL', value: 'ERROR' }],
             envFrom: secretCreated ? buildEnvFromSecret(secretName) : undefined,
             resources: {
               requests: { cpu: '50m', memory: '64Mi' },
