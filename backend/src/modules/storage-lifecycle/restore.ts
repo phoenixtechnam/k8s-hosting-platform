@@ -1,5 +1,6 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { SnapshotStore } from './snapshot-store.js';
+import type { StreamingSnapshotStore } from './streaming-store.js';
 
 /**
  * Extract a tarball from the SnapshotStore into a freshly-created PVC.
@@ -8,13 +9,19 @@ import type { SnapshotStore } from './snapshot-store.js';
  *   - Target PVC is already applied (new size, RWO, same name as before).
  *   - No workloads yet bound to it (orchestrator unquiesces only AFTER
  *     restore completes).
- *   - Job runs a single container that mounts the new PVC at /target
- *     and the snapshot store at /snapshots, then `tar xzf` streams the
- *     archive back into place.
+ *   - Job runs a single container that mounts the new PVC at /target.
+ *     Streaming branch (Phase 5): `rclone cat | gunzip | tar x` — no
+ *     local file. Legacy branch: `curl PUT to scratch → tar xzf`.
  */
 
 const DEFAULT_JOB_IMAGE = 'busybox:1.36';
-const DEFAULT_JOB_TIMEOUT_MS = 30 * 60 * 1000;
+// Streaming restore can run for hours on large archives (500 GB / 50 Mbps
+// download = 4h floor). 6h ceiling matches the snapshot Job.
+const DEFAULT_JOB_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+
+function isStreamingStore(store: SnapshotStore): store is StreamingSnapshotStore {
+  return typeof (store as Partial<StreamingSnapshotStore>).getStreamingRestoreJob === 'function';
+}
 
 export async function restoreTenantPVC(
   k8s: K8sClients,
@@ -31,45 +38,118 @@ export async function restoreTenantPVC(
     readonly onProgress?: (msg: string) => Promise<void> | void;
   },
 ): Promise<void> {
-  const mount = opts.store.mountTarget(opts.archivePath);
   const jobName = `restore-${opts.snapshotId}`.slice(0, 63);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
 
-  // S3 detection — use a presigned GET URL for the download instead
-  // of mounting a hostPath that doesn't exist on this node.
+  // Phase 5: streaming stores skip the legacy "curl PUT to scratch →
+  // tar xzf" pattern entirely. `getStreamingRestoreJob` returns the
+  // rclone | gunzip | tar pipeline + env config; the Job spec mounts
+  // ONLY the target PVC (read-write).
+  const streaming = isStreamingStore(opts.store);
+  const streamEnvelope = streaming ? opts.store.getStreamingRestoreJob(opts.archivePath) : null;
+  const mount = streaming ? null : opts.store.mountTarget(opts.archivePath);
+
+  // Legacy S3 fallback (kept for pre-Phase-3 snapshot rows with
+  // target_id = NULL — they were uploaded via the old emptyDir pattern
+  // and resolve to a non-streaming S3Store). Duck-type on getDownloadUrl.
   interface S3StoreLike { getDownloadUrl(p: string): Promise<string> }
   const s3 = (opts.store as unknown as S3StoreLike);
-  const isS3 = typeof s3.getDownloadUrl === 'function';
-  const s3DownloadUrl = isS3 ? await s3.getDownloadUrl(opts.archivePath) : null;
-  const jobImage = opts.jobImage ?? (isS3 ? 'alpine:3.20' : DEFAULT_JOB_IMAGE);
+  const isLegacyS3 = !streaming && typeof s3.getDownloadUrl === 'function';
+  const s3DownloadUrl = isLegacyS3 ? await s3.getDownloadUrl(opts.archivePath) : null;
 
-  // Extract into /target. For S3 we curl the archive into the scratch
-  // emptyDir first, then tar. For hostpath the mount already provides
-  // the file at $ARCHIVE.
-  const baseScript = [
-    'set -e',
-    ...(isS3 ? [
-      'apk add --no-cache curl >/dev/null',
-      'mkdir -p "$(dirname "$ARCHIVE")"',
-      'echo "Downloading archive from S3 via presigned URL..."',
-      'curl --fail-with-body -o "$ARCHIVE" "$S3_DOWNLOAD_URL"',
-    ] : []),
-    '[ -f "$ARCHIVE" ] || { echo "archive not found: $ARCHIVE"; exit 1; }',
-    'cd /target',
-    'tar xzf "$ARCHIVE" --numeric-owner 2>/tmp/tar.err',
-    'TAR_RC=$?',
-    '[ "$TAR_RC" = "0" ] || { echo "tar failed (rc=$TAR_RC):"; cat /tmp/tar.err; exit 1; }',
-    'echo "RESTORE_DONE"',
-  ];
-  const script = baseScript.join('\n');
+  const jobImage = opts.jobImage
+    ?? (streamEnvelope ? streamEnvelope.image
+        : isLegacyS3 ? 'alpine:3.20'
+        : DEFAULT_JOB_IMAGE);
+
+  // Three pipeline variants — same shape as snapshot.ts:
+  //   1. Streaming (Phase 5) — rclone cat | gunzip | tar x, no scratch
+  //   2. Legacy S3        — curl GET to scratch, then tar xzf
+  //   3. Legacy hostpath  — tar xzf directly from mount
+  const script = streamEnvelope
+    ? streamEnvelope.script
+    : (() => {
+      const baseScript = [
+        'set -e',
+        ...(isLegacyS3 ? [
+          'apk add --no-cache curl >/dev/null',
+          'mkdir -p "$(dirname "$ARCHIVE")"',
+          'echo "Downloading archive from S3 via presigned URL..."',
+          'curl --fail-with-body -o "$ARCHIVE" "$S3_DOWNLOAD_URL"',
+        ] : []),
+        '[ -f "$ARCHIVE" ] || { echo "archive not found: $ARCHIVE"; exit 1; }',
+        'cd /target',
+        'tar xzf "$ARCHIVE" --numeric-owner 2>/tmp/tar.err',
+        'TAR_RC=$?',
+        '[ "$TAR_RC" = "0" ] || { echo "tar failed (rc=$TAR_RC):"; cat /tmp/tar.err; exit 1; }',
+        'echo "RESTORE_DONE"',
+      ];
+      return baseScript.join('\n');
+    })();
+
+  // Phase 12: streaming branch — public env inline, credentials via
+  // ephemeral Secret. Legacy branch unchanged.
+  const containerEnv = streamEnvelope
+    ? [
+        { name: 'REMOTE_URI', value: streamEnvelope.remoteUri },
+        ...streamEnvelope.publicEnv,
+      ]
+    : [
+        { name: 'ARCHIVE', value: `${mount!.mountPath}/${mount!.relativePath}` },
+        ...(s3DownloadUrl ? [{ name: 'S3_DOWNLOAD_URL', value: s3DownloadUrl }] : []),
+      ];
+
+  const containerVolumeMounts = streamEnvelope
+    ? [{ name: 'target', mountPath: '/target' }]
+    : [
+        { name: 'target', mountPath: '/target' },
+        // S3 mode: scratch emptyDir, must be writable so curl can
+        // download. hostpath: shared store mounted RO.
+        { name: mount!.volumeSpec.name as string, mountPath: mount!.mountPath, readOnly: !isLegacyS3 },
+      ];
+
+  const podVolumes = streamEnvelope
+    ? [{ name: 'target', persistentVolumeClaim: { claimName: opts.pvcName } }]
+    : [
+        { name: 'target', persistentVolumeClaim: { claimName: opts.pvcName } },
+        mount!.volumeSpec,
+      ];
+
+  // POSIX `sh` for both branches (rclone image is alpine, legacy is busybox/alpine).
+  const command = ['sh', '-c', script];
+
+  const resources = streamEnvelope
+    ? {
+        requests: { cpu: '100m', memory: '128Mi' },
+        limits: { cpu: '500m', memory: '256Mi' },
+      }
+    : {
+        requests: { cpu: '100m', memory: '128Mi' },
+        limits: { cpu: '500m', memory: '512Mi' },
+      };
+
+  // Phase 12: ephemeral credentials Secret for streaming restore Jobs.
+  const { createEphemeralCredentialsSecret, attachOwnerToSecret, deleteSecretBestEffort, buildEnvFromSecret, credSecretNameFor } =
+    await import('./streaming-store.js');
+  const credSecretName = streamEnvelope ? credSecretNameFor(jobName) : null;
+  const hasSecretEnv = streamEnvelope && Object.keys(streamEnvelope.secretEnv).length > 0;
+  if (streamEnvelope && hasSecretEnv && credSecretName) {
+    await createEphemeralCredentialsSecret(
+      k8s as unknown as Parameters<typeof createEphemeralCredentialsSecret>[0],
+      opts.namespace,
+      credSecretName,
+      streamEnvelope.secretEnv,
+    );
+  }
 
   const jobBody = {
-    metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'restore', 'platform.io/tenant-id': opts.tenantId } },
+    metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'restore', 'platform.io/tenant-id': opts.tenantId, 'platform.io/pipeline': streamEnvelope ? 'streaming-rclone' : 'legacy' } },
     spec: {
       backoffLimit: 0,
-      ttlSecondsAfterFinished: 600,
+      ttlSecondsAfterFinished: streamEnvelope ? 3600 : 600,
+      activeDeadlineSeconds: streamEnvelope ? Math.floor(timeoutMs / 1000) : 1800,
       template: {
-        metadata: { labels: { 'platform.io/component': 'restore', 'platform.io/tenant-id': opts.tenantId } },
+        metadata: { labels: { 'platform.io/component': 'restore', 'platform.io/tenant-id': opts.tenantId, 'platform.io/pipeline': streamEnvelope ? 'streaming-rclone' : 'legacy' } },
         spec: {
           restartPolicy: 'Never',
           // Restore Jobs MUST run in the tenant namespace because they
@@ -77,37 +157,51 @@ export async function restoreTenantPVC(
           // so they don't count against the tenant's ResourceQuota.
           priorityClassName: 'platform-tenant-overhead',
           containers: [{
-            name: 'tar',
+            name: streamEnvelope ? 'rclone' : 'tar',
             image: jobImage,
             imagePullPolicy: 'IfNotPresent',
-            command: ['sh', '-c', script],
-            env: [
-              { name: 'ARCHIVE', value: `${mount.mountPath}/${mount.relativePath}` },
-              ...(s3DownloadUrl ? [{ name: 'S3_DOWNLOAD_URL', value: s3DownloadUrl }] : []),
-            ],
-            resources: {
-              requests: { cpu: '100m', memory: '128Mi' },
-              limits: { cpu: '500m', memory: '512Mi' },
-            },
-            volumeMounts: [
-              { name: 'target', mountPath: '/target' },
-              // S3 mode: scratch emptyDir, must be writable so curl can
-              // download. hostpath: shared store mounted RO.
-              { name: mount.volumeSpec.name as string, mountPath: mount.mountPath, readOnly: !isS3 },
-            ],
+            command,
+            env: containerEnv,
+            envFrom: (streamEnvelope && hasSecretEnv && credSecretName)
+              ? buildEnvFromSecret(credSecretName)
+              : undefined,
+            resources,
+            volumeMounts: containerVolumeMounts,
           }],
-          volumes: [
-            { name: 'target', persistentVolumeClaim: { claimName: opts.pvcName } },
-            mount.volumeSpec,
-          ],
+          volumes: podVolumes,
         },
       },
     },
   };
 
-  await (k8s.batch as unknown as {
-    createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-  }).createNamespacedJob({ namespace: opts.namespace, body: jobBody });
+  let createdJobResp: unknown;
+  try {
+    createdJobResp = await (k8s.batch as unknown as {
+      createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+    }).createNamespacedJob({ namespace: opts.namespace, body: jobBody });
+  } catch (err) {
+    if (credSecretName && hasSecretEnv) {
+      await deleteSecretBestEffort(
+        k8s as unknown as Parameters<typeof deleteSecretBestEffort>[0],
+        opts.namespace,
+        credSecretName,
+      );
+    }
+    throw err;
+  }
+  // Bind the Secret to the Job for cascade GC.
+  if (credSecretName && hasSecretEnv) {
+    const jobUid = ((createdJobResp as { body?: { metadata?: { uid?: string } } }).body?.metadata?.uid
+      ?? (createdJobResp as { metadata?: { uid?: string } }).metadata?.uid);
+    if (jobUid) {
+      await attachOwnerToSecret(
+        k8s as unknown as Parameters<typeof attachOwnerToSecret>[0],
+        opts.namespace,
+        credSecretName,
+        { name: jobName, uid: jobUid },
+      ).catch(() => { /* cron picks up */ });
+    }
+  }
 
   const start = Date.now();
   // eslint-disable-next-line no-constant-condition
@@ -127,7 +221,6 @@ export async function restoreTenantPVC(
     if (completed || (status.succeeded ?? 0) > 0) {
       // Delete the Job + its pod so nothing holds the PVC's RWO lock
       // by the time the orchestrator starts workloads back up.
-      // Same reasoning as snapshotTenantPVC.
       try {
         await (k8s.batch as unknown as {
           deleteNamespacedJob: (args: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;

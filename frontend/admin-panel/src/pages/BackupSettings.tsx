@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Cloud, Zap, CheckCircle, Edit2, Activity } from 'lucide-react';
+import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Cloud, Zap, CheckCircle, Edit2, Activity, Gauge } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import BackupHealthBanner from '@/components/BackupHealthBanner';
 import BackupHealthTable from '@/components/BackupHealthTable';
@@ -16,17 +16,28 @@ import {
   useDeactivateBackupConfig,
   useBackupList,
   useBackupNow,
+  useSpeedtest,
 } from '@/hooks/use-backup-config';
+import { useRefreshTaskCenter } from '@/hooks/use-task-center';
 import { formatBytes } from '@/hooks/use-platform-storage';
+import { useTargetSummaries } from '@/hooks/use-snapshot-classes';
+import { Link } from 'react-router-dom';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-type StorageType = 'ssh' | 's3';
+type StorageType = 'ssh' | 's3' | 'cifs';
 
 export default function BackupSettings() {
   const { data: response, isLoading } = useBackupConfigs();
   const { data: healthSummaries, isLoading: healthLoading } = useBackupHealth();
+  const { data: summariesData } = useTargetSummaries();
+  // Build targetId → assigned classes map once per render. Empty
+  // when no classes are routed to a given target — the pill omits.
+  const targetSummaries = new Map<string, { snapshotClass: string; priority: number }[]>();
+  for (const s of summariesData?.data?.summaries ?? []) {
+    targetSummaries.set(s.targetId, s.classes);
+  }
   const createConfig = useCreateBackupConfig();
   const updateConfig = useUpdateBackupConfig();
   const deleteConfig = useDeleteBackupConfig();
@@ -70,6 +81,14 @@ export default function BackupSettings() {
     s3_access_key: '',
     s3_secret_key: '',
     s3_prefix: '',
+    // Phase 9: CIFS form fields.
+    cifs_host: '',
+    cifs_port: '445',
+    cifs_share: '',
+    cifs_user: '',
+    cifs_password: '',
+    cifs_domain: '',
+    cifs_path: '',
     retention_days: '30',
     schedule_expression: '0 2 * * *',
   });
@@ -78,7 +97,10 @@ export default function BackupSettings() {
     setForm({
       name: '', ssh_host: '', ssh_port: '22', ssh_user: '', ssh_key: '', ssh_path: '/backups',
       s3_endpoint: '', s3_bucket: '', s3_region: 'us-east-1', s3_access_key: '', s3_secret_key: '',
-      s3_prefix: '', retention_days: '30', schedule_expression: '0 2 * * *',
+      s3_prefix: '',
+      cifs_host: '', cifs_port: '445', cifs_share: '', cifs_user: '', cifs_password: '',
+      cifs_domain: '', cifs_path: '',
+      retention_days: '30', schedule_expression: '0 2 * * *',
     });
     setShowForm(false);
     setEditingId(null);
@@ -102,6 +124,14 @@ export default function BackupSettings() {
       s3_access_key: '', // blank; server redacts
       s3_secret_key: '', // blank; server redacts
       s3_prefix: config.s3Prefix ?? '',
+      // Phase 9: CIFS fields.
+      cifs_host: config.cifsHost ?? '',
+      cifs_port: String(config.cifsPort ?? 445),
+      cifs_share: config.cifsShare ?? '',
+      cifs_user: config.cifsUser ?? '',
+      cifs_password: '', // blank; server never returns
+      cifs_domain: config.cifsDomain ?? '',
+      cifs_path: config.cifsPath ?? '',
       retention_days: String(config.retentionDays ?? 30),
       schedule_expression: config.scheduleExpression ?? '0 2 * * *',
     });
@@ -119,9 +149,23 @@ export default function BackupSettings() {
       schedule_expression: form.schedule_expression,
       enabled: true,
     };
-    return storageType === 'ssh'
-      ? { ...base, storage_type: 'ssh' as const, ssh_host: form.ssh_host, ssh_port: Number(form.ssh_port), ssh_user: form.ssh_user, ssh_key: form.ssh_key, ssh_path: form.ssh_path }
-      : { ...base, storage_type: 's3' as const, s3_endpoint: form.s3_endpoint, s3_bucket: form.s3_bucket, s3_region: form.s3_region, s3_access_key: form.s3_access_key, s3_secret_key: form.s3_secret_key, s3_prefix: form.s3_prefix || undefined };
+    if (storageType === 'ssh') {
+      return { ...base, storage_type: 'ssh' as const, ssh_host: form.ssh_host, ssh_port: Number(form.ssh_port), ssh_user: form.ssh_user, ssh_key: form.ssh_key, ssh_path: form.ssh_path };
+    }
+    if (storageType === 'cifs') {
+      return {
+        ...base,
+        storage_type: 'cifs' as const,
+        cifs_host: form.cifs_host,
+        cifs_port: Number(form.cifs_port),
+        cifs_share: form.cifs_share,
+        cifs_user: form.cifs_user,
+        cifs_password: form.cifs_password,
+        cifs_domain: form.cifs_domain || undefined,
+        cifs_path: form.cifs_path || undefined,
+      };
+    }
+    return { ...base, storage_type: 's3' as const, s3_endpoint: form.s3_endpoint, s3_bucket: form.s3_bucket, s3_region: form.s3_region, s3_access_key: form.s3_access_key, s3_secret_key: form.s3_secret_key, s3_prefix: form.s3_prefix || undefined };
   };
 
   // PATCH payload for edit mode. Strictly omits secrets unless the
@@ -245,6 +289,9 @@ export default function BackupSettings() {
                 <button type="button" onClick={() => setStorageType('s3')} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium border ${storageType === 's3' ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300' : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400'}`} data-testid="bc-type-s3">
                   <Cloud size={14} /> S3
                 </button>
+                <button type="button" onClick={() => setStorageType('cifs')} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium border ${storageType === 'cifs' ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300' : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400'}`} data-testid="bc-type-cifs">
+                  <HardDrive size={14} /> CIFS/SMB
+                </button>
               </div>
             </div>
           </div>
@@ -361,6 +408,68 @@ export default function BackupSettings() {
             </div>
           )}
 
+          {storageType === 'cifs' && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="bc-cifs-host" className="block text-sm font-medium text-gray-700 dark:text-gray-300">SMB Host</label>
+                <input id="bc-cifs-host" className={INPUT_CLASS + ' mt-1'} placeholder="storage.example.com or 10.0.0.5" value={form.cifs_host} onChange={(e) => setForm({ ...form, cifs_host: e.target.value })} required data-testid="bc-cifs-host" />
+              </div>
+              <div>
+                <label htmlFor="bc-cifs-port" className="block text-sm font-medium text-gray-700 dark:text-gray-300">SMB Port</label>
+                <input id="bc-cifs-port" type="number" className={INPUT_CLASS + ' mt-1'} value={form.cifs_port} onChange={(e) => setForm({ ...form, cifs_port: e.target.value })} data-testid="bc-cifs-port" />
+              </div>
+              <div>
+                <label htmlFor="bc-cifs-share" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Share</label>
+                <input id="bc-cifs-share" className={INPUT_CLASS + ' mt-1'} placeholder="backups" value={form.cifs_share} onChange={(e) => setForm({ ...form, cifs_share: e.target.value })} required data-testid="bc-cifs-share" />
+              </div>
+              <div>
+                <label htmlFor="bc-cifs-domain" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Domain <span className="text-xs text-gray-400">(optional, AD)</span></label>
+                <input id="bc-cifs-domain" className={INPUT_CLASS + ' mt-1'} value={form.cifs_domain} onChange={(e) => setForm({ ...form, cifs_domain: e.target.value })} data-testid="bc-cifs-domain" />
+              </div>
+              <div>
+                <label htmlFor="bc-cifs-user" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Username</label>
+                <input id="bc-cifs-user" className={INPUT_CLASS + ' mt-1'} value={form.cifs_user} onChange={(e) => setForm({ ...form, cifs_user: e.target.value })} required data-testid="bc-cifs-user" />
+              </div>
+              <div>
+                <label htmlFor="bc-cifs-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Password
+                  {editingId && (
+                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">(leave blank to keep)</span>
+                  )}
+                </label>
+                <input
+                  id="bc-cifs-password"
+                  type="password"
+                  className={INPUT_CLASS + ' mt-1 font-mono disabled:opacity-50'}
+                  value={form.cifs_password}
+                  onChange={(e) => setForm({ ...form, cifs_password: e.target.value })}
+                  required={!editingId}
+                  disabled={!!editingId && !changeSecret}
+                  placeholder={editingId ? '(unchanged)' : undefined}
+                  data-testid="bc-cifs-password"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label htmlFor="bc-cifs-path" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Sub-path <span className="text-xs text-gray-400">(optional, within share)</span></label>
+                <input id="bc-cifs-path" className={INPUT_CLASS + ' mt-1'} placeholder="/cluster1/backups" value={form.cifs_path} onChange={(e) => setForm({ ...form, cifs_path: e.target.value })} data-testid="bc-cifs-path" />
+              </div>
+              {editingId && (
+                <div className="sm:col-span-2">
+                  <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={changeSecret}
+                      onChange={(e) => setChangeSecret(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                      data-testid="bc-change-cifs-password"
+                    />
+                    Change SMB password
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="bc-retention" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Retention (days)</label>
@@ -427,13 +536,15 @@ export default function BackupSettings() {
             <div key={config.id} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid={`backup-config-${config.id}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  {config.storageType === 'ssh' ? <Server size={18} className="text-gray-500 dark:text-gray-400" /> : <Cloud size={18} className="text-blue-500 dark:text-blue-400" />}
+                  {config.storageType === 'ssh' && <Server size={18} className="text-gray-500 dark:text-gray-400" />}
+                  {config.storageType === 's3' && <Cloud size={18} className="text-blue-500 dark:text-blue-400" />}
+                  {config.storageType === 'cifs' && <HardDrive size={18} className="text-purple-500 dark:text-purple-400" />}
                   <div>
                     <h3 className="font-semibold text-gray-900 dark:text-gray-100">{config.name}</h3>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      {config.storageType === 'ssh'
-                        ? `${config.sshUser}@${config.sshHost}:${config.sshPath}`
-                        : `s3://${config.s3Bucket}${config.s3Prefix ? '/' + config.s3Prefix : ''}`}
+                      {config.storageType === 'ssh' && `${config.sshUser}@${config.sshHost}:${config.sshPath}`}
+                      {config.storageType === 's3' && `s3://${config.s3Bucket}${config.s3Prefix ? '/' + config.s3Prefix : ''}`}
+                      {config.storageType === 'cifs' && `smb://${config.cifsUser}@${config.cifsHost}/${config.cifsShare}${config.cifsPath ?? ''}`}
                     </p>
                   </div>
                 </div>
@@ -454,15 +565,49 @@ export default function BackupSettings() {
                 <span>Schedule: {config.scheduleExpression}</span>
                 {config.lastTestedAt && <span>Last tested: {new Date(config.lastTestedAt).toLocaleString()}</span>}
               </div>
+              {/* Snapshot-class "Used by" pill — operator can see at a glance
+                  which classes route to this target. Click-through to the
+                  assignments page lets them reassign before deletion. */}
+              {(() => {
+                const usedBy = targetSummaries.get(config.id) ?? [];
+                if (usedBy.length === 0) {
+                  return (
+                    <div className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+                      <span className="rounded bg-gray-100 dark:bg-gray-900/40 px-2 py-0.5">
+                        Not assigned to any snapshot class
+                      </span>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="text-gray-500 dark:text-gray-400">Used by:</span>
+                    {usedBy.map((c) => (
+                      <Link
+                        key={c.snapshotClass}
+                        to="/settings/snapshot-classes"
+                        className="rounded bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 font-medium text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-900/60"
+                        title={`priority ${c.priority}`}
+                      >
+                        {c.snapshotClass}
+                        {c.priority !== 100 && <span className="ml-1 text-indigo-500 dark:text-indigo-400">·p{c.priority}</span>}
+                      </Link>
+                    ))}
+                  </div>
+                );
+              })()}
               {testResult?.id === config.id && (
                 <div className={`mt-2 text-xs ${testResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
                   Test: {testResult.ok ? 'ok' : 'error'} ({testResult.latencyMs}ms){testResult.error ? ` — ${testResult.error.message}` : ''}
                 </div>
               )}
+              {/* Phase 10 — last speedtest result inline. NULL until first run. */}
+              <SpeedtestResultRow config={config} />
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" onClick={() => handleTest(config.id)} disabled={testConfig.isPending} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`test-backup-${config.id}`}>
                   <TestTube size={12} /> Test Connection
                 </button>
+                <SpeedtestButton configId={config.id} configName={config.name} />
                 <button
                   type="button"
                   onClick={() => startEdit(config)}
@@ -650,6 +795,97 @@ function RecentBackupsPanel({ activeConfigId }: { activeConfigId: string | null 
           </table>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Phase 10: Speedtest button + result row ─────────────────────────
+//
+// SpeedtestButton kicks off the rclone Job and refreshes the task-center
+// chip. The Job's progress modal (kind='backup-speedtest') opens
+// automatically when the operator clicks the chip — no additional
+// state machine in this component. On completion, the mutation's
+// onSettled invalidates the backup-configs query so the per-target
+// last_speedtest_* fields refresh inline.
+
+function SpeedtestButton({ configId, configName }: { readonly configId: string; readonly configName: string }) {
+  const mutation = useSpeedtest();
+  const refreshTasks = useRefreshTaskCenter();
+  const handleClick = async () => {
+    if (!window.confirm(
+      `Run speedtest on "${configName}"?\n\n` +
+      `Uploads 100 MB random data to the target, then downloads it back. ` +
+      `Takes 10-60 seconds depending on link speed. ` +
+      `Progress visible in the task-center chip.`,
+    )) return;
+    try {
+      const promise = mutation.mutateAsync({ configId });
+      // Kick the chip refresh so the task appears immediately while the
+      // Job is still running.
+      refreshTasks();
+      await promise;
+      refreshTasks();
+    } catch {
+      // Errors surface via the mutation state + are persisted server-side
+      // as last_speedtest_error. The result row renders them.
+      refreshTasks();
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={mutation.isPending}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-purple-200 dark:border-purple-700 px-3 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50"
+      data-testid={`speedtest-${configId}`}
+      title="Upload + download a 100 MB test payload to measure throughput"
+    >
+      {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Gauge size={12} />}
+      {mutation.isPending ? 'Running…' : 'Speedtest'}
+    </button>
+  );
+}
+
+interface SpeedtestResultConfig {
+  readonly lastSpeedtestAt: string | null;
+  readonly lastSpeedtestUploadMbps: number | null;
+  readonly lastSpeedtestDownloadMbps: number | null;
+  readonly lastSpeedtestLatencyMs: number | null;
+  readonly lastSpeedtestPayloadBytes: number | null;
+  readonly lastSpeedtestError: string | null;
+}
+
+function SpeedtestResultRow({ config }: { readonly config: SpeedtestResultConfig }) {
+  if (!config.lastSpeedtestAt) return null;
+  const when = new Date(config.lastSpeedtestAt);
+  const ageHours = (Date.now() - when.getTime()) / 3_600_000;
+  const stale = ageHours > 24 * 7; // > 1 week
+  if (config.lastSpeedtestError) {
+    return (
+      <div className="mt-2 flex items-start gap-2 rounded-lg border border-rose-200 dark:border-rose-700 bg-rose-50/50 dark:bg-rose-900/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+        <AlertCircle size={14} className="mt-0.5 flex-none" />
+        <div>
+          <div className="font-medium">Last speedtest failed</div>
+          <div className="text-rose-600 dark:text-rose-400">{config.lastSpeedtestError}</div>
+          <div className="mt-0.5 text-rose-500 dark:text-rose-500">{when.toLocaleString()}</div>
+        </div>
+      </div>
+    );
+  }
+  const up = config.lastSpeedtestUploadMbps;
+  const down = config.lastSpeedtestDownloadMbps;
+  const lat = config.lastSpeedtestLatencyMs;
+  const fmtMbps = (m: number | null) => m !== null ? `${m.toFixed(1)} Mbps` : '—';
+  return (
+    <div className={`mt-2 inline-flex items-center gap-3 rounded-lg border px-3 py-1.5 text-xs ${stale ? 'border-amber-200 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-900/10 text-amber-700 dark:text-amber-300' : 'border-purple-200 dark:border-purple-700 bg-purple-50/50 dark:bg-purple-900/10 text-purple-700 dark:text-purple-300'}`}>
+      <Gauge size={12} />
+      <span className="font-medium">Speedtest:</span>
+      <span title="Upload">↑ {fmtMbps(up)}</span>
+      <span title="Download">↓ {fmtMbps(down)}</span>
+      <span title="Latency">{lat !== null ? `${lat}ms` : '—'} latency</span>
+      <span className="text-purple-500 dark:text-purple-500">
+        {stale ? '(stale, > 1 week) · ' : ''}{when.toLocaleString()}
+      </span>
     </div>
   );
 }

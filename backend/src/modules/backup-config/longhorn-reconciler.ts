@@ -169,13 +169,16 @@ export async function reconcileBackupTarget(
  */
 export async function clearBackupTarget(
   tenants: LonghornTenants,
-  opts: { readonly kind?: 's3' | 'ssh' } = {},
+  opts: { readonly kind?: 's3' | 'ssh' | 'cifs' } = {},
 ): Promise<void> {
   // Suspend DR CronJobs first so they stop trying to mount the
   // (still-present) credentials Secret while the BackupTarget CR is
   // being torn down. Idempotent — no-op when already suspended.
   await setBackupCronJobsSuspended(tenants.batch, true);
-  if (opts.kind === 'ssh') return;
+  // SSH and CIFS targets are platform-level (used by tenant snapshots),
+  // NOT by Longhorn — no BackupTarget CR exists for them, so deactivate
+  // is a no-op beyond CronJob suspend.
+  if (opts.kind === 'ssh' || opts.kind === 'cifs') return;
   await patchBackupTarget(tenants.custom, {
     spec: { backupTargetURL: '', credentialSecret: '' },
   });

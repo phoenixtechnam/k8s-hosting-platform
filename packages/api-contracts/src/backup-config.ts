@@ -60,9 +60,28 @@ const s3ConfigSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+// Phase 9: CIFS/SMB target. Hostname or IP, share name, credentials.
+// Password is stored encrypted by the backend on insert; the rclone
+// Job re-obscures it server-side before passing to rclone via env var.
+const cifsConfigSchema = z.object({
+  storage_type: z.literal('cifs'),
+  name: z.string().min(1).max(255),
+  cifs_host: z.string().min(1).max(255),
+  cifs_port: z.number().int().min(1).max(65535).default(445),
+  cifs_share: z.string().min(1).max(255),
+  cifs_user: z.string().min(1).max(255),
+  cifs_password: z.string().min(1).max(512),
+  cifs_domain: z.string().max(255).optional(),
+  cifs_path: z.string().max(500).optional(),
+  retention_days: z.number().int().min(1).max(365).default(30),
+  schedule_expression: z.string().default('0 2 * * *'),
+  enabled: z.boolean().default(true),
+});
+
 export const createBackupConfigSchema = z.discriminatedUnion('storage_type', [
   sshConfigSchema,
   s3ConfigSchema,
+  cifsConfigSchema,
 ]);
 
 export type CreateBackupConfigInput = z.infer<typeof createBackupConfigSchema>;
@@ -80,6 +99,14 @@ export const updateBackupConfigSchema = z.object({
   s3_access_key: z.string().optional(),
   s3_secret_key: z.string().optional(),
   s3_prefix: z.string().optional(),
+  // Phase 9: CIFS update fields.
+  cifs_host: z.string().optional(),
+  cifs_port: z.number().int().min(1).max(65535).optional(),
+  cifs_share: z.string().optional(),
+  cifs_user: z.string().optional(),
+  cifs_password: z.string().optional(),
+  cifs_domain: z.string().optional(),
+  cifs_path: z.string().optional(),
   retention_days: z.number().int().min(1).max(365).optional(),
   schedule_expression: z.string().optional(),
   enabled: z.boolean().optional(),
@@ -90,7 +117,7 @@ export type UpdateBackupConfigInput = z.infer<typeof updateBackupConfigSchema>;
 export const backupConfigResponseSchema = z.object({
   id: z.string(),
   name: z.string(),
-  storageType: z.enum(['ssh', 's3']),
+  storageType: z.enum(['ssh', 's3', 'cifs']),
   sshHost: z.string().nullable(),
   sshPort: z.number().nullable(),
   sshUser: z.string().nullable(),
@@ -99,6 +126,13 @@ export const backupConfigResponseSchema = z.object({
   s3Bucket: z.string().nullable(),
   s3Region: z.string().nullable(),
   s3Prefix: z.string().nullable(),
+  // Phase 9: CIFS fields (password redacted in responses).
+  cifsHost: z.string().nullable(),
+  cifsPort: z.number().nullable(),
+  cifsShare: z.string().nullable(),
+  cifsUser: z.string().nullable(),
+  cifsDomain: z.string().nullable(),
+  cifsPath: z.string().nullable(),
   retentionDays: z.number(),
   scheduleExpression: z.string().nullable(),
   enabled: z.number(),
@@ -107,8 +141,38 @@ export const backupConfigResponseSchema = z.object({
   active: z.boolean(),
   lastTestedAt: z.string().nullable(),
   lastTestStatus: z.string().nullable(),
+  // Phase 10: last speedtest result. NULL until first run.
+  lastSpeedtestAt: z.string().nullable(),
+  lastSpeedtestUploadMbps: z.number().nullable(),
+  lastSpeedtestDownloadMbps: z.number().nullable(),
+  lastSpeedtestLatencyMs: z.number().nullable(),
+  lastSpeedtestPayloadBytes: z.number().nullable(),
+  lastSpeedtestError: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 
 export type BackupConfigResponse = z.infer<typeof backupConfigResponseSchema>;
+
+// Phase 10: speedtest request + response. Payload defaults to 100 MB
+// — operator may override for quick (10 MB) or thorough (1 GB) tests.
+export const speedtestInputSchema = z.object({
+  payloadBytes: z.number().int().min(1_048_576).max(1_073_741_824).default(104_857_600), // 1 MB - 1 GB; default 100 MB
+});
+export type SpeedtestInput = z.infer<typeof speedtestInputSchema>;
+
+export const speedtestResultSchema = z.object({
+  targetId: z.string(),
+  targetName: z.string(),
+  payloadBytes: z.number(),
+  uploadMbps: z.number().nullable(),
+  downloadMbps: z.number().nullable(),
+  latencyMs: z.number().int().nullable(),
+  durationSeconds: z.number().int().nullable(),
+  taskId: z.string().uuid().nullable(),
+  operationId: z.string().nullable(),
+  ok: z.boolean(),
+  error: z.string().nullable(),
+  completedAt: z.string().nullable(),
+});
+export type SpeedtestResult = z.infer<typeof speedtestResultSchema>;

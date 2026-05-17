@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download, Mail, RefreshCw, CheckCircle, AlertCircle, Cpu, Container, X, Network } from 'lucide-react';
+import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download, Mail, RefreshCw, CheckCircle, AlertCircle, Cpu, Container, X, Network, GitBranch } from 'lucide-react';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
 import { usePlatformVersion, useUpdateSettings, useTriggerUpdate } from '@/hooks/use-platform-updates';
 import { usePlatformImages } from '@/hooks/use-platform-images';
@@ -250,6 +250,14 @@ export default function Settings() {
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400"><HardDrive size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Backup Configuration</h2><p className="text-sm text-gray-500 dark:text-gray-400">Configure SSH and S3 backup storage targets</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
+      <Link to="/settings/snapshot-classes" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="snapshot-classes-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400"><GitBranch size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Snapshot Class Assignments</h2><p className="text-sm text-gray-500 dark:text-gray-400">Route each snapshot class (tenant, system, etcd, secrets) to a backup target</p></div>
         </div>
         <ChevronRight size={20} className="text-gray-400" />
       </Link>

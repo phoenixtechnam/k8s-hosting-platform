@@ -16,4 +16,9 @@ resources:
   - cluster-state-cronjob.yaml
   - secrets-backup-cronjob.yaml
   - backup-audit-cronjob.yaml
-  - hostpath-snapshot-cronjob.yaml
+  # Phase 5 of snapshot-storage overhaul: hostpath-snapshot-cronjob
+  # retired. The per-Job rclone streaming pipeline (Phase 4) uploads
+  # tenant snapshots directly to the assigned target — no second
+  # cron-based copy needed. The cronjob file is preserved on disk
+  # one release as a rollback safety net; remove after staging burn-in.
+  # - hostpath-snapshot-cronjob.yaml

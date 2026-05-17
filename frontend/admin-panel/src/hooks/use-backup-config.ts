@@ -4,7 +4,7 @@ import { apiFetch } from '@/lib/api-client';
 interface BackupConfig {
   readonly id: string;
   readonly name: string;
-  readonly storageType: 'ssh' | 's3';
+  readonly storageType: 'ssh' | 's3' | 'cifs';
   readonly sshHost: string | null;
   readonly sshPort: number | null;
   readonly sshUser: string | null;
@@ -13,6 +13,13 @@ interface BackupConfig {
   readonly s3Bucket: string | null;
   readonly s3Region: string | null;
   readonly s3Prefix: string | null;
+  // Phase 9: CIFS/SMB fields. Password is never returned.
+  readonly cifsHost: string | null;
+  readonly cifsPort: number | null;
+  readonly cifsShare: string | null;
+  readonly cifsUser: string | null;
+  readonly cifsDomain: string | null;
+  readonly cifsPath: string | null;
   readonly retentionDays: number;
   readonly scheduleExpression: string | null;
   readonly enabled: number;
@@ -21,6 +28,13 @@ interface BackupConfig {
   readonly active: boolean;
   readonly lastTestedAt: string | null;
   readonly lastTestStatus: string | null;
+  // Phase 10: speedtest results. NULL until first run.
+  readonly lastSpeedtestAt: string | null;
+  readonly lastSpeedtestUploadMbps: number | null;
+  readonly lastSpeedtestDownloadMbps: number | null;
+  readonly lastSpeedtestLatencyMs: number | null;
+  readonly lastSpeedtestPayloadBytes: number | null;
+  readonly lastSpeedtestError: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -175,5 +189,41 @@ export function useBackupNow(configId: string) {
         method: 'POST',
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-list', configId] }),
+  });
+}
+
+// Phase 10: speedtest. Runs the upload+download Job and returns the
+// final result. The Job surfaces in the task-center automatically via
+// backend wiring — the UI opens a progress modal on click and closes
+// it when this mutation resolves.
+
+interface SpeedtestResponse {
+  readonly data: {
+    readonly targetId: string;
+    readonly targetName: string;
+    readonly payloadBytes: number;
+    readonly uploadMbps: number | null;
+    readonly downloadMbps: number | null;
+    readonly latencyMs: number | null;
+    readonly durationSeconds: number | null;
+    readonly taskId: string | null;
+    readonly operationId: string | null;
+    readonly ok: boolean;
+    readonly error: string | null;
+    readonly completedAt: string | null;
+  };
+}
+
+export function useSpeedtest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ configId, payloadBytes }: { configId: string; payloadBytes?: number }) =>
+      apiFetch<SpeedtestResponse>(`/api/v1/admin/backup-configs/${configId}/speedtest`, {
+        method: 'POST',
+        body: JSON.stringify(payloadBytes ? { payloadBytes } : {}),
+      }),
+    // Refresh the backup-configs list so the new last_speedtest_*
+    // fields land in the BackupSettings tile.
+    onSettled: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
   });
 }

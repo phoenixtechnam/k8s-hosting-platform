@@ -1028,15 +1028,34 @@ export async function updateTenant(
     if (existing.status !== 'archived') {
       try {
         const { archiveTenant } = await import('../storage-lifecycle/service.js');
-        const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
+        // Phase 3 of the snapshot-storage overhaul: PATCH status:archived
+        // writes a pre-archive snapshot, so it must route through the
+        // per-class resolver (NOT the legacy single-active-target
+        // fallback). Throws NO_SNAPSHOT_TARGET (409) if the
+        // tenant_snapshot class is unassigned — operator must
+        // configure an assignment before archive can proceed.
+        const { resolveSnapshotStoreForClass } = await import('../storage-lifecycle/snapshot-store.js');
         const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
         const k8s = opts.k8sTenants ?? createK8sClients(process.env.KUBECONFIG_PATH);
-        const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
         const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
+        const bundle = await resolveSnapshotStoreForClass(
+          db,
+          process.env as Record<string, unknown>,
+          'tenant_snapshot',
+          // Phase 11: k8s ctx for CIFS read paths.
+          { k8sCtx: { k8s, namespace: platformNamespace } },
+        );
         const retentionDays = input.archive_retention_days
           ?? (await loadPreArchiveRetentionDays(db));
         const { operationId } = await archiveTenant(
-          { db, k8s, store, platformNamespace },
+          {
+            db,
+            k8s,
+            store: bundle.store,
+            platformNamespace,
+            targetId: bundle.targetId,
+            snapshotClass: 'tenant_snapshot',
+          },
           id,
           { retentionDays, triggeredByUserId: opts.triggeredByUserId ?? null },
         );
