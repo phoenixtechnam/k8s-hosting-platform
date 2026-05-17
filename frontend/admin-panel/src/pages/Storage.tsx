@@ -23,6 +23,7 @@ import {
   useUpdateStorageLifecycleSettings,
   type StorageLifecycleSettingsUpdate,
 } from '@/hooks/use-storage-settings';
+import { useSnapshotAccounting } from '@/hooks/use-snapshot-accounting';
 import type { BackupResponse } from '@k8s-hosting/api-contracts';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -297,6 +298,8 @@ function OverviewTab() {
 
   return (
     <div className="space-y-4">
+      <SnapshotAccountingPanel />
+
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Backup Storage Targets</h2>
@@ -325,6 +328,179 @@ function OverviewTab() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Snapshot Accounting Panel ─────────────────────────────────────────
+// Phase 1 of the snapshot-storage overhaul: per-class + top-tenant
+// rollup of storage_snapshots rows. Gives operator a first-glance read
+// on "who's using how much" before quotas (Phase 6) land.
+
+const CLASS_LABELS: Record<string, { label: string; color: string }> = {
+  tenant_snapshot: { label: 'Tenant PVC', color: 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300' },
+  tenant_bundle: { label: 'Tenant Bundle', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' },
+  system_snapshot: { label: 'System', color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' },
+  system_etcd: { label: 'System etcd', color: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' },
+  system_secrets: { label: 'System Secrets', color: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300' },
+};
+
+function classLabel(snapshotClass: string): { label: string; color: string } {
+  return CLASS_LABELS[snapshotClass] ?? { label: snapshotClass, color: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300' };
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return 'just now';
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+function SnapshotAccountingPanel() {
+  const { data, isLoading, error } = useSnapshotAccounting();
+  const accounting = data?.data;
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Snapshot Accounting</h2>
+        {accounting && (
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            {accounting.total.count.toLocaleString()} snapshots · {formatBytes(accounting.total.bytes)} total
+          </span>
+        )}
+      </div>
+
+      {isLoading && (
+        <div className="flex justify-center py-6"><Loader2 size={20} className="animate-spin text-gray-400" /></div>
+      )}
+
+      {error && (
+        <div className="rounded-lg border border-rose-200 dark:border-rose-700 bg-rose-50 dark:bg-rose-900/20 px-4 py-3 text-sm text-rose-700 dark:text-rose-300">
+          Failed to load snapshot accounting: {error instanceof Error ? error.message : String(error)}
+        </div>
+      )}
+
+      {accounting && (
+        <div className="space-y-5">
+          {accounting.byClass.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+              No snapshots tracked yet.
+            </div>
+          ) : (
+            <>
+              <div>
+                <div className="mb-2 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">By Class</div>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+                  {accounting.byClass.map((row) => {
+                    const cl = classLabel(row.snapshotClass);
+                    return (
+                      <div
+                        key={`${row.snapshotClass}:${row.subsystem}`}
+                        className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 p-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className={clsx('rounded px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide', cl.color)}>
+                            {cl.label}
+                          </span>
+                          <span className="text-[10px] text-gray-500 dark:text-gray-400">{row.subsystem}</span>
+                        </div>
+                        <div className="mt-2 flex items-baseline gap-2">
+                          <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                            {formatBytes(row.totalBytes)}
+                          </span>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            {row.totalCount.toLocaleString()} snap{row.totalCount === 1 ? '' : 's'}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                          Last: {timeAgo(row.lastSnapshotAt)}
+                          {row.lastReadyAt && row.lastSnapshotAt &&
+                            new Date(row.lastReadyAt).getTime() < new Date(row.lastSnapshotAt).getTime() && (
+                            <span> · last ready: {timeAgo(row.lastReadyAt)}</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {accounting.topTenants.length > 0 && (
+                <div>
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Top Tenants ({accounting.topTenants.length})
+                  </div>
+                  <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+                    <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
+                      <thead className="bg-gray-50 dark:bg-gray-900/40">
+                        <tr>
+                          <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Tenant</th>
+                          <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Size</th>
+                          <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Count</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Last</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Classes</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-800">
+                        {accounting.topTenants.slice(0, 10).map((t) => (
+                          <tr key={t.tenantId}>
+                            <td className="whitespace-nowrap px-3 py-2 text-gray-900 dark:text-gray-100">
+                              <Link
+                                to={`/tenants/${t.tenantId}`}
+                                className="hover:text-brand-600 dark:hover:text-brand-400 hover:underline"
+                              >
+                                {t.tenantName}
+                              </Link>
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 text-right font-medium text-gray-900 dark:text-gray-100">
+                              {formatBytes(t.totalBytes)}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 text-right text-gray-700 dark:text-gray-300">
+                              {t.totalCount}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 text-gray-500 dark:text-gray-400 text-xs">
+                              {timeAgo(t.lastSnapshotAt)}
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex flex-wrap gap-1">
+                                {t.byClass.map((b) => {
+                                  const cl = classLabel(b.snapshotClass);
+                                  return (
+                                    <span
+                                      key={b.snapshotClass}
+                                      className={clsx('rounded px-1.5 py-0.5 text-[10px] font-medium', cl.color)}
+                                      title={`${b.count} × ${formatBytes(b.bytes)}`}
+                                    >
+                                      {cl.label}: {formatBytes(b.bytes)}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {accounting.topTenants.length > 10 && (
+                    <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+                      Showing top 10 of {accounting.topTenants.length} tenants by size.
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

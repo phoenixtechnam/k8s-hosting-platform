@@ -66,12 +66,41 @@ export function startStorageLifecycleScheduler(
   // swapping backends in the admin UI picks up on the next cycle
   // without a backend restart. `loadStorageLifecycleSettings` already
   // caches at the DB layer (60s TTL) so this is cheap.
+  //
+  // `buildCtx` is the legacy/read-only path used by expireSnapshots and
+  // storageAuditReport — neither writes a new snapshot row, so the
+  // single-active-target fallback is fine for them.
   const buildCtx = async () => ({
     db,
     k8s,
     store: await resolveSnapshotStore(db, config as Record<string, string | undefined>),
     platformNamespace: (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform',
   });
+
+  // Phase 3: per-class ctx for auto-ops that WRITE snapshots (auto-archive).
+  // Routes through `backup_target_assignments` and stamps target_id on
+  // the resulting storage_snapshots row so Phase 5 restore can look it
+  // up. Throws NO_SNAPSHOT_TARGET (409) if the class is unassigned —
+  // the caller catches and logs (auto-archive becomes a no-op for that
+  // tenant until the operator configures an assignment).
+  const buildSnapshotCtx = async (
+    snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass,
+  ) => {
+    const { resolveSnapshotStoreForClass } = await import('./snapshot-store.js');
+    const bundle = await resolveSnapshotStoreForClass(
+      db,
+      config as Record<string, string | undefined>,
+      snapshotClass,
+    );
+    return {
+      db,
+      k8s,
+      store: bundle.store,
+      platformNamespace: (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform',
+      targetId: bundle.targetId,
+      snapshotClass,
+    };
+  };
 
   let expiryTimer: NodeJS.Timeout | null = null;
   let auditTimer: NodeJS.Timeout | null = null;
@@ -115,22 +144,43 @@ export function startStorageLifecycleScheduler(
     if (stopped) return;
     try {
       const settings = await loadLifecycleSettings(db);
-      const ctx = await buildCtx();
+      // No legacy ctx needed here — auto-archive builds its own
+      // per-class ctx below; auto-delete uses applyDeleted with only
+      // db + k8s (no snapshot store needed).
 
       // Auto-archive: compare against `suspendedAt` (stamped by
       // applySuspended), NOT `updatedAt` — any admin edit bumps
       // updatedAt and would silently reset the archive clock.
+      //
+      // Phase 3 fix: resolve a per-class ctx for archive so the
+      // pre-archive snapshot routes through `backup_target_assignments`
+      // and stamps target_id for forensic restore. If no class
+      // assignment exists, log + skip the tenant — operator must
+      // configure an assignment before auto-archive can run.
       if (settings.autoArchiveEnabled) {
         const threshold = new Date(Date.now() - settings.autoArchiveAfterDays * 24 * 60 * 60 * 1000);
         const rows = await db.select({ id: tenants.id, namespace: tenants.kubernetesNamespace, suspendedAt: tenants.suspendedAt })
           .from(tenants)
           .where(and(eq(tenants.status, 'suspended'), lt(tenants.suspendedAt, threshold)));
-        for (const row of rows) {
+
+        let snapshotCtx: Awaited<ReturnType<typeof buildSnapshotCtx>> | null = null;
+        if (rows.length > 0) {
           try {
-            console.log(`[tenant-lifecycle] auto-archiving ${row.id} (suspended since ${row.suspendedAt?.toISOString() ?? 'unknown'})`);
-            await archiveTenant(ctx, row.id, { retentionDays: settings.autoDeleteAfterDays });
+            snapshotCtx = await buildSnapshotCtx('tenant_snapshot');
           } catch (err) {
-            console.warn(`[tenant-lifecycle] auto-archive failed for ${row.id}: ${(err as Error).message}`);
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`[tenant-lifecycle] auto-archive skipped (${rows.length} tenant(s)): ${msg}`);
+          }
+        }
+
+        if (snapshotCtx) {
+          for (const row of rows) {
+            try {
+              console.log(`[tenant-lifecycle] auto-archiving ${row.id} (suspended since ${row.suspendedAt?.toISOString() ?? 'unknown'})`);
+              await archiveTenant(snapshotCtx, row.id, { retentionDays: settings.autoDeleteAfterDays });
+            } catch (err) {
+              console.warn(`[tenant-lifecycle] auto-archive failed for ${row.id}: ${(err as Error).message}`);
+            }
           }
         }
       }

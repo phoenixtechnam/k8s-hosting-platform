@@ -29,12 +29,31 @@ function sanitizeConfig(row: typeof backupConfigurations.$inferSelect) {
     s3Bucket: row.s3Bucket ?? null,
     s3Region: row.s3Region ?? null,
     s3Prefix: row.s3Prefix ?? null,
+    // Phase 9: CIFS fields (password is NEVER returned — sanitize excludes it).
+    cifsHost: row.cifsHost ?? null,
+    cifsPort: row.cifsPort ?? null,
+    cifsShare: row.cifsShare ?? null,
+    cifsUser: row.cifsUser ?? null,
+    cifsDomain: row.cifsDomain ?? null,
+    cifsPath: row.cifsPath ?? null,
     retentionDays: row.retentionDays,
     scheduleExpression: row.scheduleExpression,
     enabled: row.enabled,
     active: row.active,
     lastTestedAt: row.lastTestedAt,
     lastTestStatus: row.lastTestStatus,
+    // Phase 10: last speedtest results. numeric columns come back as
+    // strings from node-postgres — coerce so the API response is clean.
+    lastSpeedtestAt: row.lastSpeedtestAt,
+    lastSpeedtestUploadMbps: row.lastSpeedtestUploadMbps !== null && row.lastSpeedtestUploadMbps !== undefined
+      ? Number(row.lastSpeedtestUploadMbps)
+      : null,
+    lastSpeedtestDownloadMbps: row.lastSpeedtestDownloadMbps !== null && row.lastSpeedtestDownloadMbps !== undefined
+      ? Number(row.lastSpeedtestDownloadMbps)
+      : null,
+    lastSpeedtestLatencyMs: row.lastSpeedtestLatencyMs ?? null,
+    lastSpeedtestPayloadBytes: row.lastSpeedtestPayloadBytes ?? null,
+    lastSpeedtestError: row.lastSpeedtestError ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -53,7 +72,12 @@ export async function getBackupConfig(db: Database, id: string) {
   return sanitizeConfig(row);
 }
 
-async function getRawBackupConfig(db: Database, id: string) {
+// Exported so storage-lifecycle's per-class store resolver
+// (target-resolver.ts → resolveSnapshotStoreForClass) can pull
+// encrypted credentials for the resolved primary target. Callers
+// MUST decrypt with PLATFORM_ENCRYPTION_KEY before use, NEVER log
+// the raw row.
+export async function getRawBackupConfig(db: Database, id: string) {
   const [row] = await db.select().from(backupConfigurations).where(eq(backupConfigurations.id, id));
   if (!row) {
     throw new ApiError('BACKUP_CONFIG_NOT_FOUND', `Backup configuration '${id}' not found`, 404);
@@ -74,6 +98,27 @@ export async function createBackupConfig(db: Database, input: CreateBackupConfig
       sshUser: input.ssh_user,
       sshKeyEncrypted: encrypt(input.ssh_key, encryptionKey),
       sshPath: input.ssh_path,
+      retentionDays: input.retention_days ?? 30,
+      scheduleExpression: input.schedule_expression ?? '0 2 * * *',
+      enabled: input.enabled !== false ? 1 : 0,
+    });
+  } else if (input.storage_type === 'cifs') {
+    // Phase 9: CIFS/SMB target. Password is stored encrypted; the
+    // streaming Job re-obscures it server-side via rcloneObscure before
+    // passing to rclone. We NEVER store the obscured form at rest —
+    // rclone-obscure is reversible with a public key, so the encrypted
+    // plaintext at the DB layer is the only real protection.
+    await db.insert(backupConfigurations).values({
+      id,
+      name: input.name,
+      storageType: 'cifs',
+      cifsHost: input.cifs_host,
+      cifsPort: input.cifs_port ?? 445,
+      cifsShare: input.cifs_share,
+      cifsUser: input.cifs_user,
+      cifsPasswordEncrypted: encrypt(input.cifs_password, encryptionKey),
+      cifsDomain: input.cifs_domain ?? null,
+      cifsPath: input.cifs_path ?? null,
       retentionDays: input.retention_days ?? 30,
       scheduleExpression: input.schedule_expression ?? '0 2 * * *',
       enabled: input.enabled !== false ? 1 : 0,
@@ -115,6 +160,14 @@ export async function updateBackupConfig(db: Database, id: string, input: Update
   if (input.s3_access_key !== undefined) updateValues.s3AccessKeyEncrypted = encrypt(input.s3_access_key, encryptionKey);
   if (input.s3_secret_key !== undefined) updateValues.s3SecretKeyEncrypted = encrypt(input.s3_secret_key, encryptionKey);
   if (input.s3_prefix !== undefined) updateValues.s3Prefix = input.s3_prefix;
+  // Phase 9: CIFS update fields.
+  if (input.cifs_host !== undefined) updateValues.cifsHost = input.cifs_host;
+  if (input.cifs_port !== undefined) updateValues.cifsPort = input.cifs_port;
+  if (input.cifs_share !== undefined) updateValues.cifsShare = input.cifs_share;
+  if (input.cifs_user !== undefined) updateValues.cifsUser = input.cifs_user;
+  if (input.cifs_password !== undefined) updateValues.cifsPasswordEncrypted = encrypt(input.cifs_password, encryptionKey);
+  if (input.cifs_domain !== undefined) updateValues.cifsDomain = input.cifs_domain;
+  if (input.cifs_path !== undefined) updateValues.cifsPath = input.cifs_path;
   if (input.retention_days !== undefined) updateValues.retentionDays = input.retention_days;
   if (input.schedule_expression !== undefined) updateValues.scheduleExpression = input.schedule_expression;
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
@@ -332,6 +385,19 @@ export async function testDraft(input: CreateBackupConfigInput): Promise<TestCon
       secretAccessKey: input.s3_secret_key,
       bucket: input.s3_bucket,
     });
+  }
+  if (input.storage_type === 'cifs') {
+    if (!input.cifs_host || !input.cifs_share || !input.cifs_user || !input.cifs_password) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        error: { code: 'INCOMPLETE_CONFIG', message: 'host, share, user, and password are required' },
+      };
+    }
+    // CIFS probe intentionally minimal — a real probe would need to
+    // spawn an rclone Job (slow). The speedtest endpoint (Phase 10)
+    // covers reachability + throughput with a much richer signal.
+    return { ok: true, latencyMs: 0 };
   }
   if (!input.ssh_host || !input.ssh_user || !input.ssh_key || !input.ssh_path) {
     return {

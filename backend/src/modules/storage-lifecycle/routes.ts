@@ -45,6 +45,36 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     return { db: app.db, k8s, store, platformNamespace };
   }
 
+  /**
+   * Phase 3 of the snapshot-storage overhaul: per-class store resolver.
+   * Builds a ctx whose store routes to the assigned primary target for
+   * the given snapshot class. Throws NO_SNAPSHOT_TARGET (409) if the
+   * class is unassigned — fail-loud per the locked decision.
+   *
+   * Used by tenant-PVC snapshot ops (manual, pre-resize, pre-archive).
+   * Non-snapshot ops (suspend, resume, fsck) keep the legacy ctx() since
+   * they don't write to a backup target.
+   */
+  async function snapshotCtx(snapshotClass: import('@k8s-hosting/api-contracts').SnapshotClass) {
+    const kcfg = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kcfg);
+    const { resolveSnapshotStoreForClass } = await import('./snapshot-store.js');
+    const bundle = await resolveSnapshotStoreForClass(
+      app.db,
+      app.config as Record<string, unknown>,
+      snapshotClass,
+    );
+    const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
+    return {
+      db: app.db,
+      k8s,
+      store: bundle.store,
+      platformNamespace,
+      targetId: bundle.targetId,
+      snapshotClass,
+    };
+  }
+
   // ─── Resize ──────────────────────────────────────────────────────────
 
   app.post('/admin/tenants/:tenantId/storage/resize/dry-run', {
@@ -76,7 +106,10 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
     const mib = parsed.data.newMib ?? (parsed.data.newGi! * 1024);
-    const { operationId } = await service.resizeTenant(await ctx(), tenantId, {
+    // Resize takes a pre-resize snapshot — use the per-class resolver
+    // so that snapshot routes to the assigned tenant_snapshot target
+    // and gets stamped with target_id for forensic lookup on restore.
+    const { operationId } = await service.resizeTenant(await snapshotCtx('tenant_snapshot'), tenantId, {
       newMib: mib,
       triggeredByUserId: userId,
     });
@@ -97,7 +130,8 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const parsed = snapshotSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    const snap = await service.snapshotTenant(await ctx(), tenantId, {
+    // Manual snapshot → per-class resolver for tenant_snapshot.
+    const snap = await service.snapshotTenant(await snapshotCtx('tenant_snapshot'), tenantId, {
       label: parsed.data.label,
       retentionDays: parsed.data.retentionDays,
       triggeredByUserId: userId,
@@ -120,6 +154,32 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const { snapshotId } = request.params as { snapshotId: string };
     await service.deleteSnapshot(await ctx(), snapshotId);
     return success({ deleted: snapshotId });
+  });
+
+  // ─── Rollback to a specific snapshot ─────────────────────────────────
+  //
+  // Phase 5 of the snapshot-storage overhaul: rollback exercises the
+  // streaming restore pipeline (rclone cat | gunzip | tar x). Resolves
+  // the store per-snapshot-row target_id so rollback reads from the
+  // exact target that received the original upload, regardless of
+  // current class assignments. Legacy ctx() is fine here because the
+  // service-internal `resolveRestoreStore` swaps ctx.store as needed.
+  const rollbackSchema = z.object({ snapshotId: z.string().uuid() });
+  app.post('/admin/tenants/:tenantId/storage/rollback', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Roll back tenant data PVC to a specific snapshot (without archiving first)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = rollbackSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
+    const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
+    return success(await service.rollbackToSnapshot(await ctx(), tenantId, parsed.data.snapshotId, {
+      triggeredByUserId: userId,
+    }));
   });
 
   // ─── Suspend / Resume ───────────────────────────────────────────────
@@ -152,7 +212,9 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const parsed = archiveSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.archiveTenant(await ctx(), tenantId, {
+    // Archive takes a pre-archive snapshot — class-routed so the
+    // long-retention archive lands on the operator-chosen target.
+    return success(await service.archiveTenant(await snapshotCtx('tenant_snapshot'), tenantId, {
       retentionDays: parsed.data.retentionDays,
       triggeredByUserId: userId,
     }));
@@ -197,6 +259,85 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     schema: { tags: ['Storage Lifecycle'], summary: 'Platform-wide provisioned vs used storage report', security: [{ bearerAuth: [] }] },
   }, async () => {
     return success(await service.storageAuditReport(await ctx()));
+  });
+
+  // ─── Snapshot quota (Phase 6 of snapshot-storage overhaul) ─────────
+  //
+  // Per-tenant: current vs plan cap. Admin UI uses this on the
+  // per-tenant storage page to show the fill bar. Cluster-wide:
+  // system_snapshot usage for the Storage > Overview tile.
+  app.get('/admin/tenants/:tenantId/storage/snapshot-quota', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Per-tenant snapshot quota usage vs plan cap',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { getSnapshotQuotaUsage } = await import('./snapshot-quota.js');
+    const usage = await getSnapshotQuotaUsage(app.db, tenantId);
+    if (!usage) throw new ApiError('CLIENT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
+    return success(usage);
+  });
+
+  // ─── Backfill (Phase 7 of snapshot-storage overhaul) ───────────────
+  //
+  // Inventory pass: enumerate snapshots needing Phase 7 backfill.
+  // Read-only — operator inspects before running the backfill Job.
+  app.get('/admin/storage/snapshot-backfill', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Inventory of snapshot rows needing Phase 7 backfill to assigned target',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const { buildBackfillInventory, checkBackfillPreconditions, getBackfillSummary } = await import('./backfill.js');
+    const [inv, preconditions, summary] = await Promise.all([
+      buildBackfillInventory(app.db),
+      checkBackfillPreconditions(app.db),
+      getBackfillSummary(app.db),
+    ]);
+    return success({
+      summary,
+      preconditions,
+      inventory: {
+        totalRows: inv.totalRows,
+        needsBackfill: inv.needsBackfill.length,
+        alreadyMigrated: inv.alreadyMigrated,
+        failedRows: inv.failedRows,
+      },
+    });
+  });
+
+  app.get('/admin/storage/system-snapshot-usage', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Cluster-wide system snapshot byte/count totals',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const { getSystemSnapshotUsage } = await import('./snapshot-quota.js');
+    return success(await getSystemSnapshotUsage(app.db));
+  });
+
+  // ─── Snapshot accounting (Phase 1 of snapshot-storage overhaul) ──────
+  //
+  // Per-class + per-tenant rollup of every storage_snapshots row so
+  // operators have visibility into snapshot disk usage before quotas
+  // (Phase 6) are enforced. Pure read; no Kubernetes dependency.
+  app.get('/admin/storage/snapshot-accounting', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Per-class + per-tenant snapshot byte/count rollup',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const { loadSnapshotAccounting } = await import('./snapshot-accounting.js');
+    return success(await loadSnapshotAccounting(app.db));
   });
 
   // ─── Filesystem check / repair ──────────────────────────────────────

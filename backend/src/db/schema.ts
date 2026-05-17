@@ -94,7 +94,7 @@ export const ingressTargetTypeEnum = pgEnum('ingress_target_type', [
   'private_worker',
 ]);
 export const notificationTypeEnum = pgEnum('notification_type', ['info', 'warning', 'error', 'success']);
-export const storageTypeEnum = pgEnum('storage_type', ['ssh', 's3']);
+export const storageTypeEnum = pgEnum('storage_type', ['ssh', 's3', 'cifs']);
 export const backupTypeEnum = pgEnum('backup_type', ['auto', 'manual', 'scheduled']);
 export const backupStatusEnum = pgEnum('backup_status', ['pending', 'in_progress', 'completed', 'failed']);
 export const metricTypeEnum = pgEnum('metric_type', ['cpu_cores', 'memory_gb', 'storage_gb', 'bandwidth_gb']);
@@ -249,6 +249,14 @@ export const hostingPlans = pgTable('hosting_plans', {
   maxBackupRetentionDays: integer('max_backup_retention_days').notNull().default(90),
   maxBackups: integer('max_backups').notNull().default(10),
   maxBackupSizeBytes: bigint('max_backup_size_bytes', { mode: 'number' }).notNull().default(53687091200),
+  // Snapshot quota — Phase 6 of the snapshot-storage overhaul. Same
+  // shape as the backup-bundle quotas above; enforced by the snapshot
+  // orchestrator pre-flight check, NOT by k8s ResourceQuota (snapshots
+  // don't live on the tenant's PVC). System snapshots have a separate
+  // platform_settings-driven cap.
+  maxSnapshotSizeBytes: bigint('max_snapshot_size_bytes', { mode: 'number' }).notNull().default(53687091200),
+  maxSnapshotCount: integer('max_snapshot_count').notNull().default(10),
+  maxSnapshotRetentionDays: integer('max_snapshot_retention_days').notNull().default(90),
   features: jsonb('features').$type<Record<string, unknown>>(),
   status: planStatusEnum().notNull().default('active'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -696,6 +704,19 @@ export const backupConfigurations = pgTable('backup_configurations', {
   s3AccessKeyEncrypted: varchar('s3_access_key_encrypted', { length: 500 }),
   s3SecretKeyEncrypted: varchar('s3_secret_key_encrypted', { length: 500 }),
   s3Prefix: varchar('s3_prefix', { length: 255 }),
+  // Phase 9: CIFS/SMB target fields. rclone smb backend handles
+  // SMB1/2/3 — works against Hetzner Storage Box, Samba, Windows,
+  // TrueNAS, NetApp. Password is stored encrypted with PLATFORM_ENCRYPTION_KEY
+  // and re-obscured server-side via rcloneObscure() at Job creation time
+  // (rclone's RCLONE_CONFIG_REMOTE_PASS env var requires the obscured form,
+  // not plaintext).
+  cifsHost: varchar('cifs_host', { length: 255 }),
+  cifsPort: integer('cifs_port').default(445),
+  cifsShare: varchar('cifs_share', { length: 255 }),
+  cifsUser: varchar('cifs_user', { length: 255 }),
+  cifsPasswordEncrypted: varchar('cifs_password_encrypted', { length: 500 }),
+  cifsDomain: varchar('cifs_domain', { length: 255 }),
+  cifsPath: varchar('cifs_path', { length: 500 }),
   retentionDays: integer('retention_days').notNull().default(30),
   scheduleExpression: varchar('schedule_expression', { length: 100 }).default('0 2 * * *'),
   enabled: integer('enabled').notNull().default(1),
@@ -705,6 +726,14 @@ export const backupConfigurations = pgTable('backup_configurations', {
   active: boolean('active').notNull().default(false),
   lastTestedAt: timestamp('last_tested_at'),
   lastTestStatus: varchar('last_test_status', { length: 50 }),
+  // Phase 10: speedtest results. Populated by /admin/backup-configs/:id/speedtest.
+  // Operator-readable comparison across all targets in BackupSettings.
+  lastSpeedtestAt: timestamp('last_speedtest_at'),
+  lastSpeedtestUploadMbps: numeric('last_speedtest_upload_mbps', { precision: 10, scale: 2 }),
+  lastSpeedtestDownloadMbps: numeric('last_speedtest_download_mbps', { precision: 10, scale: 2 }),
+  lastSpeedtestLatencyMs: integer('last_speedtest_latency_ms'),
+  lastSpeedtestPayloadBytes: bigint('last_speedtest_payload_bytes', { mode: 'number' }),
+  lastSpeedtestError: text('last_speedtest_error'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
@@ -2185,12 +2214,31 @@ export const storageSnapshots = pgTable('storage_snapshots', {
   label: text('label'),
   // Last error — null on success, populated if status='failed'.
   lastError: text('last_error'),
+  // Migration 0003 (snapshot-storage overhaul Phase 1):
+  //  - subsystem  : which producer wrote this row. 'tenant-pvc' today;
+  //                 'mail-rocksdb', 'longhorn-volume', 'system-etcd'
+  //                 etc. will land as the other subsystems get unified.
+  //  - snapshotClass : logical class for target routing. CHECK
+  //                 constraint added in migration 0004 locks the value
+  //                 set; kept varchar to avoid coupling to a Postgres
+  //                 enum that's harder to extend.
+  subsystem: varchar('subsystem', { length: 64 }).notNull().default('tenant-pvc'),
+  snapshotClass: varchar('snapshot_class', { length: 32 }).notNull().default('tenant_snapshot'),
+  // Migration 0004: which backup target this snapshot lives on. NULL
+  // for hostpath snapshots predating the migration; gets filled in by
+  // the snapshot orchestrator (Phase 3 onwards) at row-create time
+  // from the per-class resolver. ON DELETE SET NULL preserves
+  // forensic visibility when an operator retires a target.
+  targetId: varchar('target_id', { length: 36 }).references(() => backupConfigurations.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   index('storage_snapshots_tenant_idx').on(table.tenantId),
   index('storage_snapshots_status_idx').on(table.status),
   index('storage_snapshots_expires_idx').on(table.expiresAt),
+  index('storage_snapshots_class_idx').on(table.snapshotClass),
+  index('storage_snapshots_subsystem_idx').on(table.subsystem),
+  index('storage_snapshots_target_idx').on(table.targetId),
 ]);
 
 /**
@@ -2218,6 +2266,11 @@ export const storageOperations = pgTable('storage_operations', {
   lastError: text('last_error'),
   // Who triggered this. null for scheduler-driven ops.
   triggeredByUserId: varchar('triggered_by_user_id', { length: 36 }),
+  // Migration 0003 (snapshot-storage overhaul Phase 1):
+  // Live byte counter for streaming snapshot/restore Jobs. Populated by
+  // job-log-tail.ts parsing rclone --use-json-log emissions in Phase 4
+  // (stays 0 in this phase — UI tolerates zero gracefully).
+  bytesTransferred: numeric('bytes_transferred', { precision: 20, scale: 0 }).notNull().default('0'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   completedAt: timestamp('completed_at'),
 }, (table) => [
@@ -2225,6 +2278,31 @@ export const storageOperations = pgTable('storage_operations', {
   index('storage_operations_state_idx').on(table.state),
   index('storage_operations_created_idx').on(table.createdAt),
 ]);
+
+// ─── Snapshot per-class target routing (migration 0004) ────────────────
+//
+// Replaces the single-active-backup-target model. One row per
+// (snapshot_class, target_id) lets the operator route each class to a
+// different target. Strict-primary resolver picks
+// ORDER BY priority ASC LIMIT 1.
+//
+// ON DELETE RESTRICT on target_id: deleting a target that is still
+// routed-to is refused. Operator must reassign first. This protects
+// against accidentally orphaning a class.
+
+export const backupTargetAssignments = pgTable('backup_target_assignments', {
+  snapshotClass: varchar('snapshot_class', { length: 32 }).notNull(),
+  targetId: varchar('target_id', { length: 36 }).notNull().references(() => backupConfigurations.id, { onDelete: 'restrict' }),
+  priority: integer('priority').notNull().default(100),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.snapshotClass, table.targetId] }),
+  index('backup_target_assignments_class_priority_idx').on(table.snapshotClass, table.priority),
+  index('backup_target_assignments_target_idx').on(table.targetId),
+]);
+
+export type BackupTargetAssignment = typeof backupTargetAssignments.$inferSelect;
+export type NewBackupTargetAssignment = typeof backupTargetAssignments.$inferInsert;
 
 // ─── Tenant lifecycle hook registry (migration 0069) ───
 //

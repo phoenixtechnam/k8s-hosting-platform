@@ -9,6 +9,7 @@ import {
   type CreateBackupConfigInput,
 } from '@k8s-hosting/api-contracts';
 import type { ZodError } from 'zod';
+import { z } from 'zod';
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { LonghornTenants } from './longhorn-reconciler.js';
 
@@ -128,6 +129,35 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/backup-configs/:id/test', async (request) => {
     const { id } = request.params as { id: string };
     const result = await service.testConnection(app.db, id, encryptionKey);
+    return success(result);
+  });
+
+  // Phase 10: POST /api/v1/admin/backup-configs/:id/speedtest
+  //
+  // Spawns an rclone Job that uploads a random payload (default 100 MB),
+  // downloads it back, deletes the remote, and emits a parseable
+  // SPEEDTEST_RESULT line. Result is persisted to backup_configurations
+  // for the BackupSettings UI tile. Surfaces in task-center as
+  // kind='backup.speedtest' with the 4-stage progress modal.
+  const speedtestSchema = z.object({
+    payloadBytes: z.number().int().min(1_048_576).max(1_073_741_824).optional(),
+  });
+  app.post('/admin/backup-configs/:id/speedtest', async (request) => {
+    if (!k8s) {
+      throw new ApiError('K8S_UNAVAILABLE', 'Cluster API not reachable — speedtest requires Job creation', 502);
+    }
+    const { id } = request.params as { id: string };
+    const parsed = speedtestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
+    }
+    const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
+    const { runSpeedtest } = await import('./speedtest.js');
+    const result = await runSpeedtest(app.db, k8s, {
+      targetId: id,
+      payloadBytes: parsed.data.payloadBytes,
+      triggeredByUserId: userId,
+    });
     return success(result);
   });
 

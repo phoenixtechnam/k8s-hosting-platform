@@ -26,6 +26,10 @@ const ApplyHaProgressModal = lazy(() => import('@/components/ApplyHaProgressModa
 // polls /admin/mail/migrate/:runId (per-step state machine UI).
 const MailTaskProgressModal = lazy(() => import('@/components/MailTaskProgressModal'));
 const MailMigrationProgressModal = lazy(() => import('@/components/MailMigrationProgressModal'));
+// 2026-05-17: Phase 10 of snapshot-storage overhaul. Speedtest is a
+// platform-scoped op (NOT tenant-scoped) — modal polls /me/tasks +
+// /admin/backup-configs for the latest result.
+const SpeedtestProgressModal = lazy(() => import('@/components/SpeedtestProgressModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
@@ -66,6 +70,9 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   'mail-migration': {
     Component: MailMigrationProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'backup-speedtest': {
+    Component: SpeedtestProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
 };
 

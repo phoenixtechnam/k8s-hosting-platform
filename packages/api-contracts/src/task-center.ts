@@ -96,6 +96,10 @@ export const TASK_KIND_REGISTRY = [
   'mail.snapshot.trigger',
   'cache.purge',
   'restore.cart',
+  // 2026-05-17: Phase 10 of snapshot-storage overhaul — speedtest
+  // surfaces in the task-center chip with progress modal showing the
+  // 4-step pipeline (upload → download → cleanup → record).
+  'backup.speedtest',
 ] as const;
 export type TaskKind = (typeof TASK_KIND_REGISTRY)[number];
 

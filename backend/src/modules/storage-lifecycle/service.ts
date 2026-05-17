@@ -50,6 +50,20 @@ interface ServiceCtx {
   readonly k8s: K8sClients;
   readonly store: SnapshotStore;
   readonly platformNamespace: string;
+  /**
+   * Phase 3 of the snapshot-storage overhaul: when the store was
+   * resolved via the per-class assignment table, this carries the
+   * `backup_configurations.id` for forensic stamping on the
+   * `storage_snapshots.target_id` column. Null when the legacy
+   * single-active-target fallback resolved the store.
+   */
+  readonly targetId?: string | null;
+  /**
+   * Phase 3: the snapshot class this ctx was built for. Defaults to
+   * 'tenant_snapshot' at the routes layer for tenant-PVC operations.
+   * Stamped on `storage_snapshots.snapshot_class` at row creation.
+   */
+  readonly snapshotClass?: import('@k8s-hosting/api-contracts').SnapshotClass;
 }
 
 async function mustGetTenant(db: Database, tenantId: string) {
@@ -206,6 +220,12 @@ export async function snapshotTenant(
 ): Promise<typeof storageSnapshots.$inferSelect> {
   const tenant = await mustGetTenant(ctx.db, tenantId);
   await mustBeIdle(ctx.db, tenantId);
+  // Phase 6: pre-flight quota check. Manual + pre-restore snapshots
+  // count against the tenant's plan cap; the system-initiated paths
+  // (resize/archive) skip this via their own service entry points
+  // which don't call snapshotTenant.
+  const { enforceSnapshotQuota } = await import('./snapshot-quota.js');
+  await enforceSnapshotQuota(ctx.db, tenantId);
   const opId = uuid();
   const snapId = uuid();
   const archivePath = ctx.store.reservePath(tenantId, snapId);
@@ -215,6 +235,11 @@ export async function snapshotTenant(
 
   // Pre-create DB rows in a single transaction so we don't orphan an op
   // if we crash before persisting the snapshot row.
+  //
+  // Phase 3: stamp snapshot_class + target_id from the resolver context
+  // so every row records where it was routed and which class produced it.
+  // When ctx.targetId is null (legacy single-active-target path) the
+  // column stays NULL and forensic queries fall back to subsystem alone.
   await ctx.db.transaction(async (tx) => {
     await tx.insert(storageSnapshots).values({
       id: snapId,
@@ -224,6 +249,9 @@ export async function snapshotTenant(
       archivePath,
       label: params.label ?? null,
       expiresAt,
+      snapshotClass: ctx.snapshotClass ?? 'tenant_snapshot',
+      subsystem: 'tenant-pvc',
+      targetId: ctx.targetId ?? null,
     });
     await tx.insert(storageOperations).values({
       id: opId,
@@ -554,6 +582,11 @@ async function resizeDestructive(
       archivePath,
       expiresAt: preResizeRetention,
       label: `Pre-resize ${currentMib}MiB → ${newMib}MiB`,
+      // Phase 3: pre-resize snapshots are tenant_snapshot class. They
+      // route to the same target as a manual snapshot would.
+      snapshotClass: ctx.snapshotClass ?? 'tenant_snapshot',
+      subsystem: 'tenant-pvc',
+      targetId: ctx.targetId ?? null,
     });
     await tx.insert(storageOperations).values({
       id: opId,
@@ -828,9 +861,12 @@ async function runResizeDestructive(
     await applyPVCMib(ctx.k8s, namespace, newMib, storageClass);
 
     await progress('restoring', 60, 'Restoring data from snapshot');
+    // Phase 5: per-target restore for new rows; legacy ctx.store for old.
+    const [snapRowForRestore] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapId)).limit(1);
+    const restoreStoreForResize = snapRowForRestore ? await resolveRestoreStore(ctx, snapRowForRestore) : ctx.store;
     await restoreTenantPVC(ctx.k8s, {
       namespace, pvcName, tenantId: (await currentTenantId(ctx.db, opId))!,
-      snapshotId: snapId, archivePath, store: ctx.store,
+      snapshotId: snapId, archivePath, store: restoreStoreForResize,
       onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
 
@@ -1193,6 +1229,10 @@ export async function archiveTenant(
       id: snapId, tenantId, kind: 'pre-archive', status: 'creating',
       archivePath, expiresAt,
       label: `Archive ${new Date().toISOString().slice(0, 10)}`,
+      // Phase 3: pre-archive snapshots are tenant_snapshot class.
+      snapshotClass: ctx.snapshotClass ?? 'tenant_snapshot',
+      subsystem: 'tenant-pvc',
+      targetId: ctx.targetId ?? null,
     });
     await tx.insert(storageOperations).values({
       id: opId, tenantId, opType: 'archive',
@@ -1401,6 +1441,45 @@ export async function rollbackToSnapshot(
   return { operationId: opId, snapshotId: snap.id };
 }
 
+/**
+ * Phase 5 of the snapshot-storage overhaul: pick the right restore
+ * store for a given snapshot row.
+ *
+ *   - target_id IS NOT NULL (Phase 3+ rows): resolve via
+ *     `resolveSnapshotStoreByTargetId` so restore reads from the EXACT
+ *     target that originally received the upload, regardless of how
+ *     class assignments may have changed since.
+ *   - target_id IS NULL (legacy pre-Phase-3 rows): fall back to
+ *     `ctx.store` (the legacy single-active-target / hostpath
+ *     resolver). These rows have `archive_path` in the old layout
+ *     (`<tenantId>/<snapId>.tar.gz` without per-class prefix).
+ *
+ * Throws TARGET_REMOVED if the stamped target was deleted (the
+ * snapshot row's target_id was nulled by ON DELETE SET NULL but the
+ * caller passed an out-of-date snap object).
+ */
+async function resolveRestoreStore(
+  ctx: ServiceCtx,
+  snap: { id: string; targetId: string | null; snapshotClass: string },
+): Promise<SnapshotStore> {
+  if (!snap.targetId) {
+    // Pre-Phase-3 row — use whatever the legacy resolver gives us.
+    return ctx.store;
+  }
+  const { resolveSnapshotStoreByTargetId } = await import('./snapshot-store.js');
+  const cls = snap.snapshotClass as import('@k8s-hosting/api-contracts').SnapshotClass;
+  const store = await resolveSnapshotStoreByTargetId(ctx.db, snap.targetId, cls);
+  if (!store) {
+    throw new ApiError(
+      'TARGET_REMOVED',
+      `Snapshot ${snap.id} was uploaded to target ${snap.targetId} which has since been deleted. ` +
+      `Manual recovery required: locate the archive in the original target's bucket.`,
+      410,
+    );
+  }
+  return store;
+}
+
 async function runRollbackToSnapshot(
   ctx: ServiceCtx,
   opId: string,
@@ -1412,12 +1491,19 @@ async function runRollbackToSnapshot(
   let quiesceSnap: QuiesceSnapshot | null = null;
   const pvcName = `${namespace}-storage`;
   try {
+    // Phase 5: re-fetch the snapshot row so we have its target_id +
+    // snapshot_class to drive per-target restore lookup.
+    const [snap] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapId)).limit(1);
+    const restoreStore = snap
+      ? await resolveRestoreStore(ctx, snap)
+      : ctx.store; // defensive — snap should always exist; fall back to legacy
+
     quiesceSnap = await quiesce(ctx.k8s, namespace);
     await waitForQuiesced(ctx.k8s, namespace);
     await updateOp(ctx.db, opId, { progressPct: 30, progressMessage: 'Restoring data from snapshot' });
 
     await restoreTenantPVC(ctx.k8s, {
-      namespace, pvcName, tenantId, snapshotId: snapId, archivePath, store: ctx.store,
+      namespace, pvcName, tenantId, snapshotId: snapId, archivePath, store: restoreStore,
       onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
 
@@ -1455,8 +1541,11 @@ async function runRestoreArchive(
     await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
 
     const tenantId = (await currentTenantId(ctx.db, opId))!;
+    // Phase 5: per-target restore for new rows; legacy ctx.store for old.
+    const [snap] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapId)).limit(1);
+    const restoreStore = snap ? await resolveRestoreStore(ctx, snap) : ctx.store;
     await restoreTenantPVC(ctx.k8s, {
-      namespace, pvcName, tenantId, snapshotId: snapId, archivePath, store: ctx.store,
+      namespace, pvcName, tenantId, snapshotId: snapId, archivePath, store: restoreStore,
       onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
 

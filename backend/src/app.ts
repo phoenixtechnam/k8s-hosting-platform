@@ -83,6 +83,7 @@ import { systemPvcRoutes } from './modules/system-backup/system-pvc-routes.js';
 import { clusterNetworkRoutes } from './modules/cluster-network/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
+import { snapshotClassesRoutes } from './modules/snapshot-classes/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
 import { taskCenterRoutes } from './modules/tasks/routes.js';
 import { startTaskRetention } from './modules/tasks/retention.js';
@@ -412,6 +413,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(privateWorkerAdminRoutes, { prefix: '/api/v1' });
   await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
   await app.register(storageLifecycleRoutes, { prefix: '/api/v1' });
+  await app.register(snapshotClassesRoutes, { prefix: '/api/v1' });
   await app.register(oidcRoutes, { prefix: '/api/v1' });
   await app.register(dnsServerRoutes, { prefix: '/api/v1' });
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });

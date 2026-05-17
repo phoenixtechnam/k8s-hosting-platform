@@ -1183,6 +1183,49 @@ cmd_sftp_status() {
   echo "════════════════════════════════════════════════"
 }
 
+# ─── minio (Phase 8 of snapshot-storage overhaul) ─────────────────────
+#
+# Dev-only S3 backend for the streaming snapshot E2E pipeline. Not
+# deployed by default (operators may not need snapshots in every dev
+# session). Use `./scripts/local.sh minio-up` to opt in.
+
+cmd_minio_up() {
+  echo "Deploying dev minio (S3-compatible backend for snapshot E2E)..."
+  # Copy manifest into the k3s container then apply — same pattern as
+  # cmd_up / cmd_mail_up (manifests are not visible inside the DinD
+  # container's filesystem otherwise).
+  docker cp "${PROJECT_DIR}/k8s/dev/minio/minio.yaml" "${K3S_CONTAINER}:/tmp/minio.yaml" >/dev/null
+  k3s_exec kubectl apply -f /tmp/minio.yaml >/dev/null
+  k3s_exec kubectl wait --for=condition=available --timeout=60s -n dev-minio deploy/minio
+  echo ""
+  echo "minio deployed."
+  echo "  S3 endpoint (cluster-internal): http://minio.dev-minio.svc.cluster.local:9000"
+  echo "  Access key: minio-dev-access-key"
+  echo "  Secret key: minio-dev-secret-key"
+  echo "  Buckets:    snapshots, system-backups"
+  echo ""
+  echo "Next: configure /settings/backups with these credentials, then assign"
+  echo "      tenant_snapshot class to it via /settings/snapshot-classes."
+}
+
+cmd_minio_down() {
+  echo "Removing dev minio..."
+  k3s_exec kubectl delete -f - --ignore-not-found < "${PROJECT_DIR}/k8s/dev/minio/minio.yaml" 2>/dev/null \
+    || k3s_exec kubectl delete namespace dev-minio --ignore-not-found
+}
+
+cmd_minio_status() {
+  echo "════════════════════════════════════════════════"
+  echo "  minio (snapshot-storage overhaul Phase 8)"
+  echo "════════════════════════════════════════════════"
+  k3s_exec kubectl get pods -n dev-minio 2>/dev/null | sed 's/^/    /' || echo "  Not deployed. Run: ./scripts/local.sh minio-up"
+  echo ""
+  k3s_exec kubectl exec -n dev-minio deploy/minio -- sh -c \
+    "mc alias set local http://localhost:9000 minio-dev-access-key minio-dev-secret-key >/dev/null 2>&1 && mc ls --recursive local/ 2>/dev/null | head -20" \
+    2>/dev/null | sed 's/^/    /' || true
+  echo "════════════════════════════════════════════════"
+}
+
 # ─── Help & dispatch ─────────────────────────────────────────────────────────
 
 cmd_help() {
@@ -1217,6 +1260,9 @@ case "${1:-help}" in
   sftp-up)        cmd_sftp_up ;;
   sftp-down)      cmd_sftp_down ;;
   sftp-status)    cmd_sftp_status ;;
+  minio-up)       cmd_minio_up ;;
+  minio-down)     cmd_minio_down ;;
+  minio-status)   cmd_minio_status ;;
   help|-h)        cmd_help ;;
   *)              echo "Unknown command: $1"; cmd_help; exit 1 ;;
 esac

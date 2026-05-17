@@ -20,6 +20,7 @@ import OidcSettings from '@/pages/OidcSettings';
 import DnsServers from '@/pages/DnsServers';
 import PlanManagement from '@/pages/PlanManagement';
 import BackupSettings from '@/pages/BackupSettings';
+import SnapshotClassAssignments from '@/pages/SnapshotClassAssignments';
 import SystemBackupPage from '@/pages/SystemBackup/SystemBackupPage';
 import RestoreCartPage from '@/pages/RestoreCart';
 import RestoreCartsList from '@/pages/RestoreCartsList';
@@ -97,6 +98,7 @@ export default function App() {
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
             <Route path="settings/backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupSettings /></ProtectedRoute>} />
+            <Route path="settings/snapshot-classes" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SnapshotClassAssignments /></ProtectedRoute>} />
             <Route path="restore" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartPage /></ProtectedRoute>} />
             <Route path="restores" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartsList /></ProtectedRoute>} />
             <Route path="tenant-backup" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantBackup /></ProtectedRoute>} />
