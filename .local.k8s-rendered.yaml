@@ -1,0 +1,4179 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/part-of: hosting-platform
+    pod-security.kubernetes.io/enforce: baseline
+  name: crowdsec
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: gitops
+  name: flux-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: tenant-workloads
+  name: hosting
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: observability
+  name: monitoring
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: management
+  name: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: platform-services
+  name: platform-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    platform.io/purpose: tenant-ops
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+  name: platform-tenant-ops
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: hosting-quota
+  namespace: hosting
+spec:
+  hard:
+    limits.cpu: "8"
+    limits.memory: 8Gi
+    persistentvolumeclaims: "50"
+    pods: "50"
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    services: "50"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-quota
+  namespace: platform
+spec:
+  hard:
+    limits.cpu: "4"
+    limits.memory: 4Gi
+    pods: "20"
+    requests.cpu: "2"
+    requests.memory: 2Gi
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  labels:
+    app.kubernetes.io/component: cluster-network
+    app.kubernetes.io/part-of: hosting-platform
+  name: clusterpendingpeers.networking.platform.phoenix-host.net
+spec:
+  group: networking.platform.phoenix-host.net
+  names:
+    categories:
+    - hosting-platform
+    kind: ClusterPendingPeer
+    plural: clusterpendingpeers
+    shortNames:
+    - cpp
+    - pendingpeer
+    singular: clusterpendingpeer
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.ip
+      name: IP
+      type: string
+    - jsonPath: .spec.role
+      name: Role
+      type: string
+    - jsonPath: .spec.ttlSeconds
+      name: TTL
+      priority: 1
+      type: integer
+    - jsonPath: .status.expiresAt
+      name: Expires
+      type: string
+    - jsonPath: .status.claimedAt
+      name: Claimed
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          spec:
+            properties:
+              addedBy:
+                maxLength: 200
+                type: string
+              hostname:
+                description: Operator-supplied label. Not used by the reconciler —
+                  the actual k8s node name is determined by k3s at join time.
+                maxLength: 253
+                type: string
+              ip:
+                description: |
+                  Bare IPv4 or IPv6 address of the node about to bootstrap. The
+                  reconciler implies /32 or /128 when adding to nft. The pattern
+                  is a coarse first filter; structurally-invalid IPv6 strings
+                  like ":::" or trailing-colon forms can pass admission and
+                  will be rejected by the reconciler with a Failed condition.
+                  The reconciler-side validation uses Go's net/netip which is
+                  authoritative.
+                maxLength: 64
+                pattern: ^(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9a-fA-F:]+)$
+                type: string
+              role:
+                description: UI hint for the bootstrap.sh --join-as flag. Not used
+                  by the reconciler.
+                enum:
+                - server
+                - worker
+                type: string
+              ttlSeconds:
+                default: 1800
+                description: Auto-cleanup TTL in seconds since creationTimestamp.
+                  Reconciler removes from nft and deletes CR after expiry.
+                maximum: 86400
+                minimum: 60
+                type: integer
+            required:
+            - ip
+            - role
+            type: object
+          status:
+            properties:
+              claimedAt:
+                description: Set by reconciler when the matching kube-API Node InternalIP
+                  appears. Once set, the CR is safe to delete.
+                format: date-time
+                type: string
+              conditions:
+                description: Standard k8s conditions list. Reason discriminates Pending/TTLExpired/Claimed/Failed
+                  lifecycle states.
+                items:
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 1024
+                      type: string
+                    reason:
+                      maxLength: 128
+                      type: string
+                    status:
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 64
+                      type: string
+                  required:
+                  - type
+                  - status
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              expiresAt:
+                description: creationTimestamp + ttlSeconds. Reconciler enforces.
+                format: date-time
+                type: string
+              family:
+                enum:
+                - v4
+                - v6
+                type: string
+              normalizedIp:
+                description: /32 or /128 form added to the nft cluster_peers set (union
+                  with Node InternalIPs); reconciler-written.
+                maxLength: 64
+                type: string
+              observedGeneration:
+                description: metadata.generation the reconciler last observed; clients
+                  use this to detect stale status.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  labels:
+    app.kubernetes.io/component: cluster-network
+    app.kubernetes.io/part-of: hosting-platform
+  name: clustertrustedranges.networking.platform.phoenix-host.net
+spec:
+  group: networking.platform.phoenix-host.net
+  names:
+    categories:
+    - hosting-platform
+    kind: ClusterTrustedRange
+    plural: clustertrustedranges
+    shortNames:
+    - ctr
+    - trustedrange
+    singular: clustertrustedrange
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.cidr
+      name: CIDR
+      type: string
+    - jsonPath: .status.family
+      name: Family
+      type: string
+    - jsonPath: .spec.description
+      name: Description
+      priority: 1
+      type: string
+    - jsonPath: .status.lastSyncedAt
+      name: Synced
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          spec:
+            properties:
+              addedBy:
+                description: Subject (user email or system actor) that created this
+                  entry. Set by the platform-api on POST.
+                maxLength: 200
+                type: string
+              cidr:
+                description: |
+                  Source range to trust. Accepts:
+                    - bare IPv4 (1.2.3.4)            → /32 implied
+                    - IPv4 CIDR (10.0.0.0/16)
+                    - bare IPv6 (2001:db8::1)        → /128 implied
+                    - IPv6 CIDR (fd00::/8)
+                  The pattern is a coarse first filter; the
+                  firewall-reconciler does authoritative IP/CIDR
+                  validation via Go's net/netip and writes a Failed
+                  condition on bad input. The IPv4 prefix is bounded
+                  0..32 and the IPv6 prefix is bounded 0..128 by
+                  the regex itself, so /33 and /129 are rejected at
+                  admission time.
+                maxLength: 64
+                pattern: ^(([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[12][0-9]|3[0-2]))?|[0-9a-fA-F:]+(/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))?)$
+                type: string
+                x-kubernetes-validations:
+                - message: CIDR /0 (allow-all) is not permitted; pick a specific prefix.
+                  rule: '!self.endsWith(''/0'')'
+              description:
+                description: Operator-readable purpose. e.g. "NYC office VPN", "Prometheus
+                  scraper", "Hetzner private LAN".
+                maxLength: 200
+                type: string
+            required:
+            - cidr
+            type: object
+          status:
+            properties:
+              conditions:
+                description: Standard k8s conditions list. Type is the unique key.
+                items:
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 1024
+                      type: string
+                    reason:
+                      maxLength: 128
+                      type: string
+                    status:
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 64
+                      type: string
+                  required:
+                  - type
+                  - status
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              family:
+                enum:
+                - v4
+                - v6
+                type: string
+              lastSyncedAt:
+                description: Most recent reconciler tick that observed this CR.
+                format: date-time
+                type: string
+              normalizedCidr:
+                description: CIDR after /32 or /128 implication; reconciler-written.
+                maxLength: 64
+                type: string
+              observedGeneration:
+                description: metadata.generation the reconciler last observed; clients
+                  use this to detect stale status.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: reloader-reloader
+    app.kubernetes.io/component: reloader
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hosting-platform
+  name: reloader-reloader
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: firewall-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+  name: firewall-reconciler
+  namespace: platform-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: sftp-gateway
+  name: sftp-gateway
+  namespace: platform-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: cluster-maintenance
+    app.kubernetes.io/part-of: hosting-platform
+  name: job-gc
+  namespace: platform
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: system-backup
+    app.kubernetes.io/part-of: hosting-platform
+  name: pg-dump-job
+  namespace: platform
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-api
+  namespace: platform
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-update-checker
+  namespace: platform
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: ingress-external-ips
+    app.kubernetes.io/part-of: hosting-platform
+  name: ingress-external-ips-reconciler
+  namespace: traefik
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: ingress-external-ips-reconciler
+  namespace: traefik
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - traefik
+  resources:
+  - services
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: firewall-reconciler
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  - namespaces
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.platform.phoenix-host.net
+  resources:
+  - clustertrustedranges
+  - clusterpendingpeers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.platform.phoenix-host.net
+  resources:
+  - clustertrustedranges/status
+  - clusterpendingpeers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - networking.platform.phoenix-host.net
+  resources:
+  - clusterpendingpeers
+  verbs:
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: hosting-readonly
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - pods
+  - services
+  - configmaps
+  - persistentvolumeclaims
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - statefulsets
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: ingress-external-ips-reconciler
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: job-gc
+rules:
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - get
+  - list
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/component: system-backup
+    app.kubernetes.io/part-of: hosting-platform
+  name: pg-dump-job
+rules:
+- apiGroups:
+  - postgresql.cnpg.io
+  resources:
+  - clusters
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-admin
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - pods
+  - services
+  - configmaps
+  - secrets
+  - persistentvolumeclaims
+  verbs:
+  - '*'
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - statefulsets
+  - replicasets
+  - daemonsets
+  verbs:
+  - '*'
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  - networkpolicies
+  verbs:
+  - '*'
+- apiGroups:
+  - traefik.io
+  resources:
+  - ingressroutes
+  - middlewares
+  verbs:
+  - '*'
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  - cronjobs
+  verbs:
+  - '*'
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  - issuers
+  - clusterissuers
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-api
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - create
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - services
+  - configmaps
+  - secrets
+  - persistentvolumeclaims
+  - resourcequotas
+  verbs:
+  - '*'
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumes
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - ""
+  resources:
+  - pods/exec
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - services/proxy
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - statefulsets
+  verbs:
+  - '*'
+- apiGroups:
+  - apps
+  resources:
+  - deployments/scale
+  - statefulsets/scale
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - patch
+  - delete
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  - networkpolicies
+  verbs:
+  - '*'
+- apiGroups:
+  - traefik.io
+  resources:
+  - ingressroutes
+  - middlewares
+  verbs:
+  - '*'
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  - cronjobs
+  verbs:
+  - '*'
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  - rolebindings
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  verbs:
+  - get
+  - list
+  - delete
+- apiGroups:
+  - metrics.k8s.io
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - nodes/proxy
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - pods/eviction
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - csinodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - storageclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - issuers
+  - clusterissuers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - longhorn.io
+  resources:
+  - backuptargets
+  - backupvolumes
+  - backups
+  - snapshots
+  - nodes
+  - volumes
+  - recurringjobs
+  - replicas
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - longhorn.io
+  resources:
+  - backuptargets
+  verbs:
+  - update
+  - patch
+- apiGroups:
+  - longhorn.io
+  resources:
+  - nodes
+  verbs:
+  - patch
+- apiGroups:
+  - longhorn.io
+  resources:
+  - volumes
+  verbs:
+  - patch
+  - delete
+- apiGroups:
+  - longhorn.io
+  resources:
+  - volumeattachments
+  verbs:
+  - get
+  - list
+  - patch
+- apiGroups:
+  - postgresql.cnpg.io
+  resources:
+  - clusters
+  verbs:
+  - get
+  - list
+  - create
+  - patch
+  - delete
+- apiGroups:
+  - postgresql.cnpg.io
+  resources:
+  - scheduledbackups
+  verbs:
+  - get
+  - list
+  - create
+  - patch
+  - delete
+- apiGroups:
+  - postgresql.cnpg.io
+  resources:
+  - backups
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - barmancloud.cnpg.io
+  resources:
+  - objectstores
+  verbs:
+  - get
+  - list
+  - create
+  - patch
+  - delete
+- apiGroups:
+  - snapshot.storage.k8s.io
+  resources:
+  - volumesnapshots
+  - volumesnapshotcontents
+  verbs:
+  - get
+  - list
+  - create
+  - delete
+- apiGroups:
+  - longhorn.io
+  resources:
+  - backups
+  - snapshots
+  verbs:
+  - create
+  - delete
+- apiGroups:
+  - kustomize.toolkit.fluxcd.io
+  resources:
+  - kustomizations
+  verbs:
+  - get
+  - list
+  - patch
+- apiGroups:
+  - networking.platform.phoenix-host.net
+  resources:
+  - clustertrustedranges
+  - clusterpendingpeers
+  verbs:
+  - get
+  - list
+  - create
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-update-checker
+rules:
+- apiGroups:
+  - kustomize.toolkit.fluxcd.io
+  resourceNames:
+  - hosting-platform-production
+  resources:
+  - kustomizations
+  verbs:
+  - get
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app: reloader-reloader
+    app.kubernetes.io/component: reloader
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hosting-platform
+  name: reloader-reloader-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  - configmaps
+  verbs:
+  - list
+  - get
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - daemonsets
+  - statefulsets
+  verbs:
+  - list
+  - get
+  - update
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sftp-gateway-pod-reader
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: ingress-external-ips-reconciler
+  namespace: traefik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ingress-external-ips-reconciler
+subjects:
+- kind: ServiceAccount
+  name: ingress-external-ips-reconciler
+  namespace: traefik
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: firewall-reconciler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: firewall-reconciler
+subjects:
+- kind: ServiceAccount
+  name: firewall-reconciler
+  namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: ingress-external-ips-reconciler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ingress-external-ips-reconciler
+subjects:
+- kind: ServiceAccount
+  name: ingress-external-ips-reconciler
+  namespace: traefik
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: job-gc
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: job-gc
+subjects:
+- kind: ServiceAccount
+  name: job-gc
+  namespace: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: system-backup
+    app.kubernetes.io/part-of: hosting-platform
+  name: pg-dump-job-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pg-dump-job
+subjects:
+- kind: ServiceAccount
+  name: pg-dump-job
+  namespace: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-api-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-api
+subjects:
+- kind: ServiceAccount
+  name: platform-api
+  namespace: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-update-checker-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-update-checker
+subjects:
+- kind: ServiceAccount
+  name: platform-update-checker
+  namespace: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app: reloader-reloader
+    app.kubernetes.io/component: reloader
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hosting-platform
+  name: reloader-reloader-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reloader-reloader-role
+subjects:
+- kind: ServiceAccount
+  name: reloader-reloader
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sftp-gateway-pod-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sftp-gateway-pod-reader
+subjects:
+- kind: ServiceAccount
+  name: sftp-gateway
+  namespace: platform-system
+---
+apiVersion: v1
+data:
+  500.html: |
+    <!doctype html><html><head><meta charset="utf-8"><title>Error</title></head>
+    <body><h1>Internal Server Error</h1><p>An unexpected error occurred. Please try again later.</p></body></html>
+  default.conf: |
+    server {
+      listen 80;
+      server_name _;
+      root /usr/share/nginx/html;
+
+      # Generic /{status}.html — the default Traefik query path. Falls
+      # back to a single template that interpolates the status code via
+      # the X-Traefik-Status header (Traefik sends the original upstream
+      # status as a request header when forwarding to the errors
+      # backend). The template is the same regardless of code; operators
+      # who want per-code branded pages override this file via a
+      # platform-system ConfigMap overlay.
+      location ~ "^/\d{3}\.html$" {
+        default_type text/html;
+        return 200 '<!doctype html><html><head><meta charset="utf-8"><title>Error</title></head><body><h1>Service unavailable</h1><p>Please try again later.</p></body></html>';
+      }
+
+      # Any other path — operator-supplied customErrorPath. Serves the
+      # static asset from /usr/share/nginx/html/. Operators ship their
+      # branded pages via the tenant-errors-content ConfigMap.
+      location / {
+        try_files $uri $uri/ /500.html;
+      }
+
+      # Health check for readiness/liveness probes.
+      location = /healthz {
+        access_log off;
+        return 200 "ok";
+        add_header Content-Type text/plain;
+      }
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: tenant-errors
+    app.kubernetes.io/part-of: hosting-platform
+  name: tenant-errors-content
+  namespace: platform-system
+---
+apiVersion: v1
+data:
+  config.yaml: |
+    # Dex configuration for k8s dev/staging environments
+    #
+    # Static users for testing:
+    #   - admin@k8s-platform.test  / admin  (maps to the platform's default super_admin)
+    #   - admin2@k8s-platform.test / admin  (second admin for multi-user testing)
+    #   - user@k8s-platform.test   / user   (unprivileged user for OIDC auto-provision testing)
+    #   - user2@k8s-platform.test  / user   (second unprivileged user)
+    #
+    # Static OIDC clients:
+    #   - hosting-platform-admin   (admin panel SSO)
+    #   - hosting-platform-client  (tenant panel SSO)
+    #   - hosting-platform-oauth2-proxy (OAuth2 Proxy session)
+    #
+    # IMPORTANT: The issuer URL and redirect URIs must be browser-reachable.
+    # In dev, Dex is reached at https://dex.k8s-platform.test:2011/dex through
+    # the ingress (was formerly http://dind.local:2015 on a NodePort — see
+    # k8s/overlays/dev/dex/ingress.yaml for the transition). Production
+    # bootstrap.sh --domain <FQDN> regenerates this file with real hostnames.
+
+    issuer: https://dex.k8s-platform.test:2011/dex
+
+    storage:
+      type: sqlite3
+      config:
+        file: /var/dex/dex.db
+
+    web:
+      http: 0.0.0.0:5556
+
+    oauth2:
+      skipApprovalScreen: true
+
+    staticClients:
+      - id: hosting-platform-admin
+        name: Hosting Platform Admin
+        secret: local-dev-secret-admin
+        redirectURIs:
+          - http://admin.k8s-platform.test:2010/api/v1/auth/oidc/callback
+      - id: hosting-platform-client
+        name: Hosting Platform Client
+        secret: local-dev-secret-client
+        redirectURIs:
+          - http://client.k8s-platform.test:2010/api/v1/auth/oidc/callback
+      - id: hosting-platform-oauth2-proxy
+        name: OAuth2 Proxy
+        secret: local-dev-secret-oauth2-proxy
+        redirectURIs:
+          # Transparent oauth2-proxy: the callback URL is on the PROTECTED
+          # domain, not on a shared oauth2 hostname. Each protected panel
+          # Ingress routes /oauth2/* to the oauth2-proxy Service. See
+          # backend/src/modules/system-settings/ingress-reconciler.ts for
+          # the /oauth2 path rule that makes this work.
+          - https://admin.k8s-platform.test:2011/oauth2/callback
+          - https://tenant.k8s-platform.test:2011/oauth2/callback
+
+    connectors: []
+
+    enablePasswordDB: true
+
+    staticPasswords:
+      - email: admin@k8s-platform.test
+        # password: "admin"
+        hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
+        username: admin
+        userID: "00000000-0000-0000-0000-000000000001"
+      - email: admin2@k8s-platform.test
+        # password: "admin"
+        hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
+        username: admin2
+        userID: "00000000-0000-0000-0000-000000000002"
+      - email: user@k8s-platform.test
+        # password: "user"
+        hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
+        username: user
+        userID: "00000000-0000-0000-0000-000000000003"
+      - email: user2@k8s-platform.test
+        # password: "user"
+        hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
+        username: user2
+        userID: "00000000-0000-0000-0000-000000000004"
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: hosting-platform
+  name: dex-config
+  namespace: platform
+---
+apiVersion: v1
+data:
+  admin-url: http://admin.k8s-platform.test:2010
+  cluster-issuer-name: selfsigned-issuer
+  cors-origins: http://admin.k8s-platform.test,http://client.k8s-platform.test,http://localhost:5173,http://localhost:5174
+  default-storage-class: local-path
+  environment: development
+  file-manager-image: file-manager:latest
+  ingress-base-domain: k8s-platform.test
+  ingress-default-ipv4: ""
+  log-level: debug
+  passkey-origins: https://admin.k8s-platform.test,https://tenant.k8s-platform.test
+  passkey-rp-id: k8s-platform.test
+  platform-base-domain: k8s-platform.test
+  platform-name: Hosting Platform (local dev)
+  platform-tls-secret-name: platform-dev-tls
+  private-worker-agent-image: private-worker-agent:latest
+  private-worker-frps-image: fatedier/frps:v0.62.1
+  public-url: http://admin.k8s-platform.test:2010
+  session-cookie-domain: .k8s-platform.test
+  stalwart-admin-url: https://stalwart.k8s-platform.test:2011/
+  support-email: admin@k8s-platform.test
+  tenant-url: http://client.k8s-platform.test:2010
+  tunnel-base-url: ws://tunnels.k8s-platform.test:2010
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-config
+  namespace: platform
+---
+apiVersion: v1
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <title>Site temporarily suspended</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1" />
+      <style>
+        body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0;
+               display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+        .card { max-width: 560px; padding: 2.5rem; background: #1e293b; border-radius: 12px;
+                border: 1px solid #334155; text-align: center; }
+        h1 { margin: 0 0 .5rem; font-size: 1.5rem; }
+        p { margin: .5rem 0; line-height: 1.55; color: #cbd5e1; }
+        .code { font-family: ui-monospace, SFMono-Regular, monospace; color: #60a5fa; font-size: .9rem; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>Site temporarily suspended</h1>
+        <p>This hosting account is currently suspended. The site is not
+           reachable until the owner reactivates the subscription.</p>
+        <p class="code">status=suspended</p>
+      </div>
+    </body>
+    </html>
+  nginx.conf: |
+    server {
+      listen 80 default_server;
+      server_name _;
+      root /usr/share/nginx/html;
+      index index.html;
+      # JSON endpoint for programmatic clients (mobile apps, API callers).
+      location = /api/status {
+        default_type application/json;
+        return 200 '{"status":"suspended","message":"This hosting account is temporarily suspended"}';
+      }
+      # All other paths serve the static page.
+      location / {
+        try_files $uri /index.html;
+      }
+    }
+kind: ConfigMap
+metadata:
+  name: platform-suspended-content
+  namespace: platform
+---
+apiVersion: v1
+data:
+  version: unknown
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-version
+  namespace: platform
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth2-proxy-config
+  namespace: platform
+stringData:
+  OAUTH2_PROXY_CLIENT_ID: hosting-platform-oauth2-proxy
+  OAUTH2_PROXY_CLIENT_SECRET: local-dev-secret-oauth2-proxy
+  OAUTH2_PROXY_COOKIE_SECRET: FCg1fX56K3KKIwfTwwTizNK1D6rLacez
+  OAUTH2_PROXY_REDIRECT_URL: https://admin.k8s-platform.test:2011/oauth2/callback
+  OIDC_ISSUER_URL: https://dex.k8s-platform.test:2011/dex
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-db-credentials
+  namespace: platform
+stringData:
+  password: local-dev-password
+  url: postgresql://platform:local-dev-password@postgres.platform.svc.cluster.local:5432/hosting_platform
+  username: platform
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-jwt-secret
+  namespace: platform
+stringData:
+  secret: local-dev-jwt-secret-not-for-production-use
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-secrets
+  namespace: platform
+stringData:
+  internal-secret: local-dev-platform-internal-secret-please-rotate
+  platform-encryption-key: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+type: Opaque
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/part-of: hosting-platform
+  name: crowdsec
+  namespace: crowdsec
+spec:
+  ports:
+  - name: lapi
+    port: 8080
+    protocol: TCP
+    targetPort: lapi
+  selector:
+    app.kubernetes.io/name: crowdsec
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sftp-gateway
+  namespace: platform-system
+spec:
+  ports:
+  - name: sftp
+    port: 2222
+    targetPort: 2222
+  - name: ftps
+    port: 2121
+    targetPort: 2121
+  selector:
+    app: sftp-gateway
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: tenant-errors
+    app.kubernetes.io/part-of: hosting-platform
+  name: tenant-errors
+  namespace: platform-system
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: http
+  selector:
+    app.kubernetes.io/name: tenant-errors
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: private-worker-tunnel
+    app.kubernetes.io/part-of: hosting-platform
+  name: tunnel-anchor-default
+  namespace: platform-system
+spec:
+  externalName: platform-suspended.platform.svc.cluster.local
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  type: ExternalName
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: admin-panel
+  name: admin-panel
+  namespace: platform
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: admin-panel
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: dex
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: hosting-platform
+  name: dex
+  namespace: platform
+spec:
+  ports:
+  - port: 5556
+    protocol: TCP
+    targetPort: 5556
+  selector:
+    app: dex
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex-nodeport
+  namespace: platform
+spec:
+  ports:
+  - nodePort: 30556
+    port: 5556
+    protocol: TCP
+    targetPort: 5556
+  selector:
+    app: dex
+  type: NodePort
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: oauth2-proxy
+  name: oauth2-proxy
+  namespace: platform
+spec:
+  ports:
+  - name: http
+    port: 4180
+    targetPort: 4180
+  selector:
+    app: oauth2-proxy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy-nodeport
+  namespace: platform
+spec:
+  ports:
+  - nodePort: 30180
+    port: 4180
+    protocol: TCP
+    targetPort: 4180
+  selector:
+    app: oauth2-proxy
+  type: NodePort
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: platform-api
+  name: platform-api
+  namespace: platform
+spec:
+  ports:
+  - port: 3000
+    protocol: TCP
+    targetPort: 3000
+  selector:
+    app: platform-api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: platform-suspended
+  name: platform-suspended
+  namespace: platform
+spec:
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  selector:
+    app: platform-suspended
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: hosting-platform
+  name: postgres
+  namespace: platform
+spec:
+  externalName: system-db-rw.platform.svc.cluster.local
+  ports:
+  - name: postgres
+    port: 5432
+    protocol: TCP
+  type: ExternalName
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-nodeport
+  namespace: platform
+spec:
+  ports:
+  - nodePort: 30432
+    port: 5432
+    protocol: TCP
+    targetPort: 5432
+  selector:
+    app: postgres
+  type: NodePort
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-nodeport
+  namespace: platform
+spec:
+  ports:
+  - nodePort: 30379
+    port: 6379
+    protocol: TCP
+    targetPort: 6379
+  selector:
+    app: redis
+  type: NodePort
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: tenant-panel
+  name: tenant-panel
+  namespace: platform
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: tenant-panel
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/part-of: hosting-platform
+  name: modsec-crs
+  namespace: traefik
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: http
+  selector:
+    app.kubernetes.io/name: modsec-crs
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/name: modsec-stub
+    app.kubernetes.io/part-of: hosting-platform
+  name: modsec-stub
+  namespace: traefik
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: http
+  selector:
+    app.kubernetes.io/name: modsec-stub
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: calico-system
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: cert-manager
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: cnpg-system
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: flux-system
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: hosting-limit-range
+  namespace: hosting
+spec:
+  limits:
+  - default:
+      cpu: 200m
+      memory: 256Mi
+    defaultRequest:
+      cpu: 50m
+      memory: 64Mi
+    max:
+      cpu: "1"
+      memory: 2Gi
+    min:
+      cpu: 25m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: kube-system
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: longhorn-system
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: mail
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: platform-system
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-limit-range
+  namespace: platform
+spec:
+  limits:
+  - default:
+      cpu: 300m
+      memory: 384Mi
+    defaultRequest:
+      cpu: 20m
+      memory: 32Mi
+    max:
+      cpu: "4"
+      memory: 4Gi
+    min:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: redis-system
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: tigera-operator
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-limit-range
+  namespace: traefik
+spec:
+  limits:
+  - defaultRequest:
+      cpu: 10m
+      memory: 32Mi
+    type: Container
+---
+apiVersion: scheduling.k8s.io/v1
+description: Short-lived storage-lifecycle Jobs (fsck / snapshot / restore) running
+  in the platform-tenant-ops namespace.
+globalDefault: false
+kind: PriorityClass
+metadata:
+  name: platform-storage-ops
+preemptionPolicy: PreemptLowerPriority
+value: 1000
+---
+apiVersion: scheduling.k8s.io/v1
+description: Platform-managed Pods running inside a tenant namespace (file-manager
+  etc.). Exempt from client ResourceQuota.
+globalDefault: false
+kind: PriorityClass
+metadata:
+  name: platform-tenant-overhead
+preemptionPolicy: PreemptLowerPriority
+value: 100
+---
+apiVersion: scheduling.k8s.io/v1
+description: Default priority for tenant workloads. Counts against the tenant ResourceQuota.
+globalDefault: true
+kind: PriorityClass
+metadata:
+  name: tenant-default
+preemptionPolicy: PreemptLowerPriority
+value: 0
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/part-of: hosting-platform
+  name: crowdsec-data
+  namespace: crowdsec
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/name: crowdsec
+    app.kubernetes.io/part-of: hosting-platform
+  name: crowdsec
+  namespace: crowdsec
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crowdsec
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: waf
+        app.kubernetes.io/name: crowdsec
+        app.kubernetes.io/part-of: hosting-platform
+    spec:
+      containers:
+      - env:
+        - name: DISABLE_AGENT
+          value: "true"
+        - name: LOCAL_API_URL
+          value: http://127.0.0.1:8080
+        - name: BOUNCER_KEY_traefik
+          valueFrom:
+            secretKeyRef:
+              key: bouncer-key
+              name: crowdsec-bouncer-key
+        image: docker.io/crowdsecurity/crowdsec:v1.7.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: lapi
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        name: crowdsec
+        ports:
+        - containerPort: 8080
+          name: lapi
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: lapi
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+        volumeMounts:
+        - mountPath: /var/lib/crowdsec/data
+          name: data
+        - mountPath: /etc/crowdsec
+          name: config
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: crowdsec-data
+      - emptyDir: {}
+        name: config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: reloader-reloader
+    app.kubernetes.io/component: reloader
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hosting-platform
+  name: reloader-reloader
+  namespace: kube-system
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: reloader-reloader
+  template:
+    metadata:
+      labels:
+        app: reloader-reloader
+        app.kubernetes.io/component: reloader
+        app.kubernetes.io/part-of: hosting-platform
+    spec:
+      containers:
+      - args:
+        - --reload-strategy=annotations
+        image: ghcr.io/stakater/reloader:v1.4.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /live
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        name: reloader-reloader
+        ports:
+        - containerPort: 9090
+          name: http
+        readinessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /metrics
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 15
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: reloader-reloader
+      tolerations:
+      - effect: NoSchedule
+        key: platform.phoenix-host.net/server-only
+        operator: Equal
+        value: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: sftp-gateway
+  name: sftp-gateway
+  namespace: platform-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sftp-gateway
+  template:
+    metadata:
+      labels:
+        app: sftp-gateway
+    spec:
+      containers:
+      - env:
+        - name: BACKEND_URL
+          value: http://platform-api.platform.svc.cluster.local:3000
+        - name: INTERNAL_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: internal-secret
+              name: platform-secrets
+        - name: SSH_HOST_KEY_PATH
+          value: /etc/ssh/keys/ssh_host_ed25519_key
+        - name: SSH_PORT
+          value: "2222"
+        - name: FTPS_PORT
+          value: "2121"
+        - name: FTPS_CERT_PATH
+          value: /etc/tls/tls.crt
+        - name: FTPS_KEY_PATH
+          value: /etc/tls/tls.key
+        - name: IDLE_TIMEOUT
+          value: 15m
+        - name: MAX_CONNECTIONS
+          value: "200"
+        image: ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway:latest
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        name: gateway
+        ports:
+        - containerPort: 2222
+          name: sftp
+        - containerPort: 2121
+          name: ftps
+        - containerPort: 8080
+          name: health
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+        volumeMounts:
+        - mountPath: /etc/ssh/keys
+          name: ssh-host-keys
+          readOnly: true
+        - mountPath: /etc/tls
+          name: tls-certs
+          readOnly: true
+      serviceAccountName: sftp-gateway
+      volumes:
+      - name: ssh-host-keys
+        secret:
+          defaultMode: 292
+          secretName: sftp-host-keys
+      - name: tls-certs
+        secret:
+          defaultMode: 292
+          optional: true
+          secretName: sftp-tls-certs
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: tenant-errors
+    app.kubernetes.io/name: tenant-errors
+    app.kubernetes.io/part-of: hosting-platform
+  name: tenant-errors
+  namespace: platform-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tenant-errors
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tenant-errors
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: tenant-errors
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      containers:
+      - image: nginx:1.30-alpine
+        name: nginx
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 10
+        resources:
+          limits:
+            memory: 64Mi
+          requests:
+            cpu: 10m
+            memory: 16Mi
+        volumeMounts:
+        - mountPath: /usr/share/nginx/html
+          name: content
+        - mountPath: /etc/nginx/conf.d
+          name: conf
+      securityContext:
+        fsGroup: 0
+        runAsNonRoot: false
+      volumes:
+      - configMap:
+          items:
+          - key: 500.html
+            path: 500.html
+          name: tenant-errors-content
+        name: content
+      - configMap:
+          items:
+          - key: default.conf
+            path: default.conf
+          name: tenant-errors-content
+        name: conf
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: admin-panel
+    app.kubernetes.io/part-of: hosting-platform
+  name: admin-panel
+  namespace: platform
+spec:
+  selector:
+    matchLabels:
+      app: admin-panel
+  template:
+    metadata:
+      labels:
+        app: admin-panel
+    spec:
+      containers:
+      - env:
+        - name: TENANT_PANEL_URL
+          valueFrom:
+            configMapKeyRef:
+              key: tenant-url
+              name: platform-config
+              optional: true
+        - name: STALWART_ADMIN_URL
+          valueFrom:
+            configMapKeyRef:
+              key: stalwart-admin-url
+              name: platform-config
+              optional: true
+        - name: LONGHORN_URL
+          valueFrom:
+            configMapKeyRef:
+              key: longhorn-url
+              name: platform-config
+              optional: true
+        image: hosting-platform/admin-panel:local
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          periodSeconds: 30
+        name: admin
+        ports:
+        - containerPort: 80
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 32Mi
+      terminationGracePeriodSeconds: 2
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app: admin-panel
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: dex
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: hosting-platform
+  name: dex
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dex
+  template:
+    metadata:
+      labels:
+        app: dex
+    spec:
+      containers:
+      - command:
+        - dex
+        - serve
+        - /etc/dex/config.yaml
+        image: ghcr.io/dexidp/dex:v2.45.1
+        livenessProbe:
+          httpGet:
+            path: /dex/.well-known/openid-configuration
+            port: 5556
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        name: dex
+        ports:
+        - containerPort: 5556
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /dex/.well-known/openid-configuration
+            port: 5556
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        volumeMounts:
+        - mountPath: /etc/dex
+          name: config
+          readOnly: true
+        - mountPath: /var/dex
+          name: data
+      volumes:
+      - configMap:
+          name: dex-config
+        name: config
+      - emptyDir: {}
+        name: data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: oauth2-proxy
+  name: oauth2-proxy
+  namespace: platform
+spec:
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+    spec:
+      containers:
+      - args:
+        - --http-address=0.0.0.0:4180
+        - --upstream=static://200
+        - --email-domain=*
+        - --provider=oidc
+        - --oidc-issuer-url=https://dex.k8s-platform.test:2011/dex
+        - --skip-oidc-discovery=true
+        - --login-url=https://dex.k8s-platform.test:2011/dex/auth
+        - --redeem-url=http://dex.platform.svc.cluster.local:5556/dex/token
+        - --oidc-jwks-url=http://dex.platform.svc.cluster.local:5556/dex/keys
+        - --client-id=$(OAUTH2_PROXY_CLIENT_ID)
+        - --client-secret=$(OAUTH2_PROXY_CLIENT_SECRET)
+        - --cookie-secret=$(OAUTH2_PROXY_COOKIE_SECRET)
+        - --cookie-secure=false
+        - --cookie-samesite=lax
+        - --cookie-name=_platform_oauth2
+        - --redirect-url=$(OAUTH2_PROXY_REDIRECT_URL)
+        - --skip-provider-button=true
+        - --reverse-proxy=true
+        - --set-xauthrequest=true
+        - --pass-access-token=true
+        - --skip-auth-route=^/api/
+        - --skip-auth-route=^/oauth2/
+        - --silence-ping-logging=true
+        - --insecure-oidc-skip-issuer-verification=true
+        envFrom:
+        - secretRef:
+            name: oauth2-proxy-config
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.2
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 4180
+          initialDelaySeconds: 5
+          periodSeconds: 30
+        name: oauth2-proxy
+        ports:
+        - containerPort: 4180
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 4180
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - |
+          set -eu
+          url="$${OIDC_ISSUER_URL%/}/.well-known/openid-configuration"
+          echo "polling: $${url}"
+          for i in $$(seq 1 60); do
+            if curl -fsS -o /dev/null --max-time 8 "$${url}"; then
+              echo "OIDC discovery ready (attempt $${i})"
+              exit 0
+            fi
+            echo "waiting for OIDC discovery (cert + dex)... ($${i}/60)"
+            sleep 5
+          done
+          echo "OIDC discovery never succeeded after 5 min — main container would crashloop too" >&2
+          exit 1
+        envFrom:
+        - secretRef:
+            name: oauth2-proxy-config
+        image: curlimages/curl:8.10.1
+        name: wait-for-dex-discovery
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app: oauth2-proxy
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: platform-api
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-api
+  namespace: platform
+spec:
+  selector:
+    matchLabels:
+      app: platform-api
+  template:
+    metadata:
+      labels:
+        app: platform-api
+    spec:
+      containers:
+      - env:
+        - name: NODE_ENV
+          value: production
+        - name: PORT
+          value: "3000"
+        - name: LOG_LEVEL
+          value: debug
+        - name: CERT_ENVIRONMENT
+          value: development
+        - name: DISABLE_RATE_LIMIT
+          value: "true"
+        - name: ADMIN_EMAIL
+          value: admin@k8s-platform.test
+        - name: ADMIN_PASSWORD
+          value: admin
+        - name: ADMIN_NAME
+          value: Platform Admin
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              key: url
+              name: platform-db-credentials
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: secret
+              name: platform-jwt-secret
+        - name: PLATFORM_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              key: platform-encryption-key
+              name: platform-secrets
+        - name: PLATFORM_INTERNAL_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: internal-secret
+              name: platform-secrets
+        - name: DEFAULT_STORAGE_CLASS
+          valueFrom:
+            configMapKeyRef:
+              key: default-storage-class
+              name: platform-config
+              optional: true
+        - name: INGRESS_BASE_DOMAIN
+          valueFrom:
+            configMapKeyRef:
+              key: ingress-base-domain
+              name: platform-config
+              optional: true
+        - name: INGRESS_DEFAULT_IPV4
+          valueFrom:
+            configMapKeyRef:
+              key: ingress-default-ipv4
+              name: platform-config
+              optional: true
+        - name: CLUSTER_ISSUER_NAME
+          valueFrom:
+            configMapKeyRef:
+              key: cluster-issuer-name
+              name: platform-config
+              optional: true
+        - name: PLATFORM_ENV
+          valueFrom:
+            configMapKeyRef:
+              key: environment
+              name: platform-config
+              optional: true
+        - name: CORS_ORIGINS
+          valueFrom:
+            configMapKeyRef:
+              key: cors-origins
+              name: platform-config
+              optional: true
+        - name: TENANT_STORAGE_CLASS
+          value: local-path
+        - name: STALWART_MASTER_SECRET
+          value: stalwart-dev-master
+        - name: STALWART_IMAP_HOST
+          value: stalwart-mail.mail.svc.cluster.local
+        - name: STALWART_IMAP_PORT
+          value: "143"
+        - name: STALWART_ADMIN_CREDS_DIR
+          value: /etc/stalwart-creds
+        - name: WEBMAIL_JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: WEBMAIL_JWT_SECRET
+              name: platform-webmail-jwt
+              optional: true
+        - name: LIFECYCLE_HOOK_BULWARK_ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: IMPERSONATOR_ADMIN_TOKEN
+              name: bulwark-impersonator-secrets
+              optional: true
+        - name: LIFECYCLE_HOOK_BULWARK_JMAP_URL
+          value: https://stalwart.${PLATFORM_BASE_DOMAIN}
+        - name: PLATFORM_BASE_DOMAIN
+          valueFrom:
+            configMapKeyRef:
+              key: platform-base-domain
+              name: platform-config
+              optional: true
+        - name: PUBLIC_URL
+          valueFrom:
+            configMapKeyRef:
+              key: public-url
+              name: platform-config
+              optional: true
+        - name: PLATFORM_VERSION
+          valueFrom:
+            configMapKeyRef:
+              key: version
+              name: platform-version
+              optional: true
+        - name: PLATFORM_BRANCH
+          valueFrom:
+            configMapKeyRef:
+              key: branch
+              name: platform-version
+              optional: true
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: FILE_MANAGER_IMAGE
+          valueFrom:
+            configMapKeyRef:
+              key: file-manager-image
+              name: platform-config
+              optional: true
+        - name: TUNNEL_BASE_URL
+          valueFrom:
+            configMapKeyRef:
+              key: tunnel-base-url
+              name: platform-config
+              optional: true
+        - name: PRIVATE_WORKER_FRPS_IMAGE
+          valueFrom:
+            configMapKeyRef:
+              key: private-worker-frps-image
+              name: platform-config
+              optional: true
+        - name: PRIVATE_WORKER_AGENT_IMAGE
+          valueFrom:
+            configMapKeyRef:
+              key: private-worker-agent-image
+              name: platform-config
+              optional: true
+        - name: ADMIN_PANEL_URL
+          valueFrom:
+            configMapKeyRef:
+              key: admin-url
+              name: platform-config
+              optional: true
+        - name: TENANT_PANEL_URL
+          valueFrom:
+            configMapKeyRef:
+              key: tenant-url
+              name: platform-config
+              optional: true
+        - name: SUPPORT_EMAIL
+          valueFrom:
+            configMapKeyRef:
+              key: support-email
+              name: platform-config
+              optional: true
+        - name: SUPPORT_URL
+          valueFrom:
+            configMapKeyRef:
+              key: support-url
+              name: platform-config
+              optional: true
+        - name: PLATFORM_NAME
+          valueFrom:
+            configMapKeyRef:
+              key: platform-name
+              name: platform-config
+              optional: true
+        - name: PLATFORM_TLS_SECRET_NAME
+          valueFrom:
+            configMapKeyRef:
+              key: platform-tls-secret-name
+              name: platform-config
+              optional: true
+        - name: PLATFORM_PASSKEY_RP_ID
+          valueFrom:
+            configMapKeyRef:
+              key: passkey-rp-id
+              name: platform-config
+              optional: true
+        - name: PLATFORM_PASSKEY_RP_NAME
+          valueFrom:
+            configMapKeyRef:
+              key: passkey-rp-name
+              name: platform-config
+              optional: true
+        - name: PLATFORM_PASSKEY_ORIGINS
+          valueFrom:
+            configMapKeyRef:
+              key: passkey-origins
+              name: platform-config
+              optional: true
+        - name: SESSION_COOKIE_DOMAIN
+          valueFrom:
+            configMapKeyRef:
+              key: session-cookie-domain
+              name: platform-config
+              optional: true
+        image: hosting-platform/backend:local
+        livenessProbe:
+          httpGet:
+            path: /api/v1/healthz
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        name: api
+        ports:
+        - containerPort: 3000
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /api/v1/healthz
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 1500m
+            memory: 2Gi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /api/v1/healthz
+            port: 3000
+          periodSeconds: 1
+        volumeMounts:
+        - mountPath: /etc/stalwart-creds
+          name: stalwart-creds
+          readOnly: true
+        - mountPath: /snapshots
+          name: platform-snapshots
+      serviceAccountName: platform-api
+      terminationGracePeriodSeconds: 5
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app: platform-api
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+      volumes:
+      - name: stalwart-creds
+        secret:
+          optional: true
+          secretName: platform-stalwart-creds
+      - hostPath:
+          path: /var/lib/platform/snapshots
+          type: DirectoryOrCreate
+        name: platform-snapshots
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: platform-suspended
+    platform.io/system: "true"
+  name: platform-suspended
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: platform-suspended
+  template:
+    metadata:
+      labels:
+        app: platform-suspended
+    spec:
+      containers:
+      - image: nginx:1.30-alpine
+        name: nginx
+        ports:
+        - containerPort: 80
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 10m
+            memory: 16Mi
+        volumeMounts:
+        - mountPath: /usr/share/nginx/html
+          name: content
+        - mountPath: /etc/nginx/conf.d
+          name: conf
+      volumes:
+      - configMap:
+          items:
+          - key: index.html
+            path: index.html
+          name: platform-suspended-content
+        name: content
+      - configMap:
+          items:
+          - key: nginx.conf
+            path: default.conf
+          name: platform-suspended-content
+        name: conf
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: tenant-panel
+    app.kubernetes.io/part-of: hosting-platform
+  name: tenant-panel
+  namespace: platform
+spec:
+  selector:
+    matchLabels:
+      app: tenant-panel
+  template:
+    metadata:
+      labels:
+        app: tenant-panel
+    spec:
+      containers:
+      - image: hosting-platform/tenant-panel:local
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          periodSeconds: 30
+        name: client
+        ports:
+        - containerPort: 80
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 32Mi
+      terminationGracePeriodSeconds: 2
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            app: tenant-panel
+        maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/name: modsec-crs
+    app.kubernetes.io/part-of: hosting-platform
+  name: modsec-crs
+  namespace: traefik
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: modsec-crs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: waf
+        app.kubernetes.io/name: modsec-crs
+        app.kubernetes.io/part-of: hosting-platform
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: modsec-crs
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      containers:
+      - env:
+        - name: BACKEND
+          value: http://modsec-stub.traefik.svc.cluster.local:80/
+        - name: PARANOIA
+          value: "1"
+        - name: ALLOWED_METHODS
+          value: GET HEAD POST PUT PATCH DELETE OPTIONS
+        - name: ANOMALY_INBOUND
+          value: "5"
+        - name: ANOMALY_OUTBOUND
+          value: "4"
+        image: docker.io/owasp/modsecurity-crs:4.25.0-nginx-alpine-202604040104
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          tcpSocket:
+            port: http
+        name: modsec
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          tcpSocket:
+            port: http
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+      securityContext:
+        fsGroup: 0
+        runAsNonRoot: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/name: modsec-stub
+    app.kubernetes.io/part-of: hosting-platform
+  name: modsec-stub
+  namespace: traefik
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: modsec-stub
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: waf
+        app.kubernetes.io/name: modsec-stub
+        app.kubernetes.io/part-of: hosting-platform
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: modsec-stub
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      containers:
+      - args:
+        - --port=80
+        - --name=modsec-stub
+        image: traefik/whoami:v1.11.0
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 15
+        name: stub
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 1
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 50m
+            memory: 32Mi
+          requests:
+            cpu: 1m
+            memory: 8Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  labels:
+    app: job-gc
+    app.kubernetes.io/component: cluster-maintenance
+    app.kubernetes.io/part-of: hosting-platform
+  name: job-gc
+  namespace: platform
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 600
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: job-gc
+            app.kubernetes.io/part-of: hosting-platform
+        spec:
+          containers:
+          - args:
+            - |
+              set -euo pipefail
+              # IMPORTANT: this file is rendered by Flux Kustomization
+              # with `postBuild.substituteFrom` enabled, which expands
+              # every `${VAR}` against `platform-cluster-config`. Bash    # ci-flux-escape: ignore
+              # variable references therefore MUST be written as
+              # `$${VAR}` here so a single `${VAR}` survives Flux into  # ci-flux-escape: ignore
+              # the running pod. Bare `$VAR` (no braces) is safe.       # ci-flux-escape: ignore
+              #
+              # Busybox `date` (alpine/k8s) does not understand GNU's
+              # `-d "N days ago"`, so we use POSIX arithmetic.
+              NOW=$(date -u +%s)
+              CUTOFF=$((NOW - JOB_GC_MAX_AGE_DAYS * 86400))
+              DRY="$${JOB_GC_DRY_RUN:-false}"
+              EXCLUDE="$${JOB_GC_EXCLUDE_NS_REGEX:-^$$}"
+              echo "[job-gc] cutoff=$${CUTOFF} ($${JOB_GC_MAX_AGE_DAYS}d) dryRun=$${DRY} excludeNs=$${EXCLUDE}"
+              # Select Jobs that are completed OR failed AND whose
+              # terminal condition is older than the cutoff. A Job
+              # without a completionTime but with a failed condition
+              # in lastTransitionTime is also handled. Namespaces
+              # matching JOB_GC_EXCLUDE_NS_REGEX are skipped.
+              TARGETS=$(
+                kubectl get jobs -A -o json |
+                jq -r --argjson cutoff "$CUTOFF" --arg exclude "$EXCLUDE" '
+                  .items[]
+                  | . as $j
+                  | select(($j.metadata.namespace | test($exclude)) | not)
+                  | (
+                      ($j.status.completionTime // null) as $done
+                      | ($j.status.conditions // []
+                         | map(select(.type=="Failed" and .status=="True"))
+                         | .[0].lastTransitionTime // null) as $failed
+                      | ($done // $failed) as $t
+                      | select($t != null)
+                      | select(($t | fromdateiso8601) < $cutoff)
+                      | "\($j.metadata.namespace)\t\($j.metadata.name)\t\($t)"
+                    )
+                '
+              )
+              if [ -z "$TARGETS" ]; then
+                echo "[job-gc] no completed Jobs older than $${JOB_GC_MAX_AGE_DAYS}d"
+              else
+                COUNT=0
+                # Process substitution (not pipe) so $COUNT survives — a
+                # pipeline puts the while in a subshell and increments
+                # are discarded.
+                while IFS=$'\t' read -r ns name done_at; do
+                  [ -z "$ns" ] && continue
+                  if [ "$DRY" = "true" ]; then
+                    echo "[job-gc] would delete: $${ns}/$${name} (terminal at $${done_at})"
+                  else
+                    echo "[job-gc] deleting: $${ns}/$${name} (terminal at $${done_at})"
+                    # --wait=false so a stuck finalizer doesn't pin
+                    # the GC pod; the apiserver schedules the delete.
+                    kubectl -n "$ns" delete job "$name" --wait=false || \
+                      echo "[job-gc] warn: delete failed for $${ns}/$${name}"
+                  fi
+                  COUNT=$((COUNT+1))
+                done < <(printf '%s\n' "$TARGETS")
+                echo "[job-gc] processed $${COUNT} Jobs"
+              fi
+              echo "[job-gc] done"
+            command:
+            - /bin/bash
+            - -c
+            env:
+            - name: JOB_GC_MAX_AGE_DAYS
+              value: "7"
+            - name: JOB_GC_DRY_RUN
+              value: "false"
+            - name: JOB_GC_EXCLUDE_NS_REGEX
+              value: ^(kube-system|kube-public)$
+            image: alpine/k8s:1.33.3
+            imagePullPolicy: IfNotPresent
+            name: gc
+            resources:
+              limits:
+                cpu: 200m
+                memory: 256Mi
+              requests:
+                cpu: 50m
+                memory: 64Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+          restartPolicy: OnFailure
+          securityContext:
+            runAsGroup: 65534
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          serviceAccountName: job-gc
+      ttlSecondsAfterFinished: 3600
+  schedule: 13 3 * * *
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  labels:
+    app: platform-update-checker
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-update-checker
+  namespace: platform
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 120
+      backoffLimit: 1
+      template:
+        spec:
+          containers:
+          - command:
+            - /bin/sh
+            - -c
+            - |
+              # Query the platform API for pending updates using internal secret
+              RESPONSE=$(wget -qO- \
+                --header="X-Internal-Secret: $${PLATFORM_INTERNAL_SECRET}" \
+                "http://platform-api.platform.svc.cluster.local:3000/api/v1/internal/platform/version" \
+                2>/dev/null || echo '{}')
+
+              PENDING=$(echo "$RESPONSE" | jq -r '.data.pendingVersion // empty')
+
+              if [ -z "$PENDING" ]; then
+                echo "No pending update. Exiting."
+                exit 0
+              fi
+
+              echo "Pending update detected: $${PENDING}"
+
+              # Unsuspend the production Kustomization (if suspended)
+              kubectl patch kustomization hosting-platform-production \
+                -n flux-system \
+                --type=merge \
+                -p '{"spec":{"suspend":false}}'
+
+              # Trigger reconciliation
+              kubectl annotate --overwrite kustomization/hosting-platform-production \
+                -n flux-system \
+                reconcile.fluxcd.io/requestedAt="$(date +%s)"
+
+              echo "Reconciliation triggered for version $${PENDING}."
+
+              # Re-suspend after triggering (Flux will complete the current reconcile)
+              sleep 10
+              kubectl patch kustomization hosting-platform-production \
+                -n flux-system \
+                --type=merge \
+                -p '{"spec":{"suspend":true}}'
+
+              echo "Production Kustomization re-suspended."
+            env:
+            - name: PLATFORM_INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  key: internal-secret
+                  name: platform-secrets
+            image: alpine/k8s:1.33.3
+            name: checker
+            resources:
+              limits:
+                cpu: 100m
+                memory: 64Mi
+              requests:
+                cpu: 10m
+                memory: 32Mi
+          restartPolicy: Never
+          serviceAccountName: platform-update-checker
+  schedule: '*/5 * * * *'
+  successfulJobsHistoryLimit: 1
+  suspend: true
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  labels:
+    app.kubernetes.io/component: ingress-external-ips
+    app.kubernetes.io/part-of: hosting-platform
+  name: ingress-external-ips-reconciler
+  namespace: traefik
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: ingress-external-ips
+            app.kubernetes.io/part-of: hosting-platform
+        spec:
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - preference:
+                  matchExpressions:
+                  - key: platform.phoenix-host.net/node-role
+                    operator: In
+                    values:
+                    - server
+                weight: 1
+          containers:
+          - command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # Read every Ready Node's ExternalIP. kubectl jsonpath
+              # can't nest filters, so list all nodes and pair-up
+              # the ExternalIP with the Ready-condition status via
+              # custom-columns + post-filter. NotReady nodes (Ready
+              # condition False/Unknown) are dropped so we never
+              # advertise an IP that won't accept connections.
+              IPS=$(kubectl get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,EXTIP:.status.addresses[?(@.type=="ExternalIP")].address' --no-headers \
+                | awk '$2=="True" && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $3}' \
+                | sort -u)
+              if [ -z "$IPS" ]; then
+                echo "no Ready nodes with ExternalIP — leaving Service untouched" >&2
+                exit 0
+              fi
+              # Build a JSON array of IPs without depending on jq.
+              IP_LIST=$(echo "$IPS" | awk 'BEGIN{ORS=""} {if(NR>1) printf ","; printf "\""$0"\""}')
+              echo "Ready ExternalIPs: $(echo "$IPS" | tr '\n' ' ')"
+              PATCH="{\"spec\":{\"externalIPs\":[$${IP_LIST}]}}"
+              CURRENT=$(kubectl get svc -n traefik traefik \
+                -o jsonpath='{.spec.externalIPs}')
+              echo "current: $${CURRENT}"
+              echo "desired: [$${IP_LIST}]"
+              kubectl patch svc -n traefik traefik \
+                --type=merge --patch "$PATCH"
+              echo "ok"
+            image: alpine/k8s:1.33.4
+            imagePullPolicy: IfNotPresent
+            name: reconciler
+            resources:
+              limits:
+                cpu: 100m
+                memory: 128Mi
+              requests:
+                cpu: 10m
+                memory: 32Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 1001
+              seccompProfile:
+                type: RuntimeDefault
+          restartPolicy: OnFailure
+          serviceAccountName: ingress-external-ips-reconciler
+          tolerations:
+          - effect: NoSchedule
+            key: platform.phoenix-host.net/server-only
+            operator: Equal
+            value: "true"
+          - effect: NoSchedule
+            key: node-role.kubernetes.io/control-plane
+            operator: Exists
+      ttlSecondsAfterFinished: 600
+  schedule: '*/5 * * * *'
+  successfulJobsHistoryLimit: 1
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/part-of: hosting-platform
+  name: crowdsec
+  namespace: crowdsec
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crowdsec
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app: firewall-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+  name: firewall-reconciler
+  namespace: platform-system
+spec:
+  selector:
+    matchLabels:
+      app: firewall-reconciler
+  template:
+    metadata:
+      labels:
+        app: firewall-reconciler
+    spec:
+      containers:
+      - env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        image: ghcr.io/phoenixtechnam/hosting-platform/firewall-reconciler:latest
+        imagePullPolicy: Always
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+        name: reconciler
+        ports:
+        - containerPort: 8081
+          name: healthz
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 5m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_ADMIN
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      serviceAccountName: firewall-reconciler
+      tolerations:
+      - operator: Exists
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/component: cert-manager-dev
+    app.kubernetes.io/part-of: hosting-platform
+  name: local-ca
+  namespace: cert-manager
+spec:
+  commonName: local-dev-ca
+  duration: 87600h
+  isCA: true
+  issuerRef:
+    kind: ClusterIssuer
+    name: selfsigned-bootstrap
+  secretName: local-ca-secret
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/component: private-worker-tunnel
+    app.kubernetes.io/part-of: hosting-platform
+  name: tunnels-platform-domain
+  namespace: platform-system
+spec:
+  dnsNames:
+  - tunnels.k8s-platform.test
+  duration: 2160h
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: letsencrypt-prod-http01
+  privateKey:
+    algorithm: ECDSA
+    rotationPolicy: Always
+    size: 256
+  renewBefore: 720h
+  secretName: tunnels-platform-domain-tls
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: hosting-platform
+  name: dex
+  namespace: platform
+spec:
+  dnsNames:
+  - dex.k8s-platform.test
+  duration: 8760h
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: local-ca-issuer
+  privateKey:
+    algorithm: ECDSA
+    rotationPolicy: Always
+    size: 256
+  renewBefore: 720h
+  secretName: dex-dev-tls
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/component: file-manager-upload
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-ingress-upload
+  namespace: platform
+spec:
+  dnsNames:
+  - admin.k8s-platform.test
+  - client.k8s-platform.test
+  duration: 8760h
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: local-ca-issuer
+  privateKey:
+    algorithm: ECDSA
+    rotationPolicy: Always
+    size: 256
+  renewBefore: 720h
+  secretName: platform-dev-tls
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  labels:
+    app.kubernetes.io/component: cert-manager-dev
+    app.kubernetes.io/part-of: hosting-platform
+  name: local-ca-issuer
+  namespace: cert-manager
+spec:
+  ca:
+    secretName: local-ca-secret
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  labels:
+    app.kubernetes.io/component: cert-manager-dev
+    app.kubernetes.io/part-of: hosting-platform
+  name: selfsigned-bootstrap
+  namespace: cert-manager
+spec:
+  selfSigned: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/component: waf
+    app.kubernetes.io/part-of: hosting-platform
+  name: crowdsec
+  namespace: crowdsec
+spec:
+  egress:
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: traefik
+    ports:
+    - port: 8080
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: crowdsec
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: allow-ingress-controller
+  namespace: hosting
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: traefik
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: allow-monitoring-scrape
+  namespace: hosting
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+    ports:
+    - port: 9090
+      protocol: TCP
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: allow-platform-to-hosting
+  namespace: hosting
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: platform
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: default-deny-ingress
+  namespace: hosting
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: allow-backup-files-jobs-to-platform-api
+  namespace: platform
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          platform: k8s-hosting
+      podSelector:
+        matchExpressions:
+        - key: platform.io/component
+          operator: In
+          values:
+          - backup-files
+          - restore-files
+    ports:
+    - port: 3000
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: mail
+      podSelector:
+        matchExpressions:
+        - key: platform.io/component
+          operator: In
+          values:
+          - backup-files
+          - restore-files
+    ports:
+    - port: 3000
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: platform-api
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: allow-cnpg-operator-to-postgres
+  namespace: platform
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: cnpg-system
+    ports:
+    - port: 8000
+      protocol: TCP
+    - port: 9187
+      protocol: TCP
+  - from:
+    - podSelector:
+        matchExpressions:
+        - key: cnpg.io/cluster
+          operator: Exists
+    ports:
+    - port: 5432
+      protocol: TCP
+  podSelector:
+    matchExpressions:
+    - key: cnpg.io/cluster
+      operator: Exists
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: allow-ingress-to-acme-solver
+  namespace: platform
+spec:
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 10.42.0.0/16
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: traefik
+    ports:
+    - port: 8089
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: allow-ingress-to-platform
+  namespace: platform
+spec:
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 10.42.0.0/16
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: traefik
+    ports:
+    - port: 3000
+      protocol: TCP
+    - port: 80
+      protocol: TCP
+    - port: 4180
+      protocol: TCP
+    - port: 5556
+      protocol: TCP
+    - port: 4180
+      protocol: TCP
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - platform-api
+      - admin-panel
+      - tenant-panel
+      - oauth2-proxy
+      - dex
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-platform
+  namespace: platform
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: platform
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mail-to-postgres
+  namespace: platform
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: mail
+    ports:
+    - port: 5432
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: allow-platform-internal
+  namespace: platform
+spec:
+  ingress:
+  - from:
+    - podSelector:
+        matchExpressions:
+        - key: app
+          operator: In
+          values:
+          - platform-api
+          - admin-panel
+          - tenant-panel
+          - oauth2-proxy
+          - dex
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: dr-backup
+    ports:
+    - port: 5432
+      protocol: TCP
+    - port: 6379
+      protocol: TCP
+    - port: 5556
+      protocol: TCP
+    - port: 3000
+      protocol: TCP
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - postgres
+      - redis
+      - dex
+      - platform-api
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/component: private-worker-tunnel
+    app.kubernetes.io/part-of: hosting-platform
+  name: backend-allow-private-worker-frps
+  namespace: platform
+spec:
+  ingress:
+  - from:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: private-worker-server
+    ports:
+    - port: 3000
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: platform-api
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-allow-sftp-gateway
+  namespace: platform
+spec:
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: sftp-gateway
+    ports:
+    - port: 3000
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: traefik
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+    ports:
+    - port: 3000
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: platform-api
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: default-deny-ingress
+  namespace: platform
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: merge
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: hosting-platform
+  name: system-db
+  namespace: platform
+spec:
+  affinity:
+    nodeSelector:
+      platform.phoenix-host.net/node-role: server
+    podAntiAffinityType: preferred
+    tolerations:
+    - effect: NoSchedule
+      key: platform.phoenix-host.net/server-only
+      operator: Exists
+    topologyKey: kubernetes.io/hostname
+  bootstrap:
+    initdb:
+      database: hosting_platform
+      owner: platform
+      postInitApplicationSQL:
+      - ALTER USER platform WITH SUPERUSER
+      secret:
+        name: platform-db-credentials
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie
+  inheritedMetadata:
+    labels:
+      app: postgres
+      app.kubernetes.io/part-of: hosting-platform
+      platform/managed-by: platform-api
+      platform/owner: system
+      platform/role: system-db
+  monitoring:
+    enablePodMonitor: false
+  probes:
+    liveness:
+      periodSeconds: 60
+    readiness:
+      periodSeconds: 60
+  resources:
+    limits:
+      cpu: "1"
+      memory: 1Gi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  storage:
+    size: 5Gi
+    storageClass: local-path
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  labels:
+    app.kubernetes.io/component: private-worker-tunnel
+    app.kubernetes.io/part-of: hosting-platform
+  name: tunnel-anchor
+  namespace: platform-system
+spec:
+  entryPoints:
+  - websecure
+  routes:
+  - kind: Rule
+    match: Host(`tunnels.k8s-platform.test`)
+    middlewares:
+    - name: tunnel-anchor-ratelimit
+      namespace: platform-system
+    - name: compress
+      namespace: traefik
+    priority: 1
+    services:
+    - name: tunnel-anchor-default
+      port: 80
+  tls:
+    secretName: tunnels-platform-domain-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  labels:
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: hosting-platform
+  name: dex-ingress
+  namespace: platform
+spec:
+  entryPoints:
+  - websecure
+  routes:
+  - kind: Rule
+    match: Host(`dex.k8s-platform.test`)
+    services:
+    - name: dex
+      port: 5556
+  tls:
+    secretName: dex-dev-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  labels:
+    app.kubernetes.io/component: file-manager-upload
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-ingress-upload
+  namespace: platform
+spec:
+  entryPoints:
+  - websecure
+  routes:
+  - kind: Rule
+    match: Host(`admin.k8s-platform.test`) && PathRegexp(`^/api/v1/clients/[^/]+/files/upload-raw$`)
+    priority: 100
+    services:
+    - name: admin-panel
+      port: 80
+  - kind: Rule
+    match: Host(`client.k8s-platform.test`) && PathRegexp(`^/api/v1/clients/[^/]+/files/upload-raw$`)
+    priority: 100
+    services:
+    - name: tenant-panel
+      port: 80
+  tls:
+    secretName: platform-dev-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+  name: platform-suspended
+  namespace: platform
+spec:
+  entryPoints:
+  - web
+  routes:
+  - kind: Rule
+    match: Host(`suspended.platform.local`)
+    services:
+    - name: platform-suspended
+      port: 80
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  labels:
+    app.kubernetes.io/component: private-worker-tunnel
+    app.kubernetes.io/part-of: hosting-platform
+  name: tunnel-anchor-ratelimit
+  namespace: platform-system
+spec:
+  rateLimit:
+    average: 10
+    burst: 20
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  labels:
+    app.kubernetes.io/component: traefik
+    app.kubernetes.io/part-of: hosting-platform
+  name: admin-auth-cookie
+  namespace: traefik
+spec:
+  forwardAuth:
+    address: http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session
+    authResponseHeaders:
+    - X-Platform-Admin-User
+    - X-Platform-Admin-Role
+    trustForwardHeader: false
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  labels:
+    app.kubernetes.io/component: traefik
+    app.kubernetes.io/part-of: hosting-platform
+  name: compress
+  namespace: traefik
+spec:
+  compress:
+    encodings:
+    - br
+    - gzip
+    - zstd
+    minResponseBodyBytes: 256
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  labels:
+    app.kubernetes.io/component: traefik
+    app.kubernetes.io/part-of: hosting-platform
+  name: crowdsec
+  namespace: traefik
+spec:
+  plugin:
+    crowdsec:
+      crowdsecLapiKeyFile: /var/run/secrets/crowdsec/bouncer-key
+      crowdsecLapiUrl: http://crowdsec.crowdsec.svc.cluster.local:8080
+      forwardedHeadersTrustedIPs:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16
+      - fc00::/7
+      - fe80::/10
+      updateIntervalSeconds: 60
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  labels:
+    app.kubernetes.io/component: traefik
+    app.kubernetes.io/part-of: hosting-platform
+  name: modsecurity-crs
+  namespace: traefik
+spec:
+  plugin:
+    modsecurity:
+      maxBodySize: 5242880
+      modSecurityUrl: http://modsec-crs.traefik.svc.cluster.local
+      timeoutMillis: 3000

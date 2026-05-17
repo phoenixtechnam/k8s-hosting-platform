@@ -151,7 +151,14 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
-    const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
+    // JWT payload uses `sub` (RFC 7519 + middleware/auth.ts). Task-center
+    // refuses scope=admin with null user_id, so reject early with a clear
+    // 401 if the bearer is absent/malformed.
+    const u = request.user as { sub?: string; id?: string } | undefined;
+    const userId = u?.sub ?? u?.id ?? null;
+    if (!userId) {
+      throw new ApiError('AUTHENTICATION_REQUIRED', 'Speedtest requires an authenticated user', 401);
+    }
     const { runSpeedtest } = await import('./speedtest.js');
     const result = await runSpeedtest(app.db, k8s, {
       targetId: id,
