@@ -26,11 +26,28 @@
 #       bulwark   → webmail.<apex>/api/auth/impersonate?token=<jwt>
 #  10. GET <webmailUrl>             → expect 303 + jmap_stalwart_ctx
 #                                     cookie (bulwark) or 200 (roundcube)
-#  11. Cleanup: DELETE /api/v1/tenants/:id (cascades mailboxes + domains)
+#  11. (Bulwark only) SPA-equivalent JMAP probe — confirms session works
+#       end-to-end (cookies + Origin → /api/account/stalwart/jmap → 200
+#       with a real Mailbox/get response).
+#  12. Cleanup: DELETE /api/v1/tenants/:id (cascades mailboxes + domains)
 #
-# Engine is read from the platform setting — flip ahead of time via
-# PATCH /admin/webmail-settings {"defaultWebmailEngine":"bulwark"} or
-# through the admin panel UI.
+# Modes
+#
+#   Default: phases 1–11 once against whatever engine is configured.
+#
+#   `--engine-loop`: phases 8–11 run TWICE, once with default_webmail_engine
+#   forced to bulwark, once forced to roundcube. The initial engine is
+#   captured and restored on exit (even on failure). Provisioning phases
+#   1–7 run once. Useful in CI to exercise BOTH engine paths regardless
+#   of which is currently set on the target cluster.
+#
+#   Engine flips require super_admin auth (the same ADMIN_PASSWORD as
+#   the rest of the harness — no extra config). Between flips the
+#   harness polls /admin/webmail-settings until the setting flips,
+#   then sleeps `ENGINE_FLIP_SETTLE_S` seconds (default 15) so the
+#   webmail-router reconciler has time to flip the IngressRoute +
+#   scale the pods. On clusters where the reconciler is slow, raise
+#   the env to 30 or 60.
 #
 # Usage:
 #   API_BASE=https://admin.testing.phoenix-host.net \
@@ -39,20 +56,37 @@
 #   TEST_DOMAIN=harness-$(date +%s).success.com.na \
 #   ./scripts/integration-webmail-platform-e2e.sh
 #
+#   # CI loop mode — verify both engine paths in one run:
+#   ./scripts/integration-webmail-platform-e2e.sh --engine-loop
+#
 # Environment:
-#   API_BASE         — platform-api base URL (default: https://admin.k8s-platform.test:2011)
-#   ADMIN_EMAIL      — platform super_admin email
-#   ADMIN_PASSWORD   — platform super_admin password
-#   TEST_DOMAIN      — domain to attach (default: harness-$(date +%s).success.com.na)
-#   SKIP_WEBMAIL_HIT — set to 1 to skip phase 10 (cert / connectivity issue)
-#   CURL_INSECURE    — set to 1 to pass -k (self-signed certs)
+#   API_BASE              — platform-api base URL (default: https://admin.k8s-platform.test:2011)
+#   ADMIN_EMAIL           — platform super_admin email
+#   ADMIN_PASSWORD        — platform super_admin password
+#   TEST_DOMAIN           — domain to attach (default: harness-$(date +%s).success.com.na)
+#   SKIP_WEBMAIL_HIT      — set to 1 to skip phase 10 (cert / connectivity issue)
+#   CURL_INSECURE         — set to 1 to pass -k (self-signed certs)
+#   ENGINE_FLIP_SETTLE_S  — seconds to wait after a flip for reconciler to apply (default 15)
 set -euo pipefail
+
+# ── Args ─────────────────────────────────────────────────────────────
+ENGINE_LOOP=0
+for arg in "$@"; do
+  case "$arg" in
+    --engine-loop) ENGINE_LOOP=1 ;;
+    -h|--help)
+      sed -n '1,/^set -eu/p' "$0" | sed 's/^# \?//'
+      exit 0 ;;
+    *) echo "Unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
 
 API_BASE="${API_BASE:-https://admin.k8s-platform.test:2011}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:?ADMIN_PASSWORD env var required}"
 TEST_DOMAIN="${TEST_DOMAIN:-harness-$(date +%s)-${RANDOM}.success.com.na}"
 SKIP_WEBMAIL_HIT="${SKIP_WEBMAIL_HIT:-0}"
+ENGINE_FLIP_SETTLE_S="${ENGINE_FLIP_SETTLE_S:-15}"
 
 CURL_OPTS=(-sS -m 30)
 [[ "${CURL_INSECURE:-0}" == "1" ]] && CURL_OPTS+=(-k)
@@ -65,9 +99,21 @@ phase() { printf '\n\033[36m── %s ──\033[0m\n' "$*"; }
 
 # Track resources to clean up on exit (even on failure).
 TENANT_ID=""
+INITIAL_ENGINE=""           # populated in --engine-loop mode for restore
+ENGINE_RESTORE_NEEDED=0
 trap 'cleanup_on_exit' EXIT
 
 cleanup_on_exit() {
+  # Restore initial engine first — it's the operator-visible state.
+  if [[ "$ENGINE_RESTORE_NEEDED" == "1" && -n "$INITIAL_ENGINE" && -n "${ADMIN_TOKEN:-}" ]]; then
+    local opts=(-sS -m 30)
+    [[ "${CURL_INSECURE:-0}" == "1" ]] && opts+=(-k)
+    curl "${opts[@]}" -X PATCH "${API_BASE}/api/v1/admin/webmail-settings" \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+      -H 'content-type: application/json' \
+      -d "{\"defaultWebmailEngine\":\"${INITIAL_ENGINE}\"}" \
+      -o /dev/null -w 'cleanup: engine restore → %{http_code}\n' || true
+  fi
   if [[ -n "$TENANT_ID" && -n "${ADMIN_TOKEN:-}" ]]; then
     # Cleanup is slow — cascade deletes mailboxes, email-domains, DNS
     # records, etc. Give it 60s so a busy cluster doesn't bail mid-way.
@@ -175,9 +221,9 @@ pass "5.1 mailbox created (${MAILBOX_ADDR})"
 # ── Phase 6: read active engine ─────────────────────────────────────
 phase "6. Read active webmail engine"
 SETTINGS=$(api GET /api/v1/admin/webmail-settings)
-ENGINE=$(echo "$SETTINGS" | jq -r '.data.defaultWebmailEngine // "roundcube"')
+INITIAL_ENGINE=$(echo "$SETTINGS" | jq -r '.data.defaultWebmailEngine // "roundcube"')
 WEBMAIL_DEFAULT_URL=$(echo "$SETTINGS" | jq -r '.data.defaultWebmailUrl // empty')
-pass "6.1 active engine = ${ENGINE} (default URL: ${WEBMAIL_DEFAULT_URL})"
+pass "6.1 active engine = ${INITIAL_ENGINE} (default URL: ${WEBMAIL_DEFAULT_URL})"
 
 # ── Phase 7: impersonate to tenant_admin ────────────────────────────
 phase "7. Impersonate as tenant_admin"
@@ -189,102 +235,148 @@ if [[ -z "$CLIENT_TOKEN" ]]; then
 fi
 pass "7.1 tenant_admin token issued"
 
-# ── Phase 8: mint webmail token ─────────────────────────────────────
-phase "8. Mint webmail token"
-TOK_RESP=$(curl "${CURL_OPTS[@]}" -X POST "${API_BASE}/api/v1/email/webmail-token" \
-  -H "Authorization: Bearer ${CLIENT_TOKEN}" \
-  -H 'content-type: application/json' \
-  -d "{\"mailbox_id\":\"${MAILBOX_ID}\"}")
-WEBMAIL_URL=$(echo "$TOK_RESP" | jq -r '.data.webmailUrl // empty')
-RESP_ENGINE=$(echo "$TOK_RESP" | jq -r '.data.engine // empty')
-if [[ -z "$WEBMAIL_URL" ]]; then
-  fail "8.1 webmail-token failed: $(echo "$TOK_RESP" | head -c 300)"
-  exit 1
-fi
-pass "8.1 webmail-token returned URL: ${WEBMAIL_URL}"
-[[ "$RESP_ENGINE" == "$ENGINE" ]] \
-  && pass "8.2 response engine matches platform setting (${ENGINE})" \
-  || fail "8.2 engine mismatch: settings=${ENGINE} token=${RESP_ENGINE}"
+# ─────────────────────────────────────────────────────────────────────
+# Helper: poll /admin/webmail-settings until defaultWebmailEngine
+# matches $1, up to 30s. Returns 0 on match, 1 on timeout.
+wait_engine_setting() {
+  local target="$1"
+  local end=$(( $(date +%s) + 30 ))
+  while [[ $(date +%s) -lt $end ]]; do
+    local cur
+    cur=$(api GET /api/v1/admin/webmail-settings | jq -r '.data.defaultWebmailEngine // empty')
+    [[ "$cur" == "$target" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
 
-# ── Phase 9: validate URL shape ─────────────────────────────────────
-phase "9. Validate URL shape"
-if [[ "$ENGINE" == "bulwark" ]]; then
-  if [[ "$WEBMAIL_URL" =~ /api/auth/impersonate\?token= ]]; then
-    pass "9.1 bulwark URL contains /api/auth/impersonate?token="
+flip_engine() {
+  local target="$1" tag="$2"
+  curl "${CURL_OPTS[@]}" -X PATCH "${API_BASE}/api/v1/admin/webmail-settings" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H 'content-type: application/json' \
+    -d "{\"defaultWebmailEngine\":\"${target}\"}" >/dev/null
+  if wait_engine_setting "$target"; then
+    pass "${tag} engine flipped to ${target}"
   else
-    fail "9.1 bulwark URL missing /api/auth/impersonate?token= → ${WEBMAIL_URL}"
+    fail "${tag} engine flip to ${target} did not stick within 30s"
+    return 1
   fi
-else
-  if [[ "$WEBMAIL_URL" =~ \?_task=login\&_jwt= ]]; then
-    pass "9.1 roundcube URL contains ?_task=login&_jwt="
-  else
-    fail "9.1 roundcube URL missing ?_task=login&_jwt= → ${WEBMAIL_URL}"
-  fi
-fi
+  # Give the webmail-router reconciler time to flip the IngressRoute +
+  # scale pods so subsequent SSO traffic doesn't hit a stale upstream.
+  sleep "$ENGINE_FLIP_SETTLE_S"
+  return 0
+}
 
-# ── Phase 10: hit the URL ───────────────────────────────────────────
-COOKIES=$(mktemp)
-if [[ "$SKIP_WEBMAIL_HIT" != "1" ]]; then
-  phase "10. Follow webmail URL"
-  HIT_CODE=$(curl "${CURL_OPTS[@]}" -i "$WEBMAIL_URL" \
-    -c "$COOKIES" -o /tmp/webmail-hit.txt -w '%{http_code}')
-  if [[ "$ENGINE" == "bulwark" ]]; then
-    # Bulwark's /api/auth/impersonate returns 303 + jmap_session +
-    # jmap_stalwart_ctx cookies (session-only, Secure, HttpOnly).
-    grep -q "jmap_stalwart_ctx" "$COOKIES" \
-      && pass "10.1 bulwark — jmap_stalwart_ctx cookie set" \
-      || fail "10.1 bulwark — no jmap cookie (HTTP ${HIT_CODE})"
-  else
-    # Roundcube returns 302 to its session-bootstrap or 200 with login form.
-    [[ "$HIT_CODE" =~ ^(200|302|303)$ ]] \
-      && pass "10.1 roundcube — handshake responded (HTTP ${HIT_CODE})" \
-      || fail "10.1 roundcube — bad code ${HIT_CODE}"
-  fi
-fi
-
-# ── Phase 11: SPA-equivalent session probe ──────────────────────────
-# Reproduces what the user's BROWSER does after the impersonator's
-# 303 redirect lands them on `webmail.<apex>/`. The Bulwark SPA loads
-# and immediately XHRs `/api/account/stalwart/jmap` with the
-# jmap_stalwart_ctx cookie + Origin header. If Bulwark's session was
-# pinned to a DIFFERENT origin during the impersonator's
-# stalwart-context call (the old "PUBLIC_ORIGIN baked to bulwark.<apex>"
-# bug), this XHR comes back 401 "Not authenticated" — and the user
-# sees what they perceive as a "Stalwart login page" because the SPA
-# either errors out or redirects to the JMAP server URL.
+# ─────────────────────────────────────────────────────────────────────
+# run_sso_flow ENGINE TAG_PREFIX
 #
-# This phase catches that regression directly.
-if [[ "$SKIP_WEBMAIL_HIT" != "1" && "$ENGINE" == "bulwark" ]]; then
-  phase "11. SPA-equivalent JMAP probe (session works)"
-  # Derive the apex origin the way a browser would (whatever the
-  # webmail URL setting points to).
-  WEBMAIL_ORIGIN=$(echo "$WEBMAIL_URL" | sed -E 's#^(https?://[^/]+).*#\1#')
-  JMAP_PROBE=$(mktemp)
-  curl "${CURL_OPTS[@]}" -X POST "${WEBMAIL_ORIGIN}/api/account/stalwart/jmap" \
-    -b "$COOKIES" \
-    -H 'Content-Type: application/json' \
-    -H "Origin: ${WEBMAIL_ORIGIN}" \
-    -d '{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],"methodCalls":[["Mailbox/get",{"accountId":"b","ids":null},"a"]]}' \
-    -o "$JMAP_PROBE" -w '%{http_code}' > /tmp/jmap-code.txt
-  CODE=$(cat /tmp/jmap-code.txt)
-  if grep -q '"Not authenticated"' "$JMAP_PROBE"; then
-    fail "11.1 SPA session probe — Bulwark returned 'Not authenticated' (HTTP ${CODE}). Origin/session mismatch. Body: $(head -c 200 "$JMAP_PROBE")"
-  elif grep -q '"Mailbox/get"' "$JMAP_PROBE" || grep -q '"list":' "$JMAP_PROBE"; then
-    pass "11.1 SPA session probe — Mailbox/get returned a valid JMAP response"
-  elif [[ "$CODE" == "200" ]]; then
-    pass "11.1 SPA session probe — HTTP 200 (Stalwart accepted the cookie)"
-  else
-    # Empty mailbox lists are valid for a freshly-created mailbox. As
-    # long as the response isn't 401 / 'Not authenticated', the session
-    # is working.
-    fail "11.1 SPA session probe — unexpected response (HTTP ${CODE}): $(head -c 200 "$JMAP_PROBE")"
+# Phases 8-11 against the given engine, with the engine already flipped
+# (caller is responsible for flipping/settle). Uses global CLIENT_TOKEN,
+# MAILBOX_ID, ADMIN_TOKEN, API_BASE. Reports tagged assertions so
+# --engine-loop mode can disambiguate two runs in the summary.
+run_sso_flow() {
+  local engine="$1" tag="$2"
+
+  # ── Phase 8: mint webmail token ──────────────────────────────────
+  phase "${tag}8. Mint webmail token (engine=${engine})"
+  local tok_resp webmail_url resp_engine
+  tok_resp=$(curl "${CURL_OPTS[@]}" -X POST "${API_BASE}/api/v1/email/webmail-token" \
+    -H "Authorization: Bearer ${CLIENT_TOKEN}" \
+    -H 'content-type: application/json' \
+    -d "{\"mailbox_id\":\"${MAILBOX_ID}\"}")
+  webmail_url=$(echo "$tok_resp" | jq -r '.data.webmailUrl // empty')
+  resp_engine=$(echo "$tok_resp" | jq -r '.data.engine // empty')
+  if [[ -z "$webmail_url" ]]; then
+    fail "${tag}8.1 webmail-token failed: $(echo "$tok_resp" | head -c 300)"
+    return 1
   fi
-  rm -f "$JMAP_PROBE" /tmp/jmap-code.txt
+  pass "${tag}8.1 webmail-token returned URL: ${webmail_url}"
+  [[ "$resp_engine" == "$engine" ]] \
+    && pass "${tag}8.2 response engine matches platform setting (${engine})" \
+    || fail "${tag}8.2 engine mismatch: settings=${engine} token=${resp_engine}"
+
+  # ── Phase 9: validate URL shape ──────────────────────────────────
+  phase "${tag}9. Validate URL shape (engine=${engine})"
+  if [[ "$engine" == "bulwark" ]]; then
+    if [[ "$webmail_url" =~ /api/auth/impersonate\?token= ]]; then
+      pass "${tag}9.1 bulwark URL contains /api/auth/impersonate?token="
+    else
+      fail "${tag}9.1 bulwark URL missing /api/auth/impersonate?token= → ${webmail_url}"
+    fi
+  else
+    if [[ "$webmail_url" =~ \?_task=login\&_jwt= ]]; then
+      pass "${tag}9.1 roundcube URL contains ?_task=login&_jwt="
+    else
+      fail "${tag}9.1 roundcube URL missing ?_task=login&_jwt= → ${webmail_url}"
+    fi
+  fi
+
+  # ── Phase 10: hit the URL ────────────────────────────────────────
+  local cookies hit_code
+  cookies=$(mktemp)
+  if [[ "$SKIP_WEBMAIL_HIT" != "1" ]]; then
+    phase "${tag}10. Follow webmail URL (engine=${engine})"
+    hit_code=$(curl "${CURL_OPTS[@]}" -i "$webmail_url" \
+      -c "$cookies" -o /tmp/webmail-hit.txt -w '%{http_code}')
+    if [[ "$engine" == "bulwark" ]]; then
+      grep -q "jmap_stalwart_ctx" "$cookies" \
+        && pass "${tag}10.1 bulwark — jmap_stalwart_ctx cookie set" \
+        || fail "${tag}10.1 bulwark — no jmap cookie (HTTP ${hit_code})"
+    else
+      [[ "$hit_code" =~ ^(200|302|303)$ ]] \
+        && pass "${tag}10.1 roundcube — handshake responded (HTTP ${hit_code})" \
+        || fail "${tag}10.1 roundcube — bad code ${hit_code}"
+    fi
+  fi
+
+  # ── Phase 11: SPA-equivalent session probe (bulwark only) ────────
+  if [[ "$SKIP_WEBMAIL_HIT" != "1" && "$engine" == "bulwark" ]]; then
+    phase "${tag}11. SPA-equivalent JMAP probe (engine=${engine})"
+    local webmail_origin jmap_probe code
+    webmail_origin=$(echo "$webmail_url" | sed -E 's#^(https?://[^/]+).*#\1#')
+    jmap_probe=$(mktemp)
+    curl "${CURL_OPTS[@]}" -X POST "${webmail_origin}/api/account/stalwart/jmap" \
+      -b "$cookies" \
+      -H 'Content-Type: application/json' \
+      -H "Origin: ${webmail_origin}" \
+      -d '{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],"methodCalls":[["Mailbox/get",{"accountId":"b","ids":null},"a"]]}' \
+      -o "$jmap_probe" -w '%{http_code}' > /tmp/jmap-code.txt
+    code=$(cat /tmp/jmap-code.txt)
+    if grep -q '"Not authenticated"' "$jmap_probe"; then
+      fail "${tag}11.1 SPA session probe — 'Not authenticated' (HTTP ${code}). Body: $(head -c 200 "$jmap_probe")"
+    elif grep -q '"Mailbox/get"' "$jmap_probe" || grep -q '"list":' "$jmap_probe"; then
+      pass "${tag}11.1 SPA session probe — Mailbox/get returned a valid JMAP response"
+    elif [[ "$code" == "200" ]]; then
+      pass "${tag}11.1 SPA session probe — HTTP 200 (Stalwart accepted the cookie)"
+    else
+      fail "${tag}11.1 SPA session probe — unexpected response (HTTP ${code}): $(head -c 200 "$jmap_probe")"
+    fi
+    rm -f "$jmap_probe" /tmp/jmap-code.txt
+  fi
+  rm -f "$cookies"
+}
+
+# ── Phases 8-11: SSO flow (single-engine OR loop both) ──────────────
+if [[ "$ENGINE_LOOP" == "1" ]]; then
+  ENGINE_RESTORE_NEEDED=1
+  phase "loop. Engine loop — running SSO twice (bulwark + roundcube)"
+  echo "    Initial engine: ${INITIAL_ENGINE} (will be restored on exit)"
+
+  # Order: flip to bulwark first (most-tested path), then roundcube.
+  for target in bulwark roundcube; do
+    flip_engine "$target" "loop-${target}." || continue
+    run_sso_flow "$target" "loop-${target}."
+  done
+  # cleanup_on_exit will restore $INITIAL_ENGINE
+else
+  # Single-engine mode — no flip, just exercise whatever is set.
+  run_sso_flow "$INITIAL_ENGINE" ""
 fi
 
 # ── Phase 12: cleanup is in trap; report ────────────────────────────
 phase "12. Cleanup (deferred to trap)"
-rm -f "$COOKIES" /tmp/webmail-hit.txt
+rm -f /tmp/webmail-hit.txt
 
 echo
 echo "════════════════════════════════════════════════"

@@ -360,9 +360,9 @@ else
   warn "C14 skipped (roundcube-secrets not present OR shares Bulwark's key)"
 fi
 
-# ── Phase D: engine mutex (optional) ─────────────────────────────────
+# ── Phase D: engine mutex + reconciler side-effects (optional) ───────
 if [[ $RUN_MUTEX -eq 1 ]]; then
-  phase "D. Engine mutex"
+  phase "D. Engine mutex + reconciler side-effects"
 
   if [[ -z "${ADMIN_TOKEN:-}" || -z "${API_BASE:-}" ]]; then
     fail "D ADMIN_TOKEN + API_BASE required for --mutex"
@@ -370,44 +370,118 @@ if [[ $RUN_MUTEX -eq 1 ]]; then
     CURL_OPTS=(-sS)
     [[ "${CURL_INSECURE:-0}" == "1" ]] && CURL_OPTS+=(-k)
 
-    # Current state
-    INITIAL_ENGINE="$(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $ADMIN_TOKEN" \
-      "$API_BASE/api/v1/admin/webmail-settings" \
-      | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).data?.defaultWebmailEngine ?? 'unknown')")"
-    pass "D1 initial engine: $INITIAL_ENGINE"
+    ENGINE_DISABLED_ANNOTATION="platform.phoenix-host.net/webmail-engine-disabled"
 
-    # Count Pods for both engines
-    BULWARK_PODS="$("${KCTL[@]}" get pods -l app=bulwark --field-selector=status.phase=Running 2>/dev/null | tail -n +2 | wc -l)"
-    ROUNDCUBE_PODS="$("${KCTL[@]}" get pods -l app=roundcube --field-selector=status.phase=Running -n mail 2>/dev/null | tail -n +2 | wc -l)"
+    # Helpers — read IngressRoute target + Deployment state.
+    ir_target() {
+      "${KCTL[@]}" get ingressroute platform-webmail-ingress -n mail \
+        -o jsonpath='{.spec.routes[0].services[0].name}' 2>/dev/null
+    }
+    deploy_replicas() {
+      local d="$1"
+      "${KCTL[@]}" get deploy "$d" -n mail -o jsonpath='{.spec.replicas}' 2>/dev/null
+    }
+    deploy_annotation_disabled() {
+      local d="$1"
+      "${KCTL[@]}" get deploy "$d" -n mail \
+        -o jsonpath="{.metadata.annotations.${ENGINE_DISABLED_ANNOTATION//./\\.}}" 2>/dev/null
+    }
+    api_get_engine() {
+      curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $ADMIN_TOKEN" \
+        "$API_BASE/api/v1/admin/webmail-settings" \
+        | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).data?.defaultWebmailEngine ?? 'unknown')"
+    }
+    api_flip_engine() {
+      local target="$1"
+      curl "${CURL_OPTS[@]}" -X PATCH -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $ADMIN_TOKEN" \
+        -d "{\"defaultWebmailEngine\":\"${target}\"}" \
+        "$API_BASE/api/v1/admin/webmail-settings" > /dev/null
+    }
+    # Poll until $1 evaluates to expected $2, up to $3 seconds (default 30).
+    # $1 is a command whose stdout is compared to $2.
+    wait_for() {
+      local cmd="$1" expected="$2" timeout="${3:-30}"
+      local end=$(( $(date +%s) + timeout ))
+      while [[ $(date +%s) -lt $end ]]; do
+        if [[ "$(eval "$cmd")" == "$expected" ]]; then return 0; fi
+        sleep 1
+      done
+      return 1
+    }
+
+    INITIAL_ENGINE="$(api_get_engine)"
+    pass "D1 initial engine = $INITIAL_ENGINE"
+
+    # ─── D1b: snapshot mutex state — only one engine has Running pods ───
+    BULWARK_PODS="$("${KCTL[@]}" get pods -l app=bulwark -n mail --field-selector=status.phase=Running 2>/dev/null | tail -n +2 | wc -l)"
+    ROUNDCUBE_PODS="$("${KCTL[@]}" get pods -l app=roundcube -n mail --field-selector=status.phase=Running 2>/dev/null | tail -n +2 | wc -l)"
     if [[ $INITIAL_ENGINE == "bulwark" ]]; then
       [[ $BULWARK_PODS -ge 1 && $ROUNDCUBE_PODS -eq 0 ]] \
-        && pass "D1b mutex holding: bulwark=$BULWARK_PODS roundcube=$ROUNDCUBE_PODS" \
+        && pass "D1b mutex holding (initial): bulwark=$BULWARK_PODS roundcube=$ROUNDCUBE_PODS" \
         || warn "D1b unexpected pod count: bulwark=$BULWARK_PODS roundcube=$ROUNDCUBE_PODS"
     else
       [[ $ROUNDCUBE_PODS -ge 1 && $BULWARK_PODS -eq 0 ]] \
-        && pass "D1b mutex holding: roundcube=$ROUNDCUBE_PODS bulwark=$BULWARK_PODS" \
+        && pass "D1b mutex holding (initial): roundcube=$ROUNDCUBE_PODS bulwark=$BULWARK_PODS" \
         || warn "D1b unexpected pod count: roundcube=$ROUNDCUBE_PODS bulwark=$BULWARK_PODS"
     fi
 
-    # Flip + verify
-    OTHER_ENGINE="bulwark"; [[ $INITIAL_ENGINE == "bulwark" ]] && OTHER_ENGINE="roundcube"
-    curl "${CURL_OPTS[@]}" -X PATCH -H "Content-Type: application/json" \
-      -H "Authorization: Bearer $ADMIN_TOKEN" \
-      -d "{\"defaultWebmailEngine\":\"$OTHER_ENGINE\"}" \
-      "$API_BASE/api/v1/admin/webmail-settings" > /dev/null
-    sleep 15
-    # Read back
-    NEW_ENGINE="$(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $ADMIN_TOKEN" \
-      "$API_BASE/api/v1/admin/webmail-settings" \
-      | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).data?.defaultWebmailEngine)")"
-    [[ "$NEW_ENGINE" == "$OTHER_ENGINE" ]] && pass "D2 flipped to $NEW_ENGINE" || fail "D2 flip failed: $NEW_ENGINE"
+    # ─── D1c: initial IngressRoute target matches active engine ───
+    INITIAL_IR_TARGET="$(ir_target)"
+    [[ "$INITIAL_IR_TARGET" == "$INITIAL_ENGINE" ]] \
+      && pass "D1c IngressRoute services[0].name = $INITIAL_IR_TARGET (matches engine)" \
+      || fail "D1c IR target mismatch: engine=$INITIAL_ENGINE IR=$INITIAL_IR_TARGET"
 
-    # Flip back
-    curl "${CURL_OPTS[@]}" -X PATCH -H "Content-Type: application/json" \
-      -H "Authorization: Bearer $ADMIN_TOKEN" \
-      -d "{\"defaultWebmailEngine\":\"$INITIAL_ENGINE\"}" \
-      "$API_BASE/api/v1/admin/webmail-settings" > /dev/null
-    pass "D3 restored to initial engine $INITIAL_ENGINE"
+    # ─── D2: flip engine via API ───
+    OTHER_ENGINE="bulwark"; [[ $INITIAL_ENGINE == "bulwark" ]] && OTHER_ENGINE="roundcube"
+    api_flip_engine "$OTHER_ENGINE"
+    if wait_for "api_get_engine" "$OTHER_ENGINE" 10; then
+      pass "D2 setting flipped to $OTHER_ENGINE (DB round-trip)"
+    else
+      fail "D2 setting did not flip to $OTHER_ENGINE within 10s"
+    fi
+
+    # ─── D2b: webmail-router reconciler flipped IngressRoute target ───
+    if wait_for "ir_target" "$OTHER_ENGINE" 30; then
+      pass "D2b IngressRoute services[0].name flipped to $OTHER_ENGINE (reconciler ran)"
+    else
+      fail "D2b IngressRoute target stuck at $(ir_target) after 30s — reconciler regression"
+    fi
+
+    # ─── D2c: inactive engine annotated webmail-engine-disabled=true ───
+    if wait_for "deploy_annotation_disabled $INITIAL_ENGINE" "true" 30; then
+      pass "D2c inactive engine ($INITIAL_ENGINE) Deployment annotated disabled=true"
+    else
+      fail "D2c inactive engine annotation missing — got '$(deploy_annotation_disabled "$INITIAL_ENGINE")'"
+    fi
+
+    # ─── D2d: inactive engine scaled to 0 ───
+    if wait_for "deploy_replicas $INITIAL_ENGINE" "0" 30; then
+      pass "D2d inactive engine ($INITIAL_ENGINE) scaled to 0"
+    else
+      fail "D2d inactive engine replicas=$(deploy_replicas "$INITIAL_ENGINE") — should be 0"
+    fi
+
+    # ─── D2e: active engine annotation cleared (if it was previously set) ───
+    NEW_ACTIVE_ANNOT="$(deploy_annotation_disabled "$OTHER_ENGINE")"
+    if [[ -z "$NEW_ACTIVE_ANNOT" || "$NEW_ACTIVE_ANNOT" != "true" ]]; then
+      pass "D2e active engine ($OTHER_ENGINE) annotation cleared (was '$NEW_ACTIVE_ANNOT')"
+    else
+      fail "D2e active engine still has disabled=true annotation — reconciler regression"
+    fi
+
+    # ─── D3: flip back ───
+    api_flip_engine "$INITIAL_ENGINE"
+    if wait_for "ir_target" "$INITIAL_ENGINE" 30; then
+      pass "D3 restored to $INITIAL_ENGINE (IR target flipped back)"
+    else
+      fail "D3 IngressRoute did not flip back — got $(ir_target)"
+    fi
+    if wait_for "deploy_annotation_disabled $OTHER_ENGINE" "true" 30; then
+      pass "D3b post-restore mutex: $OTHER_ENGINE now annotated disabled (symmetric)"
+    else
+      warn "D3b $OTHER_ENGINE annotation '$(deploy_annotation_disabled "$OTHER_ENGINE")' — expected 'true' (may need longer reconcile)"
+    fi
   fi
 fi
 
