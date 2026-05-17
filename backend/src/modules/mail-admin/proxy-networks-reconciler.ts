@@ -185,10 +185,29 @@ export async function runProxyNetworksReconcilerTick(
   // time in 0.16. The reconciler tolerates a stale pod for the duration
   // of one tick; operators can force a faster update by `kubectl rollout
   // restart deploy/stalwart-mail` after a node-IP change.
-  const expectedProxyNetworks: Record<string, boolean> = {
-    '10.42.0.0/16': true,
-    '10.43.0.0/16': true,
-  };
+  //
+  // **Trust list = SERVER NODE IPs ONLY** (no cluster CIDRs).
+  //
+  // The haproxy DaemonSet runs `hostNetwork: true`, so when it forwards
+  // a mail connection to stalwart-mail.mail.svc the source address
+  // Stalwart sees is the haproxy pod's NODE IP — never a 10.42/16 pod
+  // CIDR address. Historically this map also included `10.42.0.0/16` +
+  // `10.43.0.0/16` as a defensive catch-all, but that turned out to be
+  // actively harmful: it makes Stalwart's PROXY-v2 sniffer require a
+  // header on every connection from a cluster-internal source. That
+  // breaks every direct-to-Stalwart probe (mail-admin health prober's
+  // TCP scan via the Service, integration mail/SMTP/IMAP scenarios from
+  // a one-shot test pod, mail-imapsync, the Roundcube and Bulwark pods
+  // that talk to stalwart-mail directly) with `write:errno=104` —
+  // Stalwart was waiting on a PROXY-v2 frame the client never sent.
+  // Caught on testing.phoenix-host.net 2026-05-17 integration run.
+  //
+  // Cluster pods that talk to mail listeners via the Service now hit
+  // Stalwart with a non-trusted source IP, so the PROXY-v2 sniff is
+  // skipped and the raw SMTP/IMAP/manageSieve handshake proceeds
+  // normally. haproxy still gets PROXY-v2 honored because its
+  // hostNetwork source IP IS in the trust list.
+  const expectedProxyNetworks: Record<string, boolean> = {};
   for (const node of serverNodes) {
     expectedProxyNetworks[node.ip] = true;
   }
@@ -334,15 +353,19 @@ interface JmapInvocationResponse {
  *
  * **Why this is exec-based, not fetch:** Stalwart 0.16's HTTP listener at
  * `:8080` does PROXY-v2 sniffing on every incoming connection whose source
- * IP is in `SystemSettings.proxyTrustedNetworks`. Since the Phase 1
- * streamline put the cluster pod/service CIDRs (10.42.0.0/16 + 10.43.0.0/16)
- * into that trust list — necessary for haproxy DS forwarding mail traffic
- * with PROXY-v2 — cross-pod plain HTTP from platform-api to
- * `stalwart-mgmt.mail.svc:8080` is silently rejected ("invalid proxy
- * header" in the Stalwart log, "fetch failed cause=other side closed"
- * from Node.js). Per-listener `overrideProxyTrustedNetworks` does NOT
- * disable the sniffing in 0.16 — it only refines trust decisions after
- * the sniff. The only source IP that bypasses the sniff is 127.0.0.1.
+ * IP is in `SystemSettings.proxyTrustedNetworks`. As of 2026-05-17 the
+ * trust list contains server-node IPs ONLY (cluster CIDRs were removed —
+ * haproxy DS runs hostNetwork so its source IP is the node IP, not a
+ * cluster CIDR address — including 10.42/16 + 10.43/16 forced PROXY-v2
+ * sniffing on every cross-pod probe and broke them). With cluster CIDRs
+ * out of the trust list, cross-pod plain HTTP from platform-api to
+ * `stalwart-mgmt.mail.svc:8080` works without a sniff. We keep the exec
+ * path for defense-in-depth: a future Stalwart release that re-enables
+ * sniffing for non-trusted sources would silently break the reconciler
+ * the moment it shipped, and a misconfigured trust list (operator add of
+ * a cluster CIDR via a side channel) would do the same. Exec via
+ * 127.0.0.1 always bypasses the sniff — loopback is the only IP the 0.16
+ * sniffer never inspects.
  *
  * So the reconciler exec's into the Stalwart pod and runs `curl` against
  * 127.0.0.1:8080. Loopback bypasses the PROXY-v2 sniff. This is the same
@@ -634,8 +657,10 @@ const MAIL_PROTOCOLS = new Set(['smtp', 'imap', 'manageSieve', 'pop3']);
  * For each NetworkListener, write the appropriate `overrideProxyTrustedNetworks`
  * map based on its `protocol`:
  *
- *   - Mail protocols (smtp/imap/manageSieve/pop3) → mail-trust (cluster
- *     CIDRs + node IPs)
+ *   - Mail protocols (smtp/imap/manageSieve/pop3) → mail-trust
+ *     (server node IPs only — cluster CIDRs were removed 2026-05-17
+ *     because haproxy DS uses hostNetwork; see the constant block
+ *     above for full rationale)
  *   - Everything else (http and any future protocols) → empty map →
  *     inherits empty global → no PROXY-v2 sniff
  *

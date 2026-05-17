@@ -431,18 +431,33 @@ describe('runProxyNetworksReconcilerTick', () => {
       logger: { warn: () => undefined, info: () => undefined },
     });
 
-    // 4 mail listeners updated with cluster CIDRs + node IPs. 2 http
-    // listeners already had empty override → no update needed → not in
-    // the set call.
+    // 4 mail listeners updated with the SERVER NODE IP set only — cluster
+    // CIDRs are intentionally OUT of the trust list as of 2026-05-17
+    // (haproxy DS runs hostNetwork so its source IP is the node IP, not
+    // a cluster-CIDR IP; including 10.42/16+10.43/16 forced PROXY-v2
+    // sniffing on every cluster-internal mail probe and broke them).
+    // 2 http listeners already had empty override → no update needed →
+    // not in the set call.
     expect(listenerUpdates).not.toBeNull();
     const updates = listenerUpdates! as Record<string, { overrideProxyTrustedNetworks: Record<string, boolean> }>;
     expect(Object.keys(updates).sort()).toEqual(['l-imap', 'l-pop3', 'l-sieve', 'l-smtp']);
     for (const id of Object.keys(updates)) {
       expect(updates[id].overrideProxyTrustedNetworks).toEqual({
         '10.0.0.1': true,
-        '10.42.0.0/16': true,
-        '10.43.0.0/16': true,
       });
+    }
+
+    // Regression guard: cluster CIDRs MUST stay out of the per-listener
+    // trust list. A future refactor that adds them back would re-break
+    // every cluster-internal mail probe (integration harness, mail-admin
+    // health prober, Roundcube, Bulwark) with `write:errno=104`. The
+    // positive-set assertion above doesn't catch this — adding a second
+    // key wouldn't fail toEqual against a strict-shape object, but a
+    // weakened future toMatchObject would. Pin both CIDRs explicitly.
+    for (const id of Object.keys(updates)) {
+      const trust = updates[id].overrideProxyTrustedNetworks;
+      expect(trust['10.42.0.0/16']).toBeUndefined();
+      expect(trust['10.43.0.0/16']).toBeUndefined();
     }
   });
 
