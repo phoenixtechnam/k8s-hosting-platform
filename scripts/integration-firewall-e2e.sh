@@ -64,11 +64,16 @@ ssh_cluster() {
 }
 
 # ─── Login ──────────────────────────────────────────────────────────────────
-log "logging in"
-TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
-  | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null)
+if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
+  log "using cached INTEGRATION_TOKEN"
+  TOKEN="$INTEGRATION_TOKEN"
+else
+  log "logging in"
+  TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null)
+fi
 [[ -n "$TOKEN" ]] || { echo "login failed"; exit 1; }
 ok "logged in"
 

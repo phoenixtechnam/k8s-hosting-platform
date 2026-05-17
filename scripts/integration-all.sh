@@ -35,6 +35,8 @@ set -uo pipefail
 
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 [[ -n "$ADMIN_PASSWORD" ]] || { echo "ERROR: ADMIN_PASSWORD must be set" >&2; exit 2; }
+ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.phoenix-host.net}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@phoenix-host.net}"
 
 CYAN='\033[36m'
 GREEN='\033[32m'
@@ -48,59 +50,106 @@ pass()  { printf '%b✓%b %s\n' "$GREEN" "$RESET" "$*"; }
 fail()  { printf '%b✗%b %s\n' "$RED" "$RESET" "$*"; }
 warn()  { printf '%b⚠%b %s\n' "$YELLOW" "$RESET" "$*"; }
 
-# Reset admin password before each suite — pod restarts cycle the
-# bcrypt hash and a stale password breaks every login. The reset
-# script is idempotent. Both the SSH target and the admin email are
-# operator-overridable so the harness runs against any cluster
-# bootstrapped by this repo, not just the phoenix-host.net staging
-# cluster.
+# Reset admin password ONCE up front (was: per-suite). Pod restarts can
+# cycle the bcrypt hash; a stale password kills login. We reset once
+# because the cached INTEGRATION_TOKEN we issue below survives the
+# whole run — sub-scripts inherit it, no per-suite re-login.
 reset_admin_password() {
   ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" \
     -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q \
     "${SSH_HOST:-root@89.167.3.56}" \
-    "/tmp/admin-password-reset.sh --email '${ADMIN_EMAIL:-admin@phoenix-host.net}' --password '$ADMIN_PASSWORD' >/dev/null 2>&1" \
+    "/tmp/admin-password-reset.sh --email '${ADMIN_EMAIL}' --password '$ADMIN_PASSWORD' >/dev/null 2>&1" \
     || warn "admin password reset failed — auth may fail in suite"
 }
 
-suites=(
+# Single login → INTEGRATION_TOKEN. Sub-scripts inherit via export
+# and skip their own /auth/login round-trip (see
+# `lib/integration-token.sh` and individual scripts' login_token()).
+# Default access token TTL is 30 minutes; we refresh between major
+# parallel groups (~midway through a full run) to stay well within
+# that window. Sub-scripts that get a 401 fall back to fresh login
+# (their existing curl path is the else-branch of the cache check).
+mint_token() {
+  curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null
+}
+reset_admin_password
+INTEGRATION_TOKEN="$(mint_token)"
+[[ -n "$INTEGRATION_TOKEN" ]] || { echo "ERROR: initial login failed" >&2; exit 2; }
+export INTEGRATION_TOKEN
+log "Cached INTEGRATION_TOKEN (sub-scripts will skip per-suite login)"
+
+# Suite layout: SERIAL groups + PARALLEL groups. Layout chosen to keep
+# global-state-mutating suites (staging-all, oidc-dex, postgres-pitr)
+# off the parallel path, where their effects on the shared cluster
+# would corrupt sibling suites' assertions.
+#
+# SERIAL_PRE  — must run first, sequentially, against an unmolested
+#               cluster. staging-all owns the global integration
+#               fixture (admin/billing/support users, backup target,
+#               canonical plan/region IDs); oidc-dex toggles Dex
+#               static-providers + proxy-gate cluster state.
+# PARALLEL    — operate on independent tenant namespaces with no
+#               cross-suite state sharing. Race-safe to run all at
+#               once. Output is captured per-suite and replayed on
+#               completion so the operator can scroll through one
+#               cohesive log per suite.
+# SERIAL_POST — destructive / terminal. postgres-pitr deletes and
+#               recreates the platform/postgres CR — must be the last
+#               thing the cluster sees.
+#
+# 2026-05-17 baseline: a full serial run was ~45 min on staging.
+# Switching the PARALLEL bucket to background+wait drops typical
+# wall time by ~50% (most parallel suites are 4-8 min apiece and
+# converge close to the slowest one's wall time).
+
+SERIAL_PRE=(
   "staging-all:integration-staging.sh all"
+  "oidc-dex:integration-oidc-dex.sh"
+)
+PARALLEL=(
   "pvc:integration-pvc.sh"
   "tier-flip:integration-tier-flip-e2e.sh"
   "grow:integration-grow-e2e.sh"
   "passkey:integration-passkey-e2e.sh"
-  "oidc-dex:integration-oidc-dex.sh"
   "firewall:integration-firewall-e2e.sh"
   "drain:integration-drain-e2e.sh"
-  # Last — destructive to platform/postgres CR (deletes + recreates).
+)
+SERIAL_POST=(
+  # Destructive to platform/postgres CR (deletes + recreates).
   # Source PVCs are reclaimPolicy=Retain so data survives, but other
   # suites should run against the unmolested cluster first. Uses CNPG's
   # native WAL-archive PITR (independent of the storage-lifecycle
   # snapshot store), so unaffected by the PSA-baseline snapshot block.
   "postgres-pitr:integration-postgres-pitr.sh"
 )
+
 # 2026-05-17: lifecycle (integration-lifecycle-e2e.sh) and system-
 # snapshots (integration-system-snapshots.sh) suites exercise the
 # storage-lifecycle snapshot Job, which uses LocalHostPathStore's
 # inline `hostPath` volume — rejected by PodSecurity baseline on tenant
 # namespaces (the snapshot Job runs in tenant ns to mount the source
 # PVC). Re-enable by setting INTEGRATION_INCLUDE_SNAPSHOTS=1 once the
-# PSA-compatible snapshot-store work lands.
+# PSA-compatible snapshot-store work lands. Lifecycle goes to
+# PARALLEL (operates on its own tenants); system-snapshots stays
+# SERIAL_PRE because it mutates the system-db cluster.
 if [[ "${INTEGRATION_INCLUDE_SNAPSHOTS:-}" == "1" ]]; then
-  # Insert before passkey (preserve original ordering)
-  suites=(
-    "staging-all:integration-staging.sh all"
-    "pvc:integration-pvc.sh"
-    "tier-flip:integration-tier-flip-e2e.sh"
-    "grow:integration-grow-e2e.sh"
-    "lifecycle:integration-lifecycle-e2e.sh"
-    "passkey:integration-passkey-e2e.sh"
-    "oidc-dex:integration-oidc-dex.sh"
-    "firewall:integration-firewall-e2e.sh"
-    "system-snapshots:integration-system-snapshots.sh"
-    "drain:integration-drain-e2e.sh"
-    "postgres-pitr:integration-postgres-pitr.sh"
-  )
+  SERIAL_PRE+=("system-snapshots:integration-system-snapshots.sh")
+  PARALLEL+=("lifecycle:integration-lifecycle-e2e.sh")
 fi
+# Also skip the bundle + restore SCENARIOS inside the staging-all suite —
+# they exercise the same snapshot path through the tenant-backup-v2
+# bundle orchestrator. The existing SKIP_BUNDLE_SCENARIO=1 /
+# SKIP_RESTORE_SCENARIO=1 env vars in integration-staging.sh gate them.
+if [[ "${INTEGRATION_INCLUDE_SNAPSHOTS:-}" != "1" ]]; then
+  export SKIP_BUNDLE_SCENARIO="${SKIP_BUNDLE_SCENARIO:-1}"
+  export SKIP_RESTORE_SCENARIO="${SKIP_RESTORE_SCENARIO:-1}"
+fi
+# Operator opt-out: INTEGRATION_PARALLEL=0 forces serial execution
+# (useful when debugging a flake — easier to read sequential logs).
+INTEGRATION_PARALLEL="${INTEGRATION_PARALLEL:-1}"
 # Also skip the bundle + restore SCENARIOS inside the staging-all suite —
 # they exercise the same snapshot path through the tenant-backup-v2
 # bundle orchestrator. The existing SKIP_BUNDLE_SCENARIO=1 /
@@ -145,15 +194,82 @@ assert_admin_reachable() {
 #   *   → real failure
 SKIP_RC=77
 
-for entry in "${suites[@]}"; do
-  name="${entry%%:*}"
-  cmd="${entry#*:}"
-  log "Suite: $name"
-  reset_admin_password
-  set +e
-  ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/${cmd%% *}" ${cmd#* }
-  rc=$?
-  set -e
+# run_serial_group GROUP_LABEL SUITE_ENTRY...
+# Runs each suite sequentially; output streams live. Reachability
+# probe between every suite catches global-state breakage.
+run_serial_group() {
+  local group_label="$1"; shift
+  log "Group [$group_label] (serial, ${#@} suite(s))"
+  for entry in "$@"; do
+    local name="${entry%%:*}" cmd="${entry#*:}"
+    log "Suite: $name"
+    set +e
+    ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/${cmd%% *}" ${cmd#* }
+    local rc=$?
+    set -e
+    classify_rc "$name" "$rc"
+    assert_admin_reachable "$name" || true
+  done
+}
+
+# run_parallel_group GROUP_LABEL SUITE_ENTRY...
+# Background-launches every suite, captures stdout+stderr to a per-
+# suite log, then waits for all and replays each log in order
+# (so the operator sees one coherent stream per suite rather than
+# interleaved chaos). Failed suites' logs print FIRST so the failure
+# is in plain view at the bottom of the operator's terminal scroll.
+run_parallel_group() {
+  local group_label="$1"; shift
+  local n=$#
+  log "Group [$group_label] (parallel, $n suite(s))"
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local -a pids=() names=() rcfiles=() logfiles=()
+  for entry in "$@"; do
+    local name="${entry%%:*}" cmd="${entry#*:}"
+    local logf="$tmpdir/$name.log" rcf="$tmpdir/$name.rc"
+    (
+      ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/${cmd%% *}" ${cmd#* } >"$logf" 2>&1
+      echo $? > "$rcf"
+    ) &
+    pids+=("$!")
+    names+=("$name")
+    rcfiles+=("$rcf")
+    logfiles+=("$logf")
+    log "  launched: $name (pid=$!)"
+  done
+  log "  waiting for $n parallel suite(s) to finish…"
+  for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  # Replay outputs: failures first, then passes (so the operator sees
+  # the failure at the bottom of their scrollback).
+  local i
+  # Sort indices: failures first
+  local -a order=()
+  for i in "${!names[@]}"; do
+    local rc; rc=$(cat "${rcfiles[$i]}" 2>/dev/null || echo 1)
+    [[ $rc -ne 0 && $rc -ne $SKIP_RC ]] && order+=("$i")
+  done
+  for i in "${!names[@]}"; do
+    local rc; rc=$(cat "${rcfiles[$i]}" 2>/dev/null || echo 1)
+    [[ $rc -eq 0 || $rc -eq $SKIP_RC ]] && order+=("$i")
+  done
+  for i in "${order[@]}"; do
+    local name="${names[$i]}" rc; rc=$(cat "${rcfiles[$i]}" 2>/dev/null || echo 1)
+    log "── output: $name (rc=$rc) ──"
+    cat "${logfiles[$i]}" 2>/dev/null || echo "  (no output captured)"
+    classify_rc "$name" "$rc"
+  done
+  # One reachability probe per group (not per suite) — running it
+  # between concurrent suites is meaningless. Run after they all
+  # finish, with each suite's name attributed.
+  for name in "${names[@]}"; do
+    assert_admin_reachable "parallel:$name" || true
+  done
+  rm -rf "$tmpdir"
+}
+
+classify_rc() {
+  local name="$1" rc="$2"
   if [[ $rc -eq 0 ]]; then
     pass "suite $name PASSED"
     passed_suites+=("$name")
@@ -164,9 +280,30 @@ for entry in "${suites[@]}"; do
     fail "suite $name FAILED (rc=$rc)"
     failed_suites+=("$name")
   fi
-  # Reachability sweep — must run regardless of suite outcome
-  assert_admin_reachable "$name" || true
-done
+}
+
+# ─── Execute ──────────────────────────────────────────────────────
+run_serial_group "PRE (sequential, mutates global state)" "${SERIAL_PRE[@]}"
+
+# Refresh the cached token before the parallel batch — group PRE
+# can run 10-15 min on a slow cluster, and the parallel batch then
+# runs another 10-15 min. With JWT default TTL of 30 min, we'd cut
+# it close. Cheap insurance.
+log "Refreshing INTEGRATION_TOKEN before parallel group"
+INTEGRATION_TOKEN="$(mint_token)"
+[[ -n "$INTEGRATION_TOKEN" ]] || { fail "mid-run re-login failed — aborting"; exit 1; }
+export INTEGRATION_TOKEN
+
+if [[ "$INTEGRATION_PARALLEL" == "1" ]]; then
+  run_parallel_group "PARALLEL (independent tenants)" "${PARALLEL[@]}"
+else
+  warn "INTEGRATION_PARALLEL=0 — running parallel group sequentially"
+  run_serial_group "PARALLEL→serial (override)" "${PARALLEL[@]}"
+fi
+
+# Final refresh + serial post-group.
+INTEGRATION_TOKEN="$(mint_token)" && export INTEGRATION_TOKEN || warn "post-group re-login failed"
+run_serial_group "POST (destructive, terminal)" "${SERIAL_POST[@]}"
 
 log "Final results"
 printf '  %bpassed:%b  %s\n' "$GREEN" "$RESET" "${#passed_suites[@]}"

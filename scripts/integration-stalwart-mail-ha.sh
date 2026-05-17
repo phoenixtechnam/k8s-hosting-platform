@@ -2089,22 +2089,27 @@ except: print('')" 2>/dev/null)"
   echo "  Deleting pod ${source_pod} (forces re-schedule via dr-watcher)..."
   kctl -n "$STALWART_NS" delete pod "$source_pod" --grace-period=0 --force >/dev/null 2>&1
 
-  # Wait for dr-watcher tick (30s default) + a couple of state-machine
-  # iterations. Threshold is operator-configurable; staging default is
-  # 300s but the dr-watcher should at least transition to 'degraded'
-  # within the first tick.
-  echo "  Sleeping 90s for dr-watcher to detect node-unhealthy..."
-  sleep 90
-
-  # L1. drState should at least be `degraded` or further along.
-  local drift_check
-  drift_check="$(curl -sk --fail --max-time 15 \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
-    "${PLATFORM_API_URL%/}/api/v1/admin/mail/placement" 2>/dev/null \
-    | python3 -c "
+  # Poll for the first dr-watcher transition rather than wait the full
+  # 90s. The watcher ticks every 30s by default and we want the FIRST
+  # state-change after the source pod was hard-deleted — most runs land
+  # in 30-45s. We keep a 90s ceiling to match the old fixed wait so a
+  # legitimately slow tick (DNS hiccup, API throttle) doesn't false-fail.
+  #
+  # Was: `sleep 90` (fixed) → typical case dropped by ~50%.
+  echo "  Polling up to 90s for dr-watcher to detect node-unhealthy (tick ~30s)..."
+  local drift_check="unknown"
+  local _deadline=$((SECONDS + 90))
+  while (( SECONDS < _deadline )); do
+    drift_check="$(curl -sk --fail --max-time 15 \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      "${PLATFORM_API_URL%/}/api/v1/admin/mail/placement" 2>/dev/null \
+      | python3 -c "
 import sys, json
 try: print(json.load(sys.stdin)['data'].get('drState','unknown'))
 except: print('unknown')" 2>/dev/null)"
+    case "$drift_check" in degraded|failing-over|failed-over) break ;; esac
+    sleep 5
+  done
   case "$drift_check" in
     degraded|failing-over|failed-over)
       note_pass "L1. dr-watcher transitioned drState → ${drift_check}"

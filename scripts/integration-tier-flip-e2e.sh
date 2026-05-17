@@ -48,11 +48,16 @@ api() {
   fi
 }
 
-log "logging in"
-TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
-  | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")
+if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
+  log "using cached INTEGRATION_TOKEN"
+  TOKEN="$INTEGRATION_TOKEN"
+else
+  log "logging in"
+  TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")
+fi
 [[ -n "$TOKEN" ]] || { echo "login failed"; exit 1; }
 
 PLAN_ID=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d['data'] if p['name']=='Starter'),''))")

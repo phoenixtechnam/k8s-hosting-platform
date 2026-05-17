@@ -46,6 +46,10 @@ info() { echo -e "  \033[33mℹ\033[0m $*"; }
 section() { echo -e "\n\033[1m── $1 ──\033[0m"; }
 
 login_token() {
+  if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
+    printf '%s' "$INTEGRATION_TOKEN"
+    return 0
+  fi
   curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \

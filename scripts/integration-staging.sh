@@ -104,6 +104,13 @@ fail() { echo -e "  \033[31m✗\033[0m $*"; FAILURES+=("$*"); FAILED=$((FAILED+1
 warn() { echo -e "  \033[33m⚠\033[0m $*"; }
 
 login_token() {
+  # Honour INTEGRATION_TOKEN (set by integration-all.sh) to skip the
+  # redundant per-suite /auth/login round-trip. Standalone runs fall
+  # through to fresh login — behaviour unchanged.
+  if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
+    printf '%s' "$INTEGRATION_TOKEN"
+    return 0
+  fi
   curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \

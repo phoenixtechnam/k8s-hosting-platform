@@ -57,11 +57,20 @@ api() {
   fi
 }
 
-log "logging in as $ADMIN_EMAIL"
-TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
-  | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")
+# When invoked by integration-all.sh, the master runner exports
+# INTEGRATION_TOKEN so we skip the redundant per-suite /auth/login
+# round-trip. Standalone runs (no env) fall through to fresh login —
+# behaviour unchanged.
+if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
+  log "using cached INTEGRATION_TOKEN"
+  TOKEN="$INTEGRATION_TOKEN"
+else
+  log "logging in as $ADMIN_EMAIL"
+  TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")
+fi
 [[ -n "$TOKEN" ]] || { echo "login failed"; exit 1; }
 
 # Track every tenant we create so the EXIT trap can DELETE them

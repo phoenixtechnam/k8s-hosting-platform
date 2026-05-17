@@ -60,6 +60,10 @@ ok()  { echo -e "  \033[32m✓\033[0m $*"; PASSED=$((PASSED+1)); }
 fail() { echo -e "  \033[31m✗\033[0m $*"; FAILURES+=("$*"); FAILED=$((FAILED+1)); }
 
 login_token() {
+  if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
+    printf '%s' "$INTEGRATION_TOKEN"
+    return 0
+  fi
   curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \

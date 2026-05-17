@@ -82,11 +82,16 @@ EOF
 }
 
 log "1) Login"
-TOKEN=$(curl -sS -k -X POST "$ADMIN_HOST/api/v1/auth/login" \
-  -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
-  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["data"]["token"])')
-[[ -n "$TOKEN" ]] && pass "logged in" || fail "login failed"
+if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
+  TOKEN="$INTEGRATION_TOKEN"
+  pass "logged in (cached INTEGRATION_TOKEN)"
+else
+  TOKEN=$(curl -sS -k -X POST "$ADMIN_HOST/api/v1/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["data"]["token"])')
+  [[ -n "$TOKEN" ]] && pass "logged in" || fail "login failed"
+fi
 
 log "2) Pre-flight: confirm CNPG cluster system-db is healthy"
 PHASE=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}')
