@@ -196,24 +196,64 @@ export const TENANT_OVERHEAD_PRIORITY_CLASS = 'platform-tenant-overhead';
  * tenant (e.g. `scripts/backfill-tenant-namespace-pss.sh` calling the
  * platform API) is the backfill.
  */
-const TENANT_NAMESPACE_LABELS = {
+const TENANT_NAMESPACE_LABELS_BASE = {
   platform: 'k8s-hosting',
-  // PSS enforce / warn / audit. The version pin `latest` tracks the
-  // running cluster's k8s version (recommended in the PSS docs).
-  'pod-security.kubernetes.io/enforce': 'baseline',
-  'pod-security.kubernetes.io/enforce-version': 'latest',
-  'pod-security.kubernetes.io/warn': 'restricted',
-  'pod-security.kubernetes.io/warn-version': 'latest',
-  'pod-security.kubernetes.io/audit': 'restricted',
-  'pod-security.kubernetes.io/audit-version': 'latest',
 } as const;
+
+/**
+ * PSS labels for a tenant namespace. The enforce level depends on whether
+ * the operator has enabled either of the `allow_host_ports_*` toggles in
+ * system_settings:
+ *
+ *   - both off  → enforce=baseline (forbids hostPort, hostPath,
+ *                                    hostNetwork, host PID/IPC, etc.)
+ *   - either on → enforce=privileged (allows EVERYTHING, including
+ *                                      hostPort which is the whole
+ *                                      point of the toggle)
+ *
+ * baseline is preferred — it's the highest enforcement that still allows
+ * common tenant workloads to run. PSA's discrete ladder (privileged →
+ * baseline → restricted) has no "baseline + hostPort" level, so opting
+ * into host ports for tenants means opting into the full privileged
+ * profile for tenant namespaces. Operators who enable the toggle take on
+ * that broader trust. `warn` and `audit` stay at `restricted` so kubectl
+ * + audit log keep highlighting drift even when enforce is loosened.
+ *
+ * 2026-05-17: this was static `baseline` before. The firewall integration
+ * test surfaced the broken contract — platform-api accepted the deploy
+ * (allow_host_ports_* on), but k8s admission rejected the Pod because
+ * PSA enforce=baseline still forbade `hostPort`. Now the enforce level
+ * tracks the toggle so the gate decision is consistent at both layers.
+ */
+function buildPsaLabels(
+  allowHostPorts: boolean,
+): Record<string, string> {
+  const enforceLevel = allowHostPorts ? 'privileged' : 'baseline';
+  return {
+    'pod-security.kubernetes.io/enforce': enforceLevel,
+    'pod-security.kubernetes.io/enforce-version': 'latest',
+    'pod-security.kubernetes.io/warn': 'restricted',
+    'pod-security.kubernetes.io/warn-version': 'latest',
+    'pod-security.kubernetes.io/audit': 'restricted',
+    'pod-security.kubernetes.io/audit-version': 'latest',
+  };
+}
 
 export async function applyNamespace(
   k8s: K8sClients,
   namespace: string,
   tenantId: string,
+  // Caller passes the resolved settings so we don't query the DB on
+  // every namespace touch. Default to most-restrictive (baseline) when
+  // settings aren't available — fail-safe, the toggle can be re-applied
+  // by a subsequent provisioning call once settings are wired.
+  options?: { allowHostPorts?: boolean },
 ): Promise<void> {
-  const labels = { ...TENANT_NAMESPACE_LABELS, tenant: tenantId };
+  const labels = {
+    ...TENANT_NAMESPACE_LABELS_BASE,
+    ...buildPsaLabels(options?.allowHostPorts ?? false),
+    tenant: tenantId,
+  };
 
   // Check if namespace already exists. Either path (exists or 404)
   // must end with the PSS labels in place — this function is the
@@ -855,7 +895,16 @@ export async function runProvisionNamespace(
     // Step 1: Create Namespace
     if (!(await guardTenantExists())) return;
     await updateProgress('Create Namespace', 'running');
-    await applyNamespace(k8s, namespace, tenantId);
+    // Pick the namespace PSA enforce level based on the cluster-wide
+    // `allow_host_ports_*` toggles. When either is on, the tenant
+    // namespace gets enforce=privileged so deployments declaring
+    // `hostPort` actually admit (the platform-api gate alone isn't
+    // enough — k8s admission rejects the Pod independently). See
+    // buildPsaLabels in this file for the full rationale.
+    const { getSettings } = await import('../system-settings/service.js');
+    const settings = await getSettings(db).catch(() => null);
+    const allowHostPorts = !!(settings?.allowHostPortsServer || settings?.allowHostPortsWorker);
+    await applyNamespace(k8s, namespace, tenantId, { allowHostPorts });
     await updateProgress('Create Namespace', 'completed');
 
     // Step 2: Create ResourceQuota

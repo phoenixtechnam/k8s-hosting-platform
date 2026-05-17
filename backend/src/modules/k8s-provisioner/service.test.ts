@@ -134,6 +134,61 @@ describe('K8s Provisioner Service', () => {
       expect(override?._expectedContentType).toBe('application/strategic-merge-patch+json');
     });
 
+    // 2026-05-17 firewall-toggle PSA fix: enforce level tracks the
+    // `allow_host_ports_*` toggles. When the operator enables host
+    // ports cluster-wide, every tenant namespace's enforce label
+    // must be `privileged` so PSA admits hostPort pods (baseline
+    // forbids them outright — that's why pre-fix the platform-api
+    // gate let the deploy through but kubelet still rejected the
+    // Pod).
+    it('should set enforce=privileged when allowHostPorts is true (host-ports toggle on)', async () => {
+      const { applyNamespace } = await import('./service.js');
+      await applyNamespace(mockK8s, 'tenant-test-ns', 'tenant-123', { allowHostPorts: true });
+      const callBody = (mockK8s.core.createNamespace as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        body: { metadata: { labels: Record<string, string> } };
+      };
+      expect(callBody.body.metadata.labels).toMatchObject({
+        'pod-security.kubernetes.io/enforce': 'privileged',
+        // warn + audit stay at restricted — kubectl + audit log keep
+        // flagging restricted violations even when enforce is loosened.
+        'pod-security.kubernetes.io/warn': 'restricted',
+        'pod-security.kubernetes.io/audit': 'restricted',
+      });
+    });
+
+    it('should default to enforce=baseline when allowHostPorts is unset (back-compat)', async () => {
+      const { applyNamespace } = await import('./service.js');
+      // No options arg — same as every pre-2026-05-17 caller.
+      await applyNamespace(mockK8s, 'tenant-test-ns', 'tenant-123');
+      const callBody = (mockK8s.core.createNamespace as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        body: { metadata: { labels: Record<string, string> } };
+      };
+      expect(callBody.body.metadata.labels['pod-security.kubernetes.io/enforce']).toBe('baseline');
+    });
+
+    it('should patch enforce=privileged onto an existing namespace when allowHostPorts is on (backfill path)', async () => {
+      (mockK8s.core.readNamespace as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { applyNamespace } = await import('./service.js');
+      await applyNamespace(mockK8s, 'existing-ns', 'tenant-123', { allowHostPorts: true });
+      const patchCall = (mockK8s.core.patchNamespace as ReturnType<typeof vi.fn>).mock.calls[0];
+      const patchBody = patchCall[0] as { body: { metadata: { labels: Record<string, string> } } };
+      expect(patchBody.body.metadata.labels['pod-security.kubernetes.io/enforce']).toBe('privileged');
+    });
+
+    it('should patch enforce=baseline onto an existing namespace when allowHostPorts flips off (restore-security path)', async () => {
+      // The OFF direction is the operationally important one: the
+      // operator just turned host ports OFF and the cluster MUST
+      // catch up by tightening enforce back to baseline. A bug here
+      // would silently leave tenant namespaces at privileged after
+      // the operator believes they've restored the safe default.
+      (mockK8s.core.readNamespace as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { applyNamespace } = await import('./service.js');
+      await applyNamespace(mockK8s, 'existing-ns', 'tenant-123', { allowHostPorts: false });
+      const patchCall = (mockK8s.core.patchNamespace as ReturnType<typeof vi.fn>).mock.calls[0];
+      const patchBody = patchCall[0] as { body: { metadata: { labels: Record<string, string> } } };
+      expect(patchBody.body.metadata.labels['pod-security.kubernetes.io/enforce']).toBe('baseline');
+    });
+
     it('should create TWO ResourceQuotas: a Pod-scoped one (CPU/memory) + an unscoped storage one', async () => {
       const { applyResourceQuota } = await import('./service.js');
       await applyResourceQuota(mockK8s, 'test-ns', { cpu: '2', memory: '4', storage: '50' });

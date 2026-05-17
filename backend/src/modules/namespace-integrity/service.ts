@@ -138,7 +138,16 @@ export async function checkTenantNamespaceIntegrity(
   // serial).
   if (findings.includes('namespace_missing')) {
     try {
-      await applyNamespace(k8s, ns, tenantId);
+      // Mirror the provisionTenant PSA-label logic: read the cluster's
+      // `allow_host_ports_*` toggles so the recreated namespace matches
+      // what a fresh provisioning call would produce. Without this, a
+      // recovered namespace would always land at PSA=baseline even on
+      // host-ports-enabled clusters, and any hostPort deployment would
+      // re-fail until the next routine applyNamespace touch.
+      const { getSettings } = await import('../system-settings/service.js');
+      const settings = await getSettings(db).catch(() => null);
+      const allowHostPorts = !!(settings?.allowHostPortsServer || settings?.allowHostPortsWorker);
+      await applyNamespace(k8s, ns, tenantId, { allowHostPorts });
       repaired.push('namespace_missing');
     } catch (err) {
       errors.push(`namespace_missing: ${(err as Error).message}`);

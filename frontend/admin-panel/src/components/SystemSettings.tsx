@@ -46,6 +46,41 @@ export default function SystemSettingsForm() {
   }, [settings]);
 
   const handleSave = () => {
+    // Guard the security-significant host-ports toggle behind an
+    // explicit confirm() that names the full PSA-level impact. The
+    // operator must read and acknowledge what they're opening up
+    // — see the red warning paragraph in the Host Network Ports
+    // card for the same text. Only fires on the OFF→ON transition
+    // (skipped when both flags are already on, when nothing's
+    // changing, and when ON→OFF — toggling off is recoverable;
+    // toggling on widens the trust surface).
+    const wasOnServer = settings?.allowHostPortsServer ?? false;
+    const wasOnWorker = settings?.allowHostPortsWorker ?? false;
+    const enablingServer = allowHostPortsServer && !wasOnServer;
+    const enablingWorker = allowHostPortsWorker && !wasOnWorker;
+    if (enablingServer || enablingWorker) {
+      const which: string[] = [];
+      if (enablingServer) which.push('Server');
+      if (enablingWorker) which.push('Worker');
+      const proceed = window.confirm(
+        `Enabling "Allow Custom Host Ports on ${which.join(' + ')} Nodes" ` +
+          `relaxes every tenant namespace's Pod Security Admission level from baseline ` +
+          `to privileged. This also unlocks hostNetwork, hostPID, hostIPC, hostPath ` +
+          `volumes, and privileged containers for ALL tenant workloads — not just the ` +
+          `app you're enabling this for.\n\n` +
+          `On multi-tenant clusters this materially widens the blast radius of any ` +
+          `tenant-controlled deployment. Audit your custom-deployment submission ` +
+          `policy before continuing.\n\n` +
+          `Click OK to proceed, or Cancel to abort.`,
+      );
+      if (!proceed) {
+        // Roll back the form's local state so the toggle visually
+        // returns to where it was before the operator clicked it.
+        if (enablingServer) setAllowHostPortsServer(wasOnServer);
+        if (enablingWorker) setAllowHostPortsWorker(wasOnWorker);
+        return;
+      }
+    }
     setSaved(false);
     setSaveError(null);
     updateSettings.mutate(
@@ -223,8 +258,11 @@ export default function SystemSettingsForm() {
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
           Some applications (e.g. COTURN, BBB media servers) require dedicated UDP/TCP ports on the underlying host network. Enabling these toggles lets the catalog deploy gate schedule those workloads onto the matching node role and opens the requested ports on every node of that role.
         </p>
+        <p className="text-xs text-red-700 dark:text-red-300 mb-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/40 px-2 py-1.5">
+          <strong>⚠ Security impact (broader than &quot;just hostPort&quot;):</strong> Enabling either toggle relaxes the Pod Security Admission level for <strong>every tenant namespace</strong> from <code>baseline</code> to <code>privileged</code>. Kubernetes&apos; PSA ladder has no <em>baseline+hostPort</em> level, so opting into host ports also unlocks <code>hostNetwork</code>, <code>hostPID</code>, <code>hostIPC</code>, <code>hostPath</code> volumes, <code>privileged: true</code> containers, and <code>allowPrivilegeEscalation: true</code> on tenant workloads. On multi-tenant clusters, audit custom-deployment submissions before turning this on — a malicious tenant could use these capabilities to escape the pod sandbox.
+        </p>
         <p className="text-xs text-amber-700 dark:text-amber-300 mb-4 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/40 px-2 py-1">
-          <strong>Note:</strong> turning a toggle <strong>off</strong> only blocks <em>new</em> deploys. Already-running workloads keep their open ports until they are deleted or redeployed manually. To force closure, delete the affected deployments after disabling.
+          <strong>Note:</strong> turning a toggle <strong>off</strong> only blocks <em>new</em> deploys. Already-running workloads keep their open ports until they are deleted or redeployed manually. To force closure, delete the affected deployments after disabling. The namespace-level PSA reconcile runs eventual-consistently (~1-2s per tenant namespace) — flipping a toggle in either direction has a narrow window during which the cluster is mid-transition.
         </p>
         <div className="space-y-4">
           <div className="flex items-start gap-3">
