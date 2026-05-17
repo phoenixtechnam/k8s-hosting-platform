@@ -11,20 +11,6 @@
  * hostPath, an object key for S3, etc.). Callers pass it back to
  * `open()` / `delete()` unchanged.
  */
-
-// HTTP-409 narrowing for K8s "already exists" responses. Duplicated
-// from other modules (cert-manager.ts, k8s-provisioner/service.ts,
-// ingress-routes/annotation-sync.ts) instead of exported because each
-// site needs slightly different shape-tolerant handling — this one
-// reads .response?.statusCode|status which covers both the legacy
-// @kubernetes/client-node v0.x shape and the v1.x SDK wrapper.
-function isK8s409(err: unknown): boolean {
-  if (typeof err !== 'object' || err === null) return false;
-  const e = err as { code?: number; statusCode?: number; status?: number; response?: { statusCode?: number; status?: number } };
-  if (e.code === 409 || e.statusCode === 409 || e.status === 409) return true;
-  if (e.response?.statusCode === 409 || e.response?.status === 409) return true;
-  return false;
-}
 export interface SnapshotMetadata {
   readonly archivePath: string;
   readonly sizeBytes: number;
@@ -53,24 +39,6 @@ export interface SnapshotStore {
     readonly mountPath: string;
     readonly relativePath: string;
   };
-
-  /**
-   * Optional: ensure any cluster-scoped resources the Job's mount
-   * requires exist before the Job is created. For LocalHostPathStore
-   * this materialises a cluster-scoped PV (hostPath) + a tenant-namespace
-   * PVC bound to it — necessary because PodSecurity baseline forbids
-   * hostPath volumes inline on the Pod, but allows PVC references whose
-   * underlying PV is hostPath (PSA only inspects pod.spec.volumes,
-   * not the PV chain). For S3Store this is a no-op (it uses emptyDir).
-   *
-   * Implementations that don't need pre-staged resources should leave
-   * this undefined; callers MUST check for undefined before invoking.
-   */
-  ensureJobMountResources?(
-    k8s: import('../k8s-provisioner/k8s-client.js').K8sClients,
-    namespace: string,
-    archivePath: string,
-  ): Promise<void>;
 
   /**
    * Stat a completed snapshot. Returns null when the object is missing
@@ -133,156 +101,14 @@ export class LocalHostPathStore implements SnapshotStore {
     readonly mountPath: string;
     readonly relativePath: string;
   } {
-    // PodSecurity baseline forbids inline `hostPath` on Pod.spec.volumes
-    // in tenant namespaces (PSA enforce=baseline). It DOES allow a
-    // `persistentVolumeClaim` reference whose underlying PV uses hostPath
-    // — PSA only inspects the Pod spec, not the PV chain. So instead of
-    // returning the obvious `{ hostPath: ... }` volumeSpec, we return a
-    // PVC reference. The PV+PVC pair must already exist; callers must
-    // invoke `ensureJobMountResources` before creating the Pod.
-    //
-    // The PVC name is derived from the archivePath's tenant-id segment
-    // (path layout = `<tenant-id>/<snapshot-id>.tar.gz`) so it survives
-    // tenant namespace recreations and matches up with the matching PV.
-    // The underlying PV's hostPath is `<hostRoot>/<tenant-id>` (subdir),
-    // so the Job writes its archive at /snapshots/<basename> where
-    // <basename> is the path WITHIN the tenant subdir (i.e. just the
-    // `<snapshot-id>.tar.gz` slice — we strip the tenant-id prefix
-    // because the PV is already tenant-scoped). Platform-api's
-    // stat/delete still use the full <tenant-id>/<snapshot-id>.tar.gz
-    // path because IT mounts the parent /var/lib/platform/snapshots.
-    const [tenantId, ...rest] = archivePath.split('/');
-    const basenameInsideTenantDir = rest.join('/');
     return {
       volumeSpec: {
         name: 'platform-snapshots',
-        persistentVolumeClaim: { claimName: `platform-snapshots-${tenantId}` },
+        hostPath: { path: this.hostRoot, type: 'DirectoryOrCreate' },
       },
       mountPath: '/snapshots',
-      relativePath: basenameInsideTenantDir,
+      relativePath: archivePath,
     };
-  }
-
-  /**
-   * Materialise a hostPath-backed PV (cluster-scoped, OK under PSA) +
-   * a PVC in the tenant namespace pre-bound to it. Both objects are
-   * named `platform-snapshots-<tenant-id>` so they survive across
-   * snapshot/restore Jobs and across tenant namespace recreations.
-   * Idempotent — re-invocations against existing objects are no-ops.
-   *
-   * The PV's hostPath layout MUST mirror the layout the Store writes
-   * to on the node — `<hostRoot>/<tenant-id>/` — so the archive that
-   * the Job writes via /snapshots/<snapshot-id>.tar.gz lands at the
-   * platform-api's /snapshots/<tenant-id>/<snapshot-id>.tar.gz read
-   * path.
-   */
-  async ensureJobMountResources(
-    k8s: import('../k8s-provisioner/k8s-client.js').K8sClients,
-    namespace: string,
-    archivePath: string,
-  ): Promise<void> {
-    const tenantId = archivePath.split('/')[0];
-    if (!tenantId) {
-      throw new Error(`ensureJobMountResources: archivePath missing tenant segment: ${archivePath}`);
-    }
-    const resourceName = `platform-snapshots-${tenantId}`;
-    const hostSubdir = `${this.hostRoot.replace(/\/+$/, '')}/${tenantId}`;
-
-    // 1. Cluster-scoped PV with hostPath. claimRef pre-binds to the
-    // PVC we create next — this prevents the PV from being claimed by
-    // a different PVC that happened to also match.
-    try {
-      await (k8s.core as unknown as {
-        createPersistentVolume: (args: { body: unknown }) => Promise<unknown>;
-      }).createPersistentVolume({
-        body: {
-          metadata: {
-            name: resourceName,
-            labels: {
-              'platform.io/component': 'snapshot-store',
-              'platform.io/tenant-id': tenantId,
-            },
-          },
-          spec: {
-            capacity: { storage: '500Gi' },
-            accessModes: ['ReadWriteOnce'],
-            persistentVolumeReclaimPolicy: 'Retain',
-            storageClassName: '',
-            hostPath: { path: hostSubdir, type: 'DirectoryOrCreate' },
-            claimRef: { namespace, name: resourceName },
-          },
-        },
-      });
-    } catch (err: unknown) {
-      if (!isK8s409(err)) throw err;
-      // Already exists. Ensure the claimRef still points at THIS
-      // namespace — if a previous tenant namespace with the same
-      // tenantId was deleted + recreated, claimRef may still target
-      // the old (deleted) PVC and the new PVC will stay Pending.
-      // Re-bind the PV via SSA-merge patch.
-      try {
-        await (k8s.core as unknown as {
-          patchPersistentVolume: (args: { name: string; body: unknown }) => Promise<unknown>;
-        }).patchPersistentVolume({
-          name: resourceName,
-          body: {
-            spec: { claimRef: { namespace, name: resourceName } },
-          },
-        });
-      } catch { /* best-effort rebind */ }
-    }
-
-    // 2. Tenant-namespace PVC bound to the PV. volumeName pins the PVC
-    // to the cluster-scoped PV so the dynamic provisioner doesn't spawn
-    // a fresh local-path volume.
-    //
-    // backup-coverage: excluded:cluster-infrastructure
-    //   This PVC is a thin wiring object around the cluster-scoped
-    //   platform-snapshots PV (hostPath). It contains NO tenant data —
-    //   it's only the mount surface that the snapshot/restore Jobs use
-    //   to read/write the archive on the node's shared snapshot
-    //   directory. The actual tenant data lives on the source PVC
-    //   (covered by the `files` BundleComponent) and the archive
-    //   tarballs themselves live on the host filesystem (covered by
-    //   the system-backup snapshot path, not the tenant bundle).
-    //
-    // requests.storage is INTENTIONALLY tiny (1Mi) because the tenant's
-    // `requests.storage` ResourceQuota (e.g. 2Gi on Starter) sums ALL
-    // PVCs in the namespace — and ResourceQuota does NOT have a
-    // scopeSelector that can exempt storage by label/priority. If we
-    // requested anything realistic (e.g. 500Gi) the PVC creation would
-    // be rejected on every tenant smaller than that. K8s only verifies
-    // `pvc.requests.storage <= pv.capacity.storage` for binding, so 1Mi
-    // against a 500Gi PV is fine — and 1Mi against a 2Gi tenant storage
-    // quota is negligible. Snapshot archives live on the host filesystem
-    // (not on this PVC's accounted "storage"), so the real cost
-    // accounting is operator-level node-disk monitoring, not K8s quota.
-    // backup-coverage: excluded:cluster-infrastructure
-    try {
-      await (k8s.core as unknown as {
-        createNamespacedPersistentVolumeClaim: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-      }).createNamespacedPersistentVolumeClaim({
-        namespace,
-        body: {
-          metadata: {
-            name: resourceName,
-            labels: {
-              'platform.io/component': 'snapshot-store',
-              'platform.io/tenant-id': tenantId,
-            },
-          },
-          spec: {
-            accessModes: ['ReadWriteOnce'],
-            storageClassName: '',
-            resources: { requests: { storage: '1Mi' } },
-            volumeName: resourceName,
-          },
-        },
-      });
-    } catch (err: unknown) {
-      if (!isK8s409(err)) throw err;
-      // PVC already exists — fine, it's idempotent.
-    }
   }
 
   async stat(archivePath: string): Promise<{ sizeBytes: number } | null> {
