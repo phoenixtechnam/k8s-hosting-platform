@@ -43,4 +43,22 @@ describe('rclone-obscure', () => {
     const obscured = rcloneObscure('test-no-padding-chars');
     expect(obscured).not.toMatch(/[+/=]/);
   });
+
+  // Regression guard for the "wrong rclone key" bug — the implementation
+  // shipped with an incorrect last 8 bytes of the cryptKey, causing
+  // round-trips through OUR code to succeed (both sides used the wrong
+  // key) but real rclone to fail with "logon invalid" against SMB,
+  // FTP, and any other backend that uses RCLONE_CONFIG_*_PASS. These
+  // fixtures are pre-computed by `rclone obscure <plaintext>` against
+  // upstream v1.66; their reveal MUST match the documented plaintext.
+  it('reveals upstream-rclone-produced fixtures correctly', () => {
+    const fixtures: Array<{ obscured: string; plain: string }> = [
+      // generated via: kubectl run o --rm -it --image=rclone/rclone:1.66 \
+      //   --command -- rclone obscure smb-dev-password-1234
+      { obscured: 'UIQYM1XhG5kjOxglarAfZhH7RFWNli_frWfXgwp6IHecaSplTQ', plain: 'smb-dev-password-1234' },
+    ];
+    for (const { obscured, plain } of fixtures) {
+      expect(rcloneReveal(obscured)).toEqual(plain);
+    }
+  });
 });

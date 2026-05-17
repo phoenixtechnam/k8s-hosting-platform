@@ -214,12 +214,17 @@ export async function setAssignments(
 export async function resolvePrimaryTarget(
   db: Database,
   snapshotClass: SnapshotClass,
-): Promise<{ targetId: string; targetName: string; targetStorageType: string } | null> {
+): Promise<{ targetId: string; targetName: string; targetStorageType: string; targetEnabled: number } | null> {
+  // We include `enabled` in the projection so the caller (target-resolver)
+  // can refuse to use a disabled target with a TARGET_DISABLED error —
+  // strict-primary semantics (no silent failover to the next-priority
+  // assignment). Without this projection the caller couldn't tell.
   const [row] = await db
     .select({
       targetId: backupTargetAssignments.targetId,
       targetName: backupConfigurations.name,
       targetStorageType: backupConfigurations.storageType,
+      targetEnabled: backupConfigurations.enabled,
     })
     .from(backupTargetAssignments)
     .innerJoin(backupConfigurations, eq(backupConfigurations.id, backupTargetAssignments.targetId))

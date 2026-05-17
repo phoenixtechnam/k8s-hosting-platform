@@ -51,6 +51,21 @@ export async function resolveTargetFor(
       409,
     );
   }
+  // Strict-primary semantics: a disabled primary MUST fail loudly
+  // rather than silently failing over to the next-priority assignment.
+  // The operator chose `enabled=false` deliberately (e.g. to retire a
+  // target without removing it from assignments) — a silent fallback
+  // would write data to a backup target they thought was offline.
+  if (primary.targetEnabled !== 1) {
+    throw new ApiError(
+      'TARGET_DISABLED',
+      `Primary backup target '${primary.targetName}' for snapshot class ` +
+      `'${snapshotClass}' is disabled. Either re-enable the target at ` +
+      `/settings/backups or reassign the class to a different target ` +
+      `at /settings/snapshot-classes.`,
+      503,
+    );
+  }
   return {
     snapshotClass,
     targetId: primary.targetId,
@@ -69,7 +84,10 @@ export async function maybeResolveTargetFor(
   snapshotClass: SnapshotClass,
 ): Promise<ResolvedSnapshotTarget | null> {
   const primary = await resolvePrimaryTarget(db, snapshotClass);
-  if (!primary) return null;
+  // Soft variant also treats a disabled primary as "no usable target"
+  // — the UI indicator that uses this should NOT show the disabled
+  // target as the active backup destination.
+  if (!primary || primary.targetEnabled !== 1) return null;
   return {
     snapshotClass,
     targetId: primary.targetId,

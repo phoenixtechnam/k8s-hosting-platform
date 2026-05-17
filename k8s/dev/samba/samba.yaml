@@ -1,0 +1,123 @@
+---
+# Dev-only samba (SMB/CIFS) server for snapshot-storage E2E testing.
+#
+# Phase 9 + 11 of the snapshot-storage overhaul: CIFS is one of the
+# supported backup target kinds (s3 / ssh / cifs). The streaming Job
+# uploads via `rclone copyto` to `REMOTE:<share>/<path>`, and Phase 11
+# read paths (stat / delete / readSidecar) spawn one-shot rclone Jobs
+# against the same share to enumerate + reap remote snapshots.
+#
+# Without a real SMB server in dev, the CIFS code path is only ever
+# exercised through unit tests + a target-create round-trip in the
+# harness — the upload/read/restore cycle is untested. This deployment
+# closes that gap.
+#
+# Configured via local.sh --with-samba (see scripts/local.sh).
+#
+# NOT for production. Anonymous writeable share, dev creds in plain.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev-samba
+  labels:
+    platform.phoenix-host.net/env: dev
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: samba-creds
+  namespace: dev-samba
+type: Opaque
+stringData:
+  # Hardcoded for dev; --with-samba opt-in only. min length matches
+  # backup-config validation (cifsPassword min length).
+  SAMBA_USER: smbtest
+  SAMBA_PASSWORD: smb-dev-password-1234
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: samba
+  namespace: dev-samba
+  labels:
+    app: samba
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: samba
+  template:
+    metadata:
+      labels:
+        app: samba
+    spec:
+      containers:
+        - name: samba
+          # dperson/samba is a small (~250 MB) tunable SMB server image
+          # that supports SMB2/SMB3, anonymous + user shares, and is
+          # widely used in CI environments. Pinned by digest for repro.
+          image: dperson/samba:latest
+          imagePullPolicy: IfNotPresent
+          # -p disables avahi/winbind (not needed; faster start)
+          # -u defines a user with read/write to the share
+          # -s defines the share: name;path;browseable;readonly;guest;users
+          # -w defines workgroup
+          # -g sets global setting (server min protocol SMB2_10 — rclone happy)
+          args:
+            - "-p"
+            - "-w"
+            - "WORKGROUP"
+            - "-u"
+            - "smbtest;smb-dev-password-1234"
+            - "-s"
+            - "snapshots;/share;yes;no;no;smbtest"
+            - "-g"
+            - "server min protocol = SMB2_10"
+            - "-g"
+            - "client min protocol = SMB2_10"
+          ports:
+            - name: smb
+              containerPort: 445
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /share
+          # samba doesn't ship a healthz; use TCP probe on port 445.
+          readinessProbe:
+            tcpSocket:
+              port: smb
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: smb
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: samba
+  namespace: dev-samba
+  labels:
+    app: samba
+spec:
+  type: ClusterIP
+  selector:
+    app: samba
+  ports:
+    - name: smb
+      port: 445
+      targetPort: 445
