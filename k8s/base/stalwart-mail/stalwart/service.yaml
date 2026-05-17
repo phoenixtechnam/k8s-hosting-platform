@@ -1,16 +1,43 @@
 # Services for Stalwart 0.16.
 #
-# Two Services, mirroring the 0.15 layout:
-#   stalwart-mail       — mail ports, LoadBalancer, externalTrafficPolicy: Local
-#   stalwart-mgmt       — management HTTP (8080), ClusterIP
+# THREE Services (split 2026-05-17 — see history note below):
+#   stalwart-mail       — mail ports (25/465/587/143/993/4190), LoadBalancer,
+#                         externalTrafficPolicy: Local. The staging/production
+#                         overlays patch this to ClusterIP+externalIPs to bind
+#                         the node's public IP. externalIPs is a SERVICE-LEVEL
+#                         setting that claims ALL ports of the service on the
+#                         given IP via kube-proxy KUBE-EXT rules — those rules
+#                         WIN over CNI portmap (Traefik hostPort 80/443). To
+#                         avoid hijacking Traefik's port 80, http-acme MUST live
+#                         on a different Service.
+#   stalwart-mail-acme  — port 80 only (Stalwart's ACME HTTP-01 listener),
+#                         ClusterIP. Reached externally via the Traefik
+#                         IngressRoute in ingress-acme.yaml on the `web`
+#                         entrypoint, path-prefix /.well-known/acme-challenge/.
+#                         NEVER add externalIPs here — that would re-introduce
+#                         the same hijack on port 80.
+#   stalwart-mgmt       — management HTTP (8080), ClusterIP. Exposed via
+#                         ingress-mgmt.yaml on the `websecure` entrypoint.
 #
 # Port 443 (HTTPS API) is handled by the IngressRoute (ingress-mgmt.yaml)
 # which terminates TLS at Traefik. Stalwart itself listens on 8080 for
 # plain HTTP; Traefik adds TLS termination in front. This avoids needing
 # a wildcard cert inside the Stalwart pod for the management UI.
 #
+# Why the split: prior to 2026-05-17, port 80 (http-acme) lived on the same
+# `stalwart-mail` Service as the mail ports. On clusters where that Service
+# was patched with externalIPs (single-VPS staging/production overlays), the
+# kube-proxy KUBE-EXT rule for <node-ip>:80 hijacked Traefik's hostPort 80
+# → backend Stalwart pod (which doesn't always have its http-acme listener up
+# on a fresh bootstrap because configure_stalwart_full can race) → connection
+# refused → cert-manager HTTP-01 challenges blocked for every other Certificate
+# in the cluster (admin/tenant/longhorn/bulwark/...). Caught fresh-bootstrap
+# on testing.phoenix-host.net 2026-05-17.
+#
 # Dev overlay: patches stalwart-mail → NodePort (no LB controller in
-# DinD k3s). See k8s/overlays/dev/stalwart-mail/service-nodeport-patch.yaml.
+# DinD k3s). See k8s/overlays/dev/stalwart-mail/kustomization.yaml. The split
+# means dev no longer auto-allocates a NodePort for port 80 — fine, dev never
+# used Stalwart-native ACME (local-CA issues all certs in dev).
 ---
 apiVersion: v1
 kind: Service
@@ -51,12 +78,31 @@ spec:
       port: 4190
       targetPort: sieve
       protocol: TCP
-    # ACME HTTP-01 challenge (Stalwart-managed cert, see
-    # bootstrap-plan-cm.yaml requestTlsCertificate=true). Cluster-
-    # internal only — exposed via the ingress-acme.yaml IngressRoute
-    # which path-prefix-routes /.well-known/acme-challenge/* to this
-    # service. Not in externalIPs / hostPort so this does NOT bind 80
-    # on the node externally (Traefik already owns that).
+---
+# Stalwart-managed ACME HTTP-01 listener (Bootstrap.requestTlsCertificate=true
+# in bootstrap-plan-cm.yaml). ClusterIP ONLY — never give this externalIPs or a
+# hostPort. The Traefik IngressRoute in ingress-acme.yaml routes
+# `Host(mail.${DOMAIN}) && PathPrefix(/.well-known/acme-challenge/)` to this
+# service's port 80, which is the only path that should reach Stalwart's
+# http-acme listener from outside the cluster.
+#
+# Selector matches the same `app: stalwart-mail` pod as the mail Service —
+# the http-acme NetworkListener inside Stalwart binds the same pod on a
+# different container port (`http-acme`).
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-mail-acme
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+spec:
+  type: ClusterIP
+  selector:
+    app: stalwart-mail
+  ports:
     - name: http-acme
       port: 80
       targetPort: http-acme
