@@ -2299,6 +2299,15 @@ detect_public_ipv6() {
 # Always returns 0 — falls back to LE staging on any check failure so a
 # typo'd --domain never bricks bootstrap.
 select_cluster_issuer() {
+  # IMPORTANT: this function is captured via $(select_cluster_issuer ...),
+  # so its STDOUT must be ONLY the issuer name (or empty on caller-side
+  # failure). Diagnostic `log` calls MUST go to stderr, otherwise the
+  # caller's $() expansion collects "[2026-05-17 12:45:57] select_cluster_issuer:
+  # DNS check PASSED ...\nletsencrypt-prod-http01" as a multi-line string,
+  # which then poisons both the platform-cluster-config ConfigMap and the
+  # envsubst pipeline (the YAML render becomes "name: \n…" → kubectl apply
+  # fails with "did not find expected key"). Caught on testing.phoenix-host.net
+  # 2026-05-17 fresh bootstrap.
   local domain="$1" env="$2"
   # 1. Explicit override
   if [[ -n "${CLUSTER_ISSUER_NAME:-}" ]]; then
@@ -2313,7 +2322,7 @@ select_cluster_issuer() {
   # 3+4. DNS-vs-server alignment
   if ! command -v dig >/dev/null 2>&1 && ! command -v getent >/dev/null 2>&1; then
     # No resolver tool available — be conservative
-    log "select_cluster_issuer: neither dig nor getent available; defaulting to LE-staging"
+    log "select_cluster_issuer: neither dig nor getent available; defaulting to LE-staging" >&2
     echo "letsencrypt-staging-http01"
     return 0
   fi
@@ -2322,7 +2331,7 @@ select_cluster_issuer() {
   server_v4=$(detect_public_ipv4 2>/dev/null || echo "")
   server_v6=$(detect_public_ipv6 2>/dev/null || echo "")
   if [[ -z "$server_v4" ]]; then
-    log "select_cluster_issuer: no public IPv4 on server; LE-staging (prod requires reachable server)"
+    log "select_cluster_issuer: no public IPv4 on server; LE-staging (prod requires reachable server)" >&2
     echo "letsencrypt-staging-http01"
     return 0
   fi
@@ -2338,14 +2347,14 @@ select_cluster_issuer() {
   fi
 
   if [[ -z "$apex_a" ]]; then
-    log "select_cluster_issuer: apex ${domain} does not resolve (no A); LE-staging"
+    log "select_cluster_issuer: apex ${domain} does not resolve (no A); LE-staging" >&2
     echo "letsencrypt-staging-http01"
     return 0
   fi
 
   # A record must include our server IPv4
   if ! echo "$apex_a" | grep -qFx "$server_v4"; then
-    log "select_cluster_issuer: apex ${domain} resolves to [$(echo "$apex_a" | tr '\n' ',' | sed 's/,$//')] but server is ${server_v4} → LE-staging"
+    log "select_cluster_issuer: apex ${domain} resolves to [$(echo "$apex_a" | tr '\n' ',' | sed 's/,$//')] but server is ${server_v4} → LE-staging" >&2
     echo "letsencrypt-staging-http01"
     return 0
   fi
@@ -2354,13 +2363,13 @@ select_cluster_issuer() {
   # without AAAA is fine (v4-only deployment is supported).
   if [[ -n "$server_v6" && -n "$apex_aaaa" ]]; then
     if ! echo "$apex_aaaa" | grep -qFx "$server_v6"; then
-      log "select_cluster_issuer: apex ${domain} AAAA [$(echo "$apex_aaaa" | tr '\n' ',' | sed 's/,$//')] but server is ${server_v6} → LE-staging"
+      log "select_cluster_issuer: apex ${domain} AAAA [$(echo "$apex_aaaa" | tr '\n' ',' | sed 's/,$//')] but server is ${server_v6} → LE-staging" >&2
       echo "letsencrypt-staging-http01"
       return 0
     fi
-    log "select_cluster_issuer: DNS check PASSED — apex ${domain} resolves to ${server_v4} + ${server_v6} → LE-prod"
+    log "select_cluster_issuer: DNS check PASSED — apex ${domain} resolves to ${server_v4} + ${server_v6} → LE-prod" >&2
   else
-    log "select_cluster_issuer: DNS check PASSED — apex ${domain} A=${server_v4}, AAAA=${apex_aaaa:-<none>} → LE-prod"
+    log "select_cluster_issuer: DNS check PASSED — apex ${domain} A=${server_v4}, AAAA=${apex_aaaa:-<none>} → LE-prod" >&2
   fi
 
   echo "letsencrypt-prod-http01"
@@ -5702,7 +5711,7 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   if ! command -v envsubst >/dev/null 2>&1; then
     error "envsubst not found on PATH; install gettext-base / gettext."
   fi
-  log "Rendering overlay with envsubst (DOMAIN=${PLATFORM_DOMAIN}) and applying..."
+  log "Rendering overlay with envsubst (DOMAIN=${PLATFORM_DOMAIN}, STALWART_EXTERNAL_IP=${stalwart_external_ip:-<unset>}, CLUSTER_ISSUER_NAME=${cluster_issuer_for_cm}) and applying..."
   # SSA with field-manager=kustomize-controller (Flux's default). Without
   # this, bootstrap uses tenant-side apply and stashes the manifest in
   # `last-applied-configuration`. When Flux later reconciles via SSA, k8s
@@ -5714,6 +5723,16 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   # ownership on first reconcile. --force-conflicts is needed because k8s
   # auto-managed labels register as conflicts on first SSA from a new
   # field manager. See project_testing_bootstrap_2026_05_08.md issue 3.
+  #
+  # envsubst whitelist MUST cover every ${VAR} that appears literally in
+  # any overlay this bootstrap might apply. Flux postBuild.substituteFrom
+  # reads from platform-cluster-config and resolves the same set on every
+  # reconcile, so bootstrap and Flux see identical rendered output. Missing
+  # a variable here = the literal `${VAR}` reaches the apiserver and the
+  # apply fails ("Invalid value: \"${STALWART_EXTERNAL_IP}\": must be a
+  # valid IP address") — caught fresh-install on testing.phoenix-host.net
+  # 2026-05-17 after the staging stalwart-mail overlay started using
+  # ${STALWART_EXTERNAL_IP} (commit 8a1ab700).
   # Retry the apply on transient webhook errors. The Longhorn + CNPG
   # admission webhooks (which wait_for_admission_webhooks() blocks on
   # above) can flicker AFTER the initial readiness probe — pod GC,
@@ -5732,8 +5751,13 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   for apply_attempt in 1 2 3 4 5 6; do
     if apply_err=$(
         DOMAIN="${PLATFORM_DOMAIN}" \
+        STALWART_EXTERNAL_IP="${stalwart_external_ip}" \
+        CLUSTER_ISSUER_NAME="${cluster_issuer_for_cm}" \
           kubectl --kubeconfig="$KUBECONFIG" kustomize "$overlay_dir" \
-          | DOMAIN="${PLATFORM_DOMAIN}" envsubst '${DOMAIN}' \
+          | DOMAIN="${PLATFORM_DOMAIN}" \
+            STALWART_EXTERNAL_IP="${stalwart_external_ip}" \
+            CLUSTER_ISSUER_NAME="${cluster_issuer_for_cm}" \
+            envsubst '${DOMAIN} ${STALWART_EXTERNAL_IP} ${CLUSTER_ISSUER_NAME}' \
           | kctl apply --server-side --force-conflicts \
                        --field-manager=kustomize-controller -f - 2>&1
     ); then
