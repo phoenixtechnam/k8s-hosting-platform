@@ -5,13 +5,18 @@ The Bulwark integration M0 (ADR-039 Phases 0–6, 9, 10, 11) ships:
 - Production base manifest with single `/app/data` PVC + reloader.
 - Stalwart `defaultHostname` seeded by bootstrap (Phase 2 + CI guard).
 - Stalwart `usePermissiveCors=true` set by bootstrap (Phase 3).
-- `bulwark-impersonator` sidecar with HS256 JWT verify + master-auth
-  injection + jti replay protection + audit logging (Phase 4).
+- **2026-05-17 update:** master-user impersonation handled natively by
+  Bulwark's `/api/auth/impersonate` route (upstream issue #296). The
+  previously-shipped `bulwark-impersonator` sidecar is retired —
+  Bulwark itself enforces HS256 JWT verify, master-auth injection,
+  jti replay protection, and audit logging.
 - Platform-api `POST /api/v1/email/webmail-token` engine-aware
   (Phase 5) + tenant-panel hook engine override (Phase 6).
-- `scripts/integration-bulwark-e2e.sh` (27 phases) (Phase 9).
+- `scripts/integration-bulwark-impersonate.sh` (14 negative cases +
+  happy path + audit assertions) (Phase 9 — supersedes the sidecar-
+  specific harness `integration-bulwark-e2e.sh`).
 - `platform_config.default_webmail_engine` (Phase 10).
-- Docs + ADR-039 (Phase 11).
+- Docs + ADR-039 (Phase 11 — Amendment 2026-05-17).
 
 Two roadmap phases are deliberately deferred to M+1 because their
 minimal implementations would inflate the scope past the v1 target,
@@ -72,22 +77,29 @@ says yes.
   readable.
 - Cleanup can be batched on a weekly cron.
 
-**Implementation sketch:**
-Two paths:
-1. **kubectl exec approach** — backend hook execs into the
-   impersonator pod and `rm /app/data/settings/<account>.enc`.
-   Requires extending platform-api's ClusterRole with `pods/exec`
-   in `mail` ns. Same pattern as `scripts/admin-password-reset.sh`.
-2. **Sidecar admin endpoint** — add `DELETE /__impersonator/settings/:account`
-   to the bulwark-impersonator script, gated behind an
-   `X-Admin-Token` header that the operator provisions in the
-   impersonator secret. Backend hook curls this with the token.
-   Cleaner from a permissions standpoint but adds an endpoint that
-   must be defended.
+**Implementation sketch (revised 2026-05-17 — sidecar retired):**
 
-Recommend path 2 if/when this is built — keeps the impersonator
-as the single point of integration with Bulwark's data and avoids
-extending platform-api's k8s RBAC.
+The original plan was a sidecar admin endpoint. With the
+`bulwark-impersonator` sidecar retired (upstream issue #296 native
+route), two viable paths remain:
+
+1. **Kubernetes Job approach (recommended)** — a one-shot Job that
+   mounts the `bulwark-data` PVC ReadWriteOnce + iterates
+   `/app/data/settings/<sha256(mailbox:serverUrl)>.enc` and unlinks
+   matches. Triggered by the lifecycle hook on `archived` transition;
+   the hook becomes a Job-creator rather than an HTTP caller. No new
+   platform-api RBAC beyond `batch.jobs/create` (which we already have
+   for backup jobs).
+2. **kubectl exec approach** — platform-api execs into the Bulwark
+   Pod and runs `rm /app/data/settings/<hash>.enc`. Requires extending
+   platform-api's ClusterRole with `pods/exec` in `mail` ns. Same
+   pattern as `scripts/admin-password-reset.sh` but exposes a wider
+   blast radius.
+
+Path 1 is preferred: it doesn't touch platform-api's RBAC, runs as
+its own short-lived ServiceAccount with PVC mount only, and matches
+the platform's existing Job-based cascade pattern (tenant backup,
+PITR restore, etc.).
 
 **Kill switch when implemented:** `LIFECYCLE_HOOK_BULWARK_SETTINGS_PURGE=disable`.
 

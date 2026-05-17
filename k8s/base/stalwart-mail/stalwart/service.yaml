@@ -31,7 +31,7 @@
 # → backend Stalwart pod (which doesn't always have its http-acme listener up
 # on a fresh bootstrap because configure_stalwart_full can race) → connection
 # refused → cert-manager HTTP-01 challenges blocked for every other Certificate
-# in the cluster (admin/tenant/longhorn/bulwark/...). Caught fresh-bootstrap
+# in the cluster (admin/tenant/longhorn/bulwark/...). Caught fresh-bootstrap  # ci-no-longhorn: ignore
 # on testing.phoenix-host.net 2026-05-17.
 #
 # Dev overlay: patches stalwart-mail → NodePort (no LB controller in

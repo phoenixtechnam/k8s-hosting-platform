@@ -23,7 +23,7 @@
 #   9. Validate URL shape:
 #       roundcube → webmail.<apex>/?_task=login&_jwt=<jwt>  OR
 #                   webmail.<clientdomain>/?_task=login&_jwt=<jwt>
-#       bulwark   → webmail.<apex>/_impersonate?token=<jwt>
+#       bulwark   → webmail.<apex>/api/auth/impersonate?token=<jwt>
 #  10. GET <webmailUrl>             → expect 303 + jmap_stalwart_ctx
 #                                     cookie (bulwark) or 200 (roundcube)
 #  11. Cleanup: DELETE /api/v1/tenants/:id (cascades mailboxes + domains)
@@ -209,10 +209,10 @@ pass "8.1 webmail-token returned URL: ${WEBMAIL_URL}"
 # ── Phase 9: validate URL shape ─────────────────────────────────────
 phase "9. Validate URL shape"
 if [[ "$ENGINE" == "bulwark" ]]; then
-  if [[ "$WEBMAIL_URL" =~ /_impersonate\?token= ]]; then
-    pass "9.1 bulwark URL contains /_impersonate?token="
+  if [[ "$WEBMAIL_URL" =~ /api/auth/impersonate\?token= ]]; then
+    pass "9.1 bulwark URL contains /api/auth/impersonate?token="
   else
-    fail "9.1 bulwark URL missing /_impersonate?token= → ${WEBMAIL_URL}"
+    fail "9.1 bulwark URL missing /api/auth/impersonate?token= → ${WEBMAIL_URL}"
   fi
 else
   if [[ "$WEBMAIL_URL" =~ \?_task=login\&_jwt= ]]; then
@@ -229,7 +229,8 @@ if [[ "$SKIP_WEBMAIL_HIT" != "1" ]]; then
   HIT_CODE=$(curl "${CURL_OPTS[@]}" -i "$WEBMAIL_URL" \
     -c "$COOKIES" -o /tmp/webmail-hit.txt -w '%{http_code}')
   if [[ "$ENGINE" == "bulwark" ]]; then
-    # Bulwark impersonator returns 303 + jmap_stalwart_ctx cookie.
+    # Bulwark's /api/auth/impersonate returns 303 + jmap_session +
+    # jmap_stalwart_ctx cookies (session-only, Secure, HttpOnly).
     grep -q "jmap_stalwart_ctx" "$COOKIES" \
       && pass "10.1 bulwark — jmap_stalwart_ctx cookie set" \
       || fail "10.1 bulwark — no jmap cookie (HTTP ${HIT_CODE})"

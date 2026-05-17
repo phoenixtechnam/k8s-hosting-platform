@@ -4,6 +4,39 @@ JMAP-native webmail client integrated alongside Roundcube. Tracks
 upstream Bulwark (https://bulwarkmail.org/, AGPL-3.0). See ADR-039 for
 the design rationale.
 
+## Architecture change (2026-05-17): impersonator sidecar retired
+
+Bulwark's upstream `/api/auth/impersonate` route shipped in v1.6.7
+stable (issue [#296](https://github.com/bulwarkmail/webmail/issues/296),
+published 2026-05-17T16:28).
+The platform's previously-shipped `bulwark-impersonator` sidecar +
+ConfigMap is therefore retired — the new route implements the exact
+same JWT contract (HS256, iss/iat/exp/jti/mailbox claims, lifetime
+≤300s ceiling, in-memory replay-protected jti cache) natively. The
+IngressRoute now targets the `bulwark` Service directly.
+
+**What changed for the platform:**
+- `k8s/base/bulwark-impersonator/` deleted
+- Image bumped to `ghcr.io/bulwarkmail/webmail@sha256:4ee0f0b5…`
+  (v1.6.7 stable; the first release tag with the impersonation
+  route)
+- 3 new envs on the `bulwark` container: `BULWARK_JWT_AUTH_SECRET`
+  (= platform-api's `WEBMAIL_JWT_SECRET`, one shared HMAC key),
+  `BULWARK_STALWART_MASTER_USER`, `BULWARK_STALWART_MASTER_PASSWORD`
+- `webmailUrl` returned by `POST /api/v1/email/webmail-token` is
+  now `…/api/auth/impersonate?token=<jwt>` (was `…/_impersonate?token=<jwt>`)
+- `serviceNameForEngine('bulwark')` returns `'bulwark'` (was `'bulwark-impersonator'`)
+- `reconcileBulwarkOrigin` retired (Bulwark no longer has a
+  `PUBLIC_ORIGIN` env; same-origin check is no longer used)
+
+**What stayed the same:**
+- JWT shape — platform-api signs identical claims
+- Cookie names (`jmap_session`, `jmap_stalwart_ctx`) and security flags
+- Frontend wiring — the tenant-panel "Open Webmail" button continues
+  to call `POST /api/v1/email/webmail-token` and open the returned URL
+- Master-user credentials — same Stalwart account, same shared
+  `STALWART_MASTER_PASSWORD` reused from Roundcube
+
 ## TL;DR for operators
 
 - New tenants default to whichever engine `platform_config.default_webmail_engine`
@@ -14,9 +47,11 @@ the design rationale.
 - Roundcube and Bulwark share Stalwart's master-user account
   (`master@master.local`) for tenant-panel "Open Webmail" handoff.
   Both engines verify JWTs signed with the same platform `JWT_SECRET`.
-- Bulwark requires three sibling Deployments in the `mail` namespace:
-  `bulwark`, `bulwark-impersonator`, and (dev DinD only)
-  `stalwart-url-rewriter`. Production drops the rewriter.
+- Bulwark deploys as a single `bulwark` Deployment in the `mail`
+  namespace (dev DinD additionally runs `stalwart-url-rewriter` for
+  Stalwart-self-reported URL fixups). Master-user impersonation is
+  handled by Bulwark's own `/api/auth/impersonate` route — no
+  sidecar Pod.
 
 ## Architecture
 
@@ -53,12 +88,10 @@ the design rationale.
 
 | Component | Where | Purpose |
 |---|---|---|
-| `bulwark` Deployment | `mail/bulwark` | The Bulwark Next.js SPA |
-| `bulwark-impersonator` Deployment | `mail/bulwark-impersonator` | Reverse-proxy + JWT-signed master-user handoff for tenant-panel "Open Webmail" |
+| `bulwark` Deployment | `mail/bulwark` | The Bulwark Next.js SPA. Native `/api/auth/impersonate` route handles JWT-signed master-user handoff |
 | `stalwart-url-rewriter` Deployment | `mail/stalwart-url-rewriter` (**dev DinD only**) | Rewrites Stalwart self-reported URLs (port injection, JSON unzip, credentialed CORS) |
 | `platform_settings.default_webmail_engine` | `system-db` | `'roundcube'` or `'bulwark'`. Set via webmail-settings update endpoint |
-| `bulwark-impersonator-secrets` | `mail` ns | `JWT_SECRET` (shared with platform-api) + `STALWART_MASTER_USER` / `STALWART_MASTER_PASSWORD` |
-| `bulwark-secrets` | `mail` ns | Bulwark admin dashboard password + session encryption secret |
+| `bulwark-secrets` | `mail` ns | `ADMIN_PASSWORD` + `SESSION_SECRET` + `BULWARK_JWT_AUTH_SECRET` (= platform-api's `WEBMAIL_JWT_SECRET`) + `BULWARK_STALWART_MASTER_USER` + `BULWARK_STALWART_MASTER_PASSWORD` |
 
 ## Stalwart prerequisites
 
@@ -74,10 +107,12 @@ Bulwark depends on three pieces of Stalwart 0.16 configuration that
    headers only on OPTIONS preflights by default; permissive mode
    extends them to every response. Required for the browser-direct
    `/.well-known/jmap` fetch the SPA makes after login.
-3. **`master@master.local`** Account with the `System Administrator`
+3. **`master@<apex>`** Account with the `System Administrator`
    role (or any role that has the `impersonate` permission). Cleartext
    password lives in `stalwart-admin-creds.adminMasterPassword`
-   (matching `bulwark-impersonator-secrets.STALWART_MASTER_PASSWORD`).
+   (matching `bulwark-secrets.BULWARK_STALWART_MASTER_PASSWORD`).
+   Note: Stalwart 0.16 rejects `.local` TLD on auth — anchor master
+   under the platform's apex (e.g. `master@phoenix-host.net`).
 
 The CI guard `scripts/ci-stalwart-hostname-check.sh` asserts #1 is in
 place post-deploy.
@@ -102,9 +137,10 @@ place post-deploy.
 }
 ```
 
-Signed with HS256 using `JWT_SECRET` (the platform-wide secret shared
-between platform-api, the impersonator, and Roundcube's jwt_auth
-plugin).
+Signed with HS256 using `WEBMAIL_JWT_SECRET` (platform-api) which is
+the SAME value as `BULWARK_JWT_AUTH_SECRET` (Bulwark) — one shared
+HMAC key. Roundcube's `jwt_auth` plugin uses the same key, so the
+operator manages a single secret for both engines.
 
 ## Rejection reasons returned by the impersonator
 

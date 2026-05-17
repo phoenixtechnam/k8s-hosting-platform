@@ -28,6 +28,8 @@ vi.mock('../../db/schema.js', () => ({
   deployments: { id: 'id', tenantId: 'tenant_id' },
   emailAliases: { id: 'id', mailboxId: 'mailbox_id' },
   sftp_users: { id: 'id', tenantId: 'tenant_id' },
+  // Referenced by generateWebmailToken for audit-log writes.
+  auditLogs: { id: 'id', tenantId: 'tenant_id', actionType: 'action_type', actorId: 'actor_id' },
 }));
 
 // Mock bcrypt
@@ -517,7 +519,7 @@ describe('generateWebmailToken', () => {
 
   // ─── Bulwark engine path (ADR-039) ───────────────────────────────
 
-  it('engine=bulwark mints a JWT with iss/jti/tenant_id/actor_user_id + /_impersonate URL', async () => {
+  it('engine=bulwark mints a JWT with iss/jti/tenant_id/actor_user_id + /api/auth/impersonate URL', async () => {
     const user = { tenantId: 'c1' };
     const activeTenant = { status: 'active' };
     const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
@@ -547,9 +549,9 @@ describe('generateWebmailToken', () => {
     expect(typeof payload.exp).toBe('number');
     expect((payload.exp as number) - (payload.iat as number)).toBe(30);
 
-    // URL must point to the impersonator endpoint, not Roundcube's
-    // ?_task=login&_jwt= shape.
-    expect(result.webmailUrl).toContain('/_impersonate?token=');
+    // URL must point to Bulwark's native impersonation endpoint
+    // (upstream issue #296), not Roundcube's ?_task=login&_jwt= shape.
+    expect(result.webmailUrl).toContain('/api/auth/impersonate?token=');
     expect(result.webmailUrl).not.toContain('_task=login');
     expect(result.webmailUrl).toContain(encodeURIComponent(result.token));
   });

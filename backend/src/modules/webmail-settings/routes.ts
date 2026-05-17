@@ -12,10 +12,8 @@ import { updateWebmailSettingsSchema } from '@k8s-hosting/api-contracts';
 import { reconcileOutboundConfig } from '../email-outbound/service.js';
 import {
   reconcileWebmailIngress,
-  reconcileBulwarkOrigin,
   reconcileEngineDeployments,
 } from '../webmail-router/reconciler.js';
-import * as k8sNode from '@kubernetes/client-node';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { auditLogs } from '../../db/schema.js';
@@ -188,7 +186,7 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
 
     // ADR-039 Phase 10: when the webmail engine is flipped, patch the
     // platform-webmail-ingress IngressRoute so `webmail.<apex>` lands
-    // at the active engine's Service (roundcube or bulwark-impersonator).
+    // at the active engine's Service (roundcube or bulwark).
     // Non-blocking — the reconciler also runs on platform-api startup,
     // so a transient k8s failure here is recovered by the next boot.
     if (k8s && parsed.data.defaultWebmailEngine !== undefined) {
@@ -198,31 +196,6 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
         app.log.warn(
           { err },
           'webmail-settings: webmail-router reconcile failed (non-blocking)',
-        );
-      }
-    }
-
-    // ADR-039 Phase 10: when the default webmail URL changes, sync
-    // Bulwark's impersonator PUBLIC_ORIGIN env so its session origin
-    // check matches the SPA's actual request origin. Also runs on
-    // engine flip in case the URL was previously synced under the
-    // wrong engine assumption. Non-blocking — boot-time reconcile
-    // re-tries.
-    if (
-      k8s
-      && (parsed.data.defaultWebmailUrl !== undefined
-        || parsed.data.defaultWebmailEngine !== undefined)
-    ) {
-      try {
-        const kc = new k8sNode.KubeConfig();
-        const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-        if (kubePath) kc.loadFromFile(kubePath);
-        else kc.loadFromCluster();
-        await reconcileBulwarkOrigin(app.db, kc, k8s.apps, app.log);
-      } catch (err) {
-        app.log.warn(
-          { err },
-          'webmail-settings: Bulwark origin reconcile failed (non-blocking)',
         );
       }
     }

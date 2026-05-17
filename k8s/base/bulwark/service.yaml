@@ -1,13 +1,8 @@
-# Internal Service in front of Bulwark.
+# Public-facing Service for Bulwark webmail.
 #
-# In production this is NOT the public-facing entrypoint — the
-# `bulwark-impersonator` sidecar Service (k8s/base/bulwark-impersonator/)
-# sits in front and handles both transparent proxying and the
-# JWT-signed `/_impersonate?token=...` flow.
-#
-# Direct access to this Service is allowed in-cluster for diagnostics
-# and for the impersonator's server-side `/api/auth/stalwart-context`
-# POSTs.
+# Master-user impersonation is handled by Bulwark's native
+# /api/auth/impersonate route (issue #296) — no sidecar in between.
+# IngressRoutes target this Service directly.
 apiVersion: v1
 kind: Service
 metadata:

@@ -1,6 +1,7 @@
 # ADR-039 — Bulwark Webmail Integration + JWT-Signed Impersonation Flow
 
 **Status:** Accepted · 2026-05-15
+**Amended:** 2026-05-17 — impersonator sidecar retired in favour of upstream `/api/auth/impersonate` route (see Amendment 2026-05-17 at bottom).
 **Supersedes / related:** Co-exists with `k8s/base/roundcube/` until Phase 10 of the integration roadmap retires it. Companion to ADR-030 (mail-server-selection-and-swappable-architecture), ADR-033 (tenant-lifecycle-hook-registry).
 
 ## Context
@@ -110,3 +111,53 @@ The integration tracks Bulwark v1.6.x, current `v1.6.5` (May 13, 2026). Image di
 - ADR-030: mail-server-selection-and-swappable-architecture
 - ADR-033: tenant-lifecycle hook registry (impersonator settings purge wires through here)
 - `project_bulwark_eval_2026_05_15.md`: 14 findings from the local DinD evaluation (rewriter quirks, CORS, gzip, hostname JMAP property, etc.)
+
+---
+
+## Amendment 2026-05-17 — upstream `/api/auth/impersonate` adopted; sidecar retired
+
+The platform's `bulwark-impersonator` sidecar was an interim solution
+to a missing upstream feature. On 2026-05-16 Bulwark merged native
+support (issue [#296](https://github.com/bulwarkmail/webmail/issues/296))
+and cut v1.6.7 stable on 2026-05-17 (the first release tag with the
+impersonation route). The native route's contract is identical to
+what our sidecar enforced; side-by-side verification ran in local
+DinD on 2026-05-17 and passed all positive + 9 negative scenarios.
+
+### What changed
+
+| Layer | Before | After |
+|---|---|---|
+| Bulwark image | `webmail@sha256:78c691…` (1.6.5) | `webmail@sha256:4ee0f0b5…` (v1.6.7 stable) |
+| Impersonation handler | `bulwark-impersonator` sidecar in the Bulwark Pod | Bulwark's native `/api/auth/impersonate` route |
+| URL path | `webmail.<apex>/_impersonate?token=<jwt>` | `webmail.<apex>/api/auth/impersonate?token=<jwt>` |
+| Bulwark Service | Front-ended by `bulwark-impersonator` Service | Direct `bulwark` Service |
+| Secrets | `bulwark-impersonator-secrets` (JWT, master, admin token) | All keys consolidated into `bulwark-secrets` |
+| `serviceNameForEngine('bulwark')` | `'bulwark-impersonator'` | `'bulwark'` |
+| `reconcileBulwarkOrigin` | Synced `PUBLIC_ORIGIN` env | Removed (no longer used by Bulwark) |
+| `bulwark-settings-purge` lifecycle hook | Active (HTTP DELETE to sidecar) | Retired to `noop` (sidecar gone) |
+| Integration harness | `scripts/integration-bulwark-e2e.sh` (sidecar paths) | `scripts/integration-bulwark-impersonate.sh` (upstream route) |
+
+### Why this is safe
+
+The JWT contract is byte-compatible — the upstream verifier requires
+the exact same claims (HS256, `iss`/`iat`/`exp`/`jti`/`mailbox`,
+lifetime ≤300s, mailbox without `%`/`:`) plus replay-protection on
+`jti`. Audit logging on the upstream side is structured and
+includes `tenant_id` / `actor_user_id` from our claims. Cookie shape
+matches what the SPA already expected (`jmap_session`,
+`jmap_stalwart_ctx`, session-only, Secure, HttpOnly, SameSite=lax).
+
+### Out of scope for this amendment
+
+- A Kubernetes Job for orphan-`.enc`-file cleanup when a tenant is
+  archived (the retired `bulwark-settings-purge` hook used to do this
+  via the sidecar; the files are inert without a matching tenant but
+  may accumulate over time). Tracked in `BULWARK_DEFERRED_WORK.md`.
+
+### Production-readiness
+
+v1.6.7 is a stable release (not a rolling channel). Production
+rollout is unblocked at the upstream level. The platform's
+`platform_config.default_webmail_engine` mutex still gates per-
+tenant cutover.
