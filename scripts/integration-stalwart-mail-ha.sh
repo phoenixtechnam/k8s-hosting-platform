@@ -157,6 +157,22 @@
 
 set -euo pipefail
 
+# ── Runtime prerequisites ──────────────────────────────────────────────
+# Fail fast (not partway through a 10-minute Phase E) when a required
+# tool is missing on the operator's runner. Without this, a missing
+# `nc` in Phase A6 produces "no SMTP 220 banner from …" — which reads
+# like a server-side problem and sends the operator down the wrong
+# debug path. Same for `dig` (Phase B), `python3` (JMAP JSON parsing),
+# `openssl` (Phase A5/J/K cert probes), `kubectl` (everything).
+for _tool in openssl nc dig python3 kubectl curl; do
+  command -v "$_tool" >/dev/null 2>&1 || {
+    echo "ERROR: required tool '$_tool' not found in PATH" >&2
+    echo "       install it before running this harness" >&2
+    exit 2
+  }
+done
+unset _tool
+
 # ── Config ─────────────────────────────────────────────────────────────
 STALWART_DOMAIN="${STALWART_DOMAIN:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
@@ -454,6 +470,84 @@ print(' '.join(str(p) for p in sorted(ports)))" 2>/dev/null || echo '')"
       note_warn "A5/${port}. LE cert valid but <${MIN_VALIDITY_DAYS}d remaining — renewal due"
     else
       note_fail "A5/${port}. LE cert EXPIRED (notAfter=${not_after})"
+    fi
+    # A5b. Cert covers the expected mail hostname — subject CN or SAN
+    # must include STALWART_DOMAIN. Catches the "real LE cert but for
+    # the wrong host" misconfig: A5 above only validates issuer +
+    # expiry, not whether the cert actually names this server.
+    local sans
+    sans=$(echo "$cert_pem" | openssl x509 -noout -ext subjectAltName 2>/dev/null \
+      | grep -oE 'DNS:[^,]+' | sed 's/^DNS://; s/[[:space:]]*$//' | tr '\n' ',' | sed 's/,$//')
+    local cn_or_san_match="false"
+    IFS=',' read -ra _entries <<<"$sans"
+    for entry in "${_entries[@]}"; do
+      entry="${entry//[[:space:]]/}"
+      if [[ "$entry" == "$STALWART_DOMAIN" ]]; then cn_or_san_match="true"; break; fi
+      # RFC 6125 wildcard: `*.example.com` matches one label
+      if [[ "$entry" == "*"* ]]; then
+        local suffix="${entry#\*}"
+        if [[ "$STALWART_DOMAIN" == *"$suffix" ]]; then
+          local prefix="${STALWART_DOMAIN%$suffix}"
+          if [[ "$prefix" != *.* && -n "$prefix" ]]; then
+            cn_or_san_match="true"
+            break
+          fi
+        fi
+      fi
+    done
+    if [[ "$cn_or_san_match" != "true" ]]; then
+      # Escape every `.` in the hostname before substituting into the
+      # ERE — otherwise `mail.foo.com` would false-pass against
+      # `mailXfooXcom` etc. (the dots are regex metacharacters
+      # matching any single char).
+      local _esc_domain="${STALWART_DOMAIN//./\\.}"
+      if echo "$subject" | grep -qE "CN[[:space:]]*=[[:space:]]*${_esc_domain}([,/]|$)"; then
+        cn_or_san_match="true"
+      fi
+    fi
+    if [[ "$cn_or_san_match" == "true" ]]; then
+      note_pass "A5b/${port}. cert covers '${STALWART_DOMAIN}' (SAN=${sans:-<none>})"
+    else
+      note_fail "A5b/${port}. cert DOES NOT cover '${STALWART_DOMAIN}' (subject=${subject:-<missing>}, SAN=${sans:-<none>})"
+    fi
+  done
+
+  # A6. SMTP greeting (220) + EHLO 250 reply both name the configured
+  # mail hostname. Catches Bootstrap.serverHostname drift from the
+  # cert SAN — a real misconfig that breaks DKIM SDID checks
+  # downstream even when A5 + A5b above are green.
+  for spec in "25:plain" "587:plain" "465:tls"; do
+    local port="${spec%%:*}" mode="${spec##*:}"
+    local probe_out
+    if [[ "$mode" == "tls" ]]; then
+      probe_out=$( ( sleep 0.4; printf "EHLO probe.local\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) \
+        | timeout 10 openssl s_client -connect "${PROBE_HOST}:${port}" -crlf -quiet -servername "$STALWART_DOMAIN" 2>&1 || true)
+    else
+      probe_out=$( ( sleep 0.4; printf "EHLO probe.local\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) \
+        | timeout 10 nc -w 8 "$PROBE_HOST" "$port" 2>&1 || true)
+    fi
+    local banner_host
+    banner_host=$(echo "$probe_out" | grep -oE '^220[ -][^ ]+' | head -1 | awk '{print $2}')
+    if [[ -z "$banner_host" ]]; then
+      note_fail "A6/${port}. no SMTP 220 banner from ${PROBE_HOST}:${port}"
+      continue
+    fi
+    if [[ "$banner_host" == "$STALWART_DOMAIN" ]]; then
+      note_pass "A6/${port}. SMTP greeting '${banner_host}' matches expected"
+    else
+      note_fail "A6/${port}. SMTP greeting '${banner_host}' does NOT match '${STALWART_DOMAIN}'"
+    fi
+    # EHLO 250 first line names the same host as the 220 greeting.
+    # Stalwart returns `250-<host> Hello probe.local` — `grep -oE
+    # '^250[ -][^ ]+'` extracts the single token `250-<host>` (no
+    # space), so awk '{print $2}' returns empty and silently no-ops.
+    # Strip the `250[space|-]` prefix with sed instead.
+    local ehlo_host
+    ehlo_host=$(echo "$probe_out" | grep -oE '^250[ -][^ ]+' | head -1 | sed 's/^250[ -]//')
+    if [[ -n "$ehlo_host" && "$ehlo_host" != "$STALWART_DOMAIN" ]]; then
+      note_fail "A6/${port}. EHLO 250 line names '${ehlo_host}' but greeting was '${banner_host}' / expected '${STALWART_DOMAIN}'"
+    elif [[ -n "$ehlo_host" ]]; then
+      note_pass "A6/${port}. EHLO 250 line names '${ehlo_host}' (matches greeting)"
     fi
   done
   echo ""

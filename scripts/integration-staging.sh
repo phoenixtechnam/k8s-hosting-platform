@@ -33,6 +33,20 @@
 
 set -euo pipefail
 
+# Runtime prerequisites — fail fast (not partway through scenario_mail)
+# when a tool is missing. Without this, a missing `nc` in the new mail
+# banner probes produces "no SMTP 220 banner from …" which reads like
+# a server-side problem and sends the operator down the wrong debug
+# path. dig + openssl + python3 are existing dependencies that were
+# never declared either; covered here in the same sweep.
+for _tool in openssl nc dig python3 curl jq; do
+  command -v "$_tool" >/dev/null 2>&1 || {
+    echo "ERROR: required tool '$_tool' not found in PATH — install it before running this harness" >&2
+    exit 2
+  }
+done
+unset _tool
+
 # Connection settings — every default targets the historical phoenix-
 # host.net staging cluster, but every value is overridable so the
 # harness runs cleanly against any cluster bootstrapped by this repo.
@@ -134,6 +148,176 @@ ssh_cp() {
     return
   fi
   ssh -i "$SSH_KEY" $SSH_OPTS "root@$CONTROL_HOST" "$@"
+}
+
+# ─── mail TLS / SMTP probe helpers ─────────────────────────────────────
+#
+# Three helpers shared by the `mail`, `mail_tls`, and `mail_hostname_rename`
+# scenarios + the standalone integration-stalwart-mail-ha.sh harness.
+# Centralise the openssl/EHLO logic here so additions like cert-CN-match
+# and EHLO greeting checks land in every probe at once.
+
+# Resolve the cluster's externally-routable mail IP without hardcoding.
+# Strategy: dig the `mail.<apex>` A record (operators always set this DNS
+# entry, and `mail.${PLATFORM_DOMAIN}` is the canonical mail hostname the
+# Stalwart-managed cert is issued for). Fallback to a kubectl query for
+# the stalwart-mail pod's hostIP — works during pod migration (drain /
+# rescheduling / mail-HA failover) because the pod's hostIP is whatever
+# node the scheduler just placed it on, NOT a hardcoded node.
+#
+# Operator override: set MAIL_HOST=<ip-or-hostname> to point a specific
+# probe at a specific node (e.g. multi-node haproxy testing where each
+# server-role node should be probed independently). Empty MAIL_HOST or
+# absent env triggers auto-resolution.
+_resolve_mail_host() {
+  if [[ -n "${MAIL_HOST:-}" ]]; then
+    echo "$MAIL_HOST"
+    return 0
+  fi
+  local apex="${MAIL_DOMAIN_APEX:-${PLATFORM_DOMAIN:-staging.phoenix-host.net}}"
+  local resolved
+  # 1. DNS — what an external SMTP client would see
+  resolved=$(dig +short "mail.${apex}" A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+  if [[ -n "$resolved" ]]; then
+    echo "$resolved"
+    return 0
+  fi
+  # 2. kubectl fallback — current Stalwart pod's host node IP (portable
+  #    across rescheduling). Uses the same ssh_cp path the rest of the
+  #    harness uses so a remote control host works.
+  resolved=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}'" 2>/dev/null | tr -d '[:space:]')
+  if [[ -n "$resolved" ]]; then
+    echo "$resolved"
+    return 0
+  fi
+  # 3. Last resort: emit empty so the caller fails loudly with a clear
+  #    message rather than connecting to a stale hardcoded IP.
+  echo ""
+}
+
+# Dump the raw openssl s_client output for one (host, port, sni,
+# starttls_proto) tuple. starttls_proto="" means implicit-TLS port.
+# Echoes the openssl stdout/stderr blob to the caller's stdout so the
+# caller can grep cert subject, issuer, SAN, etc.
+_probe_tls_handshake() {
+  local host="$1" port="$2" sni="$3" starttls="${4:-}"
+  local args=(s_client -connect "${host}:${port}" -servername "$sni" -showcerts)
+  [[ -n "$starttls" ]] && args+=(-starttls "$starttls")
+  # `</dev/null` so openssl exits after the handshake (no interactive
+  # input). `2>&1` captures the cert chain block that openssl prints
+  # to stderr.
+  echo | timeout 10 openssl "${args[@]}" 2>&1 || true
+}
+
+# Assert that the TLS cert served by (host, port, sni) names the
+# expected hostname in its subject CN or subjectAltName. Calls ok()/fail()
+# on the caller's behalf. `tag` is a short label for the assertion
+# message ("mail-tls/465" etc.). `starttls` is "" for implicit-TLS.
+#
+# Pulls subject + SAN with openssl x509 from the certificate dumped
+# inside the handshake output. Wildcards in SAN (`*.example.com`) are
+# expanded — `mail.example.com` matches `*.example.com`.
+_assert_cert_names_hostname() {
+  local tag="$1" host="$2" port="$3" sni="$4" expected_hostname="$5" starttls="${6:-}"
+  local handshake; handshake=$(_probe_tls_handshake "$host" "$port" "$sni" "$starttls")
+  # Extract the first PEM cert from the handshake (the server leaf).
+  local pem
+  pem=$(printf '%s\n' "$handshake" \
+    | awk '/-----BEGIN CERTIFICATE-----/{flag=1} flag{print} /-----END CERTIFICATE-----/{flag=0; exit}')
+  if [[ -z "$pem" ]]; then
+    fail "${tag}: TLS handshake to ${host}:${port} (SNI=${sni}) returned no cert; output head: $(echo "$handshake" | head -3 | tr '\n' '|')"
+    return 1
+  fi
+  local subject san
+  subject=$(echo "$pem" | openssl x509 -noout -subject 2>/dev/null | sed 's|^subject=||')
+  san=$(echo "$pem" | openssl x509 -noout -ext subjectAltName 2>/dev/null \
+    | grep -oE 'DNS:[^,]+' | sed 's/^DNS://; s/[[:space:]]*$//' | tr '\n' ',' | sed 's/,$//')
+  # Match expected against SAN entries (handle wildcards) or subject CN
+  # (legacy fallback — modern LE certs put everything in SAN).
+  local found="false"
+  IFS=',' read -ra _entries <<<"$san"
+  for entry in "${_entries[@]}"; do
+    entry="${entry//[[:space:]]/}"
+    if [[ "$entry" == "$expected_hostname" ]]; then
+      found="true"
+      break
+    fi
+    if [[ "$entry" == "*"* ]]; then
+      # Wildcard: `*.example.com` matches `<single-label>.example.com`
+      local suffix="${entry#\*}"   # `.example.com`
+      if [[ "$expected_hostname" == *"$suffix" ]]; then
+        local prefix="${expected_hostname%$suffix}"
+        if [[ "$prefix" == *.* || -z "$prefix" ]]; then
+          # Multi-label prefix (`foo.bar.example.com` vs `*.example.com`)
+          # — RFC 6125 wildcards only cover ONE label. Skip.
+          continue
+        fi
+        found="true"
+        break
+      fi
+    fi
+  done
+  # Subject-CN fallback (LE 2026+ doesn't populate subject CN, but
+  # operator-provisioned certs sometimes do). Escape every `.` in the
+  # hostname before substituting into the ERE — otherwise `mail.foo.com`
+  # would false-pass against `mailXfooXcom` etc. (the dots are regex
+  # metacharacters matching any single char).
+  if [[ "$found" != "true" ]]; then
+    local _esc_hostname="${expected_hostname//./\\.}"
+    if echo "$subject" | grep -qE "CN[[:space:]]*=[[:space:]]*${_esc_hostname}([,/]|$)"; then
+      found="true"
+    fi
+  fi
+  if [[ "$found" == "true" ]]; then
+    ok "${tag}: cert covers '${expected_hostname}' (subject=${subject}; SAN=${san:-<none>})"
+  else
+    fail "${tag}: cert does NOT cover '${expected_hostname}' (subject=${subject:-<missing>}; SAN=${san:-<none>})"
+  fi
+}
+
+# Read the SMTP 220 greeting from (host, port) and assert the
+# hostname token matches `expected`. Uses implicit-TLS s_client for
+# 465/993 and plain TCP for 25/587. EHLO probe is sent so the
+# Capabilities line is also visible in the logged output.
+_assert_smtp_banner_matches() {
+  local tag="$1" host="$2" port="$3" expected="$4" mode="${5:-plain}"  # mode: plain | tls
+  local out
+  if [[ "$mode" == "tls" ]]; then
+    out=$( ( sleep 0.4; printf "EHLO probe.local\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) \
+      | timeout 10 openssl s_client -connect "${host}:${port}" -crlf -quiet -servername "$expected" 2>&1 || true)
+  else
+    out=$( ( sleep 0.4; printf "EHLO probe.local\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) \
+      | timeout 10 nc -w 8 "$host" "$port" 2>&1 || true)
+  fi
+  # Parse `220 <hostname> ESMTP ...` greeting
+  local banner_host
+  banner_host=$(echo "$out" | grep -oE '^220[ -][^ ]+' | head -1 | awk '{print $2}')
+  if [[ -z "$banner_host" ]]; then
+    fail "${tag}: no SMTP 220 banner from ${host}:${port}; output head: $(echo "$out" | head -3 | tr '\n' '|')"
+    return 1
+  fi
+  if [[ "$banner_host" == "$expected" ]]; then
+    ok "${tag}: SMTP banner '${banner_host}' matches expected '${expected}'"
+  else
+    fail "${tag}: SMTP banner '${banner_host}' DOES NOT MATCH expected '${expected}'"
+  fi
+  # Also assert the EHLO 250- reply names the same hostname (catches
+  # the case where Stalwart's greeting hostname and EHLO hostname
+  # diverge — a real misconfiguration that breaks DKIM SDID checks).
+  local ehlo_host
+  # Stalwart's first 250 line is `250-mail.example.com Hello probe.local`
+  # — `grep -oE '^250[ -][^ ]+'` extracts the single token `250-<host>`
+  # (no space). Use sed to strip the literal `250[space|-]` prefix
+  # rather than awk '{print $2}' which returns empty on a no-space
+  # token and silently no-ops the entire EHLO assertion.
+  ehlo_host=$(echo "$out" | grep -oE '^250[ -][^ ]+' | head -1 | sed 's/^250[ -]//')
+  if [[ -n "$ehlo_host" ]]; then
+    if [[ "$ehlo_host" == "$expected" ]]; then
+      ok "${tag}: EHLO 250 line names '${ehlo_host}' (matches greeting)"
+    else
+      fail "${tag}: EHLO 250 line names '${ehlo_host}' but greeting was '${banner_host}' / expected '${expected}'"
+    fi
+  fi
 }
 
 # Wait until $cmd produces output matching $expect or timeout in $1 s.
@@ -1251,12 +1435,18 @@ scenario_mail() {
 
   local stamp; stamp=$(date +%s)
   # Stalwart's SMTP/IMAP/Submission listeners are bound to the Service
-  # externalIP (staging3 = 89.167.3.56), NOT every cluster node. Defaulting
-  # MAIL_HOST to CONTROL_HOST (staging2) sends traffic to a node where
-  # Stalwart isn't listening → ECONNREFUSED on 587/993.
-  # shellcheck disable=SC2034 # Documented env override; surfaced via
-  # the comment block above so the operator knows MAIL_HOST is honored.
-  local mail_host="${MAIL_HOST:-89.167.3.56}"
+  # externalIP (single-node) or to every server-role node via the
+  # haproxy DaemonSet (allServerNodes mode). Use _resolve_mail_host
+  # so the probe stays correct as the Stalwart pod migrates between
+  # nodes (drain, failover, allServerNodes) — the helper looks up
+  # mail.${apex} A record first, falls back to the current pod's
+  # hostIP. Operator can still set MAIL_HOST=<ip> to pin a specific
+  # node for multi-node debugging.
+  local mail_host; mail_host=$(_resolve_mail_host)
+  if [[ -z "$mail_host" ]]; then
+    fail "mail/resolve: could not auto-resolve mail host (DNS of mail.<apex> + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
+    return 1
+  fi
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.phoenix-host.net}"
   local webmail_url="${WEBMAIL_URL:-https://webmail.staging.phoenix-host.net}"
   local admin_ui_url="${ADMIN_UI_URL:-https://stalwart.staging.phoenix-host.net}"
@@ -1940,6 +2130,18 @@ except Exception as e:
     fail "mail/admin-gate: unexpected HTTP $gate_code from $admin_ui_url"
   fi
 
+  # ── Step 11b: external SMTP greeting + EHLO match the configured
+  #             mail hostname. Catches greeting/EHLO mismatches that
+  #             would break DKIM SDID checks in real traffic — a
+  #             cluster-internal SMTP-send/receive (Steps 9-10 above)
+  #             does NOT exercise the public hostname path because
+  #             the in-cluster Service ClusterIP doesn't carry the
+  #             public DNS name. ──
+  local _mail_fqdn="mail.${mail_domain_apex}"
+  _assert_smtp_banner_matches "mail/banner/25"  "$mail_host" 25  "$_mail_fqdn" "plain"
+  _assert_smtp_banner_matches "mail/banner/587" "$mail_host" 587 "$_mail_fqdn" "plain"
+  _assert_smtp_banner_matches "mail/banner/465" "$mail_host" 465 "$_mail_fqdn" "tls"
+
   # ── Step 14: cleanup ─────────────────────────────────────────────
   local del_mb; del_mb=$(api DELETE "/tenants/$mail_cid/mailboxes/$mail_mbid" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else d['error'])" 2>/dev/null || echo "ok")
   ok "mail/cleanup: mailbox deleted ($del_mb)"
@@ -2101,14 +2303,26 @@ scenario_mail_tls() {
 
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.phoenix-host.net}"
   local mail_hostname="${MAIL_HOSTNAME:-mail.${mail_domain_apex}}"
-  local mail_host="${MAIL_HOST:-89.167.3.56}"
+  # MAIL_HOST: auto-resolve (DNS of mail.<apex>, then kubectl hostIP
+  # fallback) so the probe stays correct as the Stalwart pod migrates
+  # between nodes (drain, failover, allServerNodes haproxy mode).
+  # Operator can still pin to a specific node IP via MAIL_HOST=...
+  # for multi-node debugging.
+  local mail_host; mail_host=$(_resolve_mail_host)
+  if [[ -z "$mail_host" ]]; then
+    fail "mail-tls/resolve: could not auto-resolve mail host (DNS of mail.${mail_domain_apex} + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
+    return 1
+  fi
+  log "mail-tls: probing ${mail_hostname} via ${mail_host}"
 
   # ── 1. TLS handshake on each implicit-TLS port — must serve LE
-  #       cert, NOT Stalwart's embedded rcgen self-signed default ──
+  #       cert (not rcgen self-signed) AND cover the expected hostname
+  #       (subject CN or SAN). The CN/SAN match catches the case where
+  #       Stalwart serves a real LE cert but for a different hostname —
+  #       which would still validate as "LE-issued" but mail clients
+  #       would reject on hostname mismatch in real traffic. ──
   for port in 465 993; do
-    local out; out=$(echo | timeout 8 openssl s_client \
-      -connect "${mail_host}:${port}" \
-      -servername "${mail_hostname}" 2>&1)
+    local out; out=$(_probe_tls_handshake "$mail_host" "$port" "$mail_hostname")
     if echo "$out" | grep -qE "Let's Encrypt|R10|R11|E5|E6|E7|E8"; then
       ok "mail-tls/${port}: serves LE-issued cert (SNI=${mail_hostname})"
     elif echo "$out" | grep -qE "rcgen self signed cert|self-signed"; then
@@ -2116,6 +2330,9 @@ scenario_mail_tls() {
     else
       fail "mail-tls/${port}: openssl handshake unexpected output: $(echo "$out" | grep -E 'subject=|issuer=|verify' | head -3)"
     fi
+    # CN/SAN match — independent assertion so we know whether the cert
+    # the server returned actually covers the hostname we asked for.
+    _assert_cert_names_hostname "mail-tls/${port}/san" "$mail_host" "$port" "$mail_hostname" "$mail_hostname"
   done
 
   # ── 2. STARTTLS upgrade on submission/SMTP/sieve ports ──
@@ -2123,10 +2340,7 @@ scenario_mail_tls() {
     local proto="smtp"
     [[ "$port" == "4190" ]] && proto="sieve"
     local out
-    out=$(echo "QUIT" | timeout 10 openssl s_client \
-      -connect "${mail_host}:${port}" \
-      -starttls "$proto" \
-      -servername "${mail_hostname}" 2>&1 || true)
+    out=$(_probe_tls_handshake "$mail_host" "$port" "$mail_hostname" "$proto")
     if echo "$out" | grep -qE "Let's Encrypt|R10|R11|E5|E6|E7|E8"; then
       ok "mail-tls/${port}: STARTTLS upgrade → LE cert"
     elif echo "$out" | grep -qE "rcgen self signed cert"; then
@@ -2135,10 +2349,25 @@ scenario_mail_tls() {
       # openssl <1.1.1 doesn't know `-starttls sieve`; accept implicit
       # ports as the canonical check.
       log "mail-tls/${port}: openssl version doesn't support -starttls $proto — skipped"
+      continue
     else
       fail "mail-tls/${port}: unexpected output: $(echo "$out" | head -3)"
+      continue
     fi
+    # CN/SAN match on the STARTTLS-upgraded cert (same check as
+    # implicit-TLS — same cert is served).
+    _assert_cert_names_hostname "mail-tls/${port}/san" "$mail_host" "$port" "$mail_hostname" "$mail_hostname" "$proto"
   done
+
+  # ── 2b. SMTP greeting (220 banner) + EHLO 250 reply must both name
+  #        the configured mail_hostname. Catches:
+  #        - Stalwart Bootstrap.serverHostname out of sync with cert SAN
+  #          (real misconfig that breaks DKIM SDID checks downstream)
+  #        - greeting hostname != EHLO hostname (some Stalwart misconfigs)
+  # ──
+  _assert_smtp_banner_matches "mail-tls/465/banner" "$mail_host" 465 "$mail_hostname" "tls"
+  _assert_smtp_banner_matches "mail-tls/25/banner"  "$mail_host" 25  "$mail_hostname" "plain"
+  _assert_smtp_banner_matches "mail-tls/587/banner" "$mail_host" 587 "$mail_hostname" "plain"
 
   # ── 3. SRV records target mail.${DOMAIN} (single-SAN cert match) ──
   for rec in _imaps._tcp _submissions._tcp _submission._tcp _imap._tcp; do
