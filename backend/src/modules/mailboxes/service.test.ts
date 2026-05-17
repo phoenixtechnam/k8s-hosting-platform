@@ -435,7 +435,9 @@ describe('generateWebmailToken', () => {
     selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
-    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
+    // Pin engine=roundcube to preserve this test's intent (URL host
+    // fallback behavior). Engine default flipped to bulwark in 2026-05-17.
+    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1', { engine: 'roundcube' });
 
     // Token is a real HS256 JWT, not a mock string
     expect(result.token.split('.')).toHaveLength(3);
@@ -466,7 +468,8 @@ describe('generateWebmailToken', () => {
     selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
-    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
+    // Pin engine=roundcube — this test asserts the WEBMAIL_URL env path.
+    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1', { engine: 'roundcube' });
     expect(result.webmailUrl).toMatch(/^https:\/\/webmail\.platform\.test\/\?_task=login&_jwt=/);
   });
 
@@ -574,21 +577,23 @@ describe('generateWebmailToken', () => {
     expect(jti1).not.toBe(jti2);
   });
 
-  it('engine defaults to roundcube when omitted (back-compat)', async () => {
+  it('engine defaults to bulwark when omitted (fresh-install default)', async () => {
     const user = { tenantId: 'c1' };
     const activeTenant = { status: 'active' };
     const userRole = { roleName: 'tenant_admin', tenantId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
     const mbStatus = { status: 'active' };
-    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus]];
+    // Six selects: user, tenant, role, mailboxes, mbStatus, getSetting
+    // (the unset default_webmail_engine returns empty []).
+    selectResults = [[user], [activeTenant], [userRole], allMailboxes, [mbStatus], []];
     const db = createMockDb();
 
     const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
-    expect(result.engine).toBe('roundcube');
-    expect(result.webmailUrl).toContain('?_task=login&_jwt=');
+    expect(result.engine).toBe('bulwark');
+    expect(result.webmailUrl).toContain('/api/auth/impersonate?token=');
     const payload = decodeJwtPayload(result.token);
-    expect(payload.iss).toBeUndefined();
-    expect(payload.jti).toBeUndefined();
+    expect(payload.iss).toBe('platform-api/webmail');
+    expect(typeof payload.jti).toBe('string');
   });
 
   it('should reject token generation for unauthorized user', async () => {

@@ -171,18 +171,30 @@ async function defaultMailHostname(db: Database): Promise<string> {
 export type WebmailEngine = 'roundcube' | 'bulwark';
 
 /**
- * Read the platform-wide default webmail engine. Roundcube is the
- * historic default; flip to `bulwark` once the operator has verified
- * the Bulwark stack on staging (ADR-039 Phase 10). When unset,
- * defaults to 'roundcube' for backwards compatibility.
+ * Read the platform-wide default webmail engine.
+ *
+ * **Fresh-install default (2026-05-17 onward): bulwark.** Bulwark
+ * v1.6.7 stable ships native master-user impersonation (upstream
+ * issue #296). New clusters land on Bulwark out of the box —
+ * JMAP-native, calendar/contacts/files in one SPA, single shared
+ * Deployment.
+ *
+ * Existing clusters that explicitly stored `default_webmail_engine`
+ * keep their explicit setting — only the unset/never-touched case
+ * changed.
+ *
+ * Operators can flip to Roundcube via the admin UI
+ * (PATCH /admin/webmail-settings). The mutex reconciler swaps
+ * Ingress + Pod replicas in one transaction.
  *
  * Per-tenant override is out of scope for v1 — all tenants share the
  * platform default. The setting is super_admin only.
  */
 export async function getDefaultWebmailEngine(db: Database): Promise<WebmailEngine> {
   const raw = (await getSetting(db, 'default_webmail_engine'))?.trim().toLowerCase();
-  if (raw === 'bulwark') return 'bulwark';
-  return 'roundcube';
+  if (raw === 'roundcube') return 'roundcube';
+  // 'bulwark' OR unset (fresh install) OR any unknown value → bulwark
+  return 'bulwark';
 }
 
 export async function getWebmailSettings(db: Database) {
