@@ -195,5 +195,21 @@ log "Post-suite cleanup pass (deletes leftover test clients via lifecycle API)"
 yes y | ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/integration-cleanup.sh" 2>&1 \
   | tail -20 || warn "integration-cleanup.sh reported errors — re-run manually if leaks persist"
 
+# Hard CI guard — fail the run if any test-tenant namespace OR Released
+# test-pattern PV survived the per-suite traps AND the cleanup pass
+# above. The cleanup pass uses the lifecycle API, which fails when
+# system-db is down (the chicken-and-egg scenario observed on
+# testing.phoenix-host.net 2026-05-17). This guard talks directly to
+# the apiserver so it catches that case. CI_LEAK_GUARD=0 disables.
+log "Leak guard (assert no test-tenant namespaces or Released test-PVs survived)"
+leak_rc=0
+"$SCRIPT_DIR/ci-no-leaked-test-tenants.sh" || leak_rc=$?
+if [[ $leak_rc -eq 1 ]]; then
+  fail "leak guard FAILED — see above. Set CI_LEAK_GUARD=0 to override (use sparingly)."
+  failed_suites+=("leak-guard")
+elif [[ $leak_rc -eq 2 ]]; then
+  warn "leak guard could not run (no cluster access) — re-check manually"
+fi
+
 # Real failures + reachability breaks both fatal.
 [[ ${#failed_suites[@]} -eq 0 && ${#reachability_breaks[@]} -eq 0 ]] || exit 1

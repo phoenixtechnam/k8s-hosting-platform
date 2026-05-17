@@ -159,6 +159,65 @@ export const SYSTEM_MEMORY_RESERVE = 0;
 
 /** PriorityClass that tenant ResourceQuotas count against (every Pod
  *  without an explicit priorityClassName gets this via globalDefault). */
+/**
+ * Namespace patterns produced by the integration test suite. Tenants
+ * provisioned into a namespace matching one of these (case-insensitive)
+ * get `longhorn-tenant-test` (reclaimPolicy=Delete) instead of
+ * `longhorn-tenant` (reclaimPolicy=Retain), so their PVs auto-GC on
+ * tenant delete.
+ *
+ * Why a regex on the namespace rather than a tenant attribute: the
+ * namespace name is the only stable signal the provisioner has at PVC
+ * creation time — tenant rows don't carry a "test" boolean and we
+ * don't want one (operators shouldn't be able to flip a real tenant
+ * into delete-on-deprovision mode by accident). The names are written
+ * by the integration scripts themselves (see `integration-*.sh`) so
+ * the contract lives at the test layer.
+ *
+ * Production tenant slugs are user-chosen via the admin UI / API —
+ * they don't match these patterns unless an operator deliberately
+ * creates a tenant with a name like `tenant-foo-passkey-e2e-…`.
+ */
+const TENANT_TEST_NAMESPACE_PATTERN = new RegExp(
+  '^tenant-(' + [
+    'integration-test',
+    'lifecycle-e2e',
+    'passkey-e2e',
+    'pvc-test',
+    'reaper-test',
+    'bundle-test',
+    'ingress-test',
+    'drain-test',
+    'tier-test',
+    'grow-test',
+    'mail-test',
+    'provision-test',
+    'mtls-test',
+    'firewall-test',
+  ].join('|') + ')-',
+  'i',
+);
+
+/**
+ * Pick the StorageClass for a tenant's PVC. Test namespaces (matching
+ * `TENANT_TEST_NAMESPACE_PATTERN`) get a Delete-reclaim SC so they
+ * don't leak PVs when the test exits. Everything else uses the
+ * Retain SC that protects real customer data.
+ *
+ * The `TENANT_STORAGE_CLASS` env var still wins — non-Longhorn dev
+ * clusters use it to swap in `local-path` etc. for both prod-mode and
+ * test-mode tenants alike (those clusters typically only have one SC).
+ * Exported for unit tests.
+ */
+export function selectTenantStorageClass(namespace: string): string {
+  const override = process.env.TENANT_STORAGE_CLASS;
+  if (override) return override;
+  if (TENANT_TEST_NAMESPACE_PATTERN.test(namespace)) {
+    return 'longhorn-tenant-test';
+  }
+  return 'longhorn-tenant';
+}
+
 export const TENANT_DEFAULT_PRIORITY_CLASS = 'tenant-default';
 /** PriorityClass for platform-managed Pods that live in tenant
  *  namespaces but should NOT count against the tenant ResourceQuota. */
@@ -816,7 +875,13 @@ export async function runProvisionNamespace(
   // code below is Longhorn-specific and silently no-ops on other SCs (the
   // patch() call fails — we treat that as "non-Longhorn cluster, skip"
   // so the deployer doesn't crash on plain SCs).
-  const storageClass = process.env.TENANT_STORAGE_CLASS || 'longhorn-tenant';
+  //
+  // Test-namespace auto-select: namespaces matching the integration-test
+  // naming patterns get longhorn-tenant-test (reclaimPolicy=Delete) so
+  // their PVs auto-GC when the tenant is deleted. See
+  // selectTenantStorageClass for the matched patterns + rationale.
+  // Production tenants are NEVER matched.
+  const storageClass = selectTenantStorageClass(namespace);
 
   // Auto-pick worker for Local tier when the operator chose "Auto"
   // (nodeName=null). Local tier MUST run on a specific node

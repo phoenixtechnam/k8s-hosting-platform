@@ -77,6 +77,32 @@ source "${LIB_DIR}/probe.sh"
 # shellcheck source=catalog-tests/lib/cleanup.sh
 source "${LIB_DIR}/cleanup.sh"
 
+# ─── safety net: track every tenant we create so the EXIT trap can ──
+# tear them down even when SIGINT / set -e interrupts the run between
+# `create_tenant` and the inline tear_down_tenant call. The trap is a
+# best-effort backstop on top of the per-entry cleanup in run_entry
+# — most runs never need it, but it prevents the 41-entry sweep from
+# leaking 41 tenants if Ctrl+C lands mid-loop.
+declare -a CATALOG_CREATED_TENANTS=()
+track_created_tenant()   { CATALOG_CREATED_TENANTS+=("$1"); }
+untrack_created_tenant() { CATALOG_CREATED_TENANTS=("${CATALOG_CREATED_TENANTS[@]/$1}"); }
+
+catalog_exit_cleanup() {
+  local rc=$?
+  local leftover=()
+  for cid in "${CATALOG_CREATED_TENANTS[@]}"; do
+    [[ -n "$cid" ]] && leftover+=("$cid")
+  done
+  if [[ ${#leftover[@]} -gt 0 ]]; then
+    log "EXIT trap: tearing down ${#leftover[@]} leftover tenant(s)"
+    for cid in "${leftover[@]}"; do
+      tear_down_tenant "$cid" "" 2>&1 | sed 's/^/  /' || true
+    done
+  fi
+  exit "$rc"
+}
+trap catalog_exit_cleanup EXIT
+
 # ─── prerequisites ────────────────────────────────────────────────
 
 prereq_check() {
@@ -233,6 +259,7 @@ print(plans[0].get('id', '') if plans else '')
     return 1
   fi
   info "tenant_id=${tenant_id}"
+  track_created_tenant "$tenant_id"
 
   # Wait for client provision
   if ! wait_for 180 "client provisioned" '"provisioningStatus":"provisioned"' \

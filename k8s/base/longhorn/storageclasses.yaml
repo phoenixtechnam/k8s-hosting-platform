@@ -163,6 +163,41 @@ parameters:
   # No nodeSelector — tenant volumes land on any host-tenant-workloads
   # node. The `system` tag is reserved for platform PVCs.
 ---
+# Test-only sibling of longhorn-tenant. The ONLY difference is
+# reclaimPolicy=Delete (production is Retain to protect customer data).
+# Integration tests that create tenants with names matching the test
+# patterns (Reaper Test, Bundle Test, Lifecycle E2E, Passkey E2E, etc.
+# — see TENANT_TEST_NAMESPACE_PATTERN in k8s-provisioner/service.ts)
+# get this SC automatically. When the test deletes the tenant (or
+# crashes mid-run and the post-run reaper sweeps the namespace), the
+# PV + Longhorn volume + replica directory get GC'd by Kubernetes
+# instead of accumulating as Released zombies that block future
+# storage scheduling.
+#
+# Today (2026-05-17) testing.phoenix-host.net accumulated 16 Released
+# `longhorn-tenant` PVs from a single test run — Retain meant they
+# leaked even after the namespaces were deleted, pushing Longhorn's
+# storageScheduled from a comfortable 12 GiB up to 51 GiB and breaking
+# the next PITR test's replica scheduling. Delete fixes that.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-tenant-test
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    platform.phoenix-host.net/tier: tenant
+    platform.phoenix-host.net/test-only: "true"
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "1"
+  staleReplicaTimeout: "30"
+  fsType: "xfs"
+  dataLocality: "best-effort"
+  recurringJobSelector: '[{"name":"default","isGroup":true}]'
+---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
