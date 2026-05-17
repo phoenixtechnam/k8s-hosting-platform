@@ -4804,7 +4804,16 @@ spec:
     args:
     - |
       set -e
-      apk add -q --no-cache curl jq >/dev/null
+      # Retry apk add — see configure pod for full reasoning.
+      for _try in 1 2 3 4 5 6; do
+        if apk add -q --no-cache curl jq >/dev/null 2>&1; then break; fi
+        echo "apk add attempt \${_try}/6 failed — retrying in 10s" >&2
+        sleep 10
+      done
+      command -v curl >/dev/null && command -v jq >/dev/null || {
+        echo "FATAL: apk add curl jq failed after 6 retries" >&2
+        exit 1
+      }
 
       MGMT="http://stalwart-mgmt.mail.svc.cluster.local:8080"
       AUTH="admin:\${recoveryPassword}"
@@ -5029,7 +5038,22 @@ spec:
       args:
         - |
           set -eu
-          apk add -q --no-cache curl jq
+          # apk add can transiently fail on a fresh-bootstrap cluster
+          # ("unable to select packages" — typically CoreDNS not yet
+          # ready, or apk index fetch hits a window where the alpine
+          # mirror is unreachable). Retry up to 6 times before giving up
+          # so a one-off DNS hiccup doesn't strand Stalwart with no
+          # listeners on 587/143/80. Caught on testing.phoenix-host.net
+          # fresh-bootstrap 2026-05-17.
+          for _try in 1 2 3 4 5 6; do
+            if apk add -q --no-cache curl jq 2>&1; then break; fi
+            echo "apk add attempt \${_try}/6 failed — retrying in 10s" >&2
+            sleep 10
+          done
+          command -v curl >/dev/null && command -v jq >/dev/null || {
+            echo "FATAL: apk add curl jq failed after 6 retries" >&2
+            exit 1
+          }
 
           MGMT="http://stalwart-mgmt.mail.svc.cluster.local:8080"
           AUTH="admin:\${recoveryPassword}"
