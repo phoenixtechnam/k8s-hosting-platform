@@ -873,7 +873,8 @@ export async function generateWebmailToken(
   // Engine resolution precedence:
   //   1. explicit caller override (options.engine)
   //   2. platform-wide `default_webmail_engine` setting
-  //   3. hardcoded 'roundcube' (back-compat for fresh installs)
+  //   3. hardcoded 'bulwark' (fresh-install default since 2026-05-17;
+  //      see getDefaultWebmailEngine doc)
   let engine: 'roundcube' | 'bulwark';
   if (options?.engine) {
     engine = options.engine;
@@ -882,7 +883,7 @@ export async function generateWebmailToken(
       const { getDefaultWebmailEngine } = await import('../webmail-settings/service.js');
       engine = await getDefaultWebmailEngine(db);
     } catch {
-      engine = 'roundcube';
+      engine = 'bulwark';
     }
   }
 
