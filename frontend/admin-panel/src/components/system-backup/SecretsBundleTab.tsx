@@ -19,6 +19,7 @@ import {
   useSecretsBundleRun,
   useTriggerSecretsBundleExport,
 } from '@/hooks/use-system-backup';
+import SecretsCoverageSection from './SecretsCoverageSection';
 
 export default function SecretsBundleTab() {
   const manifestQ = useSecretsBundleManifest();
@@ -78,6 +79,8 @@ export default function SecretsBundleTab() {
       </div>
 
       <RunsHistoryPanel runs={runsQ.data ?? []} loading={runsQ.isLoading} onSelectRun={setActiveRunId} />
+
+      <SecretsCoverageSection />
 
       {activeRunId && runQ.data && (
         <DownloadModal

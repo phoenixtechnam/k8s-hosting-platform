@@ -18,11 +18,29 @@ import {
   type ExportSecretsBundleResponse,
   type SystemBackupRun,
   type SecretsBundleManifestResponse,
+  addAllowlistEntryRequestSchema,
+  recordDrDrillRunRequestSchema,
+  type SecretsAuditResponse,
+  type ListAllowlistResponse,
+  type ListDrDrillRunsResponse,
+  type DrDrillSummaryResponse,
 } from '@k8s-hosting/api-contracts';
 import {
   createSecretsBundleExport,
   readManifest,
 } from './service.js';
+import {
+  invalidateAuditCache,
+  readAllowlist,
+  removeAllowlistEntry,
+  runSecretsAudit,
+  upsertAllowlistEntry,
+} from './secrets-audit.js';
+import {
+  getDrDrillSummary,
+  listDrDrillRuns,
+  recordDrDrillRun,
+} from './dr-drill-runs.js';
 
 export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
   // Fail-closed on missing/short JWT_SECRET — without this, download
@@ -150,6 +168,136 @@ export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('SYSTEM_BACKUP_RUN_NOT_FOUND', 'run not found', 404);
     }
     return success(toApiRun(row, /*includeDownloadUrl*/ true));
+  });
+
+  // ─── Secrets coverage audit (DR-bundle Phase 0) ──────────────────
+  app.get('/system-backup/secrets-audit', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'Differential audit: every cluster Secret → coverage category',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const data = await runSecretsAudit(k8sFactory());
+    return success<SecretsAuditResponse['data']>(data);
+  });
+
+  app.post('/system-backup/secrets-audit/refresh', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'Bust the audit cache + recompute on next read',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const userId = (request.user as { sub?: string } | undefined)?.sub ?? 'unknown';
+    app.log.warn({ userId }, 'secrets-audit: cache refresh requested');
+    invalidateAuditCache();
+    const data = await runSecretsAudit(k8sFactory(), { useCache: false });
+    return success<SecretsAuditResponse['data']>(data);
+  });
+
+  app.get('/system-backup/secrets-audit/allowlist', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'List entries in the secrets-audit-allowlist ConfigMap',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const entries = await readAllowlist(k8sFactory());
+    return success<ListAllowlistResponse['data']>({ entries });
+  });
+
+  app.post('/system-backup/secrets-audit/allowlist', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'Add (or update reason for) an allowlist entry',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const parsed = addAllowlistEntryRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('SYSTEM_BACKUP_BAD_REQUEST', parsed.error.message, 400);
+    }
+    const userId = (request.user as { sub?: string } | undefined)?.sub;
+    if (typeof userId !== 'string' || userId.length === 0) {
+      throw new ApiError('UNAUTHENTICATED', 'no user id in token', 401);
+    }
+    app.log.warn(
+      { userId, namespace: parsed.data.namespace, name: parsed.data.name },
+      'secrets-audit: allowlist entry added',
+    );
+    const entries = await upsertAllowlistEntry(k8sFactory(), {
+      namespace: parsed.data.namespace,
+      name: parsed.data.name,
+      reason: parsed.data.reason,
+      addedBy: userId,
+    });
+    return success<ListAllowlistResponse['data']>({ entries });
+  });
+
+  app.delete<{ Params: { namespace: string; name: string } }>(
+    '/system-backup/secrets-audit/allowlist/:namespace/:name',
+    {
+      schema: {
+        tags: ['SystemBackup'],
+        summary: 'Remove an allowlist entry',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request) => {
+      const { namespace, name } = request.params;
+      if (!namespace || !name) {
+        throw new ApiError('SYSTEM_BACKUP_BAD_REQUEST', 'namespace + name required', 400);
+      }
+      const userId = (request.user as { sub?: string } | undefined)?.sub ?? 'unknown';
+      app.log.warn({ userId, namespace, name }, 'secrets-audit: allowlist entry removed');
+      const entries = await removeAllowlistEntry(k8sFactory(), namespace, name);
+      return success<ListAllowlistResponse['data']>({ entries });
+    },
+  );
+
+  // ─── DR drill runs (DR-bundle Phase 1) ───────────────────────────
+  app.get('/system-backup/dr-drill/runs', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'List recent DR drill executions',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const limit = Number((request.query as { limit?: string } | undefined)?.limit ?? '12');
+    const data = await listDrDrillRuns(app.db, Number.isFinite(limit) ? limit : 12);
+    return success<ListDrDrillRunsResponse['data']>(data);
+  });
+
+  app.get('/system-backup/dr-drill/summary', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'DR drill rolling summary (pass rate, streak, last success/failure)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const data = await getDrDrillSummary(app.db);
+    return success<DrDrillSummaryResponse['data']>(data);
+  });
+
+  app.post('/system-backup/dr-drill/runs', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'Webhook: CI posts drill results here',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const parsed = recordDrDrillRunRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('SYSTEM_BACKUP_BAD_REQUEST', parsed.error.message, 400);
+    }
+    const userId = (request.user as { sub?: string } | undefined)?.sub ?? 'unknown';
+    app.log.warn(
+      { userId, drillId: parsed.data.id, status: parsed.data.status },
+      'dr-drill: run recorded',
+    );
+    const run = await recordDrDrillRun(app.db, parsed.data);
+    return success(run);
   });
 }
 

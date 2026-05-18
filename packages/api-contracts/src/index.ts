@@ -96,3 +96,5 @@ export * from './mail-archive.js';
 export * from './mail-placement.js';
 export * from './mail-health.js';
 export * from './security-hardening.js';
+export * from './secrets-audit.js';
+export * from './dr-drill.js';

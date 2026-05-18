@@ -15,6 +15,11 @@ import type {
   ExportSecretsBundleRequest,
   ExportSecretsBundleResponse,
   SecretsBundleManifestResponse,
+  SecretsAuditResult,
+  AllowlistEntry,
+  AddAllowlistEntryRequest,
+  DrDrillRun,
+  DrDrillSummary,
 } from '@k8s-hosting/api-contracts';
 
 // API envelope used by all admin endpoints.
@@ -75,5 +80,96 @@ export function useTriggerSecretsBundleExport() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: KEYS.runs });
     },
+  });
+}
+
+// ─── DR-bundle Phase 0 — secrets coverage audit ───────────────────────
+
+const AUDIT_KEYS = {
+  audit: ['system-backup', 'secrets-audit'] as const,
+  allowlist: ['system-backup', 'secrets-audit', 'allowlist'] as const,
+};
+
+export function useSecretsAudit() {
+  return useQuery({
+    queryKey: AUDIT_KEYS.audit,
+    queryFn: () => apiFetch<ApiEnv<SecretsAuditResult>>('/api/v1/system-backup/secrets-audit')
+      .then((r) => r.data),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useRefreshSecretsAudit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<ApiEnv<SecretsAuditResult>>('/api/v1/system-backup/secrets-audit/refresh', {
+        method: 'POST',
+      }).then((r) => r.data),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: AUDIT_KEYS.audit }); },
+  });
+}
+
+export function useSecretsAuditAllowlist() {
+  return useQuery({
+    queryKey: AUDIT_KEYS.allowlist,
+    queryFn: () => apiFetch<ApiEnv<{ entries: AllowlistEntry[] }>>('/api/v1/system-backup/secrets-audit/allowlist')
+      .then((r) => r.data),
+  });
+}
+
+export function useAddAllowlistEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AddAllowlistEntryRequest) =>
+      apiFetch<ApiEnv<{ entries: AllowlistEntry[] }>>('/api/v1/system-backup/secrets-audit/allowlist', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }).then((r) => r.data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: AUDIT_KEYS.audit });
+      void qc.invalidateQueries({ queryKey: AUDIT_KEYS.allowlist });
+    },
+  });
+}
+
+export function useRemoveAllowlistEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ namespace, name }: { namespace: string; name: string }) =>
+      apiFetch<ApiEnv<{ entries: AllowlistEntry[] }>>(
+        `/api/v1/system-backup/secrets-audit/allowlist/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+        { method: 'DELETE' },
+      ).then((r) => r.data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: AUDIT_KEYS.audit });
+      void qc.invalidateQueries({ queryKey: AUDIT_KEYS.allowlist });
+    },
+  });
+}
+
+// ─── DR-bundle Phase 1 — drill runs ───────────────────────────────────
+
+const DRILL_KEYS = {
+  runs: ['system-backup', 'dr-drill', 'runs'] as const,
+  summary: ['system-backup', 'dr-drill', 'summary'] as const,
+};
+
+export function useDrDrillRuns() {
+  return useQuery({
+    queryKey: DRILL_KEYS.runs,
+    queryFn: () => apiFetch<ApiEnv<DrDrillRun[]>>('/api/v1/system-backup/dr-drill/runs')
+      .then((r) => r.data),
+    refetchInterval: 60_000,
+  });
+}
+
+export function useDrDrillSummary() {
+  return useQuery({
+    queryKey: DRILL_KEYS.summary,
+    queryFn: () => apiFetch<ApiEnv<DrDrillSummary>>('/api/v1/system-backup/dr-drill/summary')
+      .then((r) => r.data),
+    refetchInterval: 60_000,
   });
 }
