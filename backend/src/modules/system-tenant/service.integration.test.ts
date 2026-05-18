@@ -63,6 +63,11 @@ describe.skipIf(!dbAvailable)('system-tenant service (integration)', () => {
       expect(apex).toBeDefined();
       expect(apex!.tenantId).toBe(result.tenantId);
       expect(apex!.dnsMode).toBe('primary');
+      // 2026-05-18 fix: apex must be stamped pre-verified so the
+      // verification cron doesn't churn it (NS-delegation check
+      // fails for operator-managed parent zones with just A records).
+      expect(apex!.status).toBe('verified');
+      expect(apex!.verifiedAt).not.toBeNull();
 
       // Admin user owned by SYSTEM.
       const [adminUser] = await db.select().from(users).where(eq(users.email, systemTenantEmail(TEST_APEX)));

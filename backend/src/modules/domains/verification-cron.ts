@@ -16,10 +16,10 @@
  * Last-writer-wins on system_settings.last_known_platform_ips is acceptable.
  */
 
-import { and, isNull, lt, not, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, isNull, lt, not, inArray, or, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
-import { domains, systemSettings } from '../../db/schema.js';
+import { domains, systemSettings, tenants } from '../../db/schema.js';
 import { getPlatformIngressIps, getPlatformConfig, verifyDomain } from './verification.js';
 import { setDomainVerificationStatus } from './service.js';
 import { notifyDomainRegression, notifyDomainGraceUnverified } from './notifications.js';
@@ -129,6 +129,13 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
     createdAt: Date;
   }>;
   try {
+    // SYSTEM-tenant filter (ADR-040): the platform apex domain owned
+    // by the SYSTEM tenant is configured by the operator at bootstrap
+    // (A records on the parent zone) — it doesn't have its own NS
+    // delegation, so verifyNsDelegation falls over with ENODATA every
+    // tick and flips the row to `unverified`. The SYSTEM domain isn't
+    // a tenant-managed surface; skip it. ensureSystemApexDomain stamps
+    // status='verified' on insert as belt-and-braces.
     candidates = await db
       .select({
         id: domains.id,
@@ -140,9 +147,11 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
         createdAt: domains.createdAt,
       })
       .from(domains)
+      .innerJoin(tenants, eq(tenants.id, domains.tenantId))
       .where(
         and(
           not(inArray(domains.status, ['suspended', 'deleted'])),
+          eq(tenants.isSystem, false),
           or(
             isNull(domains.verificationCacheAt),
             lt(domains.verificationCacheAt, since),
@@ -204,6 +213,9 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
   const graceStart = new Date(Date.now() - GRACE_WINDOW_START_MS);
   const graceEnd = new Date(Date.now() - GRACE_WINDOW_END_MS);
   try {
+    // ADR-040: same SYSTEM-tenant exclusion as the main candidate
+    // query — never send "domain unverified" notifications about the
+    // platform's own apex.
     const graceTargets = await db
       .select({
         id: domains.id,
@@ -212,9 +224,11 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
         createdAt: domains.createdAt,
       })
       .from(domains)
+      .innerJoin(tenants, eq(tenants.id, domains.tenantId))
       .where(
         and(
           isNull(domains.verifiedAt),
+          eq(tenants.isSystem, false),
           lt(domains.createdAt, graceStart),
           not(lt(domains.createdAt, graceEnd)),
         ),
@@ -248,12 +262,18 @@ export async function startVerificationCron(
   // Immediate first tick if there are un-cached unverified domains
   void (async () => {
     try {
+      // ADR-040: don't count SYSTEM-owned domains when deciding
+      // whether to fire the initial-tick — otherwise every fresh
+      // bootstrap would trigger the cron on a domain it can't
+      // verify.
       const uncached = await db
         .select({ id: domains.id })
         .from(domains)
+        .innerJoin(tenants, eq(tenants.id, domains.tenantId))
         .where(
           and(
             isNull(domains.verificationCacheAt),
+            eq(tenants.isSystem, false),
             not(inArray(domains.status, ['suspended', 'deleted'])),
           ),
         )

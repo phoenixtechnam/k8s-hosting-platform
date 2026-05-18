@@ -208,12 +208,24 @@ export async function ensureSystemApexDomain(
   if (existing) return false;
 
   try {
+    // status='verified' + verifiedAt=NOW(): the platform apex is
+    // configured by the operator at install time (A records on the
+    // parent zone point at the cluster IPs). The verification cron's
+    // `dnsMode='primary'` check looks for NS-record delegation
+    // (assumption: platform owns its own zone) — for a subdomain
+    // served from the operator's parent zone there ARE no NS records
+    // and the cron flips the row to `unverified` on every tick.
+    // Pre-marking as verified short-circuits that flapping.
+    // verification-cron also filters by tenants.is_system=false as
+    // belt-and-braces.
     await db.insert(domains).values({
       id: crypto.randomUUID(),
       tenantId: systemTenantId,
       domainName: apex,
-      status: 'active',
+      status: 'verified',
       dnsMode: 'primary',
+      verifiedAt: new Date(),
+      lastVerifiedAt: new Date(),
     });
     return true;
   } catch (err) {
