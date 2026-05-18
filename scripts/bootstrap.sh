@@ -1750,6 +1750,75 @@ CR
   done
 }
 
+seed_cluster_pending_peer_crs() {
+  # Apply ClusterPendingPeer CRs from the operator's --pre-enroll-peer
+  # entries. Sister function to seed_cluster_trusted_range_crs — the
+  # firewall-reconciler reads ClusterPendingPeer.spec.ip and converges
+  # the IPs into cluster_peers_v{4,6} on every node.
+  #
+  # Why this exists (Bug #1 fix, 2026-05-18):
+  #   seed_firewall_sets() above adds the --pre-enroll-peer entries
+  #   directly to nft. That works for the brief window before the
+  #   firewall-reconciler DaemonSet starts. Once the reconciler is
+  #   running, it computes cluster_peers_v4/v6 as the union of
+  #   (Node.status.addresses[InternalIP]) ∪ (ClusterPendingPeer.spec.ip
+  #   where not expired). Anything not in that set — including our
+  #   bootstrap-time nft entries — gets reaped on the next tick (~5s).
+  #   Joining peers whose own k3s.service hadn't yet succeeded would
+  #   then see their pre-enrolled IP disappear, the firewall would
+  #   drop their :6443 connect, k3s would loop forever.
+  #
+  # Fix: also create durable ClusterPendingPeer CRs so the reconciler
+  # keeps the entries in place until the joining node is fully
+  # registered (at which point the CR can be deleted by an operator,
+  # or it can age out via the CRD's expiration mechanism).
+  #
+  # Idempotent: same name + same spec = no-op. Different IPs would
+  # update — but our names embed the IP so the diff stays minimal.
+  if [[ ${#PRE_ENROLL_PEERS_V4[@]} -eq 0 && ${#PRE_ENROLL_PEERS_V6[@]} -eq 0 ]]; then
+    return 0
+  fi
+  if ! kctl get crd clusterpendingpeers.networking.platform.phoenix-host.net &>/dev/null; then
+    log "ClusterPendingPeer CRD not yet applied — skipping CR seed; re-run bootstrap.sh after Flux finishes to pick up."
+    return 0
+  fi
+
+  log "Seeding ClusterPendingPeer CRs from --pre-enroll-peer entries..."
+  # Sanitize IPs into RFC-1123-compliant CR names: replace colons +
+  # dots with hyphens, then collapse runs of hyphens (IPv6 compressed
+  # `::` would otherwise produce `--` which k8s rejects as an invalid
+  # name). Example: `2a01:4f8:1c17:5d0f::1` → `2a01-4f8-1c17-5d0f-1`.
+  local entry name safe_name
+  for entry in "${PRE_ENROLL_PEERS_V4[@]+"${PRE_ENROLL_PEERS_V4[@]}"}" \
+               "${PRE_ENROLL_PEERS_V6[@]+"${PRE_ENROLL_PEERS_V6[@]}"}"; do
+    safe_name=$(echo "$entry" | tr ':.' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | tr 'A-Z' 'a-z')
+    name="bootstrap-seed-${safe_name}"
+    # spec.role: 'server' is a safe default — the reconciler doesn't
+    # actually distinguish server vs worker for firewall purposes,
+    # both need the same control-plane port allowance from cluster_peers.
+    # ttlSeconds=86400 (24h): the bootstrap → 2nd-server-join window
+    # can be 30+ min if the first server is doing slow Flux work, and
+    # the CRD's 30-min default could expire mid-join. 24h gives the
+    # operator a full day; the reconciler's sweeper deletes the CR
+    # automatically once the corresponding Node appears in kube-API.
+    kctl apply -f - <<CR | grep -v "unchanged" || true
+apiVersion: networking.platform.phoenix-host.net/v1alpha1
+kind: ClusterPendingPeer
+metadata:
+  name: ${name}
+  labels:
+    platform.phoenix-host.net/seed: bootstrap
+spec:
+  ip: ${entry}
+  role: server
+  hostname: bootstrap-seed
+  addedBy: bootstrap.sh
+  ttlSeconds: 86400
+CR
+    log "  + ClusterPendingPeer/${name} ip=${entry}"
+  done
+}
+
 configure_fail2ban() {
   if [[ "$SKIP_HARDENING" == true ]]; then
     log "Skipping fail2ban (--skip-hardening)."
@@ -2707,6 +2776,22 @@ install_k3s_worker() {
     log "  public-underlay mode: --node-ip=${public_ip}"
     exec_args="agent --node-ip=${public_ip}"
   fi
+
+  # Stamp the platform-required labels at k3s-agent ExecStart time.
+  # Without this, the worker joins unlabeled, the node-sync reconciler
+  # (which only stamps SERVER nodes — see backend/src/modules/nodes/
+  # k8s-sync.ts:hasExplicitHostLabel) skips the worker, and integration
+  # tests think there are 0 tenant-capable workers (causing tier-flip
+  # and drain suites to take the wrong code path). k3s passes
+  # --node-label through to kubelet's initial registration which is
+  # idempotent — operators can still flip them later via
+  # `kubectl label --overwrite` from the control plane.
+  #
+  # host-tenant-workloads defaults to 'true' for workers per the
+  # --help text ("workers exist to run tenants"); only an explicit
+  # --host-tenant-workloads=false overrides.
+  local worker_host_tenant="${HOST_CLIENT_WORKLOADS:-true}"
+  exec_args="${exec_args} --node-label=platform.phoenix-host.net/node-role=worker --node-label=platform.phoenix-host.net/host-tenant-workloads=${worker_host_tenant}"
 
   # Worker installs hit the same peer-firewall gate as joining
   # servers: k3s-agent.service can't reach :6443 on the control
@@ -6531,6 +6616,12 @@ main() {
     # atomic flush+add wipes the bootstrap-time-only nft seed on first
     # tick and operator NetBird/workstation access disappears.
     seed_cluster_trusted_range_crs
+    # Sister seed for --pre-enroll-peer entries (Bug #1 fix, 2026-05-18).
+    # Same rationale: nft entries seeded in Phase 1 get reaped by the
+    # firewall-reconciler unless backed by a Node or ClusterPendingPeer
+    # CR. Joining bootstraps would then hit a dropped :6443 because
+    # the pre-enrolled entries vanished before they could complete.
+    seed_cluster_pending_peer_crs
     # Tag the Longhorn Node CR (.spec.tags + each disk .tags = "system")
     # so the platform's longhorn-system-local StorageClass can schedule
     # replicas. apply_platform_manifests waits for the longhorn admission

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { encrypt, decrypt } from './crypto.js';
-import { generatePkce, parseLogoutToken, findOrCreateOidcUser, isLocalAuthDisabled, getGlobalSettings } from './service.js';
+import { generatePkce, parseLogoutToken, findOrCreateOidcUser, isLocalAuthDisabled, getGlobalSettings, fetchDiscovery } from './service.js';
 
 describe('OIDC crypto', () => {
   const key = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -165,5 +165,60 @@ describe('findOrCreateOidcUser', () => {
       sub: 'sub-new', iss: 'https://dex', email: 'new@example.com',
       aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
     }, makeProvider({ panelScope: 'tenant', autoProvision: 0 }))).rejects.toThrow('Your account is not registered on this platform');
+  });
+});
+
+// 2026-05-18 regression guard: network-level errors from fetch() in
+// fetchDiscovery used to escape as TypeError → INTERNAL_SERVER_ERROR
+// 500 with no diagnostic info. The fix wraps the fetch in try/catch
+// and rethrows as OIDC_DISCOVERY_FAILED 502 with the network error
+// embedded — these tests ensure we don't regress.
+describe('fetchDiscovery error wrapping', () => {
+  it('wraps DNS / network failures as OIDC_DISCOVERY_FAILED 502', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed: getaddrinfo ENOTFOUND dex.unreachable'));
+    try {
+      await expect(fetchDiscovery('https://dex.unreachable')).rejects.toMatchObject({
+        code: 'OIDC_DISCOVERY_FAILED',
+        status: 502,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('error message includes the underlying network reason for triage', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:5556'));
+    try {
+      try {
+        await fetchDiscovery('http://localhost:5556');
+        throw new Error('expected to throw');
+      } catch (err) {
+        const e = err as Error & { code?: string };
+        expect(e.code).toBe('OIDC_DISCOVERY_FAILED');
+        expect(e.message).toMatch(/ECONNREFUSED/);
+        expect(e.message).toMatch(/openid-configuration/);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('wraps non-2xx HTTP responses as OIDC_DISCOVERY_FAILED 502', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+    } as Response);
+    try {
+      await expect(fetchDiscovery('https://dex.example.com')).rejects.toMatchObject({
+        code: 'OIDC_DISCOVERY_FAILED',
+        status: 502,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

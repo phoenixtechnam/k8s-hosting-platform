@@ -124,13 +124,23 @@ for _ in $(seq 1 60); do
 done
 [[ -n "$PVNAME" ]] && ok "PVC bound pv=$PVNAME" || { fail "PVC not bound after 120s"; exit 1; }
 
-# Assert SC is the unified longhorn-tenant.
+# Assert SC is one of the unified longhorn-tenant variants. The test
+# namespace slug ("PVC Test L $STAMP" → "tenant-pvc-test-l-...") trips
+# the test-namespace regex in k8s-provisioner/service.ts:selectTenantStorageClass
+# which selects `longhorn-tenant-test` (reclaimPolicy=Delete). Both
+# values are correct outcomes — the assertion only needs to rule out
+# unrelated storage classes (local-path, longhorn, etc.).
 SC=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.storageClassName}'")
-[[ "$SC" == "longhorn-tenant" ]] && ok "SC=longhorn-tenant" || fail "SC=$SC (expected longhorn-tenant)"
+if [[ "$SC" == "longhorn-tenant" || "$SC" == "longhorn-tenant-test" ]]; then
+  ok "SC=$SC (longhorn-tenant or test variant)"
+else
+  fail "SC=$SC (expected longhorn-tenant or longhorn-tenant-test)"
+fi
 
-# Auto-pick: clients.workerNodeName should be populated for Local tier.
-WORKER=$(api GET "/tenants/$CID" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(d.get('workerNodeName') or '')")
-[[ -n "$WORKER" ]] && ok "auto-picked workerNodeName=$WORKER" || fail "workerNodeName empty (autoPickWorkerNode didn't fire)"
+# Auto-pick: tenant.nodeName should be populated for Local tier. Field
+# was renamed `workerNodeName` → `nodeName` (tenant-rename refactor M5).
+WORKER=$(api GET "/tenants/$CID" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(d.get('nodeName') or '')")
+[[ -n "$WORKER" ]] && ok "auto-picked nodeName=$WORKER" || fail "nodeName empty (autoPickWorkerNode didn't fire — check worker host-tenant-workloads=true label)"
 
 # Volume.spec.numberOfReplicas should be 1 for local tier.
 REPL=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $PVNAME -o jsonpath='{.spec.numberOfReplicas}'" 2>/dev/null || echo "")

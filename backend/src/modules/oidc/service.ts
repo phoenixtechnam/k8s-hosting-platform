@@ -22,7 +22,25 @@ interface Jwks { readonly keys: readonly Record<string, unknown>[]; }
 
 export async function fetchDiscovery(issuerUrl: string): Promise<OidcDiscovery> {
   const url = `${issuerUrl.replace(/\/$/, '')}/.well-known/openid-configuration`;
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  // Wrap the entire fetch in try/catch so network-level errors (DNS,
+  // TLS, connect-refused, timeout) surface as OIDC_DISCOVERY_FAILED 502
+  // with the underlying reason. Without this, raw fetch() throws an
+  // unwrapped TypeError that the global error handler maps to a
+  // generic INTERNAL_SERVER_ERROR 500 — losing the actual cause.
+  // Observed 2026-05-18 staging: pod-egress to Dex's public URL
+  // failed at create-provider time, leaving the operator with no
+  // diagnostic info.
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { Accept: 'application/json' } });
+  } catch (err: unknown) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ApiError(
+      'OIDC_DISCOVERY_FAILED',
+      `Failed to fetch OIDC discovery from ${url}: ${detail}`,
+      502,
+    );
+  }
   if (!res.ok) {
     throw new ApiError('OIDC_DISCOVERY_FAILED', `Failed to fetch OIDC discovery: ${res.status} ${res.statusText}`, 502);
   }
@@ -30,7 +48,13 @@ export async function fetchDiscovery(issuerUrl: string): Promise<OidcDiscovery> 
 }
 
 async function fetchJwks(jwksUri: string): Promise<Jwks> {
-  const res = await fetch(jwksUri, { headers: { Accept: 'application/json' } });
+  let res: Response;
+  try {
+    res = await fetch(jwksUri, { headers: { Accept: 'application/json' } });
+  } catch (err: unknown) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ApiError('OIDC_JWKS_FAILED', `Failed to fetch JWKS from ${jwksUri}: ${detail}`, 502);
+  }
   if (!res.ok) throw new ApiError('OIDC_JWKS_FAILED', `Failed to fetch JWKS: ${res.status}`, 502);
   return res.json() as Promise<Jwks>;
 }
