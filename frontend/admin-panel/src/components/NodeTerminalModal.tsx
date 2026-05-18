@@ -1,240 +1,174 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
-import '@xterm/xterm/css/xterm.css';
-import { X, RotateCw, ShieldAlert, Key, Fingerprint, AlertCircle, Loader2 } from 'lucide-react';
-import { useNodeTerminal } from '@/hooks/use-node-terminal';
+import {
+  X, RotateCw, Key, Fingerprint, AlertCircle, Loader2,
+  Maximize2, Minimize2, Terminal as TerminalIcon,
+} from 'lucide-react';
+import { useTerminalSessions, type StepUpMethod } from '@/stores/terminal-sessions';
 
 interface NodeTerminalModalProps {
+  readonly sessionId: string;
   readonly nodeName: string;
-  readonly onClose: () => void;
 }
 
-// Tokyo-Night theme parity with frontend/tenant-panel/src/components/WebTerminal.tsx
-const TERMINAL_THEME = {
-  background: '#1a1b26',
-  foreground: '#c0caf5',
-  cursor: '#c0caf5',
-  selectionBackground: '#364a82',
-};
+// Capitalize the first character so a node name like `k8s-local` renders
+// as `K8s-local` in the title (operator request — node names are
+// case-insensitive identifiers so this is purely cosmetic).
+function titleCase(name: string): string {
+  if (!name) return name;
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
 
-export default function NodeTerminalModal({ nodeName, onClose }: NodeTerminalModalProps) {
-  const terminalRef = useRef<HTMLDivElement | null>(null);
-  const xtermRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
+/**
+ * Visible shell of an active terminal session. The xterm Terminal +
+ * WebSocket live in the terminal-sessions store; this component is just
+ * a viewport that appendChild's the session's DOM host into its body.
+ *
+ * Mount = move host into modal. Unmount (close OR minimize) = move host
+ * back to the graveyard.
+ */
+export function NodeTerminalModal({ sessionId, nodeName }: NodeTerminalModalProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [isMaximized, setIsMaximized] = useState(false);
+  // Individual selectors — object-returning selectors trigger zustand v5's
+  // reference-identity check on every render, causing an infinite loop.
+  const attach = useTerminalSessions((s) => s.attach);
+  const detach = useTerminalSessions((s) => s.detach);
+  const fit = useTerminalSessions((s) => s.fit);
+  const minimize = useTerminalSessions((s) => s.minimize);
+  const terminate = useTerminalSessions((s) => s.terminate);
 
-  const term = useNodeTerminal(nodeName);
-  const { connect, send, resize, disconnect, connected, connecting, error, stepUpRequired,
-    verifyStepUpPassword, verifyStepUpPasskey } = term;
-
-  // ── Auto-connect on mount; tear down on unmount.
-  // Mount the xterm into the DOM first so the connect() onData callback
-  // has a place to write into.
+  // ── Attach xterm host on mount; detach on unmount.
   useEffect(() => {
-    if (!terminalRef.current) return;
-    const x = new Terminal({
-      theme: TERMINAL_THEME,
-      fontFamily: 'JetBrains Mono, Menlo, Monaco, monospace',
-      fontSize: 15,
-      lineHeight: 1.2,
-      cursorBlink: true,
-      scrollback: 5000,
-      convertEol: true,
-    });
-    const fit = new FitAddon();
-    const links = new WebLinksAddon();
-    x.loadAddon(fit);
-    x.loadAddon(links);
-    x.open(terminalRef.current);
-    // Defer the first fit() to the next animation frame so flexbox has
-    // laid the container out before xterm measures it. Without this,
-    // fit() sees a 0×0 container and pins cols/rows to the minimum.
-    requestAnimationFrame(() => {
-      try { fit.fit(); } catch { /* container detached during mount */ }
-    });
-    x.onData((data) => send(data));
-    xtermRef.current = x;
-    fitAddonRef.current = fit;
-
-    const observer = new ResizeObserver(() => {
-      try { fit.fit(); } catch { return; }
-      if (term.connected) resize(x.cols, x.rows);
-    });
-    observer.observe(terminalRef.current);
-
-    x.writeln('\x1b[90mEstablishing root shell — please wait…\x1b[0m');
-
-    // Kick off the connection. The hook handles step-up internally;
-    // when stepUpRequired is set, render the step-up dialog instead.
-    void connect((data) => {
-      xtermRef.current?.write(data);
-    });
-
+    if (!containerRef.current) return;
+    attach(sessionId, containerRef.current);
+    // ResizeObserver — refits xterm whenever the container's box changes
+    // (modal switches centered ↔ maximized, browser window resize, etc.).
+    const ro = new ResizeObserver(() => fit(sessionId));
+    ro.observe(containerRef.current);
     return () => {
-      observer.disconnect();
-      x.dispose();
-      xtermRef.current = null;
-      disconnect();
+      ro.disconnect();
+      detach(sessionId);
     };
-    // Mount-only — the xterm + ws lifecycle is anchored to the modal
-    // open/close, not to changes in connect/disconnect identity.
-  }, []);
+    // Deps intentionally only on sessionId — the store actions are
+    // stable singletons (zustand) and including them would just churn
+    // attach/detach every render.
+  }, [sessionId]);
 
-  // Resize the terminal whenever the connection toggles — once we
-  // come online, push the current cols/rows to the server.
+  // ── Re-fit when isMaximized toggles. The ResizeObserver eventually
+  // catches it, but we kick fit on the next rAF for a snappy switch.
   useEffect(() => {
-    if (connected && xtermRef.current) {
-      resize(xtermRef.current.cols, xtermRef.current.rows);
-      xtermRef.current.focus();
-    }
-  }, [connected, resize]);
+    const f = requestAnimationFrame(() => fit(sessionId));
+    return () => cancelAnimationFrame(f);
+  }, [isMaximized, sessionId, fit]);
 
-  const handleClose = useCallback(() => {
-    disconnect();
-    onClose();
-  }, [disconnect, onClose]);
+  const handleClose = useCallback(() => terminate(sessionId), [terminate, sessionId]);
+  const handleMinimize = useCallback(() => minimize(sessionId), [minimize, sessionId]);
 
-  // ESC closes the modal.
+  // ESC closes (terminates) the modal.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleClose();
-    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [handleClose]);
 
-  const handleReconnect = useCallback(() => {
-    if (!xtermRef.current) return;
-    xtermRef.current.writeln('\r\n\x1b[33mReconnecting…\x1b[0m');
-    void connect((data) => xtermRef.current?.write(data));
-  }, [connect]);
+  const modalSizeClass = isMaximized
+    ? 'h-screen w-screen rounded-none border-0'
+    : 'h-[85vh] w-full max-w-5xl rounded-lg border border-zinc-700';
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
+      className={
+        isMaximized
+          ? 'fixed inset-0 z-[60] flex'
+          : 'fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm'
+      }
+      onClick={(e) => { if (!isMaximized && e.target === e.currentTarget) handleMinimize(); }}
       data-testid={`node-terminal-backdrop-${nodeName}`}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={`Root terminal on ${nodeName}`}
-        className="flex h-[85vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-red-600 shadow-2xl"
+        className={`flex ${modalSizeClass} flex-col overflow-hidden shadow-2xl`}
         data-testid={`node-terminal-modal-${nodeName}`}
       >
-        {/* Header — break-glass banner stays sticky so the operator can't miss it. */}
-        <div className="flex items-center justify-between gap-3 border-b border-red-600 bg-red-600/20 px-4 py-2 text-red-100">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <ShieldAlert size={16} aria-hidden="true" />
+        {/* Title bar — terminal icon, capitalized node name, status pill,
+            window controls. Audit reminder kept as the operator-facing copy. */}
+        <div className="flex items-center justify-between gap-3 border-b border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-200">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <TerminalIcon size={16} aria-hidden="true" className="text-zinc-400" />
             <span data-testid="node-terminal-banner">
-              [BREAK-GLASS] root shell on <code className="rounded bg-red-900/40 px-1.5 py-0.5">{nodeName}</code> — every command is audited.
+              <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-100">{titleCase(nodeName)}</code>
+              {' '}root shell — every command is audited.
             </span>
           </div>
-          <div className="flex items-center gap-2">
-            <StatusPill connected={connected} connecting={connecting} hasStepUp={!!stepUpRequired} />
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleMinimize}
+              className="rounded-md p-1.5 text-zinc-300 hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-500"
+              aria-label="Minimize terminal (keep session running in background)"
+              title="Minimize — keeps the session running while you navigate"
+              data-testid={`node-terminal-minimize-${nodeName}`}
+            >
+              {/* Standard "minimize to taskbar" affordance — single underline. */}
+              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                <line x1="3" y1="13" x2="13" y2="13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsMaximized((m) => !m)}
+              className="rounded-md p-1.5 text-zinc-300 hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-500"
+              aria-label={isMaximized ? 'Restore terminal to a smaller window' : 'Maximize terminal to full viewport'}
+              title={isMaximized ? 'Restore' : 'Maximize'}
+              data-testid={`node-terminal-toggle-size-${nodeName}`}
+            >
+              {isMaximized ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
+            </button>
             <button
               type="button"
               onClick={handleClose}
-              className="rounded-md p-1.5 text-red-100 hover:bg-red-800/30 focus:outline-none focus:ring-2 focus:ring-red-300"
-              aria-label="Close terminal"
+              className="rounded-md p-1.5 text-zinc-300 hover:bg-red-700/40 hover:text-red-200 focus:outline-none focus:ring-2 focus:ring-red-400"
+              aria-label="Close terminal (ends the session)"
+              title="Close — terminates the session"
               data-testid={`node-terminal-close-${nodeName}`}
             >
-              <X size={18} aria-hidden="true" />
+              <X size={16} aria-hidden="true" />
             </button>
           </div>
         </div>
 
-        {/* Body — either the terminal, the step-up prompt, or an error pane.
-            min-h-0 is essential: without it, flex items default to min-content
-            (their intrinsic height) and the terminal would overflow the modal
-            instead of shrinking to fit. */}
-        <div className="relative flex min-h-0 flex-1 flex-col bg-[#1a1b26] p-2">
-          {stepUpRequired ? (
-            <StepUpDialog
-              methods={stepUpRequired.methods}
-              onPassword={async (pw) => {
-                await verifyStepUpPassword(pw);
-                // Caller (the dialog) clears its state; we re-fire connect()
-                // once the hook's stepUpRequired drops to null.
-              }}
-              onPasskey={async () => {
-                await verifyStepUpPasskey();
-              }}
-              error={error}
-              onAfterSuccess={handleReconnect}
-            />
-          ) : error && !connected && !connecting ? (
-            <DropPane message={error} onReconnect={handleReconnect} />
-          ) : null}
-          {/* xterm container — min-h-0 so flex shrinking works; the xterm
-              FitAddon measures this element on every ResizeObserver tick. */}
-          <div
-            ref={terminalRef}
-            className="min-h-0 flex-1"
-            data-testid={`node-terminal-xterm-${nodeName}`}
-            style={{ display: stepUpRequired ? 'none' : 'block' }}
-          />
-        </div>
+        {/* Body — pure xterm container. min-h-0 so flex shrinks correctly;
+            without it, flex children default to min-content and overflow. */}
+        <div
+          ref={containerRef}
+          className="min-h-0 flex-1 bg-black p-2"
+          data-testid={`node-terminal-xterm-${nodeName}`}
+        />
       </div>
     </div>
   );
 }
 
-function StatusPill({
-  connected,
-  connecting,
-  hasStepUp,
-}: { readonly connected: boolean; readonly connecting: boolean; readonly hasStepUp: boolean }) {
-  if (hasStepUp) {
-    return <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-900/40 px-2.5 py-1 text-xs text-amber-200">
-      <Key size={12} aria-hidden="true" /> step-up required
-    </span>;
-  }
-  if (connecting && !connected) {
-    return <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-900/40 px-2.5 py-1 text-xs text-blue-200">
-      <Loader2 size={12} className="animate-spin" aria-hidden="true" /> connecting…
-    </span>;
-  }
-  if (connected) {
-    return <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-900/40 px-2.5 py-1 text-xs text-emerald-200">
-      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> connected
-    </span>;
-  }
-  return <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-700/60 px-2.5 py-1 text-xs text-zinc-300">
-    <span className="h-1.5 w-1.5 rounded-full bg-zinc-400" /> disconnected
-  </span>;
-}
-
-function DropPane({ message, onReconnect }: { readonly message: string; readonly onReconnect: () => void }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 text-zinc-300">
-      <div className="flex items-center gap-2 text-amber-300">
-        <AlertCircle size={20} aria-hidden="true" />
-        <span className="font-semibold">Connection lost</span>
-      </div>
-      <p className="max-w-md text-center text-sm">{message}</p>
-      <button
-        type="button"
-        onClick={onReconnect}
-        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm text-white hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-300"
-        data-testid="node-terminal-reconnect"
-      >
-        <RotateCw size={14} aria-hidden="true" /> Reconnect
-      </button>
-    </div>
-  );
-}
+// ─── Step-up dialog ───────────────────────────────────────────────────
+//
+// Rendered when the store's pendingStepUp is set. Sits in front of any
+// active terminal (operator may have one minimized while opening a new
+// fresh session that needs step-up).
 
 interface StepUpDialogProps {
-  readonly methods: readonly ('password' | 'passkey')[];
-  readonly onPassword: (pw: string) => Promise<void>;
-  readonly onPasskey: () => Promise<void>;
-  readonly onAfterSuccess: () => void;
+  readonly nodeName: string;
+  readonly methods: readonly StepUpMethod[];
   readonly error: string | null;
+  readonly onVerifyPassword: (pw: string) => Promise<void>;
+  readonly onVerifyPasskey: () => Promise<void>;
+  readonly onCancel: () => void;
 }
 
-function StepUpDialog({ methods, onPassword, onPasskey, onAfterSuccess, error }: StepUpDialogProps) {
+export function NodeTerminalStepUpDialog({
+  nodeName, methods, error, onVerifyPassword, onVerifyPasskey, onCancel,
+}: StepUpDialogProps) {
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState<'password' | 'passkey' | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -246,46 +180,51 @@ function StepUpDialog({ methods, onPassword, onPasskey, onAfterSuccess, error }:
     setLocalError(null);
     setSubmitting('password');
     try {
-      await onPassword(password);
+      await onVerifyPassword(password);
       setPassword('');
-      onAfterSuccess();
     } catch (e) {
       setLocalError((e as Error).message);
     } finally {
       setSubmitting(null);
     }
-  }, [password, onPassword, onAfterSuccess]);
+  }, [password, onVerifyPassword]);
 
   const submitPasskey = useCallback(async () => {
     setLocalError(null);
     setSubmitting('passkey');
     try {
-      await onPasskey();
-      onAfterSuccess();
+      await onVerifyPasskey();
     } catch (e) {
       setLocalError((e as Error).message);
     } finally {
       setSubmitting(null);
     }
-  }, [onPasskey, onAfterSuccess]);
+  }, [onVerifyPasskey]);
 
   return (
-    <div className="flex h-full items-center justify-center" data-testid="node-terminal-step-up">
-      <div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-6 text-zinc-100 shadow-xl">
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+      data-testid={`node-terminal-step-up-${nodeName}`}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Re-authenticate to open a root shell"
+        className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-6 text-zinc-100 shadow-xl"
+      >
         <div className="mb-4 flex items-center gap-2">
           <Key size={18} className="text-amber-400" aria-hidden="true" />
           <h2 className="text-lg font-semibold">Re-authenticate to open a root shell</h2>
         </div>
         <p className="mb-4 text-sm text-zinc-400">
-          Opening a privileged terminal requires a fresh credential check. Your last
-          successful authentication is older than 30 minutes.
+          Opening a privileged terminal on <span className="font-mono">{titleCase(nodeName)}</span> requires a
+          fresh credential check.
         </p>
 
         {canPassword && (
           <div className="mb-4">
-            <label className="mb-1 block text-sm font-medium text-zinc-200" htmlFor="step-up-password">
-              Password
-            </label>
+            <label className="mb-1 block text-sm font-medium text-zinc-200" htmlFor="step-up-password">Password</label>
             <input
               id="step-up-password"
               type="password"
@@ -327,17 +266,48 @@ function StepUpDialog({ methods, onPassword, onPasskey, onAfterSuccess, error }:
 
         {!canPassword && !canPasskey && (
           <div className="rounded-md bg-rose-900/30 px-3 py-2 text-sm text-rose-200">
-            No step-up methods available for your account. Contact a super-admin to enable
-            a password or passkey credential.
+            No step-up methods available for your account. Contact a super-admin to enable a password or passkey.
           </div>
         )}
 
         {(localError || error) && (
-          <div className="mt-3 rounded-md bg-rose-900/30 px-3 py-2 text-xs text-rose-200" data-testid="node-terminal-step-up-error">
+          <div className="mt-3 rounded-md bg-rose-900/30 px-3 py-2 text-xs text-rose-200">
             {localError ?? error}
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={onCancel}
+          className="mt-4 inline-flex items-center gap-1.5 text-sm text-zinc-400 hover:text-zinc-200"
+          data-testid={`node-terminal-step-up-cancel-${nodeName}`}
+        >
+          <X size={14} /> Cancel
+        </button>
       </div>
+    </div>
+  );
+}
+
+// ─── Open-error toast ─────────────────────────────────────────────────
+
+interface OpenErrorBannerProps {
+  readonly message: string;
+  readonly onRetry: () => void;
+  readonly onDismiss: () => void;
+}
+
+export function NodeTerminalOpenErrorBanner({ message, onRetry, onDismiss }: OpenErrorBannerProps) {
+  return (
+    <div className="fixed bottom-4 left-1/2 z-[60] flex max-w-md -translate-x-1/2 items-center gap-3 rounded-lg border border-rose-700 bg-rose-900/90 px-4 py-3 text-rose-100 shadow-2xl">
+      <AlertCircle size={16} aria-hidden="true" />
+      <span className="flex-1 text-sm">{message}</span>
+      <button onClick={onRetry} className="inline-flex items-center gap-1 text-sm hover:underline">
+        <RotateCw size={12} /> Retry
+      </button>
+      <button onClick={onDismiss} aria-label="Dismiss" className="opacity-70 hover:opacity-100">
+        <X size={14} />
+      </button>
     </div>
   );
 }

@@ -11,7 +11,7 @@ import type { ClusterNodeResponse, NodeIngressMode } from '@k8s-hosting/api-cont
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
 import NodeStorageCard from '@/components/NodeStorageCard';
-import NodeTerminalModal from '@/components/NodeTerminalModal';
+import { useTerminalSessions } from '@/stores/terminal-sessions';
 
 // Saturation thresholds shared by the per-node compact summary, the cluster
 // health bar, and the in-card UsageBar. Mirrors UsageBar's scale so the
@@ -267,8 +267,11 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [drainOpen, setDrainOpen] = useState(false);
-  const [terminalOpen, setTerminalOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Terminal lifecycle lives in the App-level store so sessions survive
+  // navigation away from this page. The store handles step-up + WS +
+  // xterm; this page just hands off the node name.
+  const openTerminal = useTerminalSessions((s) => s.openFresh);
   const deleteNodeMutation = useDeleteNode(node.name);
   const ready = readyCondition(node);
   const stale = staleness(node.lastSeenAt);
@@ -466,7 +469,7 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
               {ready === 'Ready' && (
                 <button
                   type="button"
-                  onClick={() => setTerminalOpen(true)}
+                  onClick={() => void openTerminal(node.name)}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200 dark:hover:bg-red-900/50"
                   data-testid={`terminal-node-${node.name}-button`}
                   title="Open a root shell on this node (audited)"
@@ -527,7 +530,9 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
 
       {editOpen && <NodeEditModal node={node} onClose={() => setEditOpen(false)} />}
       {drainOpen && <NodeDrainDeleteModal node={node} onClose={() => setDrainOpen(false)} />}
-      {terminalOpen && <NodeTerminalModal nodeName={node.name} onClose={() => setTerminalOpen(false)} />}
+      {/* Terminal modal is mounted at App-level via NodeTerminalHost so
+          sessions survive route navigation. Click handler above calls
+          openTerminal(node.name) on the store. */}
     </div>
   );
 }

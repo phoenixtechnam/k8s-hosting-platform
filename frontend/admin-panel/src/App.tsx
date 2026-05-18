@@ -3,6 +3,7 @@ import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react
 import { TASK_CENTER_QUERY_KEY } from '@/hooks/use-task-center';
 import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
+import { NodeTerminalHost } from '@/components/NodeTerminalHost';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import Tenants from '@/pages/Tenants';
@@ -78,6 +79,12 @@ export default function App() {
           <Route
             element={
               <ProtectedRoute>
+                {/* App-level mount for the node-terminal host so its
+                    modal + dock survive page navigation. Terminal
+                    sessions started on one page stay alive when the
+                    operator navigates elsewhere — the dock surfaces
+                    them as restorable pills. */}
+                <NodeTerminalHost />
                 <Layout />
               </ProtectedRoute>
             }
