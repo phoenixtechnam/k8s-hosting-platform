@@ -412,7 +412,11 @@ export async function findOrCreateOidcUser(
     .where(and(eq(users.oidcIssuer, claims.iss), eq(users.oidcSubject, claims.sub)));
 
   if (existingByOidc) {
-    await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, existingByOidc.id));
+    const now = new Date();
+    await db.update(users).set({
+      lastLoginAt: now,
+      lastCredentialCheckAt: now,
+    }).where(eq(users.id, existingByOidc.id));
     return existingByOidc;
   }
 
@@ -422,11 +426,13 @@ export async function findOrCreateOidcUser(
     const [existingByEmail] = await db.select().from(users)
       .where(and(eq(users.email, email), eq(users.panel, panelScope)));
     if (existingByEmail) {
+      const now = new Date();
       await db.update(users).set({
         oidcIssuer: claims.iss,
         oidcSubject: claims.sub,
-        emailVerifiedAt: claims.email_verified ? new Date() : existingByEmail.emailVerifiedAt,
-        lastLoginAt: new Date(),
+        emailVerifiedAt: claims.email_verified ? now : existingByEmail.emailVerifiedAt,
+        lastLoginAt: now,
+        lastCredentialCheckAt: now,
       }).where(eq(users.id, existingByEmail.id));
       const [updated] = await db.select().from(users).where(eq(users.id, existingByEmail.id));
       return updated;
@@ -443,6 +449,7 @@ export async function findOrCreateOidcUser(
 
     if (matchingTenant) {
       const id = crypto.randomUUID();
+      const now = new Date();
       await db.insert(users).values({
         id,
         email,
@@ -454,8 +461,9 @@ export async function findOrCreateOidcUser(
         status: 'active',
         oidcIssuer: claims.iss,
         oidcSubject: claims.sub,
-        emailVerifiedAt: claims.email_verified ? new Date() : null,
-        lastLoginAt: new Date(),
+        emailVerifiedAt: claims.email_verified ? now : null,
+        lastLoginAt: now,
+        lastCredentialCheckAt: now,
       });
       const [created] = await db.select().from(users).where(eq(users.id, id));
       return created;
@@ -485,6 +493,7 @@ export async function findOrCreateOidcUser(
     });
 
     const userId = crypto.randomUUID();
+    const now = new Date();
     await db.insert(users).values({
       id: userId,
       email,
@@ -496,8 +505,9 @@ export async function findOrCreateOidcUser(
       status: 'active',
       oidcIssuer: claims.iss,
       oidcSubject: claims.sub,
-      emailVerifiedAt: claims.email_verified ? new Date() : null,
-      lastLoginAt: new Date(),
+      emailVerifiedAt: claims.email_verified ? now : null,
+      lastLoginAt: now,
+      lastCredentialCheckAt: now,
     });
     const [created] = await db.select().from(users).where(eq(users.id, userId));
     return created;
@@ -513,6 +523,7 @@ export async function findOrCreateOidcUser(
   }
 
   const id = crypto.randomUUID();
+  const now = new Date();
   await db.insert(users).values({
     id,
     email: email ?? `${claims.sub}@oidc`,
@@ -523,8 +534,9 @@ export async function findOrCreateOidcUser(
     status: 'active',
     oidcIssuer: claims.iss,
     oidcSubject: claims.sub,
-    emailVerifiedAt: claims.email_verified ? new Date() : null,
-    lastLoginAt: new Date(),
+    emailVerifiedAt: claims.email_verified ? now : null,
+    lastLoginAt: now,
+    lastCredentialCheckAt: now,
   });
   const [created] = await db.select().from(users).where(eq(users.id, id));
   return created;
@@ -660,7 +672,11 @@ export async function breakGlassLogin(db: Database, email: string, password: str
     throw new ApiError('INVALID_TOKEN', 'Invalid credentials', 401);
   }
 
-  await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+  const now = new Date();
+  await db.update(users).set({
+    lastLoginAt: now,
+    lastCredentialCheckAt: now,
+  }).where(eq(users.id, user.id));
 
   return {
     id: user.id,

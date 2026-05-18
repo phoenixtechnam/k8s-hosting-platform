@@ -63,7 +63,11 @@ export async function authenticateUser(
 
   // Re-hash legacy SHA-256 passwords to bcrypt on successful login
   const isLegacyHash = user.passwordHash.length === 64 && /^[a-f0-9]+$/.test(user.passwordHash);
-  const updateValues: Record<string, unknown> = { lastLoginAt: new Date() };
+  const now = new Date();
+  const updateValues: Record<string, unknown> = {
+    lastLoginAt: now,
+    lastCredentialCheckAt: now,
+  };
   if (isLegacyHash) {
     updateValues.passwordHash = await hashNewPassword(password);
   }

@@ -532,10 +532,18 @@ export async function completeAuthentication(
     throw new ApiError('PASSKEY_SIGN_COUNT_ROLLBACK',
       `Sign count rolled back (stored=${passkeyRow.signCount}, presented=${newCounter}). Possible cloned authenticator.`, 401);
   }
+  const now = new Date();
   await db.update(userPasskeys).set({
     signCount: newCounter,
-    lastUsedAt: new Date(),
+    lastUsedAt: now,
   }).where(eq(userPasskeys.id, passkeyRow.id));
+
+  // Bump the user-level credential-check freshness. Every successful
+  // passkey verify is a fresh credential proof, regardless of whether
+  // it was the userless login path or the 2FA second step.
+  await db.update(users).set({
+    lastCredentialCheckAt: now,
+  }).where(eq(users.id, user.id));
 
   return { user, passkeyId: passkeyRow.id };
 }

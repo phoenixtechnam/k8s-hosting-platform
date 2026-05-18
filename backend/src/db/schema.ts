@@ -136,6 +136,13 @@ export const users = pgTable('users', {
   status: userStatusEnum().notNull().default('pending'),
   emailVerifiedAt: timestamp('email_verified_at'),
   lastLoginAt: timestamp('last_login_at'),
+  // Renewable credential-check freshness — bumped by EVERY successful
+  // credential challenge (password login, passkey verify, step-up). Read
+  // by privileged operations (e.g. node-terminal session creation) to
+  // decide whether to require a step-up re-auth. Distinct from
+  // lastLoginAt (one event per session) — this is renewable inside an
+  // existing session. NULL = stale.
+  lastCredentialCheckAt: timestamp('last_credential_check_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   oidcSubject: varchar('oidc_subject', { length: 255 }),
   oidcIssuer: varchar('oidc_issuer', { length: 500 }),

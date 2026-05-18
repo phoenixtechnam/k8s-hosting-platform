@@ -17,6 +17,8 @@ export * from './shared.js';
 export * from './cluster-network.js';
 export * from './operator-error.js';
 export * from './auth.js';
+export * from './step-up.js';
+export * from './node-terminal.js';
 export * from './tenants.js';
 export * from './domains.js';
 export * from './backups.js';
