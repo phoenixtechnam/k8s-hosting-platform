@@ -187,8 +187,13 @@ export async function runSpeedtest(
               envFrom: hasSecretEnv ? buildEnvFromSecret(credSecretName) : undefined,
               volumeMounts: fileMount ? [fileMount.volumeMount] : undefined,
               resources: {
+                // Match streaming snapshot/restore at 384 Mi —
+                // speedtest payloads + dd /dev/urandom + rclone
+                // multipart buffer can climb past 256 Mi at the
+                // upper end of payload sizes (100 MiB) under
+                // S3 multipart concurrency.
                 requests: { cpu: '100m', memory: '128Mi' },
-                limits: { cpu: '500m', memory: '256Mi' },
+                limits: { cpu: '500m', memory: '384Mi' },
               },
             }],
             volumes: fileMount ? [fileMount.volume] : undefined,
@@ -383,8 +388,11 @@ function buildRcloneEnv(
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 's3' },
       { name: 'RCLONE_CONFIG_REMOTE_PROVIDER', value: 'Other' },
       { name: 'RCLONE_CONFIG_REMOTE_REGION', value: target.s3Region },
+      // Match streaming S3 tuning so speedtest is a faithful proxy
+      // for what a real snapshot will actually achieve.
       { name: 'RCLONE_S3_CHUNK_SIZE', value: '16M' },
       { name: 'RCLONE_S3_UPLOAD_CONCURRENCY', value: '8' },
+      { name: 'RCLONE_BUFFER_SIZE', value: '64M' },
       { name: 'RCLONE_CONTIMEOUT', value: '60s' },
       { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];
@@ -408,6 +416,9 @@ function buildRcloneEnv(
     const publicEnv: Array<{ name: string; value: string }> = [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'smb' },
       { name: 'RCLONE_CONFIG_REMOTE_HOST', value: target.cifsHost },
+      // Match streaming CIFS tuning. SMB is single-connection per
+      // file by protocol — the 64 MiB buffer is what we have.
+      { name: 'RCLONE_BUFFER_SIZE', value: '64M' },
       { name: 'RCLONE_CONTIMEOUT', value: '60s' },
       { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];
@@ -451,6 +462,13 @@ function buildRcloneEnv(
       // TOFU host-key acceptance (no known_hosts_file). Acceptable for
       // operator-supplied backup targets; tighten later if needed.
       { name: 'RCLONE_CONFIG_REMOTE_KNOWN_HOSTS_FILE', value: '' },
+      // Match streaming SSH tuning — AES-NI hw-accelerated cipher
+      // (~2× faster than default aes256-ctr per tenant-bundles).
+      { name: 'RCLONE_CONFIG_REMOTE_CIPHERS', value: 'aes128-gcm@openssh.com' },
+      // 64 MiB transfer buffer — smooths single-stream SFTP.
+      { name: 'RCLONE_BUFFER_SIZE', value: '64M' },
+      // Skip modtime SETSTAT after upload.
+      { name: 'RCLONE_CONFIG_REMOTE_SET_MODTIME', value: 'false' },
       { name: 'RCLONE_CONTIMEOUT', value: '60s' },
       { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];

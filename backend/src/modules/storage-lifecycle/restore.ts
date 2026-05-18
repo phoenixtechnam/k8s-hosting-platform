@@ -118,10 +118,14 @@ export async function restoreTenantPVC(
   // POSIX `sh` for both branches (rclone image is alpine, legacy is busybox/alpine).
   const command = ['sh', '-c', script];
 
+  // Streaming restore: same 384 Mi ceiling as snapshot — rclone cat
+  // multipart reader + RCLONE_BUFFER_SIZE 64 MB + gunzip + tar
+  // working set ≈ 240 MB + Go overhead. 256 Mi was too tight under
+  // S3 latency stalls; 384 Mi gives real headroom.
   const resources = streamEnvelope
     ? {
         requests: { cpu: '100m', memory: '128Mi' },
-        limits: { cpu: '500m', memory: '256Mi' },
+        limits: { cpu: '500m', memory: '384Mi' },
       }
     : {
         requests: { cpu: '100m', memory: '128Mi' },

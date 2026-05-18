@@ -157,12 +157,17 @@ export async function snapshotTenantPVC(
   // pipeline uses a named pipe instead of bash process substitution.
   const command = ['sh', '-c', script];
 
-  // Resource limits: streaming caps memory at 256 Mi (rclone multipart
-  // buffer + tar + gzip + sha256sum). Legacy stays at 512 Mi.
+  // Resource limits: streaming caps memory at 384 Mi (rclone S3
+  // multipart buffer 16M × 8 = 128 MB + RCLONE_BUFFER_SIZE 64 MB +
+  // tar/gzip/sha256sum ≈ 12 MB + Go runtime overhead ≈ 60 MB →
+  // ~265 MB working set, 384 Mi gives ~120 Mi safety headroom).
+  // Was 256 Mi which sat right at the working-set ceiling — under
+  // unusual S3 latency stalls (8 parts queueing buffers without
+  // draining) the pod could OOM. Legacy non-streaming stays at 512 Mi.
   const resources = streamEnvelope
     ? {
         requests: { cpu: '100m', memory: '128Mi' },
-        limits: { cpu: '500m', memory: '256Mi' },
+        limits: { cpu: '500m', memory: '384Mi' },
       }
     : {
         requests: { cpu: '100m', memory: '128Mi' },

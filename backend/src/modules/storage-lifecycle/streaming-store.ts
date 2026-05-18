@@ -155,9 +155,17 @@ export class S3StreamingStore implements StreamingSnapshotStore {
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 's3' },
       { name: 'RCLONE_CONFIG_REMOTE_PROVIDER', value: 'Other' },
       { name: 'RCLONE_CONFIG_REMOTE_REGION', value: this.config.region },
-      // Multipart parallel uploads for high-throughput S3.
+      // Multipart parallel uploads for high-throughput S3. Same
+      // 16M × 8 = 128 MB peak buffer shape that's already validated
+      // against Hetzner Object Storage at ~70 Mbps (its per-session
+      // ceiling, not ours). Tenant-bundles tried 10 connections and
+      // saw sub-linear past 5 with Hetzner — 8 here is a safe ceiling.
       { name: 'RCLONE_S3_CHUNK_SIZE', value: '16M' },
       { name: 'RCLONE_S3_UPLOAD_CONCURRENCY', value: '8' },
+      // 64 MiB transfer buffer — smooths pipe-to-network impedance
+      // when tar/gzip produce faster than S3 drains (single-stream
+      // perf gain, especially for slow remotes).
+      { name: 'RCLONE_BUFFER_SIZE', value: '64M' },
       // No retries inside rclone — the Job orchestrator retries via
       // backoffLimit. Reduce log noise.
       { name: 'RCLONE_LOW_LEVEL_RETRIES', value: '3' },
@@ -261,6 +269,19 @@ export class SshStreamingStore implements StreamingSnapshotStore {
       // (TOFU). Acceptable for managed-cluster backup targets where
       // the host's authenticity is implicit (operator-supplied creds).
       { name: 'RCLONE_CONFIG_REMOTE_KNOWN_HOSTS_FILE', value: '' },
+      // Pin to AES-NI hardware-accelerated cipher. tenant-bundles
+      // measured ~2× faster than the default aes256-ctr at 5 GiB
+      // workloads (restic-driver.ts:444-448). Modern CPUs have AES-NI
+      // since ~2010; the cipher is widely supported on modern OpenSSH.
+      { name: 'RCLONE_CONFIG_REMOTE_CIPHERS', value: 'aes128-gcm@openssh.com' },
+      // 64 MiB transfer buffer — same rationale as S3 above. SFTP is
+      // single-connection by protocol (rcat from stdin can't split);
+      // larger buffer smooths the slow-network case.
+      { name: 'RCLONE_BUFFER_SIZE', value: '64M' },
+      // Skip the modtime round-trip after upload (one extra SETSTAT
+      // RPC per file at the end of transfer). We don't preserve PVC
+      // file mtimes via rclone anyway.
+      { name: 'RCLONE_CONFIG_REMOTE_SET_MODTIME', value: 'false' },
       { name: 'RCLONE_LOW_LEVEL_RETRIES', value: '3' },
       { name: 'RCLONE_USE_JSON_LOG', value: 'true' },
       { name: 'RCLONE_STATS', value: '15s' },
@@ -440,6 +461,10 @@ export class CifsStreamingStore implements StreamingSnapshotStore {
     const publicEnv: Array<{ name: string; value: string }> = [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'smb' },
       { name: 'RCLONE_CONFIG_REMOTE_HOST', value: this.config.host },
+      // 64 MiB transfer buffer — smooths pipe-to-network impedance
+      // for the single-stream SMB upload (rcat from stdin can't be
+      // split into multi-connection parallel by protocol).
+      { name: 'RCLONE_BUFFER_SIZE', value: '64M' },
       { name: 'RCLONE_LOW_LEVEL_RETRIES', value: '3' },
       { name: 'RCLONE_USE_JSON_LOG', value: 'true' },
       { name: 'RCLONE_STATS', value: '15s' },
