@@ -122,17 +122,31 @@ API_BASE="${API_BASE:-$ADMIN_HOST}"
 ok "Authenticated (token len=${#TOKEN})"
 
 # Wrapper that calls the admin API. Handles both modes.
+# In DinD mode the kubectl-run-rm-i path appends `pod "name" deleted`
+# to stdout AFTER the JSON response — strip it with a python regex
+# so downstream `json.load(sys.stdin)` sees clean input.
 api() {
   local method="$1" path="$2" body="${3:-}"
   if [[ "$ADMIN_HOST" == *"k8s-platform.test"* && "${API_BASE:-}" == *"svc.cluster.local"* ]]; then
-    local cmd="curl -sk -X $method -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' '$API_BASE$path'"
-    [[ -n "$body" ]] && cmd="$cmd -d '$body'"
-    docker exec "$K3S_CONTAINER" sh -c "kubectl run -n default --rm -i --restart=Never --image=curlimages/curl:latest sh-api-$$-$RANDOM -- sh -c \"$cmd\"" 2>&1 | sed -n '/^{/,$p'
+    # Use stdin-pipe for the body to avoid impossible nested shell
+    # quoting (docker exec → kubectl run → inner sh). curl reads
+    # the body via `--data-binary @-` from pod stdin which is
+    # connected through to bash's pipe.
+    local pod_name="sh-api-$$-$RANDOM"
+    if [[ -n "$body" ]]; then
+      printf '%s' "$body" | docker exec -i "$K3S_CONTAINER" sh -c \
+        "kubectl run -n default --rm -i --restart=Never --image=curlimages/curl:latest $pod_name -- sh -c 'curl -sk -X $method -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" --data-binary @- $API_BASE$path'" 2>&1 \
+        | python3 -c "import sys,re; t=sys.stdin.read(); m=re.search(r'(\{.*\})', t, re.S); print(m.group(1) if m else '')"
+    else
+      docker exec "$K3S_CONTAINER" sh -c \
+        "kubectl run -n default --rm -i --restart=Never --image=curlimages/curl:latest $pod_name -- curl -sk -X $method -H 'Authorization: Bearer $TOKEN' $API_BASE$path" 2>&1 \
+        | python3 -c "import sys,re; t=sys.stdin.read(); m=re.search(r'(\{.*\})', t, re.S); print(m.group(1) if m else '')"
+    fi
   else
     if [[ -n "$body" ]]; then
-      curl -sk -X "$method" "$API_BASE$path" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$body"
+      curl -s -X "$method" "$API_BASE$path" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$body"
     else
-      curl -sk -X "$method" "$API_BASE$path" -H "Authorization: Bearer $TOKEN"
+      curl -s -X "$method" "$API_BASE$path" -H "Authorization: Bearer $TOKEN"
     fi
   fi
 }
@@ -142,7 +156,7 @@ phase "Phase 1 — static BUNDLE_SECRET_LIST drift"
 # Extract TS list as ns/name lines. Scope to BUNDLE_SECRET_LIST only —
 # OPERATOR_KEY_SECRETS is a separate TS-side array for operator-key
 # file handling that the shell bootstrap doesn't put in `items=()`.
-TS_LIST=$(python3 - <<'PY'
+TS_LIST=$(python3 - "$ROOT/backend/src/modules/system-backup/secrets-bundle.ts" <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
 m = re.search(r'BUNDLE_SECRET_LIST[^=]*=\s*\[(.*?)\];', src, re.S)
@@ -151,10 +165,10 @@ if not m:
 for em in re.finditer(r"\{\s*namespace:\s*'([^']+)'\s*,\s*name:\s*'([^']+)'\s*\}", m.group(1)):
     print(f"{em.group(1)}/{em.group(2)}")
 PY
-"$ROOT/backend/src/modules/system-backup/secrets-bundle.ts")
+)
 
 # Extract shell list from bootstrap.sh.
-SHELL_LIST=$(python3 - <<'PY'
+SHELL_LIST=$(python3 - "$ROOT/scripts/bootstrap.sh" <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
 m = re.search(r'bundle_bootstrap_secrets\(\).*?local items=\(\s*\n(.*?)\n\s*\)', src, re.S)
@@ -168,7 +182,7 @@ for line in m.group(1).splitlines():
     if len(parts) == 2:
         print(f"{parts[0]}/{parts[1]}")
 PY
-"$ROOT/scripts/bootstrap.sh")
+)
 
 # Diff TS and shell.
 TS_FILE="$TMPDIR/ts.txt"; SH_FILE="$TMPDIR/sh.txt"
@@ -183,7 +197,7 @@ fi
 
 # ── Phase 2: AUDIT happy path ─────────────────────────────────────────
 phase "Phase 2 — audit happy path"
-AUDIT=$(api GET /api/v1/system-backup/secrets-audit/refresh)
+AUDIT=$(api POST /api/v1/system-backup/secrets-audit/refresh)
 HEALTHY=$(echo "$AUDIT" | python3 -c "import sys,json,re; d=json.load(sys.stdin); print(d['data']['healthy'])" 2>/dev/null || echo "ERR")
 UNCOV=$(echo "$AUDIT" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['byCategory']['uncovered'])" 2>/dev/null || echo "-1")
 TIER1=$(echo "$AUDIT" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['byCategory']['tier1Bundle'])" 2>/dev/null || echo "-1")
@@ -204,7 +218,7 @@ log "  creating plant: $PLANT_NS/$PLANT_NAME"
 kctl create secret generic "$PLANT_NAME" -n "$PLANT_NS" --from-literal=k=v --dry-run=client -o yaml | kctl apply -f - >/dev/null
 trap 'kctl delete secret -n "$PLANT_NS" "$PLANT_NAME" 2>/dev/null || true; rm -rf "$TMPDIR"' EXIT
 
-AUDIT=$(api GET /api/v1/system-backup/secrets-audit/refresh)
+AUDIT=$(api POST /api/v1/system-backup/secrets-audit/refresh)
 FOUND=$(echo "$AUDIT" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)['data']
@@ -223,7 +237,7 @@ fi
 phase "Phase 4 — allowlist entry quiets the audit"
 api POST /api/v1/system-backup/secrets-audit/allowlist "{\"namespace\":\"$PLANT_NS\",\"name\":\"$PLANT_NAME\",\"reason\":\"integration test plant — automatically removed\"}" >/dev/null
 sleep 1
-AUDIT=$(api GET /api/v1/system-backup/secrets-audit/refresh)
+AUDIT=$(api POST /api/v1/system-backup/secrets-audit/refresh)
 NOW_ALLOWLISTED=$(echo "$AUDIT" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)['data']
@@ -242,7 +256,7 @@ fi
 phase "Phase 5 — allowlist removal re-surfaces as uncovered"
 api DELETE "/api/v1/system-backup/secrets-audit/allowlist/$PLANT_NS/$PLANT_NAME" >/dev/null
 sleep 1
-AUDIT=$(api GET /api/v1/system-backup/secrets-audit/refresh)
+AUDIT=$(api POST /api/v1/system-backup/secrets-audit/refresh)
 REAPPEARED=$(echo "$AUDIT" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)['data']
