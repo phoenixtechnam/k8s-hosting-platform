@@ -1112,6 +1112,16 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // platform SA token in the environment.
   app.post(
     '/internal/mail/snapshot-last-run',
+    {
+      // The mailAdminRoutes plugin attaches authenticate + requireRole
+      // onRequest hooks plugin-wide. The /internal/* endpoint
+      // authenticates via the PLATFORM_INTERNAL_SECRET bearer token
+      // (compared inside the handler), NOT via the user JWT — so the
+      // global hooks must skip this route. Without skipAuth=true,
+      // authenticate fires first, sees our internal token, fails JWT
+      // verification, and the handler's token check never runs.
+      config: { skipAuth: true },
+    },
     async (req: { body: unknown; headers: Record<string, string | string[] | undefined> }) => {
       // SECURITY: fail closed when the internal token is unset.
       // Earlier versions of this code read only PLATFORM_INTERNAL_TOKEN,
