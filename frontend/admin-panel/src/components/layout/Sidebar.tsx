@@ -39,7 +39,7 @@ function RuntimeInfoBlock() {
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/tenants', icon: Users, label: 'Clients' },
+  { to: '/tenants', icon: Users, label: 'Tenants' },
   { to: '/domains', icon: Globe, label: 'Domains' },
   { to: '/applications', icon: AppWindow, label: 'Applications' },
   { to: '/storage', icon: Database, label: 'Backups & Snapshots' },

@@ -112,7 +112,7 @@ export default function Clients() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Clients</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Tenants</h1>
         <button
           onClick={() => setShowCreate(true)}
           className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-brand-600"

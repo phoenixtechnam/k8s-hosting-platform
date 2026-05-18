@@ -270,7 +270,7 @@ export async function ensureSystemAdminUser(
         roleName: 'tenant_admin',
         status: 'active',
         passwordHash,
-        fullName: 'SYSTEM (platform-managed)',
+        fullName: 'Platform System Account',
         emailVerifiedAt: new Date(),
       })
       .where(eq(users.id, existing.id));
@@ -282,7 +282,7 @@ export async function ensureSystemAdminUser(
       id: crypto.randomUUID(),
       email,
       passwordHash,
-      fullName: 'SYSTEM (platform-managed)',
+      fullName: 'Platform System Account',
       roleName: 'tenant_admin',
       panel: 'tenant',
       tenantId: systemTenantId,
