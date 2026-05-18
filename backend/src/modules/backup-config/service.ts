@@ -5,6 +5,8 @@ import { encrypt, decrypt } from '../oidc/crypto.js';
 import type { Database } from '../../db/index.js';
 import type { CreateBackupConfigInput, UpdateBackupConfigInput } from '@k8s-hosting/api-contracts';
 import { probeS3 } from './s3-probe.js';
+import { probeSsh } from './ssh-probe.js';
+import { probeCifs } from './cifs-probe.js';
 import type { LonghornBackupTargetInput } from './longhorn-reconciler.js';
 
 // Connectivity-test result returned by testConnection + testDraft. A real
@@ -321,6 +323,8 @@ export async function testConnection(db: Database, id: string, encryptionKey: st
 
   let result: TestConnectionResult;
   if (row.storageType === 'ssh') {
+    // Real SSH probe: dial host:port + auth handshake (ssh2). Catches
+    // wrong host, blocked port, bad credentials, host-key changes.
     const credCipher = row.sshKeyEncrypted ?? row.sshPasswordEncrypted;
     if (!row.sshHost || !row.sshUser || !row.sshPath || !credCipher) {
       result = {
@@ -332,12 +336,15 @@ export async function testConnection(db: Database, id: string, encryptionKey: st
         },
       };
     } else {
-      // SSH probe not yet wired — decrypt the active credential as a
-      // smoke-test so we at least catch encryption-key mismatches.
-      // Future work can dial a TCP connection + exec a listing.
       try {
-        decrypt(credCipher, encryptionKey);
-        result = { ok: true, latencyMs: 0 };
+        const probeInput: { host: string; port: number; user: string; privateKey?: string; password?: string } = {
+          host: row.sshHost,
+          port: row.sshPort ?? 22,
+          user: row.sshUser,
+        };
+        if (row.sshKeyEncrypted) probeInput.privateKey = decrypt(row.sshKeyEncrypted, encryptionKey);
+        else if (row.sshPasswordEncrypted) probeInput.password = decrypt(row.sshPasswordEncrypted, encryptionKey);
+        result = await probeSsh(probeInput);
       } catch (err) {
         result = {
           ok: false,
@@ -346,7 +353,25 @@ export async function testConnection(db: Database, id: string, encryptionKey: st
         };
       }
     }
+  } else if (row.storageType === 'cifs') {
+    // TCP-port probe (Node has no SMB client; the alternative was a
+    // multi-second rclone Job, too slow for an interactive button).
+    // Auth validation is via the Speedtest action.
+    if (!row.cifsHost) {
+      result = {
+        ok: false,
+        latencyMs: 0,
+        error: { code: 'INCOMPLETE_CONFIG', message: 'Incomplete CIFS configuration: host is required' },
+      };
+    } else {
+      result = await probeCifs({
+        host: row.cifsHost,
+        port: row.cifsPort ?? 445,
+        share: row.cifsShare ?? undefined,
+      });
+    }
   } else {
+    // S3.
     if (!row.s3Endpoint || !row.s3Bucket || !row.s3Region || !row.s3AccessKeyEncrypted || !row.s3SecretKeyEncrypted) {
       result = {
         ok: false,
@@ -414,10 +439,13 @@ export async function testDraft(input: CreateBackupConfigInput): Promise<TestCon
         error: { code: 'INCOMPLETE_CONFIG', message: 'host, share, user, and password are required' },
       };
     }
-    // CIFS probe intentionally minimal — a real probe would need to
-    // spawn an rclone Job (slow). The speedtest endpoint (Phase 10)
-    // covers reachability + throughput with a much richer signal.
-    return { ok: true, latencyMs: 0 };
+    // TCP probe to host:port (no SMB client in the backend image).
+    // Full auth/share validation is via Speedtest.
+    return probeCifs({
+      host: input.cifs_host,
+      port: input.cifs_port ?? 445,
+      share: input.cifs_share,
+    });
   }
   if (!input.ssh_host || !input.ssh_user || !input.ssh_path || (!input.ssh_key && !input.ssh_password)) {
     return {
@@ -426,9 +454,12 @@ export async function testDraft(input: CreateBackupConfigInput): Promise<TestCon
       error: { code: 'INCOMPLETE_CONFIG', message: 'host, user, path, and (key or password) are required' },
     };
   }
-  // SSH probe intentionally minimal — real SSH dial + directory test
-  // belongs with the SSH-backed backup writer (out of scope for this
-  // Longhorn-first rollout). The UI already surfaces this as a best-
-  // effort check.
-  return { ok: true, latencyMs: 0 };
+  // Real SSH dial + auth handshake.
+  return probeSsh({
+    host: input.ssh_host,
+    port: input.ssh_port ?? 22,
+    user: input.ssh_user,
+    privateKey: input.ssh_key,
+    password: input.ssh_password,
+  });
 }

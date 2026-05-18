@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, lazy, Suspense, type FormEvent } from 'react';
 import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Cloud, Zap, CheckCircle, Edit2, Activity, Gauge } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import BackupHealthBanner from '@/components/BackupHealthBanner';
@@ -882,48 +882,90 @@ function RecentBackupsPanel({ activeConfigId }: { activeConfigId: string | null 
 
 // ─── Phase 10: Speedtest button + result row ─────────────────────────
 //
-// SpeedtestButton kicks off the rclone Job and refreshes the task-center
-// chip. The Job's progress modal (kind='backup-speedtest') opens
-// automatically when the operator clicks the chip — no additional
-// state machine in this component. On completion, the mutation's
-// onSettled invalidates the backup-configs query so the per-target
-// last_speedtest_* fields refresh inline.
+// SpeedtestButton kicks off the rclone Job AND proactively opens the
+// SpeedtestProgressModal so the operator sees live progress instead of
+// just a spinning button. The modal polls /me/tasks + /admin/backup-configs
+// directly so the moment the backend's start phase logs `operationId`
+// + `taskId` (returned synchronously from POST), the polling locks on.
+
+const SpeedtestProgressModalLazy = lazy(() => import('@/components/SpeedtestProgressModal'));
 
 function SpeedtestButton({ configId, configName }: { readonly configId: string; readonly configName: string }) {
   const mutation = useSpeedtest();
   const refreshTasks = useRefreshTaskCenter();
-  const handleClick = async () => {
+  const [modalState, setModalState] = useState<{
+    targetId: string;
+    targetName: string;
+    payloadBytes: number;
+    // Filled in when the POST returns with the operationId. While null,
+    // the modal shows a "Starting…" placeholder and polls /me/tasks
+    // for the latest backup.speedtest task on this target.
+    operationId: string | null;
+  } | null>(null);
+
+  const handleClick = () => {
     if (!window.confirm(
       `Run speedtest on "${configName}"?\n\n` +
       `Uploads 100 MB random data to the target, then downloads it back. ` +
-      `Takes 10-60 seconds depending on link speed. ` +
-      `Progress visible in the task-center chip.`,
+      `Takes 10-60 seconds depending on link speed.`,
     )) return;
-    try {
-      const promise = mutation.mutateAsync({ configId });
-      // Kick the chip refresh so the task appears immediately while the
-      // Job is still running.
-      refreshTasks();
-      await promise;
-      refreshTasks();
-    } catch {
-      // Errors surface via the mutation state + are persisted server-side
-      // as last_speedtest_error. The result row renders them.
-      refreshTasks();
-    }
+
+    // Open the modal IMMEDIATELY — no awaiting the POST. The modal
+    // polls /me/tasks for the latest backup.speedtest task on this
+    // target so progress is visible from the moment the Job is
+    // scheduled. When the POST eventually returns, we patch the
+    // modal's operationId in so polling pins to the exact task.
+    setModalState({
+      targetId: configId,
+      targetName: configName,
+      payloadBytes: 100 * 1024 * 1024,
+      operationId: null,
+    });
+    refreshTasks();
+
+    // Fire-and-forget the POST. Errors persist server-side as
+    // last_speedtest_error; the modal renders them.
+    mutation.mutate({ configId }, {
+      onSuccess: (result) => {
+        refreshTasks();
+        if (result?.data?.operationId) {
+          setModalState((prev) => prev ? { ...prev, operationId: result.data.operationId! } : prev);
+        }
+      },
+      onError: () => {
+        refreshTasks();
+      },
+    });
   };
+
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      disabled={mutation.isPending}
-      className="inline-flex items-center gap-2 rounded-lg border-2 border-purple-300 dark:border-purple-600 bg-purple-50 dark:bg-purple-900/30 px-4 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/50 disabled:opacity-50 shadow-sm"
-      data-testid={`speedtest-${configId}`}
-      title="Upload + download a 100 MB test payload to measure throughput"
-    >
-      {mutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />}
-      {mutation.isPending ? 'Running speedtest…' : 'Run Speedtest'}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={mutation.isPending}
+        className="inline-flex items-center gap-2 rounded-lg border-2 border-purple-300 dark:border-purple-600 bg-purple-50 dark:bg-purple-900/30 px-4 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/50 disabled:opacity-50 shadow-sm"
+        data-testid={`speedtest-${configId}`}
+        title="Upload + download a 100 MB test payload to measure throughput"
+      >
+        {mutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />}
+        {mutation.isPending ? 'Running speedtest…' : 'Run Speedtest'}
+      </button>
+      {modalState && (
+        <Suspense fallback={null}>
+          <SpeedtestProgressModalLazy
+            operationId={modalState.operationId ?? ''}
+            targetId={modalState.targetId}
+            targetName={modalState.targetName}
+            payloadBytes={modalState.payloadBytes}
+            onClose={() => {
+              setModalState(null);
+              refreshTasks();
+            }}
+          />
+        </Suspense>
+      )}
+    </>
   );
 }
 
