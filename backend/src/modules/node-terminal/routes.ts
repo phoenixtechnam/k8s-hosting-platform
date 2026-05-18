@@ -79,9 +79,17 @@ function publicWssOrigin(request: FastifyRequest, app: FastifyInstance): string 
       );
     }
   }
-  // Preserve port if present on the original host header (DinD :2011).
-  const portMatch = (request.hostname ?? '').match(/:(\d+)$/);
-  const port = portMatch ? portMatch[1] : '';
+  // Preserve port from the actual request. Fastify's `request.hostname`
+  // drops the port; pull it from the raw Host header instead (and from
+  // X-Forwarded-Port via trustProxy when present). DinD listens on
+  // :2011 — without this the constructed wsUrl points at the standard
+  // :443 which the ingress doesn't serve.
+  const hostHeader = request.headers['x-forwarded-host'] ?? request.headers.host;
+  const hostStr = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  const portFromHost = (hostStr ?? '').match(/:(\d+)$/)?.[1];
+  const portFromXf = request.headers['x-forwarded-port'];
+  const port = portFromHost
+    ?? (typeof portFromXf === 'string' ? portFromXf : Array.isArray(portFromXf) ? portFromXf[0] : '');
   return `wss://${candidate}${port ? ':' + port : ''}`;
 }
 
@@ -107,21 +115,48 @@ async function lookupActorEmail(app: FastifyInstance, userId: string): Promise<s
 
 interface SessionParams { nodeName: string; }
 interface SessionWithIdParams { nodeName: string; sessionId: string; }
-interface WsQuery { token?: string; replica?: string; }
+interface WsQuery { token?: string; replica?: string; jwt?: string; }
 
+/**
+ * Authenticate the WS upgrade. The query string carries the session-
+ * scoped `token` (single-use, sessionId-bound) AND the access JWT in
+ * `jwt`. The JWT is also read from:
+ *   - Authorization: Bearer header (used by the integration harness)
+ *   - platform_session cookie (used by browsers when same-site)
+ * The browser can't set Authorization on a WebSocket, hence `?jwt=`.
+ *
+ * We never accept the same value for both — `?token=` is the wsToken
+ * (validated separately by attachExec), `?jwt=` / Bearer / cookie is
+ * the access JWT.
+ */
 function authenticateWs(app: FastifyInstance, request: FastifyRequest): JwtPayload {
+  let jwtToken: string | undefined;
   const auth = request.headers.authorization;
-  let token: string | undefined;
   if (typeof auth === 'string' && auth.toLowerCase().startsWith('bearer ')) {
-    token = auth.slice(7);
+    jwtToken = auth.slice(7);
   }
-  if (!token) {
+  if (!jwtToken) {
     const q = request.query as WsQuery;
-    token = q.token;
+    if (q.jwt) jwtToken = q.jwt;
   }
-  if (!token) throw invalidToken();
+  if (!jwtToken) {
+    // Cookie fallback — same name as the rest of the platform.
+    const cookieHeader = request.headers.cookie;
+    if (typeof cookieHeader === 'string') {
+      for (const pair of cookieHeader.split(';')) {
+        const eq = pair.indexOf('=');
+        if (eq === -1) continue;
+        const name = pair.slice(0, eq).trim();
+        if (name === 'platform_session') {
+          jwtToken = pair.slice(eq + 1).trim();
+          break;
+        }
+      }
+    }
+  }
+  if (!jwtToken) throw invalidToken();
   try {
-    const decoded = app.jwt.verify<JwtPayload>(token);
+    const decoded = app.jwt.verify<JwtPayload>(jwtToken);
     // Reject pre-auth tokens (passkey 2FA step-1) — never enough for
     // node terminal, even when they decode correctly.
     if ((decoded as { step?: string }).step) throw invalidToken();

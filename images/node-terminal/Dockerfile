@@ -27,10 +27,10 @@ FROM alpine:3.20
 #   pause container. Defence in depth — the pod typically holds
 #   only `sleep` as PID 1.
 RUN apk add --no-cache \
-      util-linux=2.40.1-r0 \
-      bash=5.2.26-r0 \
-      coreutils=9.5-r1 \
-      tini=0.19.0-r3 \
+      util-linux \
+      bash \
+      coreutils \
+      tini \
   && addgroup -S terminal && adduser -S terminal -G terminal
 
 # Document the OCI labels for the GHCR listing. These do not affect

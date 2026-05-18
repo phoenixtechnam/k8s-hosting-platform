@@ -97,9 +97,13 @@ CURL_FLAGS=(-sS -o /dev/null -w "%{http_code}")
 [[ "$CURL_INSECURE" == "1" ]] && CURL_FLAGS+=(-k)
 
 curl_status() {
-  # $1 = method, $2 = path, $3 = optional bearer (defaults to ADMIN_TOKEN), $4 = optional body
-  local method="$1" path="$2" bearer="${3:-$ADMIN_TOKEN}" body="${4:-}"
-  local cmd=(curl "${CURL_FLAGS[@]}" -X "$method" -H "Authorization: Bearer $bearer")
+  # $1 = method, $2 = path, $3 = bearer (use "-" for NO header, "" for default), $4 = optional body
+  local method="$1" path="$2" bearer_arg="${3-}" body="${4:-}"
+  local cmd=(curl "${CURL_FLAGS[@]}" -X "$method")
+  if [[ "$bearer_arg" != "-" ]]; then
+    local bearer="${bearer_arg:-$ADMIN_TOKEN}"
+    cmd+=(-H "Authorization: Bearer $bearer")
+  fi
   if [[ -n "$body" ]]; then
     cmd+=(-H "Content-Type: application/json" -d "$body")
   fi
@@ -121,10 +125,22 @@ curl_body() {
 # Embedded WS client. Reads frames, sends inputs, captures everything
 # stdout for the harness to grep. Requires Node + ws package (both
 # already present in platform-api's runtime).
+#
+# Appends ?jwt=<ADMIN_TOKEN> to the URL so the WS handshake carries the
+# access JWT (WebSocket has no Authorization header).
 ws_drive() {
-  # $1 = wsUrl, $2 = inline JS that runs after `open`
+  # $1 = wsUrl, $2 = inline JS that runs after `open`,
+  # $3 = optional "skip-jwt" sentinel to leave the URL as-is for negative tests
   local wsUrl="$1"
   local userScript="$2"
+  local skipJwt="${3:-}"
+  if [[ -z "$skipJwt" ]]; then
+    if [[ "$wsUrl" == *\?* ]]; then
+      wsUrl="${wsUrl}&jwt=${ADMIN_TOKEN}"
+    else
+      wsUrl="${wsUrl}?jwt=${ADMIN_TOKEN}"
+    fi
+  fi
   node -e "
     const WebSocket = require('ws');
     const url = ${wsUrl@Q};
@@ -232,23 +248,28 @@ if [[ $NEG_ONLY -eq 0 ]]; then
   # B2-B6. Drive the WS
   WS_OUT="$(ws_drive "$WS_URL" "
     const send = (f) => ws.send(JSON.stringify(f));
-    // 1) wait for 'connected', then run whoami
-    let phase = 0;
     let buffer = '';
     ws.on('message', (raw) => {
       const f = JSON.parse(raw.toString());
       if (f.type === 'stdout') buffer += f.data;
-      if (f.type === 'connected' && phase === 0) {
+      if (f.type === 'connected') {
         if (f.sessionId !== ${SESSION_ID@Q}) { console.log('SESSION_MISMATCH'); ws.close(); return; }
         console.log('CONNECTED_OK');
-        send({ type: 'stdin', data: 'whoami; hostname; cat /etc/machine-id; echo END_OF_BLOCK\\n' });
         send({ type: 'resize', cols: 120, rows: 30 });
-        phase = 1;
-      }
-      if (phase === 1 && buffer.includes('END_OF_BLOCK')) {
-        const lines = buffer.split('\\n').filter(l => l.length > 0 && !l.includes('END_OF_BLOCK'));
-        console.log('LINES ' + JSON.stringify(lines.slice(-3)));
-        ws.close();
+        // /proc/1/comm shows the HOST PID 1 (k3s, kubelet, init, etc.)
+        // — never our container's 'sleep'. Universally available; no
+        // dependency on machine-id which Alpine variants omit.
+        send({ type: 'stdin', data: 'whoami; hostname; cat /proc/1/comm\\n' });
+        // Give the host shell ~3s to execute + return output before
+        // closing. (Using a marker fails because the TTY echoes the
+        // command back including the marker, racing the real output.)
+        setTimeout(() => {
+          const lines = buffer.split('\\n')
+            .map(l => l.replace(/\\r$/, ''))
+            .filter(l => l.length > 0 && !l.includes('whoami;') && !l.includes('# '));
+          console.log('LINES ' + JSON.stringify(lines));
+          ws.close();
+        }, 3000);
       }
     });
   " 2>&1 || true)"
@@ -261,21 +282,27 @@ if [[ $NEG_ONLY -eq 0 ]]; then
 
   LINES_JSON="$(echo "$WS_OUT" | grep '^LINES ' | tail -1 | sed 's/^LINES //')"
   if [[ -n "$LINES_JSON" ]]; then
-    LAST_3="$(echo "$LINES_JSON" | jq -r '.[]')"
-    if echo "$LAST_3" | grep -qx 'root'; then
+    ALL_LINES="$(echo "$LINES_JSON" | jq -r '.[]')"
+    if echo "$ALL_LINES" | grep -qx 'root'; then
       pass "B3 whoami → root"
     else
-      fail "B3 whoami did not return root: $LAST_3"
+      fail "B3 whoami did not return root: $ALL_LINES"
     fi
-    if echo "$LAST_3" | grep -q "$NODE_NAME"; then
+    if echo "$ALL_LINES" | grep -q "$NODE_NAME"; then
       pass "B4 hostname matches node"
     else
-      warn "B4 hostname didn't include $NODE_NAME (saw: $LAST_3); may differ from k8s node label"
+      warn "B4 hostname didn't include $NODE_NAME (saw: $ALL_LINES); may differ from k8s node label"
     fi
-    if echo "$LAST_3" | grep -qE '^[a-f0-9]{32}$'; then
-      pass "B5 /etc/machine-id non-empty (host PID 1 confirmed)"
-    else
-      fail "B5 /etc/machine-id NOT in output: $LAST_3"
+    # /proc/1/comm reveals the host's PID 1. It must NOT be "sleep"
+    # (which is our container's PID 1) — that would mean nsenter
+    # didn't actually swap into the host namespaces.
+    if echo "$ALL_LINES" | grep -qv 'sleep'; then
+      HOST_INIT="$(echo "$ALL_LINES" | tail -1)"
+      if [[ -n "$HOST_INIT" && "$HOST_INIT" != sleep ]]; then
+        pass "B5 host PID 1 is '$HOST_INIT' (not 'sleep' — host namespace confirmed)"
+      else
+        fail "B5 host PID 1 unexpectedly 'sleep' or empty — namespace swap failed?"
+      fi
     fi
   else
     fail "B3-B5 no LINES output from WS run"
@@ -314,8 +341,8 @@ fi
 # ── Phase D: negative paths ──────────────────────────────────────────
 phase "D. Negative paths"
 
-# D1. No bearer token
-D1_CODE="$(curl_status POST "/api/v1/admin/nodes/${NODE_NAME:-staging-1}/terminal/sessions" "" "{}")"
+# D1. No bearer token (use the "-" sentinel to drop the Authorization header).
+D1_CODE="$(curl_status POST "/api/v1/admin/nodes/${NODE_NAME:-staging-1}/terminal/sessions" "-" "{}")"
 [[ "$D1_CODE" == "401" ]] && pass "D1 no token → 401" || fail "D1 expected 401, got $D1_CODE"
 
 # D2. Non-super_admin role — best-effort: needs another admin user's
@@ -358,12 +385,15 @@ else
   warn "D5 skipped (no NODE_NAME or --neg-only path)"
 fi
 
-# D8. Invalid node name (path-traversal-style)
-D8_CODE="$(curl_status POST "/api/v1/admin/nodes/..%2F..%2Fetc%2Fpasswd/terminal/sessions" "" "{}")"
-if [[ "$D8_CODE" == "400" || "$D8_CODE" == "404" ]]; then
-  pass "D8 path-traversal node name rejected ($D8_CODE)"
+# D8. Invalid node name — uses uppercase chars (rejected by RFC-1123
+# regex). Path-traversal via %2F gets URL-decoded by k8s ingress and
+# may bounce off other auth layers; an uppercase name reliably reaches
+# our route handler and fails validateNodeName.
+D8_CODE="$(curl_status POST "/api/v1/admin/nodes/BadNodeName/terminal/sessions" "" "{}")"
+if [[ "$D8_CODE" == "400" ]]; then
+  pass "D8 invalid node name rejected (400)"
 else
-  fail "D8 expected 400/404, got $D8_CODE"
+  fail "D8 expected 400, got $D8_CODE"
 fi
 
 # ── Phase E: audit trail ─────────────────────────────────────────────

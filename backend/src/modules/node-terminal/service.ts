@@ -334,17 +334,43 @@ export async function attachExec(
     request,
   });
 
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const stdin = new PassThrough();
+  let closed = false;
+
+  // Wire the stdin handler BEFORE the 'connected' frame goes out so
+  // any data the client sends in response to that frame isn't lost in
+  // the gap between connect-ack and exec-stream-attach. The
+  // PassThrough buffers writes until the exec.exec() pipeline plugs
+  // it into the k8s API server stream.
+  socket.on('message', (raw: Buffer | string) => {
+    if (closed) return;
+    markActivity(sessionId);
+    try {
+      const text = typeof raw === 'string' ? raw : raw.toString('utf-8');
+      const parsed = JSON.parse(text) as { type?: unknown; data?: unknown; cols?: unknown; rows?: unknown };
+      if (parsed.type === 'stdin' && typeof parsed.data === 'string') {
+        stdin.write(parsed.data);
+        return;
+      }
+      if (parsed.type === 'resize' && typeof parsed.cols === 'number' && typeof parsed.rows === 'number') {
+        // k8s exec resize is managed internally by @kubernetes/client-node
+        // when tty=true. We intentionally accept and discard — the field
+        // is forward-compatible for clients that expect ack frames.
+        return;
+      }
+    } catch {
+      // Malformed frame — drop. Don't crash the WS.
+    }
+  });
+
   sendFrame(socket, {
     type: 'connected',
     sessionId,
     nodeName: session.nodeName,
     podName: session.podName,
   });
-
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  const stdin = new PassThrough();
-  let closed = false;
 
   const finalize = async (reason: TerminateReason): Promise<void> => {
     if (closed) return;
@@ -402,27 +428,6 @@ export async function attachExec(
     } catch { void finalize('error'); }
   });
   stdout.on('end', () => { void finalize('shell_exited'); });
-
-  socket.on('message', (raw: Buffer | string) => {
-    if (closed) return;
-    markActivity(sessionId);
-    try {
-      const text = typeof raw === 'string' ? raw : raw.toString('utf-8');
-      const parsed = JSON.parse(text) as { type?: unknown; data?: unknown; cols?: unknown; rows?: unknown };
-      if (parsed.type === 'stdin' && typeof parsed.data === 'string') {
-        stdin.write(parsed.data);
-        return;
-      }
-      if (parsed.type === 'resize' && typeof parsed.cols === 'number' && typeof parsed.rows === 'number') {
-        // k8s exec resize is managed internally by @kubernetes/client-node
-        // when tty=true. We intentionally accept and discard — the field
-        // is forward-compatible for clients that expect ack frames.
-        return;
-      }
-    } catch {
-      // Malformed frame — drop. Don't crash the WS.
-    }
-  });
 
   // Heartbeat at 30s — also keeps mid-NAT proxies from culling the
   // socket. Idle timeout is enforced separately by the scheduler.

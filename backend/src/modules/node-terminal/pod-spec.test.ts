@@ -83,11 +83,11 @@ describe('buildTerminalPodSpec', () => {
     expect(pod.spec?.terminationGracePeriodSeconds).toBe(5);
   });
 
-  it('uses imagePullPolicy IfNotPresent + caps resources', () => {
+  it('uses imagePullPolicy IfNotPresent + tight resource caps', () => {
     const pod = buildTerminalPodSpec({ nodeName: VALID_NODE, sessionId: VALID_SESSION });
     const c = pod.spec?.containers?.[0];
     expect(c?.imagePullPolicy).toBe('IfNotPresent');
-    expect(c?.resources?.limits).toEqual({ cpu: '500m', memory: '256Mi' });
+    expect(c?.resources?.limits).toEqual({ cpu: '100m', memory: '64Mi' });
   });
 
   it('uses the default image when none is provided', () => {
@@ -130,8 +130,15 @@ describe('NSENTER_BASH_ARGV', () => {
     expect(NSENTER_BASH_ARGV.slice(0, 8)).toEqual(['/usr/bin/nsenter', '-t', '1', '-m', '-u', '-i', '-n', '-p']);
   });
 
-  it('execs /bin/bash -l so the shell sources /etc/profile + ~/.bashrc', () => {
-    const tail = NSENTER_BASH_ARGV.slice(-3);
-    expect(tail).toEqual(['--', '/bin/bash', '-l']);
+  it('falls back from bash to sh so alpine-based hosts work', () => {
+    const argv = NSENTER_BASH_ARGV;
+    // -- separator + shell + script that tries bash then falls back
+    expect(argv).toContain('--');
+    const idx = argv.indexOf('--');
+    expect(argv[idx + 1]).toBe('/bin/sh');
+    expect(argv[idx + 2]).toBe('-c');
+    // Must check for bash existence BEFORE exec (else missing-bash
+    // exits 127 and the fallback never fires).
+    expect(argv[idx + 3]).toMatch(/\[ -x \/bin\/bash \].*exec \/bin\/bash.*exec \/bin\/sh/);
   });
 });

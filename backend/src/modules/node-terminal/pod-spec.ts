@@ -135,14 +135,15 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): k8s.V1Po
             runAsUser: 0,
             allowPrivilegeEscalation: true,
           },
-          // Tight resource caps. The shell typically uses <50Mi; this
-          // cap exists so a stuck process inside the shell can't
-          // pressure the host. A debug session that legitimately needs
-          // more memory should be on a different tool (e.g. `kubectl
-          // debug node/...` with manual flags).
+          // Tight resource caps. The pod's container process is
+          // just `sleep 3600` — the actual bash shell runs in the
+          // host's PID namespace via `kubectl exec nsenter`, so the
+          // accounting for shell processes lives outside this cgroup
+          // (host kernel cgroups). Minimal limits suffice and keep
+          // the terminal Pod from eating the platform quota.
           resources: {
-            requests: { cpu: '50m', memory: '64Mi' },
-            limits: { cpu: '500m', memory: '256Mi' },
+            requests: { cpu: '10m', memory: '32Mi' },
+            limits: { cpu: '100m', memory: '64Mi' },
           },
         },
       ],
@@ -154,8 +155,11 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): k8s.V1Po
  * The argv vector platform-api passes to `kubectl exec`. Exported so
  * the exec call-site and tests stay in sync.
  *
- * `-l` makes bash a login shell, so /etc/profile + ~/.bashrc are
- * sourced — operator gets familiar PATH, PS1, etc.
+ * Tries `/bin/bash -l` first (full creature comforts: PS1, history,
+ * tab-completion); falls back to `/bin/sh -l` for Alpine-based hosts
+ * (k3s itself, busybox images, embedded distros) that don't ship bash.
+ * The `exec` keeps the shell as PID 1 inside the nsenter pid-ns so
+ * exit propagates cleanly.
  */
 export const NSENTER_BASH_ARGV: readonly string[] = [
   '/usr/bin/nsenter',
@@ -166,6 +170,11 @@ export const NSENTER_BASH_ARGV: readonly string[] = [
   '-n', // network namespace
   '-p', // PID namespace
   '--',
-  '/bin/bash',
-  '-l',
+  '/bin/sh',
+  '-c',
+  // Try bash, fall back to sh. `exec` replaces the shell entirely
+  // when the target exists; the `command -v` check avoids the
+  // "exec: not found → exit 127" failure mode that swallows the
+  // fallback when /bin/bash is missing (k3s, busybox, embedded).
+  '{ [ -x /bin/bash ] && exec /bin/bash -l; } ; exec /bin/sh -l',
 ];

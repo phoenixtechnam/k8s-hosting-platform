@@ -273,6 +273,24 @@ _build_all_images() {
     fi
   done
 
+  # Node-terminal image — the privileged-Pod harness for the admin
+  # terminal feature. Pod-spec defaults to the GHCR tag; we tag the
+  # local build with the same name so kubelet's IfNotPresent policy
+  # uses the in-cluster copy.
+  if [[ -d "${PROJECT_DIR}/images/node-terminal" ]]; then
+    _build_and_import "node-terminal" "images/node-terminal" "images/node-terminal/Dockerfile"
+    local node_terminal_changed=false
+    if grep -q '^HP_IMAGE_CHANGED_node-terminal=' "${PROJECT_DIR}/.local.build-state" 2>/dev/null; then
+      node_terminal_changed=true
+    fi
+    if [[ "$node_terminal_changed" == true ]] || ! _image_in_k3s "ghcr.io/phoenixtechnam/hosting-platform/node-terminal:latest"; then
+      docker tag "hosting-platform/node-terminal:local" \
+        "ghcr.io/phoenixtechnam/hosting-platform/node-terminal:latest"
+      docker save "ghcr.io/phoenixtechnam/hosting-platform/node-terminal:latest" \
+        | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+    fi
+  fi
+
   # Sidecar image — content-hashed like the others. Base manifests reference
   # it by GHCR name, so on a real rebuild we also re-tag + re-import under
   # that name. The tag itself is idempotent and free; we only re-save+import

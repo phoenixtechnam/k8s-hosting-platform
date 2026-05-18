@@ -158,7 +158,13 @@ export function useNodeTerminal(nodeName: string): UseNodeTerminalResult {
   }, []);
 
   const openSocket = useCallback((url: string, sid: string, onData: (chunk: string) => void) => {
-    const ws = new WebSocket(url);
+    // WebSocket can't carry Authorization headers; embed the access
+    // JWT in `?jwt=` alongside the wsToken (`?token=` already in the
+    // URL the server emitted). Server's authenticateWs reads both.
+    const fullUrl = url.includes('?')
+      ? `${url}&jwt=${encodeURIComponent(authToken())}`
+      : `${url}?jwt=${encodeURIComponent(authToken())}`;
+    const ws = new WebSocket(fullUrl);
     wsRef.current = ws;
     onDataRef.current = onData;
     ws.onopen = () => {
