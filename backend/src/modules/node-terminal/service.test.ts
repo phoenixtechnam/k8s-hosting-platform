@@ -78,6 +78,29 @@ describe('createSession', () => {
     expect(ctx.k8sCoreApi.createNamespacedPod).not.toHaveBeenCalled();
   });
 
+  it('throws STEP_UP_UNAVAILABLE 409 for OIDC-only users (no methods)', async () => {
+    // Security finding H1: an OIDC-only super_admin has no local
+    // credential they can present to step up. Surface 409 explicitly
+    // so the UI can render a useful "enroll a passkey first" message.
+    vi.mocked(stepUp.getStepUpStatus).mockResolvedValue({
+      required: true,
+      methods: [],
+      lastCredentialCheckAt: null,
+      maxAgeMs: 30 * 60 * 1000,
+    });
+    const ctx = makeCtx();
+    await expect(createSession(
+      ctx,
+      actor,
+      { nodeName: 'staging-1', publicWssOrigin: 'wss://admin.test' },
+      fakeRequest,
+    )).rejects.toMatchObject({
+      code: 'STEP_UP_UNAVAILABLE',
+      status: 409,
+    });
+    expect(ctx.k8sCoreApi.createNamespacedPod).not.toHaveBeenCalled();
+  });
+
   it('throws NODE_NOT_FOUND when node is unknown', async () => {
     vi.mocked(stepUp.getStepUpStatus).mockResolvedValue({
       required: false,

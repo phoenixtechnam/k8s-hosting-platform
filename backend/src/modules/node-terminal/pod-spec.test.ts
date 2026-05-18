@@ -12,9 +12,11 @@ const VALID_NODE = 'staging-control-1';
 const VALID_SESSION = '11111111-2222-3333-4444-555555555555';
 
 describe('buildTerminalPodSpec', () => {
-  it('names the pod after the session UUID prefix', () => {
+  it('names the pod after the FULL session UUID (no collision via 8-char prefix)', () => {
     const pod = buildTerminalPodSpec({ nodeName: VALID_NODE, sessionId: VALID_SESSION });
-    expect(pod.metadata?.name).toBe('node-terminal-11111111');
+    expect(pod.metadata?.name).toBe(`node-terminal-${VALID_SESSION}`);
+    // DNS-1123 label cap is 63 chars
+    expect(pod.metadata!.name!.length).toBeLessThanOrEqual(63);
   });
 
   it('lands in the platform namespace', () => {

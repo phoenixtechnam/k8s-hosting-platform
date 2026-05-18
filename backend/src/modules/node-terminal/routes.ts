@@ -26,16 +26,63 @@ function validateNodeName(name: string): void {
 }
 
 /**
- * Resolve the public wss origin to embed in the websocketUrl. Honours
- * PLATFORM_WSS_ORIGIN when set (production); falls back to the request's
- * own host with wss scheme otherwise — works for staging/DinD.
+ * Resolve the public wss origin to embed in the websocketUrl.
+ *
+ * Security finding H2: a naive X-Forwarded-Host lookup is attacker-
+ * controllable — even a privileged super_admin who is being phished
+ * could be tricked into receiving a wsUrl that points at attacker.example.com.
+ *
+ * Resolution order:
+ *   1. PLATFORM_WSS_ORIGIN env var (preferred in prod) — overrides all.
+ *   2. The Host header validated against an allowlist:
+ *        - app.config.CORS_ORIGINS (already validated at startup)
+ *        - app.config.PLATFORM_PUBLIC_HOSTS (CSV) when set explicitly
+ *      The Host header is what Fastify parsed from the request, with
+ *      trustProxy honouring XFH only when the proxy was authenticated.
+ *      We further constrain it to known-good hostnames.
+ *   3. Fallback to `wss://<request.hostname>` only when CORS_ORIGINS is
+ *      empty (dev / DinD).
  */
 function publicWssOrigin(request: FastifyRequest, app: FastifyInstance): string {
-  const env = (app.config as Record<string, unknown>).PLATFORM_WSS_ORIGIN as string | undefined;
+  const cfg = app.config as Record<string, unknown>;
+  const env = cfg.PLATFORM_WSS_ORIGIN as string | undefined;
   if (env) return env;
-  const xfHost = request.headers['x-forwarded-host'] ?? request.headers.host;
-  const host = typeof xfHost === 'string' ? xfHost : (Array.isArray(xfHost) ? xfHost[0] : 'localhost');
-  return `wss://${host}`;
+
+  const allowlist = new Set<string>();
+  const corsOrigins = cfg.CORS_ORIGINS as string | undefined;
+  if (corsOrigins) {
+    for (const origin of corsOrigins.split(',')) {
+      try {
+        const u = new URL(origin.trim());
+        if (u.hostname) allowlist.add(u.hostname.toLowerCase());
+      } catch { /* ignore malformed */ }
+    }
+  }
+  const extraHosts = cfg.PLATFORM_PUBLIC_HOSTS as string | undefined;
+  if (extraHosts) {
+    for (const host of extraHosts.split(',')) {
+      const h = host.trim().toLowerCase();
+      if (h) allowlist.add(h);
+    }
+  }
+
+  // request.hostname is Fastify's parsed Host header. trustProxy honours
+  // XFH from a trusted proxy, but we no longer trust that value blindly.
+  const candidate = (request.hostname ?? '').toLowerCase().split(':')[0];
+
+  if (allowlist.size > 0) {
+    if (!allowlist.has(candidate)) {
+      throw new ApiError(
+        'PLATFORM_HOST_UNALLOWED',
+        'Refusing to construct a node-terminal WS URL for an unrecognised host. Set PLATFORM_WSS_ORIGIN or PLATFORM_PUBLIC_HOSTS to allow this host.',
+        500,
+      );
+    }
+  }
+  // Preserve port if present on the original host header (DinD :2011).
+  const portMatch = (request.hostname ?? '').match(/:(\d+)$/);
+  const port = portMatch ? portMatch[1] : '';
+  return `wss://${candidate}${port ? ':' + port : ''}`;
 }
 
 function makeServiceCtx(app: FastifyInstance): ServiceCtx {
@@ -189,8 +236,11 @@ export async function nodeTerminalRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { nodeName, sessionId } = request.params;
     validateNodeName(nodeName);
+    const user = request.user as JwtPayload;
     const ctx = makeServiceCtx(app);
-    await terminateSession(ctx, sessionId, 'server_close', request);
+    // Pass the requesting user separately so the audit row attributes
+    // forced-closures correctly (security finding M1).
+    await terminateSession(ctx, sessionId, 'server_close', request, user.sub);
     return reply.send({ data: { sessionId, terminated: true as const } });
   });
 

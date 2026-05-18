@@ -177,10 +177,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         paths: ['req.url'],
         censor: (value: unknown): unknown => {
           if (typeof value !== 'string') return value;
-          return value.replace(
+          let out = value;
+          // System Backup signed download URL with HMAC token in path.
+          out = out.replace(
             /\/api\/v1\/system-backup\/secrets\/download\/[^/?#]+/,
             '/api/v1/system-backup/secrets/download/[REDACTED]',
           );
+          // Node-terminal WebSocket upgrade URL — the `token` query
+          // param is the single-use, sessionId-bound ws-token. Logging
+          // it would let any operator with log-read access harvest
+          // tokens within the 60s TTL. Strip token AND replica (the
+          // replica anchor names a platform-api pod hostname — not
+          // sensitive but no value in logs).
+          out = out.replace(
+            /([?&])(token|replica)=([^&#]+)/g,
+            '$1$2=[REDACTED]',
+          );
+          return out;
         },
       },
     },

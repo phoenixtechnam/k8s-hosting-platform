@@ -42,6 +42,8 @@ export interface TerminalSession {
    * the moment the WS upgrades, so a stolen URL can't be replayed.
    */
   wsToken: string | null;
+  /** Token issuance timestamp. Used by consumeWsToken to enforce TTL. */
+  wsTokenIssuedAt: Date;
   /** Set after the WS upgrade. Null while the session is pending. */
   ws: TerminalSocket | null;
   lastActivityAt: Date;
@@ -84,9 +86,18 @@ export function markActivity(sessionId: string): void {
   if (s) s.lastActivityAt = new Date();
 }
 
+export const WS_TOKEN_TTL_MS = 60_000; // matches the api-contracts comment
+
 export function consumeWsToken(sessionId: string, presentedToken: string): boolean {
   const s = REGISTRY.get(sessionId);
   if (!s || s.wsToken === null) return false;
+  // TTL enforcement — fixes security finding C1. A token left
+  // unconsumed past TTL is dead even before the session lifetime
+  // ends, shrinking the replay window for a leaked URL.
+  if (Date.now() - s.wsTokenIssuedAt.getTime() > WS_TOKEN_TTL_MS) {
+    s.wsToken = null;
+    return false;
+  }
   // Constant-time comparison avoids leaking the token via timing.
   if (!constantTimeEquals(s.wsToken, presentedToken)) return false;
   s.wsToken = null;

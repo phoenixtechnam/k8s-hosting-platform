@@ -13,6 +13,8 @@ import {
   completeAuthentication,
   loadPasskeyConfig,
 } from './passkey-service.js';
+import { users } from '../../db/schema.js';
+import { eq } from 'drizzle-orm';
 import {
   stepUpStatusQuerySchema,
   stepUpPasswordRequestSchema,
@@ -195,10 +197,17 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
         passkeyId: result.passkeyId,
       });
       const method: StepUpMethod = 'passkey';
-      // The user row was just updated by completeAuthentication —
-      // re-read or trust the time. Trusting the wall clock is fine
-      // (race window is microseconds; the row write is committed).
-      const at = new Date();
+      // Security finding M3: read back the DB-committed
+      // last_credential_check_at value rather than minting a wall-clock
+      // timestamp here. If the row write failed mid-transaction, the
+      // re-read surfaces the truth and the client sees the right
+      // freshness boundary.
+      const [row] = await app.db
+        .select({ at: users.lastCredentialCheckAt })
+        .from(users)
+        .where(eq(users.id, payload.sub))
+        .limit(1);
+      const at = row?.at ?? new Date();
       return reply.send({
         data: {
           ok: true as const,

@@ -17,6 +17,7 @@ import {
   remove,
   attachWs,
   markActivity,
+  WS_TOKEN_TTL_MS,
   type TerminalSession,
   type TerminateReason,
   type TerminalSocket,
@@ -80,6 +81,28 @@ export async function createSession(
   if (!opts.skipStepUpForTest) {
     const status = await getStepUpStatus(ctx.db, actor.userId);
     if (status.required) {
+      // Security finding H1: an OIDC-only super_admin has NO local
+      // credential to step up with. We surface STEP_UP_UNAVAILABLE so
+      // the operator hears "your account can't open this" instead of
+      // a recursive step-up loop. Operator must enroll a password or
+      // passkey before they can open a node terminal.
+      if (status.methods.length === 0) {
+        await recordNodeTerminalAudit(ctx.db, {
+          actorId: actor.userId,
+          nodeName: opts.nodeName,
+          action: 'node_terminal.session.create.failed',
+          httpStatus: 409,
+          request,
+          changes: { reason: 'STEP_UP_UNAVAILABLE' },
+        });
+        throw new ApiError(
+          'STEP_UP_UNAVAILABLE',
+          'Your account has no step-up method enrolled (no password, no passkey). Enroll a credential before opening a node terminal.',
+          409,
+          { reason: 'NO_STEP_UP_METHOD_AVAILABLE' },
+          'Add a passkey under Profile → Passkeys, then retry.',
+        );
+      }
       await recordNodeTerminalAudit(ctx.db, {
         actorId: actor.userId,
         nodeName: opts.nodeName,
@@ -228,6 +251,7 @@ export async function createSession(
     createdAt: now,
     expiresAt,
     wsToken,
+    wsTokenIssuedAt: now,
     ws: null,
     lastActivityAt: now,
   };
@@ -417,12 +441,18 @@ export async function attachExec(
 /**
  * Delete the privileged Pod + remove the session from the registry.
  * Idempotent — calling twice is a no-op on the second call.
+ *
+ * `requestingUserId` distinguishes "session owner closed their own
+ * shell" from "another super_admin force-closed someone else's"
+ * (security finding M1). The audit logs the actor (requestor) and
+ * mirrors the session owner in `changes.sessionOwnerId`.
  */
 export async function terminateSession(
   ctx: ServiceCtx,
   sessionId: string,
   reason: TerminateReason,
   request: FastifyRequest,
+  requestingUserId?: string,
 ): Promise<void> {
   const session = remove(sessionId);
   if (!session) return;
@@ -437,8 +467,9 @@ export async function terminateSession(
     // 404 is fine — Pod might have been GC'd by activeDeadline or
     // ownerRef cascade. Anything else we log via audit changes.
   }
+  const actorId = requestingUserId ?? session.userId;
   await recordNodeTerminalAudit(ctx.db, {
-    actorId: session.userId,
+    actorId,
     nodeName: session.nodeName,
     sessionId,
     action: 'node_terminal.session.closed',
@@ -447,6 +478,9 @@ export async function terminateSession(
       reason,
       durationMs: Date.now() - session.createdAt.getTime(),
       podName: session.podName,
+      sessionOwnerId: session.userId,
+      sessionOwnerEmail: session.userEmail,
+      ...(requestingUserId && requestingUserId !== session.userId ? { forcedByDifferentUser: true } : {}),
     },
   });
 }
@@ -455,6 +489,12 @@ export async function terminateSession(
 
 function consumeWsTokenForSession(session: TerminalSession, presented: string): boolean {
   if (session.wsToken === null) return false;
+  // TTL enforcement (security finding C1). Burn the token even on
+  // expiry so a slow attacker can't keep racing the comparison.
+  if (Date.now() - session.wsTokenIssuedAt.getTime() > WS_TOKEN_TTL_MS) {
+    session.wsToken = null;
+    return false;
+  }
   if (session.wsToken.length !== presented.length) return false;
   let diff = 0;
   for (let i = 0; i < presented.length; i++) {

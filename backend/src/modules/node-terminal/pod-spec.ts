@@ -62,7 +62,11 @@ export interface BuildTerminalPodSpecInput {
  */
 export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): k8s.V1Pod {
   const image = input.image ?? DEFAULT_TERMINAL_IMAGE;
-  const podName = `${TERMINAL_POD_NAME_PREFIX}${input.sessionId.slice(0, 8)}`;
+  // Security finding H3: avoid pod-name collisions in the 8-char
+  // UUID prefix space (~4B combinations) by using the FULL UUID.
+  // Total length: 14 ("node-terminal-") + 36 = 50 chars, well under
+  // the DNS-1123 label cap of 63.
+  const podName = `${TERMINAL_POD_NAME_PREFIX}${input.sessionId}`;
 
   return {
     apiVersion: 'v1',

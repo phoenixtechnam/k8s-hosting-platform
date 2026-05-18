@@ -14,7 +14,7 @@ import {
 } from './session-registry.js';
 
 function fixture(overrides: Partial<TerminalSession> = {}): TerminalSession {
-  const now = new Date('2026-05-18T12:00:00Z');
+  const now = new Date();
   return {
     id: 'aaaaaaaa-0000-0000-0000-000000000001',
     nodeName: 'staging-1',
@@ -25,6 +25,7 @@ function fixture(overrides: Partial<TerminalSession> = {}): TerminalSession {
     createdAt: now,
     expiresAt: new Date(now.getTime() + 3600_000),
     wsToken: 'token-aaaa',
+    wsTokenIssuedAt: now, // default fresh — overridable per-test
     ws: null,
     lastActivityAt: now,
     ...overrides,
@@ -83,6 +84,23 @@ describe('session-registry', () => {
 
   it('consumeWsToken returns false for unknown session', () => {
     expect(consumeWsToken('nope', 'anything')).toBe(false);
+  });
+
+  it('consumeWsToken enforces the 60s TTL (security finding C1)', () => {
+    const oldIssuedAt = new Date(Date.now() - 70_000); // 70s ago
+    const s = fixture({ wsToken: 'fresh', wsTokenIssuedAt: oldIssuedAt });
+    register(s);
+    expect(consumeWsToken(s.id, 'fresh')).toBe(false);
+    // The token is burned on expiry — even a subsequent in-window
+    // submission can't replay it.
+    expect(getSession(s.id)?.wsToken).toBeNull();
+  });
+
+  it('consumeWsToken accepts a token presented just inside the TTL window', () => {
+    const recentIssuedAt = new Date(Date.now() - 30_000); // 30s ago
+    const s = fixture({ wsToken: 'fresh', wsTokenIssuedAt: recentIssuedAt });
+    register(s);
+    expect(consumeWsToken(s.id, 'fresh')).toBe(true);
   });
 
   it('markActivity bumps lastActivityAt', () => {

@@ -81,4 +81,37 @@ if ! grep -Eq "user\.role[[:space:]]*!==[[:space:]]*'super_admin'" "$ROUTES"; th
   fail "routes.ts WS handler must verify user.role !== 'super_admin' as a belt-and-braces check."
 fi
 
+# 8. WS handler must verify panel === 'admin' (security finding M2 —
+#    same defence-in-depth posture as the role check).
+if ! grep -Eq "user\.panel[[:space:]]*!==[[:space:]]*'admin'" "$ROUTES"; then
+  fail "routes.ts WS handler must verify user.panel !== 'admin' as a belt-and-braces check."
+fi
+
+# 9. authenticateWs must reject pre-auth (passkey 2FA) tokens — they
+#    carry a `step` claim and must NEVER pass a privileged auth gate.
+if ! grep -Eq "decoded as.*step|payload.*\.step" "$ROUTES"; then
+  fail "routes.ts authenticateWs must reject JWTs carrying a 'step' claim."
+fi
+
+# 10. Pino redact rules must scrub the WS token query param (security
+#     finding C2). Without this, tokens leak into platform-api logs.
+#     Matches the regex literal that captures token|replica.
+if ! grep -Eq "\(token\|replica\)=" "$APP_TS"; then
+  fail "app.ts Pino redact must scrub ?token=/?replica= from URLs to prevent ws-token leakage in logs."
+fi
+
+# 11. consumeWsTokenForSession must enforce a TTL (security finding C1).
+SERVICE_TS="$ROOT/backend/src/modules/node-terminal/service.ts"
+SERVICE_CODE=$(sed -e 's://.*$::' -e '/\/\*/,/\*\//d' "$SERVICE_TS")
+if ! echo "$SERVICE_CODE" | grep -Eq 'WS_TOKEN_TTL_MS|wsTokenIssuedAt'; then
+  fail "service.ts must enforce a TTL on wsToken consumption (WS_TOKEN_TTL_MS)."
+fi
+
+# 12. Pod-name uses full UUID (security finding H3 — avoids 8-char
+#     prefix collisions).
+POD_SPEC_CODE2=$(sed -e 's://.*$::' "$POD_SPEC")
+if echo "$POD_SPEC_CODE2" | grep -Eq 'sessionId\.slice\(0,[[:space:]]*8\)'; then
+  fail "pod-spec.ts must not truncate sessionId — use the full UUID (avoids collision)."
+fi
+
 echo "[ci-node-terminal-check] OK — all security invariants intact."
