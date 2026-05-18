@@ -249,6 +249,27 @@ spec:
                   name: platform-config
                   key: platform-tls-secret-name
                   optional: true
+            # Node-terminal feature flag (ADR-041 — privileged root shell
+            # on cluster nodes via nsenter into host PID 1). OFF by
+            # default; staging + dev overlays opt in. Production toggles
+            # via this ConfigMap key — no code change needed.
+            - name: NODE_TERMINAL_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: node-terminal-enabled
+                  optional: true
+            # Allowlist of public hostnames the node-terminal route is
+            # willing to construct wsUrls for. Belt-and-braces against
+            # X-Forwarded-Host spoofing — see backend/src/modules/
+            # node-terminal/routes.ts:publicWssOrigin. CSV; matches the
+            # hostname portion of cors-origins exactly.
+            - name: PLATFORM_PUBLIC_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: platform-public-hosts
+                  optional: true
             # Cross-namespace mirror of the Stalwart admin password.
             # The backend reads /etc/stalwart-creds/ADMIN_SECRET_PLAIN
             # at JMAP call time so a rotated password lands within the
@@ -389,3 +410,21 @@ spec:
     - port: 3000
       targetPort: 3000
       protocol: TCP
+  # HA-3 stickiness for the node-terminal feature (ADR-041): the
+  # in-memory session registry lives per-replica, and the WS upgrade
+  # MUST land on the same replica that created the session via POST.
+  # ClientIP affinity hashes by the SOURCE Pod IP. When admin-panel
+  # nginx forwards from a given Pod (the L7 client at this hop), all
+  # of its traffic pins to a single platform-api replica.
+  #
+  # Combined with Traefik sticky-cookie on the panel IngressRoute
+  # (browser → admin-panel pod), this gives end-to-end stickiness:
+  #   browser cookie → admin-panel-pod-X → platform-api-pod-Y
+  #
+  # 3-hour ClientIP timeout matches the activeDeadlineSeconds of the
+  # terminal Pod plus a margin so a session never outlives the
+  # affinity record.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800

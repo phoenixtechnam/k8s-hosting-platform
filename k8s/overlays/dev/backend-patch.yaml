@@ -159,13 +159,6 @@ spec:
             # secretKeyRef because that would freeze the value at pod start.
             - name: STALWART_ADMIN_CREDS_DIR
               value: /etc/stalwart-creds
-            # Admin node-terminal (privileged shell on cluster nodes via
-            # nsenter into host PID 1). OFF in production overlays; ON in
-            # the dev overlay so the integration harness can exercise it.
-            - name: NODE_TERMINAL_ENABLED
-              value: "true"
-            # Allowlist for publicWssOrigin (security finding H2). Without
-            # this, the route 500s when CORS_ORIGINS doesn't already cover
-            # the local dind hosts.
-            - name: PLATFORM_PUBLIC_HOSTS
-              value: admin.k8s-platform.test,client.k8s-platform.test
+            # NODE_TERMINAL_ENABLED + PLATFORM_PUBLIC_HOSTS moved to
+            # platform-config-patch.yaml so all environments flow
+            # through the same ConfigMap surface (ADR-041).

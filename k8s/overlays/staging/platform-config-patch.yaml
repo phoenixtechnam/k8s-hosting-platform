@@ -41,3 +41,12 @@ data:
   passkey-rp-id: "${DOMAIN}"
   passkey-rp-name: "Phoenix Hosting (staging)"
   passkey-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"
+  # Admin node-terminal (ADR-041 — privileged root shell on cluster
+  # nodes via nsenter into host PID 1). super_admin-only with 30-min
+  # step-up freshness; audited to audit_logs. Enabled on staging by
+  # default so operators have a break-glass tool against k3s host
+  # issues without SSH.
+  node-terminal-enabled: "true"
+  # Allowlist for publicWssOrigin — host portion of cors-origins.
+  # Belt-and-braces against X-Forwarded-Host spoofing.
+  platform-public-hosts: "admin.${DOMAIN},tenant.${DOMAIN}"

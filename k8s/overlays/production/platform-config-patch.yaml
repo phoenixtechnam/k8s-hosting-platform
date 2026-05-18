@@ -21,3 +21,14 @@ data:
   tunnel-base-url: "wss://tunnels.${DOMAIN}"
   private-worker-frps-image: "fatedier/frps:v0.62.1"
   private-worker-agent-image: "ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest"
+  # Admin node-terminal (ADR-041 — privileged root shell on cluster
+  # nodes via nsenter into host PID 1). Default OFF in production
+  # since the feature is a break-glass tool. Flip to "true" here when
+  # the deployment is single-replica platform-api OR HA stickiness is
+  # configured. See docs/02-operations/NODE_TERMINAL.md.
+  node-terminal-enabled: "false"
+  # Allowlist for publicWssOrigin — host portion of cors-origins.
+  # Belt-and-braces against X-Forwarded-Host spoofing. Populated even
+  # when the feature is disabled so flipping the flag above doesn't
+  # require a second ConfigMap edit.
+  platform-public-hosts: "admin.${DOMAIN},tenant.${DOMAIN}"

@@ -4563,6 +4563,17 @@ create_platform_configmap() {
     --from-literal=passkey-rp-id="${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=passkey-rp-name="$platform_name_value" \
     --from-literal=passkey-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://client.${PLATFORM_DOMAIN:-localhost}" \
+    `# Admin node-terminal (ADR-041 — privileged root shell on cluster` \
+    `# nodes via nsenter into host PID 1). super_admin-only, 30-min` \
+    `# step-up freshness, fully audited. Defaults to ON outside of` \
+    `# production so operators have a break-glass shell from day 1;` \
+    `# production overlay flips to OFF by default — flip back here` \
+    `# (or via the System Settings UI) once an HA-stickiness path is` \
+    `# in place. See docs/02-operations/NODE_TERMINAL.md.` \
+    --from-literal=node-terminal-enabled="$([[ "$PLATFORM_ENV" == "production" ]] && echo false || echo true)" \
+    `# Allowlist for publicWssOrigin — host portion of cors-origins.` \
+    `# Belt-and-braces against X-Forwarded-Host spoofing.` \
+    --from-literal=platform-public-hosts="admin.${PLATFORM_DOMAIN:-localhost},client.${PLATFORM_DOMAIN:-localhost}" \
     --dry-run=client -o yaml | kctl apply -f -
   log "platform-config ConfigMap applied (issuer=${issuer_name})."
 }
