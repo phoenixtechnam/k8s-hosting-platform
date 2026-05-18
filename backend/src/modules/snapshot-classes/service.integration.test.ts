@@ -15,8 +15,13 @@ const dbAvailable = await isDbAvailable();
 
 async function insertTarget(name: string, storageType: 's3' | 'ssh' = 's3'): Promise<string> {
   const id = crypto.randomUUID();
+  // The column is quoted "storageType" in the migration (camelCase
+  // emitted by drizzle-kit from the Drizzle schema's `storageType:`
+  // declaration without an explicit column name). Wrap in double
+  // quotes here so Postgres treats it as a case-sensitive identifier
+  // matching the actual column name.
   await db.execute(sql`
-    INSERT INTO backup_configurations (id, name, storage_type, retention_days, schedule_expression, enabled, active, created_at, updated_at)
+    INSERT INTO backup_configurations (id, name, "storageType", retention_days, schedule_expression, enabled, active, created_at, updated_at)
     VALUES (${id}, ${name}, ${storageType}, 30, '0 2 * * *', 1, false, NOW(), NOW())
   `);
   return id;
@@ -74,6 +79,9 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
 
   it('setAssignments rejects duplicate target_ids', async () => {
     const t1 = await insertTarget('test-dup');
+    // ApiError carries the symbolic code on `.code`, not the message.
+    // Earlier version of this test grepped the message for the code
+    // string, which was never present — message is operator-friendly.
     await expect(
       setAssignments(db, 'tenant_snapshot', {
         assignments: [
@@ -81,7 +89,7 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
           { targetId: t1, priority: 200 },
         ],
       }),
-    ).rejects.toThrow(/DUPLICATE_TARGET/);
+    ).rejects.toMatchObject({ code: 'DUPLICATE_TARGET' });
   });
 
   it('setAssignments rejects duplicate priorities', async () => {
@@ -94,7 +102,7 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
           { targetId: t2, priority: 100 },
         ],
       }),
-    ).rejects.toThrow(/DUPLICATE_PRIORITY/);
+    ).rejects.toMatchObject({ code: 'DUPLICATE_PRIORITY' });
   });
 
   it('setAssignments rejects non-existent target_id', async () => {
@@ -103,7 +111,7 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
       setAssignments(db, 'tenant_snapshot', {
         assignments: [{ targetId: fake, priority: 100 }],
       }),
-    ).rejects.toThrow(/TARGET_NOT_FOUND/);
+    ).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' });
   });
 
   it('setAssignments with empty array clears the class', async () => {
