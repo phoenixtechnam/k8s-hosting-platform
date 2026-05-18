@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: security-probe
+  namespace: platform-system
+  labels:
+    app: security-probe
+    app.kubernetes.io/part-of: hosting-platform
+---
+# RBAC for the security-probe DaemonSet.
+#
+# The probe writes one ConfigMap per node into platform-system,
+# named security-probe-<NODE_NAME>. The backend
+# `security-hardening` module reads these to compose the admin
+# page snapshot.
+#
+# Permissions are intentionally narrow:
+#   - configmaps: get/create/update/patch ONLY in platform-system.
+#     (Cluster-wide list/watch is unnecessary because each pod
+#     only writes its own node's ConfigMap.)
+#   - nodes: get/list/watch cluster-wide — needed to set an
+#     OwnerReference so the ConfigMap GCs when the node is
+#     removed, and to fetch the parent Node's UID.
+#
+# NO secrets access. NO write to any other resource. NO exec.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: security-probe
+rules:
+  # Only `get` on Nodes — the probe fetches its own parent Node by
+  # name (downward API NODE_NAME) for OwnerReference UID. list/watch
+  # would let a compromised SA enumerate every node's metadata
+  # cluster-wide; we don't need it.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: security-probe
+  namespace: platform-system
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: security-probe
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: security-probe
+subjects:
+  - kind: ServiceAccount
+    name: security-probe
+    namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: security-probe
+  namespace: platform-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: security-probe
+subjects:
+  - kind: ServiceAccount
+    name: security-probe
+    namespace: platform-system

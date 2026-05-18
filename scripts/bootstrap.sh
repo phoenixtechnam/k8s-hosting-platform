@@ -224,6 +224,24 @@ CALICO_VERSION="v3.31.5"
 # cluster_cidr_arg.
 POD_CIDR_V4="10.42.0.0/16"
 
+# SSH-via-mesh — opt-in firewall scoping for SSH (:22).
+#
+# Default behaviour is unchanged: `tcp dport 22 accept` is public,
+# matching the historical bootstrap.sh that assumed operators gate SSH
+# externally (cloud-firewall, workstation IP via --allow-source).
+#
+# When SSH_VIA_MESH_IFACE is non-empty (set via --ssh-via-mesh <iface>),
+# the public :22 accept is REPLACED with a scoped rule:
+#   iif "<iface>"                          tcp dport 22 accept
+#   ip  saddr @trusted_ranges_v4           tcp dport 22 accept
+#   ip6 saddr @trusted_ranges_v6           tcp dport 22 accept
+# So operators with the workstation IP in --allow-source still get in
+# via the trusted_ranges path even when the mesh agent is down.
+#
+# Surfaces via /etc/hosting-platform/firewall.conf for the
+# security-probe DaemonSet to read.
+SSH_VIA_MESH_IFACE=""
+
 # Always-on set-mode firewall. cluster_peers_v{4,6} nft sets gate
 # cluster-internal control-plane ports (6443/8443/10250/5473/2379-2380),
 # converged from kube-API node InternalIPs by the peer-firewall-
@@ -531,6 +549,24 @@ FIREWALL TRUST (always-on set mode):
                          --join-as server/worker bootstraps then succeed
                          on first try with no operator intervention.
 
+  --ssh-via-mesh <iface>
+                         OPT-IN. Replace public 'tcp dport 22 accept'
+                         with a scoped rule that only allows SSH from
+                         the named interface (e.g. wt0 for NetBird,
+                         tailscale0 for Tailscale, wg0 for self-hosted
+                         WireGuard) PLUS any source IP/CIDR seeded
+                         into trusted_ranges_v{4,6} via --allow-source.
+                         Use ONLY when you have console / KVM / cloud
+                         rescue access — a wrong interface name will
+                         lock you out of SSH on this node.
+                         Examples:
+                           --ssh-via-mesh wt0
+                           --ssh-via-mesh tailscale0
+                           --ssh-via-mesh wg0
+                         Persists to /etc/hosting-platform/firewall.conf
+                         so the security-probe DaemonSet reports it
+                         via the admin panel.
+
   --cluster-network-cidr <cidr>
                          k3s --node-ip pinning. When set, k3s binds and
                          advertises the node's IP from inside this CIDR
@@ -752,6 +788,7 @@ parse_args() {
       --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; shift 2 ;;
       --allow-source)    parse_allow_source_arg "$2"; shift 2 ;;
       --pre-enroll-peer) parse_pre_enroll_peer_arg "$2"; shift 2 ;;
+      --ssh-via-mesh)    SSH_VIA_MESH_IFACE="$2"; shift 2 ;;
       --calico-wg-public) CALICO_WG_PUBLIC="$2"; shift 2 ;;
       --calico-mtu)      CALICO_MTU="$2"; shift 2 ;;
       --with-monitoring) ENABLE_MONITORING=true; shift ;;
@@ -1402,6 +1439,24 @@ configure_firewall() {
     ip6 saddr @trusted_ranges_v6 udp dport 51821 accept"
   fi
 
+  # ─── SSH rule rendering ───────────────────────────────────────────────
+  # Default: public :22 (legacy behaviour, assumes external gating).
+  # --ssh-via-mesh <iface>: scoped to that interface + trusted_ranges.
+  local ssh_rule="    tcp dport 22 accept      # SSH (public — set --ssh-via-mesh to scope)"
+  local ssh_via_mesh_persist="false"
+  if [[ -n "$SSH_VIA_MESH_IFACE" ]]; then
+    ssh_rule="    # SSH (:22) scoped to mesh interface + trusted_ranges.
+    # --ssh-via-mesh ${SSH_VIA_MESH_IFACE} was specified at bootstrap.
+    iif \"${SSH_VIA_MESH_IFACE}\" tcp dport 22 accept
+    ip  saddr @trusted_ranges_v4 tcp dport 22 accept
+    ip6 saddr @trusted_ranges_v6 tcp dport 22 accept"
+    ssh_via_mesh_persist="true"
+    if ! ip link show "${SSH_VIA_MESH_IFACE}" >/dev/null 2>&1; then
+      warn "Interface '${SSH_VIA_MESH_IFACE}' does NOT exist on this host. SSH may be locked out — make sure you have console / KVM / cloud-rescue access before continuing. Sleeping 10s; Ctrl-C to abort."
+      sleep 10
+    fi
+  fi
+
   # ─── nft set declarations ─────────────────────────────────────────────
   # All four firewall sets are always declared. Empty sets are valid;
   # rules referencing an empty set are no-ops, so single-node clusters
@@ -1459,7 +1514,7 @@ ${set_decls}
     # Public-facing — tenants and operators must always reach these.
     tcp dport 80 accept      # HTTP
     tcp dport 443 accept     # HTTPS
-    tcp dport 22 accept      # SSH
+${ssh_rule}
 
     # Public-key-authenticated UDP — exposure is safe.
     udp dport 51820 accept   # NetBird WireGuard
@@ -1522,6 +1577,20 @@ NFT
   systemctl enable nftables
   nft -f /etc/nftables.conf
   log "Firewall configured (always-on set mode)."
+
+  # Persist operator-declared posture for the security-probe
+  # DaemonSet. Key-value format, KEY=val per line; the probe reads
+  # this via a hostPath mount at /host/etc/hosting-platform/.
+  mkdir -p /etc/hosting-platform
+  cat > /etc/hosting-platform/firewall.conf <<HPFW
+# Written by bootstrap.sh — DO NOT EDIT BY HAND.
+# Re-run bootstrap with appropriate flags to change posture.
+PUBLIC_TCP_PORTS=$( [[ -n "$SSH_VIA_MESH_IFACE" ]] && echo "80 443" || echo "80 443 22" ) 25 465 587 143 993 110 995 4190
+PUBLIC_UDP_PORTS=51820 29899
+SSH_VIA_MESH=${ssh_via_mesh_persist}
+SSH_VIA_MESH_INTERFACE=${SSH_VIA_MESH_IFACE}
+HPFW
+  chmod 0644 /etc/hosting-platform/firewall.conf
 
   # Always seed the firewall sets — set mode is the only mode now.
   seed_firewall_sets

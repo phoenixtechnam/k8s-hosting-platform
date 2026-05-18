@@ -92,10 +92,34 @@ if (( v4_count > v6_count + allowed_skew )); then
   failures=$((failures + 1))
 fi
 
+# Invariant 3: --ssh-via-mesh renders correctly.
+# Default path: `tcp dport 22 accept` literal must be reachable in
+# bash via the default `ssh_rule=` assignment. Mesh-on path: when
+# SSH_VIA_MESH_IFACE is non-empty, the rendered rule MUST scope to
+# `iif "<iface>"` AND seed both trusted_ranges_v4/v6 saddr fallbacks.
+# Without these, an operator could lose SSH access on a non-mesh
+# cluster (regression) OR be unable to recover via --allow-source if
+# the mesh agent goes down (a different regression).
+if ! grep -q 'local ssh_rule=".*tcp dport 22 accept' "$SCRIPT"; then
+  echo "FAIL --ssh-via-mesh: default ssh_rule assignment missing the literal 'tcp dport 22 accept' fallback"
+  echo "      bootstrap.sh must keep public :22 as the DEFAULT path; --ssh-via-mesh is opt-in only"
+  failures=$((failures + 1))
+fi
+if ! grep -qE 'iif \\?"\$\{SSH_VIA_MESH_IFACE\}\\?" tcp dport 22 accept' "$SCRIPT"; then
+  echo "FAIL --ssh-via-mesh: scoped path missing 'iif \"\${SSH_VIA_MESH_IFACE}\" tcp dport 22 accept'"
+  failures=$((failures + 1))
+fi
+if ! grep -q 'ip  saddr @trusted_ranges_v4 tcp dport 22 accept' "$SCRIPT" || \
+   ! grep -q 'ip6 saddr @trusted_ranges_v6 tcp dport 22 accept' "$SCRIPT"; then
+  echo "FAIL --ssh-via-mesh: trusted_ranges_v4/v6 SSH fallback rules missing"
+  echo "      Without these, --allow-source cannot recover SSH access when the mesh agent is down"
+  failures=$((failures + 1))
+fi
+
 if (( failures > 0 )); then
   echo
   echo "✗ $failures firewall-rule violation(s) in $SCRIPT"
   exit 1
 fi
 
-echo "✓ bootstrap.sh firewall rules: $v4_count v4 / $v6_count v6 scoped, all public ports documented."
+echo "✓ bootstrap.sh firewall rules: $v4_count v4 / $v6_count v6 scoped, all public ports documented, --ssh-via-mesh paths verified."
