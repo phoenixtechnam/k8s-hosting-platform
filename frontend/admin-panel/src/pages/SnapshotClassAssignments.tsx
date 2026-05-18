@@ -46,13 +46,13 @@ export default function SnapshotClassAssignments() {
     <div className="space-y-6">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-          Snapshot Class Assignments
+          Backup Class Assignments
         </h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Route each snapshot class to one or more backup targets. The strict-primary resolver
+          Route each backup class to one or more backup targets. The strict-primary resolver
           picks the lowest-priority assignment per class; failover is manual reassignment.
           Classes with no assignment are <span className="font-medium text-rose-600 dark:text-rose-400">disabled</span> —
-          snapshot operations of that class will fail loud with <code className="rounded bg-gray-100 dark:bg-gray-800 px-1 text-[11px]">NO_SNAPSHOT_TARGET</code>.
+          backup operations of that class will fail loud with <code className="rounded bg-gray-100 dark:bg-gray-800 px-1 text-[11px]">NO_SNAPSHOT_TARGET</code>.
           {' '}
           <Link to="/settings/backups" className="font-medium text-brand-600 dark:text-brand-400 hover:underline">
             Manage backup targets →
