@@ -39,6 +39,7 @@ import { metricsRoutes } from './modules/metrics/routes.js';
 import { cronJobRoutes } from './modules/cron-jobs/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { passkeyRoutes } from './modules/auth/passkey-routes.js';
+import { stepUpRoutes } from './modules/auth/step-up-routes.js';
 import { planRoutes } from './modules/plans/routes.js';
 import { regionRoutes } from './modules/regions/routes.js';
 import { catalogRoutes } from './modules/catalog/routes.js';
@@ -176,10 +177,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         paths: ['req.url'],
         censor: (value: unknown): unknown => {
           if (typeof value !== 'string') return value;
-          return value.replace(
+          let out = value;
+          // System Backup signed download URL with HMAC token in path.
+          out = out.replace(
             /\/api\/v1\/system-backup\/secrets\/download\/[^/?#]+/,
             '/api/v1/system-backup/secrets/download/[REDACTED]',
           );
+          // Node-terminal WebSocket upgrade URL — the `token` query
+          // param is the single-use, sessionId-bound ws-token. Logging
+          // it would let any operator with log-read access harvest
+          // tokens within the 60s TTL. Strip token AND replica (the
+          // replica anchor names a platform-api pod hostname — not
+          // sensitive but no value in logs).
+          out = out.replace(
+            /([?&])(token|replica)=([^&#]+)/g,
+            '$1$2=[REDACTED]',
+          );
+          return out;
         },
       },
     },
@@ -387,6 +401,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // Routes
   await app.register(authRoutes, { prefix: '/api/v1' });
   await app.register(passkeyRoutes, { prefix: '/api/v1' });
+  await app.register(stepUpRoutes, { prefix: '/api/v1' });
   await app.register(planRoutes, { prefix: '/api/v1' });
   await app.register(regionRoutes, { prefix: '/api/v1' });
   await app.register(tenantRoutes, { prefix: '/api/v1' });
@@ -489,6 +504,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   const { containerConsoleRoutes } = await import('./modules/container-console/routes.js');
   await app.register(containerConsoleRoutes, { prefix: '/api/v1' });
 
+  // Admin node-terminal: privileged root shell on cluster nodes via
+  // nsenter into host PID 1. Gated by NODE_TERMINAL_ENABLED so we can
+  // ship the backend + integration harness before the UI lights up.
+  // Default-off; staging/local override sets it to 'true'.
+  const nodeTerminalEnabled = String(
+    (deps.config as Record<string, unknown>).NODE_TERMINAL_ENABLED
+      ?? process.env.NODE_TERMINAL_ENABLED
+      ?? 'false',
+  ).toLowerCase() === 'true';
+  if (nodeTerminalEnabled) {
+    const { nodeTerminalRoutes } = await import('./modules/node-terminal/routes.js');
+    await app.register(nodeTerminalRoutes, { prefix: '/api/v1' });
+  }
+
   const { aiEditorRoutes } = await import('./modules/ai-editor/routes.js');
   await app.register(aiEditorRoutes, { prefix: '/api/v1' });
 
@@ -588,6 +617,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
       const webcronTimer = startWebcronScheduler(app.db);
       app.addHook('onClose', () => clearInterval(webcronTimer));
+
+      // Node-terminal scheduler: idle-session sweep + orphan-Pod reap.
+      // Same feature flag as the routes — when disabled, there are no
+      // sessions or labelled Pods to sweep anyway.
+      if (nodeTerminalEnabled) {
+        const { startNodeTerminalScheduler } = await import('./modules/node-terminal/scheduler.js');
+        const stopNodeTerminalScheduler = startNodeTerminalScheduler(app);
+        app.addHook('onClose', () => stopNodeTerminalScheduler());
+      }
 
       // Task tracker retention — reap orphans + delete old terminal rows.
       const taskRetentionTimer = startTaskRetention(app.db);

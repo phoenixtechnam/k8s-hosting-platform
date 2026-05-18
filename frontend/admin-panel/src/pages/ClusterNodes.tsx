@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Server, Loader2, AlertCircle, Edit, ShieldAlert, HardDrive, Cpu, AlertTriangle,
-  Trash2, ChevronRight, ChevronDown, CheckCircle2, Activity,
+  Trash2, ChevronRight, ChevronDown, CheckCircle2, Activity, Terminal as TerminalIcon,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClusterNodes, useDeleteNode } from '@/hooks/use-cluster-nodes';
@@ -11,6 +11,7 @@ import type { ClusterNodeResponse, NodeIngressMode } from '@k8s-hosting/api-cont
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
 import NodeStorageCard from '@/components/NodeStorageCard';
+import NodeTerminalModal from '@/components/NodeTerminalModal';
 
 // Saturation thresholds shared by the per-node compact summary, the cluster
 // health bar, and the in-card UsageBar. Mirrors UsageBar's scale so the
@@ -266,6 +267,7 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [drainOpen, setDrainOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteNodeMutation = useDeleteNode(node.name);
   const ready = readyCondition(node);
@@ -461,6 +463,17 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
               >
                 <Edit size={14} /> Edit
               </button>
+              {ready === 'Ready' && (
+                <button
+                  type="button"
+                  onClick={() => setTerminalOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200 dark:hover:bg-red-900/50"
+                  data-testid={`terminal-node-${node.name}-button`}
+                  title="Open a root shell on this node (audited)"
+                >
+                  <TerminalIcon size={14} /> Terminal
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setDrainOpen(true)}
@@ -514,6 +527,7 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
 
       {editOpen && <NodeEditModal node={node} onClose={() => setEditOpen(false)} />}
       {drainOpen && <NodeDrainDeleteModal node={node} onClose={() => setDrainOpen(false)} />}
+      {terminalOpen && <NodeTerminalModal nodeName={node.name} onClose={() => setTerminalOpen(false)} />}
     </div>
   );
 }

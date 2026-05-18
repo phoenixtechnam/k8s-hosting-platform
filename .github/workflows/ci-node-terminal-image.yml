@@ -1,0 +1,94 @@
+name: node-terminal CI
+
+# Privileged-Pod harness for the admin node-terminal feature.
+# Built from images/node-terminal/Dockerfile (alpine + util-linux for
+# `nsenter` into the k3s node host namespaces).
+#
+# Mirrors ci-rocksdb-secondary-checkpoint.yml — same registry, tagging,
+# and Trivy gate. The image surface is tiny (~10MB alpine + util-linux).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'images/node-terminal/**'
+      - '.github/workflows/ci-node-terminal-image.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'images/node-terminal/**'
+      - '.github/workflows/ci-node-terminal-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/phoenixtechnam/hosting-platform/node-terminal
+
+jobs:
+  build:
+    name: Build + Scan + Push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: images/node-terminal
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Tiny image — cache hits are essentially the apk add layer.
+          cache-from: type=gha,scope=node-terminal
+          cache-to: type=gha,mode=max,scope=node-terminal
+
+      # Smoke-test: nsenter must be present and runnable from PATH.
+      - name: Smoke test (nsenter --version)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --rm --entrypoint=/bin/sh \
+            ${{ fromJSON(steps.meta.outputs.json).tags[0] }} \
+            -c "command -v nsenter && nsenter --version"
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: 'CRITICAL,HIGH'
+          # Image is internal-only (admin-only privileged pod, ephemeral)
+          # and only ships util-linux/bash from a pinned alpine base.
+          # Advisory mode keeps the build green; findings surface in
+          # GitHub Security.
+          exit-code: '0'
+
+      - name: Upload Trivy results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
