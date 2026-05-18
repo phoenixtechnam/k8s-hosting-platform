@@ -1,0 +1,189 @@
+# security-probe — read-only host posture probe.
+#
+# One pod per node. Every 60s it:
+#   1. parses /etc/ssh/sshd_config (+ drop-in dir + Include),
+#   2. enumerates /sys/class/net for mesh interfaces (wt0,
+#      tailscale0, wg0) and reports peer counts via WireGuard
+#      proc (when present),
+#   3. samples /proc/net/nf_conntrack for recent denies,
+#   4. reads /etc/os-release, /proc/sys/kernel/osrelease,
+#      /proc/1 boot time, presence of fail2ban/sshguard/
+#      unattended-upgrades binaries,
+#   5. WRITES exactly ONE ConfigMap (security-probe-<node>) in
+#      platform-system with the JSON snapshot in data.snapshot.
+#
+# Security posture:
+#   * ALL mounts are readOnly: true.
+#   * capabilities.drop: [ALL]; nothing added.
+#   * runAsNonRoot is false (uid 0) ONLY because /etc/ssh/
+#     sshd_config and /proc/sys/kernel/* are root-readable on
+#     most distros; we cannot run as non-root and still read
+#     them. allowPrivilegeEscalation: false enforces no setuid.
+#   * privileged: false. hostNetwork: false. hostPID: false.
+#     hostIPC: false. No /var/run/docker.sock, no kubeconfig.
+#   * readOnlyRootFilesystem: true so container can't drop
+#     unintended files even if compromised.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: security-probe
+  namespace: platform-system
+  labels:
+    app: security-probe
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  selector:
+    matchLabels:
+      app: security-probe
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: security-probe
+    spec:
+      serviceAccountName: security-probe
+      # Tolerate control-plane and platform taints — the probe
+      # must cover every node.
+      tolerations:
+        - operator: Exists
+      priorityClassName: system-node-critical
+      containers:
+        - name: probe
+          image: ghcr.io/phoenixtechnam/hosting-platform/security-probe:latest # {"$imagepolicy": "flux-system:security-probe"}
+          imagePullPolicy: Always
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Loop interval (seconds). Default 60 in binary.
+            - name: PROBE_INTERVAL_SECONDS
+              value: "60"
+          ports:
+            - name: healthz
+              containerPort: 8082
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+          securityContext:
+            capabilities:
+              drop: ["ALL"]
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 5m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 96Mi
+          volumeMounts:
+            # Narrowed from /etc/ssh (Directory) to the specific files
+            # we read. Excludes ssh_host_*_key private keys from the
+            # container surface entirely — defense-in-depth even though
+            # the binary never opens them.
+            - name: etc-sshd-config
+              mountPath: /host/etc/ssh/sshd_config
+              readOnly: true
+            - name: etc-sshd-config-dir
+              mountPath: /host/etc/ssh/sshd_config.d
+              readOnly: true
+            - name: etc-os-release
+              mountPath: /host/etc/os-release
+              readOnly: true
+            - name: proc-sys-kernel-osrelease
+              mountPath: /host/proc/sys/kernel/osrelease
+              readOnly: true
+            # /proc/net narrowed to the two files the probe reads.
+            # Excludes /proc/net/tcp, /proc/net/udp, /proc/net/arp etc.
+            # which would expose tenant connection state cluster-wide.
+            - name: proc-net-conntrack
+              mountPath: /host/proc/net/nf_conntrack
+              readOnly: true
+            - name: proc-net-wireguard
+              mountPath: /host/proc/net/wireguard
+              readOnly: true
+            - name: proc-stat
+              mountPath: /host/proc/stat
+              readOnly: true
+            - name: sys-class-net
+              mountPath: /host/sys/class/net
+              readOnly: true
+            - name: usr-sbin
+              mountPath: /host/usr/sbin
+              readOnly: true
+            - name: usr-bin
+              mountPath: /host/usr/bin
+              readOnly: true
+            - name: etc-hosting-platform
+              mountPath: /host/etc/hosting-platform
+              readOnly: true
+      volumes:
+        - name: etc-sshd-config
+          hostPath:
+            path: /etc/ssh/sshd_config
+            type: FileOrCreate
+        - name: etc-sshd-config-dir
+          hostPath:
+            path: /etc/ssh/sshd_config.d
+            type: DirectoryOrCreate
+        - name: etc-os-release
+          hostPath:
+            path: /etc/os-release
+            type: File
+        - name: proc-sys-kernel-osrelease
+          hostPath:
+            path: /proc/sys/kernel/osrelease
+            type: File
+        - name: proc-net-conntrack
+          hostPath:
+            path: /proc/net/nf_conntrack
+            type: FileOrCreate
+        - name: proc-net-wireguard
+          hostPath:
+            path: /proc/net/wireguard
+            type: FileOrCreate
+        - name: proc-stat
+          hostPath:
+            path: /proc/stat
+            type: File
+        - name: sys-class-net
+          hostPath:
+            path: /sys/class/net
+            type: Directory
+        - name: usr-sbin
+          hostPath:
+            path: /usr/sbin
+            type: DirectoryOrCreate
+        - name: usr-bin
+          hostPath:
+            path: /usr/bin
+            type: DirectoryOrCreate
+        - name: etc-hosting-platform
+          hostPath:
+            path: /etc/hosting-platform
+            type: DirectoryOrCreate

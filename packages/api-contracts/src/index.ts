@@ -91,3 +91,4 @@ export * from './mail-snapshot.js';
 export * from './mail-archive.js';
 export * from './mail-placement.js';
 export * from './mail-health.js';
+export * from './security-hardening.js';
