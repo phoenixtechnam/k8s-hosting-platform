@@ -9,6 +9,7 @@ import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview, useIngressBaseDomain } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
+import { useEmailDomains } from '@/hooks/use-email';
 import { useDeployments } from '@/hooks/use-deployments';
 import { useCustomDeployments } from '@/hooks/use-custom-deployments';
 import { useCatalog } from '@/hooks/use-catalog';
@@ -610,6 +611,100 @@ function MigrateDnsModal({ domainId, currentGroupId, groups, migrateDns, onClose
   );
 }
 
+// ─── Managed Webmail Row (read-only) ────────────────────────────────────────
+//
+// 2026-05-18: surfaces the platform-managed `webmail.<domain>` Ingress
+// on the Routing tab as a non-editable row. Only renders when the
+// matching email_domains row has `webmailEnabled === 1`. The route
+// itself is created by toggling per-domain webmail on the Email tab —
+// editing it from this page would be confusing (it isn't a
+// user-configurable ingress route).
+
+interface ManagedWebmailRowProps {
+  readonly tenantId: string;
+  readonly domainId: string;
+}
+
+function ManagedWebmailRow({ tenantId, domainId }: ManagedWebmailRowProps) {
+  const { data: emailDomainsData } = useEmailDomains(tenantId);
+  const ed = emailDomainsData?.data?.find((row) => row.domainId === domainId);
+
+  if (!ed || ed.webmailEnabled !== 1) {
+    return null;
+  }
+
+  const hostname = `webmail.${ed.domainName}`;
+  const status = ed.webmailStatus ?? 'pending';
+  const statusBadge = (() => {
+    switch (status) {
+      case 'ready':
+        return {
+          label: 'Ready',
+          cls: 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300',
+          icon: <CheckCircle size={12} />,
+        };
+      case 'ready_no_tls':
+        return {
+          label: 'Ready (no TLS yet)',
+          cls: 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300',
+          icon: <AlertCircle size={12} />,
+        };
+      case 'failed':
+        return {
+          label: 'Failed',
+          cls: 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300',
+          icon: <AlertCircle size={12} />,
+        };
+      case 'pending':
+      default:
+        return {
+          label: 'Provisioning…',
+          cls: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+          icon: <Loader2 size={12} className="animate-spin" />,
+        };
+    }
+  })();
+
+  return (
+    <div
+      className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 px-4 py-3 opacity-90"
+      data-testid="managed-webmail-row"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300">
+            <Lock size={14} />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-gray-700 dark:text-gray-200 truncate" data-testid="managed-webmail-hostname">
+                {hostname}
+              </span>
+              <span className="inline-flex items-center rounded bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 text-xs text-gray-600 dark:text-gray-300">
+                managed
+              </span>
+            </div>
+            <div className="text-xs text-gray-500 dark:text-gray-400">
+              Platform-managed webmail Ingress — toggle on the Email tab.
+            </div>
+          </div>
+        </div>
+        <span
+          className={clsx(
+            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap',
+            statusBadge.cls,
+          )}
+          data-testid="managed-webmail-status"
+          title={ed.webmailStatusMessage ?? statusBadge.label}
+        >
+          {statusBadge.icon}
+          {statusBadge.label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // ─── Routing Tab ─────────────────────────────────────────────────────────────
 
 function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
@@ -726,6 +821,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           <p>Add routes for hostnames that resolve to the platform. Assign each to a deployed workload.</p>
         )}
       </div>
+
+      {/* 2026-05-18: read-only "Webmail" row surfaces the
+          platform-managed `webmail.<domain>` Ingress when the tenant
+          has opted into the per-domain webmail subdomain. Greyed out
+          + not interactive — the route is created/destroyed by
+          toggling Email → Settings → "Enable per-domain webmail",
+          not by editing rows here. Provisioning status badge mirrors
+          email_domains.webmail_status. */}
+      <ManagedWebmailRow tenantId={tenantId} domainId={domainId} />
 
       {isLoading ? (
         <div className="flex items-center gap-2 py-4">
