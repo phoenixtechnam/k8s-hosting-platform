@@ -806,6 +806,30 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // 2026-05-18: webmail feature-visibility CSS reconciler.
+        // Reads platform_settings.webmail_show_{contacts,calendar,files}
+        // + writes the `mail/webmail-feature-overrides` ConfigMap +
+        // stamps Bulwark/Roundcube Deployment annotations so rolling
+        // restarts pick up CSS content changes. 5-min tick; PATCH
+        // /admin/webmail-settings also triggers an immediate pass
+        // inline. Non-blocking on failure.
+        try {
+          const { startWebmailFeatureCssReconciler } = await import(
+            './modules/webmail-feature-css/scheduler.js'
+          );
+          const featureCssHandle = startWebmailFeatureCssReconciler(
+            app.db,
+            { core: k8sForImapsync.core, apps: k8sForImapsync.apps },
+            app.log,
+          );
+          app.addHook('onClose', () => featureCssHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'webmail-feature-css: scheduler start failed (non-blocking)',
+          );
+        }
+
         // 2026-05-16: Roundcube DB password self-healer. If the
         // password in `mail/roundcube-secrets.ROUNDCUBEMAIL_DB_PASSWORD`
         // drifts from what's set on the `roundcube` Postgres role,

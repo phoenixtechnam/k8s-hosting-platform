@@ -38,6 +38,12 @@ resources:
   # BULWARK_JWT_AUTH_SECRET key MUST equal platform-api's
   # WEBMAIL_JWT_SECRET (bootstrap.sh generates one shared value).
   - bulwark/
+  # 2026-05-18: webmail feature-visibility ConfigMap. Roundcube +
+  # Bulwark Deployments mount this CM unconditionally; without the
+  # ConfigMap their volume mounts fail and the Pods never start.
+  # platform-api's webmail-feature-css reconciler is the
+  # authoritative writer (see ADR-039).
+  - ../../base/mail-feature-css
   # Cross-namespace NetworkPolicy so Stalwart (mail ns) can reach
   # Postgres (platform ns). Lives at the overlay root, not under
   # stalwart/, because it targets the platform namespace and the

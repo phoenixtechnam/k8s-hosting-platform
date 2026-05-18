@@ -23,6 +23,15 @@ export const updateWebmailSettingsSchema = z.object({
   // tokens for. The backend already maps `roundcube` → `?_task=login&_jwt=`
   // and `bulwark` → `/_impersonate?token=` in generateWebmailToken.
   defaultWebmailEngine: webmailEngineSchema.optional(),
+  // 2026-05-18: Webmail feature visibility — three independent flags
+  // that hide the matching tab/icon in the webmail UI via CSS. The
+  // underlying Stalwart DAV endpoints stay reachable (DAV clients
+  // like Thunderbird and iOS continue working) — this is UI-only.
+  // All default to false (hidden) so the fresh-install experience
+  // is mail-only.
+  webmailShowContacts: z.boolean().optional(),
+  webmailShowCalendar: z.boolean().optional(),
+  webmailShowFiles: z.boolean().optional(),
 });
 
 export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSchema>;
@@ -32,6 +41,12 @@ export const webmailSettingsResponseSchema = z.object({
   mailServerHostname: z.string().optional(),
   emailSendRateLimitDefault: z.number().nullable().optional(),
   defaultWebmailEngine: webmailEngineSchema,
+  // 2026-05-18 (see updateWebmailSettingsSchema). Always present in
+  // the response so the admin UI can render the toggle state
+  // deterministically; backend coerces unset keys to false.
+  webmailShowContacts: z.boolean(),
+  webmailShowCalendar: z.boolean(),
+  webmailShowFiles: z.boolean(),
 });
 
 export type WebmailSettingsResponse = z.infer<typeof webmailSettingsResponseSchema>;

@@ -219,6 +219,35 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
       }
     }
 
+    // 2026-05-18: if any webmail feature-visibility flag was changed,
+    // re-render the override CSS ConfigMap + stamp the Deployments so
+    // a rolling restart picks the new content up. Synchronous because
+    // it's fast (1 ConfigMap PATCH + 2 Deployment PATCHes ≈ 500 ms);
+    // the actual Pod restart is async in kube. The 5-min scheduler
+    // recovers from any drift, so a failure here just delays — never
+    // blocks — convergence.
+    const featureFlagTouched =
+      parsed.data.webmailShowContacts !== undefined
+      || parsed.data.webmailShowCalendar !== undefined
+      || parsed.data.webmailShowFiles !== undefined;
+    if (k8s && featureFlagTouched) {
+      try {
+        const { reconcileWebmailFeatureCss } = await import(
+          '../webmail-feature-css/reconciler.js'
+        );
+        await reconcileWebmailFeatureCss(
+          app.db,
+          { core: k8s.core, apps: k8s.apps },
+          app.log,
+        );
+      } catch (err) {
+        app.log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          'webmail-feature-css: PATCH-triggered reconcile failed (5-min scheduler will retry)',
+        );
+      }
+    }
+
     // ADR-039 Phase 10 (rev. 2026-05-18): when the operator flips the
     // webmail engine, run the actual cluster-side work in the
     // task-center so the admin UI gets a progress modal with the 5

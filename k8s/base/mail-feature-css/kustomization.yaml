@@ -1,0 +1,22 @@
+# Webmail feature-visibility CSS overrides ConfigMap.
+#
+# Overlays include this module via:
+#   resources:
+#     - ../../base/mail-feature-css
+#
+# Dev/staging/production all need it because Roundcube + Bulwark
+# Deployments reference the ConfigMap unconditionally. Without the
+# ConfigMap their volume mounts would fail and the Pods would never
+# start.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - webmail-feature-overrides-cm.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hosting-platform
+      app.kubernetes.io/component: webmail

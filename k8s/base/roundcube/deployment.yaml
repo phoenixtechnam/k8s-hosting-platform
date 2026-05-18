@@ -7,6 +7,15 @@ metadata:
     app: roundcube
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: webmail
+  annotations:
+    # 2026-05-18: Flux SSA merge mode lets platform-api stamp
+    # spec.template.metadata.annotations[platform.phoenix-host.net/feature-css-hash]
+    # (set by webmail-feature-css reconciler) without Flux reverting
+    # it on the next sync. Without this annotation Flux would
+    # overwrite the pod-template annotation every ~60s, preventing
+    # rolling restarts when the feature-visibility CSS changes —
+    # the same arrangement Bulwark already has.
+    kustomize.toolkit.fluxcd.io/ssa: Merge
 spec:
   # Cut 3 (2026-05-04): replicas removed from manifest — owned by the
   # platform-storage-policy reconciler. Apply HA scales Roundcube to
@@ -102,6 +111,19 @@ spec:
                 cp -f /branding-src/branding.css /var/www/html/public_html/branding/branding.css
                 cp -f /branding-src/logo.svg /var/www/html/public_html/branding/logo.svg
                 cp -f /branding-src/platform_branding.php /var/www/html/plugins/platform_branding/platform_branding.php
+                # 2026-05-18: webmail feature-visibility CSS. The
+                # roundcube-overrides.css key in the
+                # webmail-feature-overrides ConfigMap is filled by
+                # platform-api's reconciler based on platform_settings
+                # webmail_show_{contacts,calendar,files}. Append it to
+                # branding.css so it gets injected on every page via
+                # the platform_branding plugin's existing add_header
+                # hook. Empty file = upstream UI ships unchanged.
+                if [ -f /feature-overrides/roundcube-overrides.css ]; then
+                  echo "" >> /var/www/html/public_html/branding/branding.css
+                  cat /feature-overrides/roundcube-overrides.css >> /var/www/html/public_html/branding/branding.css
+                  echo "[branding] feature-css overrides appended ($(wc -c < /feature-overrides/roundcube-overrides.css) bytes)"
+                fi
                 chown -R www-data:www-data /var/www/html/public_html/branding /var/www/html/plugins/platform_branding 2>/dev/null || true
                 echo "[branding] assets + plugin installed"
               ) &
@@ -220,6 +242,14 @@ spec:
               mountPath: /var/roundcube/config/branding.inc.php
               subPath: branding.inc.php
               readOnly: true
+            # 2026-05-18: webmail feature-visibility CSS, written by
+            # platform-api's webmail-feature-css reconciler. Appended
+            # to /var/www/html/public_html/branding/branding.css by
+            # the wrapper script so the platform_branding plugin's
+            # existing <link> tag picks up the hide rules.
+            - name: feature-overrides
+              mountPath: /feature-overrides
+              readOnly: true
           resources:
             requests:
               cpu: "50m"
@@ -303,3 +333,11 @@ spec:
             items:
               - key: branding.inc.php
                 path: branding.inc.php
+        # 2026-05-18: webmail feature-visibility CSS overrides.
+        # Reconciled by platform-api (see ADR-039 +
+        # backend/src/modules/webmail-feature-css/). Empty default
+        # ships unchanged upstream UI.
+        - name: feature-overrides
+          configMap:
+            name: webmail-feature-overrides
+            optional: false

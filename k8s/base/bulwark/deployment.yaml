@@ -74,6 +74,64 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      # 2026-05-18: webmail feature-visibility CSS injection. Bulwark's
+      # SPA <head> is React-rendered and there's no env-driven custom-
+      # CSS hook in the v1.6.x image, so we append our overrides to the
+      # bundled Tailwind CSS files that the SPA already loads. This
+      # initContainer:
+      #   1. Copies the pristine /app/.next/static/css/*.css from the
+      #      image's read-only layer to an emptyDir.
+      #   2. Appends the content of
+      #      /feature-overrides/bulwark-overrides.css (mounted from the
+      #      platform-managed ConfigMap) to every .css file in the dir.
+      #   3. The main container mounts the same emptyDir at
+      #      /app/.next/static/css, shadowing the image's pristine dir.
+      #
+      # When platform-api flips one of the feature flags, the reconciler
+      # rewrites the ConfigMap content + stamps a
+      # `platform.phoenix-host.net/feature-css-hash` annotation on this
+      # Deployment's pod template, which triggers a rolling restart that
+      # re-runs this initContainer with the new ConfigMap content.
+      initContainers:
+        - name: feature-css-injector
+          image: ghcr.io/bulwarkmail/webmail@sha256:4ee0f0b505287555f814654fec12bd07c8bde098ee80a92b2dc13d556f576431
+          imagePullPolicy: IfNotPresent
+          # busybox-style sh is available in the Bulwark image (Alpine
+          # base). The script is intentionally tiny + has no error
+          # tolerance for the original-CSS copy (if that fails the Pod
+          # would serve a broken UI — fail-fast). The append step is
+          # tolerant of an empty override file (cat /dev/null → no-op).
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "[feature-css-injector] copying pristine CSS to overlay…"
+              cp /app/.next/static/css/*.css /css-overlay/
+              if [ -f /feature-overrides/bulwark-overrides.css ]; then
+                echo "[feature-css-injector] appending bulwark-overrides.css to each CSS file"
+                # Bulwark concatenates all .css under that dir into the
+                # request response; appending to every file makes the
+                # override unconditional regardless of which chunk a
+                # given page loads.
+                for f in /css-overlay/*.css; do
+                  echo "" >> "$f"
+                  cat /feature-overrides/bulwark-overrides.css >> "$f"
+                done
+                echo "[feature-css-injector] override applied ($(wc -c < /feature-overrides/bulwark-overrides.css) bytes)"
+              else
+                echo "[feature-css-injector] no overrides ConfigMap mount — Pod will serve upstream UI"
+              fi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: css-overlay
+              mountPath: /css-overlay
+            - name: feature-overrides
+              mountPath: /feature-overrides
+              readOnly: true
       containers:
         - name: bulwark
           # ghcr.io/bulwarkmail/webmail@sha256:4ee0f0b5... — Bulwark
@@ -154,6 +212,13 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+            # 2026-05-18: shadow /app/.next/static/css with the
+            # initContainer-prepared CSS (pristine bundle + appended
+            # feature-visibility overrides). The image's layer is read-
+            # only; this mount replaces it for the running Pod.
+            - name: css-overlay
+              mountPath: /app/.next/static/css
+              readOnly: true
           resources:
             requests:
               cpu: "50m"
@@ -183,3 +248,16 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: bulwark-data
+        # 2026-05-18: ephemeral scratch space the initContainer
+        # populates with the modified CSS. Replaced on every Pod start.
+        - name: css-overlay
+          emptyDir:
+            sizeLimit: 4Mi
+        # Webmail feature-visibility ConfigMap, mounted into the
+        # initContainer only. Reconciled by platform-api's
+        # webmail-feature-css scheduler (see ADR-039 + the module at
+        # backend/src/modules/webmail-feature-css/).
+        - name: feature-overrides
+          configMap:
+            name: webmail-feature-overrides
+            optional: false

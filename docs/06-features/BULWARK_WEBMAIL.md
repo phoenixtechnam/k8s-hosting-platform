@@ -215,6 +215,47 @@ bump:
    `./scripts/integration-bulwark-e2e.sh`.
 6. Commit + push; Flux rolls staging; manual stable promotion.
 
+## Feature visibility (2026-05-18)
+
+Bulwark's SPA ships Mail + Contacts + Calendar + Files tabs.
+Platform-wide `platform_settings` flags hide the latter three from
+the webmail UI **without touching the underlying server**:
+
+- `webmail_show_contacts`  (default: `false`)
+- `webmail_show_calendar`  (default: `false`)
+- `webmail_show_files`     (default: `false`)
+
+Mechanism: `backend/src/modules/webmail-feature-css/` computes a CSS
+blob per engine, writes `mail/webmail-feature-overrides` ConfigMap.
+Bulwark's pod template has a hash annotation stamped on it so a
+content change triggers a rolling restart; the initContainer copies
+the bundled Tailwind CSS to an emptyDir and appends our hide-rules,
+which the main container then serves at `/_next/static/css/*.css`.
+
+The rules use ends-with attribute selectors on the rendered nav
+`<a>` tags (`a[href$="/contacts"]`, `a[href$="/calendar"]`,
+`a[href$="/files"]`) so locale-prefixed routes (`/en/contacts`, …)
+are also covered. Stalwart's CardDAV / CalDAV / WebDAV endpoints
+stay reachable — DAV clients (Thunderbird, iOS, macOS) keep
+working regardless of the toggle.
+
+Operators flip a feature via admin → Email → Webmail settings;
+PATCH triggers an inline reconcile, and the 5-min scheduler covers
+drift recovery. ~30 s rolling-restart pause before the change is
+visible in the webmail UI.
+
+**Fresh-install caveat**: the base ConfigMap (`k8s/base/mail-feature-css/`)
+ships with empty CSS keys. On a brand-new cluster, the webmail Pods
+boot first (showing upstream Contacts/Calendar/Files tabs visible)
+and then platform-api's reconciler fires its first tick — writes the
+default hide-rules to the ConfigMap, stamps the pod-template hash
+annotation, kube performs a rolling restart, and the tabs disappear.
+The window is ~30-90 s on a cold start. Operators should not file
+support tickets for tabs being visible immediately after a fresh
+install — wait one full reconcile cycle.
+
+E2E: `./scripts/integration-webmail-feature-toggle.sh`.
+
 ## Known limitations (v1)
 
 - **No per-tenant vanity webmail domains.** All tenants share the

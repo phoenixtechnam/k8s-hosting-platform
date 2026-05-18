@@ -1,0 +1,49 @@
+# Webmail feature-visibility CSS overrides.
+#
+# 2026-05-18: this ConfigMap carries the CSS that hides the Contacts /
+# Calendar / Files nav entries in the webmail UIs. The data keys are
+# stubs here — platform-api's `webmail-feature-css` reconciler is the
+# authoritative writer:
+#
+#   1. Reads platform_settings.webmail_show_{contacts,calendar,files}.
+#   2. Computes the CSS body per engine (Bulwark + Roundcube).
+#   3. PATCHes this ConfigMap with the computed content.
+#   4. Stamps a `platform.phoenix-host.net/feature-css-hash` annotation
+#      on both Deployments' `spec.template.metadata.annotations` so a
+#      rolling restart picks up content changes.
+#
+# Flux is told to skip reconciling the `data` keys (kustomize.toolkit
+# .fluxcd.io/reconcile: disabled) — without this annotation Flux would
+# re-apply the empty stubs every minute, undoing the reconciler's
+# writes.
+#
+# The Deployments mount this ConfigMap:
+#   - Bulwark: via an initContainer that appends bulwark-overrides.css
+#     to the bundled Tailwind CSS files in /app/.next/static/css/.
+#   - Roundcube: via the existing wrapper-script entry point, which
+#     appends roundcube-overrides.css to /var/www/html/branding/branding.css.
+#
+# Stalwart DAV endpoints (CardDAV / CalDAV / WebDAV) are NOT affected
+# by this — native DAV clients (Thunderbird, iOS, macOS Contacts/
+# Calendar) keep working regardless of the toggles. See ADR-039 +
+# docs/06-features/BULWARK_WEBMAIL.md for the visibility contract.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webmail-feature-overrides
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+    app.kubernetes.io/managed-by: platform-api-webmail-feature-css
+  annotations:
+    # Flux will not reconcile the .data keys — platform-api owns them.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
+data:
+  # Empty stubs. Reconciler fills these on the first tick (90s after
+  # platform-api boot, or immediately on PATCH /admin/webmail-settings).
+  # An empty body means "no override CSS applied" — the upstream UI
+  # ships unchanged. Default platform_settings (`show_*=false`) will
+  # cause the reconciler to populate these with hide-rules.
+  bulwark-overrides.css: ""
+  roundcube-overrides.css: ""

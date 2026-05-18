@@ -28,6 +28,10 @@ resources:
   # `roundcube-secrets` Secret + the `roundcube` PG database/role on
   # the platform CNPG cluster (scripts/bootstrap.sh:create_roundcube_db).
   - roundcube/
+  # 2026-05-18: webmail feature-visibility ConfigMap. Mounted by the
+  # roundcube Pod (and the bulwark Pod when production opts in). The
+  # data keys are reconciler-owned — Flux is told to skip them.
+  - ../../base/mail-feature-css
   # Cross-namespace NetworkPolicy so mail-namespace pods (Stalwart,
   # Roundcube, future MTA components) can reach platform Postgres.
   - allow-mail-to-postgres-netpol.yaml

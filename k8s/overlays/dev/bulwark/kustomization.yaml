@@ -27,6 +27,9 @@ namespace: mail
 
 resources:
   - ../../../base/bulwark
+  # 2026-05-18: webmail feature-visibility ConfigMap. Mounted by the
+  # Bulwark Pod's initContainer; without it the volume reference fails.
+  - ../../../base/mail-feature-css
   - secret.yaml
   - ingress.yaml
   - netpol.yaml

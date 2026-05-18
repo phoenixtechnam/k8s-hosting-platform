@@ -21,6 +21,9 @@ namespace: mail
 
 resources:
   - ../../../base/roundcube
+  # 2026-05-18: webmail feature-visibility ConfigMap. Mounted by the
+  # Roundcube Pod; without it the volume reference fails on Pod start.
+  - ../../../base/mail-feature-css
   - secret.yaml
   - ingress.yaml
 

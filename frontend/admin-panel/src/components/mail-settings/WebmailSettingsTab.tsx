@@ -56,6 +56,12 @@ export default function WebmailSettingsTab() {
 
   const [defaultWebmailUrl, setDefaultWebmailUrl] = useState('');
   const [engine, setEngine] = useState<WebmailEngine>('roundcube');
+  // 2026-05-18: webmail feature-visibility toggles. Default to hidden
+  // (false) on a fresh install so the OOTB experience is mail-only.
+  // Stalwart's DAV endpoints stay reachable — DAV clients keep working.
+  const [showContacts, setShowContacts] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   // taskId returned by the PATCH response when the engine changes. The
@@ -69,12 +75,18 @@ export default function WebmailSettingsTab() {
     if (!settings) return;
     setDefaultWebmailUrl(settings.defaultWebmailUrl ?? '');
     setEngine(settings.defaultWebmailEngine ?? 'roundcube');
+    setShowContacts(settings.webmailShowContacts ?? false);
+    setShowCalendar(settings.webmailShowCalendar ?? false);
+    setShowFiles(settings.webmailShowFiles ?? false);
   }, [settings]);
 
   const urlChanged =
     defaultWebmailUrl.trim().length > 0
     && defaultWebmailUrl !== (settings?.defaultWebmailUrl ?? '');
   const engineChanged = engine !== (settings?.defaultWebmailEngine ?? 'roundcube');
+  const contactsChanged = showContacts !== (settings?.webmailShowContacts ?? false);
+  const calendarChanged = showCalendar !== (settings?.webmailShowCalendar ?? false);
+  const filesChanged = showFiles !== (settings?.webmailShowFiles ?? false);
 
   const handleSave = (e: FormEvent) => {
     e.preventDefault();
@@ -84,9 +96,15 @@ export default function WebmailSettingsTab() {
     const payload: {
       defaultWebmailUrl?: string;
       defaultWebmailEngine?: WebmailEngine;
+      webmailShowContacts?: boolean;
+      webmailShowCalendar?: boolean;
+      webmailShowFiles?: boolean;
     } = {};
     if (urlChanged) payload.defaultWebmailUrl = defaultWebmailUrl.trim();
     if (engineChanged) payload.defaultWebmailEngine = engine;
+    if (contactsChanged) payload.webmailShowContacts = showContacts;
+    if (calendarChanged) payload.webmailShowCalendar = showCalendar;
+    if (filesChanged) payload.webmailShowFiles = showFiles;
 
     if (Object.keys(payload).length === 0) {
       setSaved(true);
@@ -234,6 +252,71 @@ export default function WebmailSettingsTab() {
           webmail IngressRoute is reconciled to point at whichever engine
           is active.
         </p>
+      </div>
+
+      {/* 2026-05-18: webmail feature-visibility toggles.
+          Stalwart serves CardDAV / CalDAV / WebDAV regardless of these
+          flags — they only control whether the corresponding nav entry
+          appears in the webmail UI (Bulwark + Roundcube). DAV clients
+          (Thunderbird, iOS, macOS) keep working in both states. Flipping
+          a toggle triggers a rolling restart of the webmail Deployments
+          so the new CSS is applied; expect a ~30 s reload before the
+          change is visible in webmail tabs. */}
+      <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+          Webmail features
+        </h3>
+        <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+          Hide or show secondary tabs in the webmail UI. Stalwart&apos;s
+          CalDAV / CardDAV / WebDAV endpoints stay reachable for native
+          clients regardless of these toggles &mdash; flipping a switch
+          rolls the webmail Pods (~30 s).
+        </p>
+        <div className="mt-3 space-y-2">
+          {([
+            {
+              key: 'contacts' as const,
+              label: 'Contacts',
+              hint: 'Address book tab in Bulwark + Roundcube.',
+              value: showContacts,
+              setValue: setShowContacts,
+            },
+            {
+              key: 'calendar' as const,
+              label: 'Calendar',
+              hint: 'Calendar tab in Bulwark. Roundcube ships no calendar plugin.',
+              value: showCalendar,
+              setValue: setShowCalendar,
+            },
+            {
+              key: 'files' as const,
+              label: 'Files',
+              hint: 'WebDAV files tab in Bulwark. Roundcube has no files feature.',
+              value: showFiles,
+              setValue: setShowFiles,
+            },
+          ]).map((row) => (
+            <label
+              key={row.key}
+              className="flex items-start gap-3 cursor-pointer"
+              data-testid={`webmail-feature-${row.key}`}
+            >
+              <input
+                type="checkbox"
+                checked={row.value}
+                onChange={(e) => row.setValue(e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500"
+                data-testid={`webmail-feature-${row.key}-input`}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-gray-900 dark:text-gray-100">
+                  Show <span className="font-medium">{row.label}</span> in webmail
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">{row.hint}</div>
+              </div>
+            </label>
+          ))}
+        </div>
       </div>
 
       <div className="flex items-center gap-3">

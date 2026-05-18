@@ -197,16 +197,58 @@ export async function getDefaultWebmailEngine(db: Database): Promise<WebmailEngi
   return 'bulwark';
 }
 
+// 2026-05-18: webmail feature visibility — three independent toggles
+// (Contacts / Calendar / Files). All default to **hidden** (false) so
+// the fresh-install UX is mail-only. The webmail-feature-css
+// reconciler reads these and renders a CSS file into the
+// `mail/webmail-feature-overrides` ConfigMap which Roundcube +
+// Bulwark mount + apply at startup. DAV endpoints are NOT affected —
+// this is purely the webmail-UI surface.
+const WEBMAIL_SHOW_CONTACTS_KEY = 'webmail_show_contacts';
+const WEBMAIL_SHOW_CALENDAR_KEY = 'webmail_show_calendar';
+const WEBMAIL_SHOW_FILES_KEY = 'webmail_show_files';
+
+export interface WebmailFeatureVisibility {
+  readonly webmailShowContacts: boolean;
+  readonly webmailShowCalendar: boolean;
+  readonly webmailShowFiles: boolean;
+}
+
+function parseBoolSetting(value: string | null): boolean {
+  // Unset / empty / anything that isn't literal "true" → false. The
+  // strict comparison guards against accidental "True" / "1" / "yes"
+  // drift between admin-panel writes (always "true"/"false") and any
+  // future migration script. Default is "feature hidden".
+  return value === 'true';
+}
+
+export async function getWebmailFeatureVisibility(
+  db: Database,
+): Promise<WebmailFeatureVisibility> {
+  const [c, cal, f] = await Promise.all([
+    getSetting(db, WEBMAIL_SHOW_CONTACTS_KEY),
+    getSetting(db, WEBMAIL_SHOW_CALENDAR_KEY),
+    getSetting(db, WEBMAIL_SHOW_FILES_KEY),
+  ]);
+  return {
+    webmailShowContacts: parseBoolSetting(c),
+    webmailShowCalendar: parseBoolSetting(cal),
+    webmailShowFiles: parseBoolSetting(f),
+  };
+}
+
 export async function getWebmailSettings(db: Database) {
   const defaultWebmailUrlStored = await getSetting(db, 'default_webmail_url');
   const mailServerHostnameStored = await getSetting(db, 'mail_server_hostname');
   const rateLimitRaw = await getSetting(db, 'email_send_rate_limit_default');
   const emailSendRateLimitDefault = rateLimitRaw ? parseInt(rateLimitRaw, 10) : null;
+  const visibility = await getWebmailFeatureVisibility(db);
   return {
     defaultWebmailUrl: defaultWebmailUrlStored ?? (await defaultWebmailUrl(db)),
     mailServerHostname: mailServerHostnameStored ?? (await defaultMailHostname(db)),
     emailSendRateLimitDefault: Number.isFinite(emailSendRateLimitDefault) ? emailSendRateLimitDefault : null,
     defaultWebmailEngine: await getDefaultWebmailEngine(db),
+    ...visibility,
   };
 }
 
@@ -217,6 +259,9 @@ export async function updateWebmailSettings(
     mailServerHostname?: string;
     emailSendRateLimitDefault?: number | null;
     defaultWebmailEngine?: WebmailEngine;
+    webmailShowContacts?: boolean;
+    webmailShowCalendar?: boolean;
+    webmailShowFiles?: boolean;
   },
 ) {
   if (input.defaultWebmailUrl !== undefined) {
@@ -238,6 +283,20 @@ export async function updateWebmailSettings(
       throw new Error(`Invalid webmail engine: ${input.defaultWebmailEngine}`);
     }
     await setSetting(db, 'default_webmail_engine', input.defaultWebmailEngine);
+  }
+  // 2026-05-18: webmail feature visibility writes. Each flag is
+  // stored as the literal string "true" / "false" so getSetting +
+  // parseBoolSetting round-trip cleanly. The webmail-feature-css
+  // reconciler picks up the change on the next tick (or immediately
+  // via the PATCH route's task-center hook).
+  if (input.webmailShowContacts !== undefined) {
+    await setSetting(db, WEBMAIL_SHOW_CONTACTS_KEY, input.webmailShowContacts ? 'true' : 'false');
+  }
+  if (input.webmailShowCalendar !== undefined) {
+    await setSetting(db, WEBMAIL_SHOW_CALENDAR_KEY, input.webmailShowCalendar ? 'true' : 'false');
+  }
+  if (input.webmailShowFiles !== undefined) {
+    await setSetting(db, WEBMAIL_SHOW_FILES_KEY, input.webmailShowFiles ? 'true' : 'false');
   }
   return getWebmailSettings(db);
 }

@@ -28,6 +28,14 @@ interface UpdateWebmailSettingsInput {
   readonly mailServerHostname?: string;
   readonly emailSendRateLimitDefault?: number | null;
   readonly defaultWebmailEngine?: 'roundcube' | 'bulwark';
+  // 2026-05-18: feature-visibility toggles. All default to false
+  // (hidden) on a fresh install. Flipping any of these triggers a
+  // rolling restart of the webmail Deployments so the
+  // webmail-feature-css initContainer (Bulwark) / wrapper script
+  // (Roundcube) picks up the new ConfigMap content.
+  readonly webmailShowContacts?: boolean;
+  readonly webmailShowCalendar?: boolean;
+  readonly webmailShowFiles?: boolean;
 }
 
 export function useUpdateWebmailSettings() {
