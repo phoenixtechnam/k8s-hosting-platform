@@ -14,6 +14,7 @@
  */
 
 import { Activity, AlertCircle, ExternalLink, Terminal } from 'lucide-react';
+import DrDrillRunsSection from './DrDrillRunsSection';
 
 export default function DrDrillTab() {
   return (
@@ -28,6 +29,8 @@ export default function DrDrillTab() {
           actually recovers.
         </p>
       </header>
+
+      <DrDrillRunsSection />
 
       <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 space-y-3">
         <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">

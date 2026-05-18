@@ -1673,6 +1673,30 @@ export const systemPgDumpSchedules = pgTable('system_pg_dump_schedules', {
 ]);
 export type SystemPgDumpSchedule = typeof systemPgDumpSchedules.$inferSelect;
 
+// ─── DR-bundle Phase 1 — drill execution history (migration 0012) ───────────
+// One row per DR drill execution. CI posts via the webhook route in
+// system-backup/dr-drill-runs.ts; the admin UI reads the most recent 12.
+export const drDrillRuns = pgTable('dr_drill_runs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  status: varchar('status', { length: 16 }).notNull(),
+  trigger: varchar('trigger', { length: 32 }).notNull(),
+  sourceBundleSha256: varchar('source_bundle_sha256', { length: 64 }),
+  secretsRestoredCount: integer('secrets_restored_count'),
+  bundleSizeBytes: bigint('bundle_size_bytes', { mode: 'number' }),
+  durationSeconds: integer('duration_seconds'),
+  failureReason: varchar('failure_reason', { length: 500 }),
+  report: jsonb('report'),
+  runner: varchar('runner', { length: 200 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('dr_drill_runs_started_at_idx').on(table.startedAt),
+  index('dr_drill_runs_status_idx').on(table.status),
+]);
+export type DrDrillRunRow = typeof drDrillRuns.$inferSelect;
+
 // ─── Ingress access control (OIDC + claim rules) ────────────────────────────
 
 export interface IngressClaimRule {

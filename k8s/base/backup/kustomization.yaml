@@ -16,6 +16,10 @@ resources:
   - cluster-state-cronjob.yaml
   - secrets-backup-cronjob.yaml
   - backup-audit-cronjob.yaml
+  # DR-bundle roadmap Phase 0 — differential secrets-audit allowlist.
+  # Empty ConfigMap by default; backend reads + patches the
+  # `allowlist.yaml` data key on writes from the admin UI.
+  - secrets-audit-allowlist.yaml
   # Phase 5 of snapshot-storage overhaul: hostpath-snapshot-cronjob
   # retired. The per-Job rclone streaming pipeline (Phase 4) uploads
   # tenant snapshots directly to the assigned target — no second

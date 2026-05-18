@@ -1,0 +1,162 @@
+name: DR Drill (weekly)
+
+# DR-bundle roadmap, Phase 1.
+#
+# Runs scripts/dr-drill.sh against the most-recent staging secrets-
+# bundle every Monday 04:00 UTC. Operator can also trigger manually
+# via workflow_dispatch. Posts a structured report back to the
+# staging platform-api so the admin DR Drill tab surfaces history.
+#
+# Requires repository secrets:
+#   STAGING_AGE_KEY            operator's age private key (the SAME
+#                              key used to encrypt the staging bundle)
+#   STAGING_DRILL_WEBHOOK_URL  https://admin.staging.phoenix-host.net/
+#                              api/v1/system-backup/dr-drill/runs
+#   STAGING_DRILL_WEBHOOK_TOKEN  long-lived JWT for the drill service
+#                              account (super_admin role, admin panel)
+#   STAGING_BUNDLE_FETCH_PROVIDER  one of: s3 | rclone | scp
+#   STAGING_BUNDLE_FETCH_SRC       source location, e.g. s3://bucket/path
+#                                  or operator@host:/path or rclone:remote/path
+#   STAGING_BUNDLE_FETCH_AUX       optional aux config (e.g. AWS_PROFILE)
+#
+# The provider/source split (rather than a single one-liner shell
+# command) avoids `eval` on a secret value — code execution from a
+# compromised STAGING_BUNDLE_FETCH_* secret is bounded to the fixed
+# fetch command per provider.
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'   # Mondays 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      meta_test:
+        description: 'Self-meta-test: corrupt the bundle to verify the drill catches breakage'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  # issues:write is REQUIRED for the "Open issue on failure" step.
+  # Without it, github.rest.issues.create() returns 403, silently
+  # breaking the failure-notification contract Phase 1 depends on.
+  issues: write
+
+jobs:
+  drill:
+    name: Restore from staging bundle + assert recoverable
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install age + jq + uuid
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y age jq uuid-runtime
+
+      - name: Fetch latest staging bundle
+        env:
+          PROVIDER: ${{ secrets.STAGING_BUNDLE_FETCH_PROVIDER }}
+          SRC: ${{ secrets.STAGING_BUNDLE_FETCH_SRC }}
+          AUX: ${{ secrets.STAGING_BUNDLE_FETCH_AUX }}
+        run: |
+          if [[ -z "$PROVIDER" || -z "$SRC" ]]; then
+            echo "::error::STAGING_BUNDLE_FETCH_PROVIDER + STAGING_BUNDLE_FETCH_SRC required"
+            exit 1
+          fi
+          # Dispatch to a FIXED command per provider — never eval a
+          # secret value (the compromised-secret blast radius would
+          # otherwise be arbitrary code on the runner, including
+          # access to the age key + webhook token).
+          case "$PROVIDER" in
+            s3)
+              # shellcheck disable=SC2086
+              [[ -n "$AUX" ]] && export $AUX
+              aws s3 cp "$SRC" ./bundle.tar.age
+              ;;
+            rclone)
+              # shellcheck disable=SC2086
+              [[ -n "$AUX" ]] && export $AUX
+              rclone copyto "$SRC" ./bundle.tar.age
+              ;;
+            scp)
+              scp -o StrictHostKeyChecking=no "$SRC" ./bundle.tar.age
+              ;;
+            *)
+              echo "::error::Unknown STAGING_BUNDLE_FETCH_PROVIDER='$PROVIDER' (allowed: s3|rclone|scp)"
+              exit 1
+              ;;
+          esac
+          test -s ./bundle.tar.age || { echo "::error::bundle empty or missing"; exit 1; }
+          echo "Bundle size: $(stat -c%s ./bundle.tar.age) bytes"
+
+      - name: Stage age key
+        env:
+          AGE_KEY: ${{ secrets.STAGING_AGE_KEY }}
+        run: |
+          if [[ -z "$AGE_KEY" ]]; then
+            echo "::error::STAGING_AGE_KEY secret not set"
+            exit 1
+          fi
+          printf '%s' "$AGE_KEY" > ./operator-key.txt
+          chmod 0600 ./operator-key.txt
+
+      - name: Run drill
+        env:
+          DR_DRILL_BUNDLE: ./bundle.tar.age
+          DR_DRILL_AGE_KEY: ./operator-key.txt
+          DR_DRILL_REPORT: ./drill-report.json
+          DR_DRILL_WEBHOOK_URL: ${{ secrets.STAGING_DRILL_WEBHOOK_URL }}
+          DR_DRILL_WEBHOOK_TOKEN: ${{ secrets.STAGING_DRILL_WEBHOOK_TOKEN }}
+          DR_DRILL_TRIGGER: ${{ github.event_name == 'schedule' && 'cron' || 'workflow_dispatch' }}
+          DR_DRILL_RUNNER: github-actions/dr-drill@${{ github.run_id }}
+          DR_DRILL_META_TEST: ${{ github.event.inputs.meta_test == 'true' && '1' || '0' }}
+        run: bash scripts/dr-drill.sh
+
+      - name: Upload drill report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drill-report-${{ github.run_id }}
+          path: ./drill-report.json
+          retention-days: 90
+
+      - name: Wipe age key
+        if: always()
+        run: shred -u ./operator-key.txt 2>/dev/null || rm -f ./operator-key.txt
+
+      - name: Open issue on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let report = '(no report file written)';
+            try {
+              report = fs.readFileSync('./drill-report.json', 'utf8');
+            } catch {}
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `DR drill failed — ${new Date().toISOString().slice(0, 10)}`,
+              labels: ['dr-drill-failure', 'priority/high'],
+              body: [
+                '## DR drill failed',
+                '',
+                `**Run:** ${context.runId}`,
+                `**Trigger:** ${context.eventName}`,
+                '',
+                'See [the run page](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ') for full logs.',
+                '',
+                '### Report JSON',
+                '```json',
+                report,
+                '```',
+                '',
+                '### Triage checklist',
+                '- [ ] Reproduce locally: `make dr-drill-local`',
+                '- [ ] Check the failing phase (`decrypt`, `enumerate`, `manifest-parse`, `yaml-validate`)',
+                '- [ ] Compare the failing bundle against the last-known-good in S3',
+                '- [ ] If new Secret added without bundle coverage → fix via Phase 0 audit',
+              ].join('\n'),
+            });
