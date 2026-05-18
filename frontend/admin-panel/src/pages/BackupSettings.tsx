@@ -68,12 +68,18 @@ export default function BackupSettings() {
 
   const configs = response?.data ?? [];
 
+  // Phase 12.5: SSH targets can use key OR password auth. The form
+  // shows whichever the operator picks; the unused field is sent as
+  // null on create so the DB row reflects the operator's choice.
+  const [sshAuthMethod, setSshAuthMethod] = useState<'key' | 'password'>('key');
+
   const [form, setForm] = useState({
     name: '',
     ssh_host: '',
     ssh_port: '22',
     ssh_user: '',
     ssh_key: '',
+    ssh_password: '',
     ssh_path: '/backups',
     s3_endpoint: '',
     s3_bucket: '',
@@ -95,7 +101,7 @@ export default function BackupSettings() {
 
   const resetForm = () => {
     setForm({
-      name: '', ssh_host: '', ssh_port: '22', ssh_user: '', ssh_key: '', ssh_path: '/backups',
+      name: '', ssh_host: '', ssh_port: '22', ssh_user: '', ssh_key: '', ssh_password: '', ssh_path: '/backups',
       s3_endpoint: '', s3_bucket: '', s3_region: 'us-east-1', s3_access_key: '', s3_secret_key: '',
       s3_prefix: '',
       cifs_host: '', cifs_port: '445', cifs_share: '', cifs_user: '', cifs_password: '',
@@ -105,6 +111,7 @@ export default function BackupSettings() {
     setShowForm(false);
     setEditingId(null);
     setChangeSecret(false);
+    setSshAuthMethod('key');
     setDraftResult(null);
   };
 
@@ -117,6 +124,7 @@ export default function BackupSettings() {
       ssh_port: String(config.sshPort ?? 22),
       ssh_user: config.sshUser ?? '',
       ssh_key: '', // always blank — a secret the server never returns
+      ssh_password: '', // always blank — a secret the server never returns
       ssh_path: config.sshPath ?? '/backups',
       s3_endpoint: config.s3Endpoint ?? '',
       s3_bucket: config.s3Bucket ?? '',
@@ -137,6 +145,12 @@ export default function BackupSettings() {
     });
     setEditingId(config.id);
     setChangeSecret(false);
+    // Restore SSH auth method from the existing config — the API
+    // returns booleans `hasSshKey` / `hasSshPassword` (never the
+    // secrets themselves). If neither is set yet, default to 'key'.
+    if (config.storageType === 'ssh') {
+      setSshAuthMethod(config.hasSshPassword && !config.hasSshKey ? 'password' : 'key');
+    }
     setShowForm(true);
     setDraftResult(null);
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -150,7 +164,17 @@ export default function BackupSettings() {
       enabled: true,
     };
     if (storageType === 'ssh') {
-      return { ...base, storage_type: 'ssh' as const, ssh_host: form.ssh_host, ssh_port: Number(form.ssh_port), ssh_user: form.ssh_user, ssh_key: form.ssh_key, ssh_path: form.ssh_path };
+      // Phase 12.5: send whichever auth method the operator picked;
+      // the other field stays undefined so the backend stores NULL.
+      return {
+        ...base,
+        storage_type: 'ssh' as const,
+        ssh_host: form.ssh_host,
+        ssh_port: Number(form.ssh_port),
+        ssh_user: form.ssh_user,
+        ssh_path: form.ssh_path,
+        ...(sshAuthMethod === 'key' ? { ssh_key: form.ssh_key } : { ssh_password: form.ssh_password }),
+      };
     }
     if (storageType === 'cifs') {
       return {
@@ -184,8 +208,18 @@ export default function BackupSettings() {
       payload.ssh_port = Number(form.ssh_port);
       payload.ssh_user = form.ssh_user;
       payload.ssh_path = form.ssh_path;
-      if (changeSecret && form.ssh_key.trim().length > 0) {
-        payload.ssh_key = form.ssh_key;
+      // Phase 12.5: when changing the secret, send whichever auth
+      // method the operator has selected. The OTHER field is sent
+      // explicitly as empty string so the backend can clear the
+      // unused credential (key↔password switch).
+      if (changeSecret) {
+        if (sshAuthMethod === 'key' && form.ssh_key.trim().length > 0) {
+          payload.ssh_key = form.ssh_key;
+          payload.ssh_password = '';
+        } else if (sshAuthMethod === 'password' && form.ssh_password.trim().length > 0) {
+          payload.ssh_password = form.ssh_password;
+          payload.ssh_key = '';
+        }
       }
     } else {
       payload.s3_endpoint = form.s3_endpoint;
@@ -314,25 +348,72 @@ export default function BackupSettings() {
                 <label htmlFor="bc-ssh-path" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Remote Path</label>
                 <input id="bc-ssh-path" className={INPUT_CLASS + ' mt-1'} value={form.ssh_path} onChange={(e) => setForm({ ...form, ssh_path: e.target.value })} required data-testid="bc-ssh-path" />
               </div>
+              {/* Phase 12.5: SSH auth method radio. Switching toggles
+                  the key/password field below. */}
               <div className="sm:col-span-2">
-                <label htmlFor="bc-ssh-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  SSH Private Key
-                  {editingId && (
-                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">(leave blank to keep current)</span>
-                  )}
-                </label>
-                <textarea
-                  id="bc-ssh-key"
-                  rows={4}
-                  className={INPUT_CLASS + ' mt-1 font-mono text-xs disabled:opacity-50'}
-                  value={form.ssh_key}
-                  onChange={(e) => setForm({ ...form, ssh_key: e.target.value })}
-                  required={!editingId}
-                  disabled={!!editingId && !changeSecret}
-                  placeholder={editingId ? '(unchanged)' : '-----BEGIN OPENSSH PRIVATE KEY-----'}
-                  data-testid="bc-ssh-key"
-                />
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Authentication</label>
+                <div className="mt-1 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSshAuthMethod('key')}
+                    className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium border ${sshAuthMethod === 'key' ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300' : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400'}`}
+                    data-testid="bc-ssh-auth-key"
+                  >
+                    SSH key
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSshAuthMethod('password')}
+                    className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium border ${sshAuthMethod === 'password' ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300' : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400'}`}
+                    data-testid="bc-ssh-auth-password"
+                  >
+                    Password
+                  </button>
+                </div>
               </div>
+              {sshAuthMethod === 'key' && (
+                <div className="sm:col-span-2">
+                  <label htmlFor="bc-ssh-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    SSH Private Key
+                    {editingId && (
+                      <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">(leave blank to keep current)</span>
+                    )}
+                  </label>
+                  <textarea
+                    id="bc-ssh-key"
+                    rows={4}
+                    className={INPUT_CLASS + ' mt-1 font-mono text-xs disabled:opacity-50'}
+                    value={form.ssh_key}
+                    onChange={(e) => setForm({ ...form, ssh_key: e.target.value })}
+                    required={!editingId}
+                    disabled={!!editingId && !changeSecret}
+                    placeholder={editingId ? '(unchanged)' : '-----BEGIN OPENSSH PRIVATE KEY-----'}
+                    data-testid="bc-ssh-key"
+                  />
+                </div>
+              )}
+              {sshAuthMethod === 'password' && (
+                <div className="sm:col-span-2">
+                  <label htmlFor="bc-ssh-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    SSH Password
+                    {editingId && (
+                      <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">(leave blank to keep current)</span>
+                    )}
+                  </label>
+                  <input
+                    id="bc-ssh-password"
+                    type="password"
+                    autoComplete="new-password"
+                    className={INPUT_CLASS + ' mt-1 disabled:opacity-50'}
+                    value={form.ssh_password}
+                    onChange={(e) => setForm({ ...form, ssh_password: e.target.value })}
+                    required={!editingId}
+                    disabled={!!editingId && !changeSecret}
+                    placeholder={editingId ? '(unchanged)' : '••••••••'}
+                    data-testid="bc-ssh-password"
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -836,12 +917,12 @@ function SpeedtestButton({ configId, configName }: { readonly configId: string; 
       type="button"
       onClick={handleClick}
       disabled={mutation.isPending}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-purple-200 dark:border-purple-700 px-3 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50"
+      className="inline-flex items-center gap-2 rounded-lg border-2 border-purple-300 dark:border-purple-600 bg-purple-50 dark:bg-purple-900/30 px-4 py-2 text-sm font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/50 disabled:opacity-50 shadow-sm"
       data-testid={`speedtest-${configId}`}
       title="Upload + download a 100 MB test payload to measure throughput"
     >
-      {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Gauge size={12} />}
-      {mutation.isPending ? 'Running…' : 'Speedtest'}
+      {mutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Gauge size={14} />}
+      {mutation.isPending ? 'Running speedtest…' : 'Run Speedtest'}
     </button>
   );
 }
@@ -856,7 +937,17 @@ interface SpeedtestResultConfig {
 }
 
 function SpeedtestResultRow({ config }: { readonly config: SpeedtestResultConfig }) {
-  if (!config.lastSpeedtestAt) return null;
+  // Phase 12.5 / discoverability: render an empty-state hint when no
+  // speedtest has run yet — operators were missing the action button
+  // when there was no result row to anchor it visually.
+  if (!config.lastSpeedtestAt) {
+    return (
+      <div className="mt-2 inline-flex items-center gap-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-700 px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400">
+        <Gauge size={12} />
+        <span>No speedtest yet — click <strong>Run Speedtest</strong> below to measure throughput.</span>
+      </div>
+    );
+  }
   const when = new Date(config.lastSpeedtestAt);
   const ageHours = (Date.now() - when.getTime()) / 3_600_000;
   const stale = ageHours > 24 * 7; // > 1 week

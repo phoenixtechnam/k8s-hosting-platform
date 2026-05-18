@@ -37,12 +37,20 @@ const sshConfigSchema = z.object({
   ssh_host: z.string().min(1).max(255),
   ssh_port: z.number().int().min(1).max(65535).default(22),
   ssh_user: z.string().min(1).max(100),
-  ssh_key: z.string().min(1),
+  // Phase 12.5 follow-up: EITHER ssh_key OR ssh_password (or both) is
+  // required. The .refine() below enforces that. Operators who don't
+  // want to manage SSH keypairs can use password auth — many SFTP
+  // services (Hetzner Storage Box, corporate file servers) support it.
+  ssh_key: z.string().min(1).max(16384).optional(),
+  ssh_password: z.string().min(1).max(512).optional(),
   ssh_path: z.string().min(1).max(500),
   retention_days: z.number().int().min(1).max(365).default(30),
   schedule_expression: z.string().default('0 2 * * *'),
   enabled: z.boolean().default(true),
-});
+}).refine(
+  (v) => Boolean(v.ssh_key || v.ssh_password),
+  { message: 'ssh_key or ssh_password is required', path: ['ssh_key'] },
+);
 
 const s3ConfigSchema = z.object({
   storage_type: z.literal('s3'),
@@ -92,6 +100,7 @@ export const updateBackupConfigSchema = z.object({
   ssh_port: z.number().int().min(1).max(65535).optional(),
   ssh_user: z.string().optional(),
   ssh_key: z.string().optional(),
+  ssh_password: z.string().optional(),
   ssh_path: z.string().optional(),
   s3_endpoint: z.string().optional(),
   s3_bucket: z.string().optional(),

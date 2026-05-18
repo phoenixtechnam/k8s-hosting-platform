@@ -442,23 +442,20 @@ function buildRcloneEnv(
     return { publicEnv, secretEnv, remoteRef, kindLabel: 'cifs' };
   }
   if (target.storageType === 'ssh') {
-    // Phase 12.5: SSH/SFTP via rclone sftp backend. PEM private key
-    // is mounted as a file (Phase 12.5 secretFiles), NOT as an env
-    // var — rclone's `key_pem` parser rejects literal newlines.
-    if (!target.sshHost || !target.sshUser || !target.sshKeyEncrypted) {
-      throw new ApiError(
-        'TARGET_INCOMPLETE',
-        `SSH target ${target.name} is missing host/user/key`,
-        400,
-      );
+    // Phase 12.5: SSH/SFTP via rclone sftp backend. EITHER PEM key
+    // (mounted as file via secretFiles — multi-line PEM rejects env)
+    // OR password (rclone-obscured, env-var). resolveSnapshotStore*
+    // does the same branching.
+    if (!target.sshHost || !target.sshUser) {
+      throw new ApiError('TARGET_INCOMPLETE', `SSH target ${target.name} is missing host/user`, 400);
     }
-    const plainKey = decrypt(target.sshKeyEncrypted, encryptionKey);
+    if (!target.sshKeyEncrypted && !target.sshPasswordEncrypted) {
+      throw new ApiError('TARGET_INCOMPLETE', `SSH target ${target.name} has neither key nor password`, 400);
+    }
     const publicEnv: Array<{ name: string; value: string }> = [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'sftp' },
       { name: 'RCLONE_CONFIG_REMOTE_HOST', value: target.sshHost },
       { name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(target.sshPort ?? 22) },
-      // File-mounted PEM at the deterministic Phase-12.5 path.
-      { name: 'RCLONE_CONFIG_REMOTE_KEY_FILE', value: '/etc/rclone/ssh_key' },
       // TOFU host-key acceptance (no known_hosts_file). Acceptable for
       // operator-supplied backup targets; tighten later if needed.
       { name: 'RCLONE_CONFIG_REMOTE_KNOWN_HOSTS_FILE', value: '' },
@@ -475,7 +472,15 @@ function buildRcloneEnv(
     const secretEnv: Record<string, string> = {
       RCLONE_CONFIG_REMOTE_USER: target.sshUser,
     };
-    const secretFiles: Record<string, string> = { ssh_key: plainKey };
+    let secretFiles: Record<string, string> | undefined;
+    if (target.sshKeyEncrypted) {
+      const plainKey = decrypt(target.sshKeyEncrypted, encryptionKey);
+      secretFiles = { ssh_key: plainKey };
+      publicEnv.push({ name: 'RCLONE_CONFIG_REMOTE_KEY_FILE', value: '/etc/rclone/ssh_key' });
+    } else if (target.sshPasswordEncrypted) {
+      const plainPw = decrypt(target.sshPasswordEncrypted, encryptionKey);
+      secretEnv.RCLONE_CONFIG_REMOTE_PASS = rcloneObscure(plainPw);
+    }
     // SFTP path: relative to user's home unless absolute. Match the
     // S3/CIFS pattern — strip both leading and trailing slashes from
     // the configured path and let rclone handle the join.

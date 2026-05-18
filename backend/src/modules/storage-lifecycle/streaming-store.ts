@@ -234,11 +234,23 @@ export class SshStreamingStore implements StreamingSnapshotStore {
     readonly host: string;
     readonly port: number;
     readonly user: string;
-    readonly privateKey: string;
+    /**
+     * Phase 12.5: EITHER privateKey (PEM) OR password (rclone-obscured)
+     * is set. Caller (`resolveSnapshotStore*`) decrypts the encrypted-
+     * at-rest credential and passes whichever is configured. The
+     * key-vs-password choice surfaces in publicEnv / secretFiles via
+     * `buildPublicEnv` / `buildSecretEnv` / `buildSecretFiles` below.
+     */
+    readonly privateKey?: string;
+    readonly password?: string;
     readonly basePath: string;
     /** k8s Secret containing the ssh private key — used to mount it via volume. */
     readonly credentialsSecret?: { name: string; keyKey: string };
-  }) {}
+  }) {
+    if (!config.privateKey && !config.password) {
+      throw new Error('SshStreamingStore: privateKey or password is required');
+    }
+  }
 
   reservePath(tenantId: string, snapshotId: string): string {
     return `${tenantId}/${snapshotId}.tar.gz`;
@@ -256,15 +268,10 @@ export class SshStreamingStore implements StreamingSnapshotStore {
   }
 
   private buildPublicEnv(): Array<{ name: string; value: string }> {
-    return [
+    const env: Array<{ name: string; value: string }> = [
       { name: 'RCLONE_CONFIG_REMOTE_TYPE', value: 'sftp' },
       { name: 'RCLONE_CONFIG_REMOTE_HOST', value: this.config.host },
       { name: 'RCLONE_CONFIG_REMOTE_PORT', value: String(this.config.port) },
-      // Phase 12.5: PEM is mounted as a file via the Job orchestrator's
-      // file-Secret pattern. RCLONE_CONFIG_REMOTE_KEY_FILE points at
-      // the deterministic mount path; the file is created via
-      // `envelope.secretFiles` below.
-      { name: 'RCLONE_CONFIG_REMOTE_KEY_FILE', value: '/etc/rclone/ssh_key' },
       // Empty `known_hosts_file` = rclone skips host-key verification
       // (TOFU). Acceptable for managed-cluster backup targets where
       // the host's authenticity is implicit (operator-supplied creds).
@@ -289,17 +296,36 @@ export class SshStreamingStore implements StreamingSnapshotStore {
       { name: 'RCLONE_CONTIMEOUT', value: '60s' },
       { name: 'RCLONE_TIMEOUT', value: '300s' },
     ];
+    if (this.config.privateKey) {
+      // Phase 12.5: PEM is mounted as a file via the Job orchestrator's
+      // file-Secret pattern. RCLONE_CONFIG_REMOTE_KEY_FILE points at
+      // the deterministic mount path; the file is created via
+      // `envelope.secretFiles` below.
+      env.push({ name: 'RCLONE_CONFIG_REMOTE_KEY_FILE', value: '/etc/rclone/ssh_key' });
+    }
+    return env;
   }
 
   private buildSecretEnv(): Record<string, string> {
     // USER is mildly sensitive (account name on the target server) but
     // SSH considers it part of the credential — keep with the key.
-    return { RCLONE_CONFIG_REMOTE_USER: this.config.user };
+    // Phase 12.5: when password auth is in use, RCLONE_CONFIG_REMOTE_PASS
+    // carries the rclone-obscured password (env-var-safe; no newlines).
+    const env: Record<string, string> = {
+      RCLONE_CONFIG_REMOTE_USER: this.config.user,
+    };
+    if (this.config.password) {
+      env.RCLONE_CONFIG_REMOTE_PASS = this.config.password;
+    }
+    return env;
   }
 
-  private buildSecretFiles(): Record<string, string> {
+  private buildSecretFiles(): Record<string, string> | undefined {
     // PEM private key — mounted at /etc/rclone/ssh_key, mode 0400.
-    // The rclone sftp backend reads it via key_file at startup.
+    // The rclone sftp backend reads it via key_file at startup. Only
+    // emit the file Secret when key auth is in use (password auth
+    // uses env-var only, no file mount needed).
+    if (!this.config.privateKey) return undefined;
     return { ssh_key: this.config.privateKey };
   }
 

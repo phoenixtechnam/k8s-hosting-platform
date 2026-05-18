@@ -704,6 +704,10 @@ export const backupConfigurations = pgTable('backup_configurations', {
   sshPort: integer('ssh_port').default(22),
   sshUser: varchar('ssh_user', { length: 100 }),
   sshKeyEncrypted: text('ssh_key_encrypted'),
+  // Phase 12.5 follow-up: SSH targets can authenticate via password
+  // instead of (or in addition to) a PEM key. CHECK constraint at the
+  // DB layer enforces that at least one is set when storage_type='ssh'.
+  sshPasswordEncrypted: text('ssh_password_encrypted'),
   sshPath: varchar('ssh_path', { length: 500 }),
   s3Endpoint: varchar('s3_endpoint', { length: 500 }),
   s3Bucket: varchar('s3_bucket', { length: 255 }),

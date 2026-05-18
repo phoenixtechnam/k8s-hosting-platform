@@ -25,6 +25,11 @@ function sanitizeConfig(row: typeof backupConfigurations.$inferSelect) {
     sshPort: row.sshPort ?? null,
     sshUser: row.sshUser ?? null,
     sshPath: row.sshPath ?? null,
+    // Phase 12.5: ssh_key_encrypted / ssh_password_encrypted are NEVER
+    // returned; the UI surfaces booleans so the edit form can pick the
+    // right auth-method radio + show "(unchanged)" placeholder.
+    hasSshKey: row.sshKeyEncrypted != null,
+    hasSshPassword: row.sshPasswordEncrypted != null,
     s3Endpoint: row.s3Endpoint ?? null,
     s3Bucket: row.s3Bucket ?? null,
     s3Region: row.s3Region ?? null,
@@ -89,6 +94,10 @@ export async function createBackupConfig(db: Database, input: CreateBackupConfig
   const id = crypto.randomUUID();
 
   if (input.storage_type === 'ssh') {
+    // Phase 12.5 follow-up: ssh_key OR ssh_password (or both). The
+    // contract refine() ensures at least one is set; we still null
+    // out the unused field so the DB row is unambiguous about which
+    // auth method the operator chose.
     await db.insert(backupConfigurations).values({
       id,
       name: input.name,
@@ -96,7 +105,8 @@ export async function createBackupConfig(db: Database, input: CreateBackupConfig
       sshHost: input.ssh_host,
       sshPort: input.ssh_port ?? 22,
       sshUser: input.ssh_user,
-      sshKeyEncrypted: encrypt(input.ssh_key, encryptionKey),
+      sshKeyEncrypted: input.ssh_key ? encrypt(input.ssh_key, encryptionKey) : null,
+      sshPasswordEncrypted: input.ssh_password ? encrypt(input.ssh_password, encryptionKey) : null,
       sshPath: input.ssh_path,
       retentionDays: input.retention_days ?? 30,
       scheduleExpression: input.schedule_expression ?? '0 2 * * *',
@@ -153,6 +163,7 @@ export async function updateBackupConfig(db: Database, id: string, input: Update
   if (input.ssh_port !== undefined) updateValues.sshPort = input.ssh_port;
   if (input.ssh_user !== undefined) updateValues.sshUser = input.ssh_user;
   if (input.ssh_key !== undefined) updateValues.sshKeyEncrypted = encrypt(input.ssh_key, encryptionKey);
+  if (input.ssh_password !== undefined) updateValues.sshPasswordEncrypted = encrypt(input.ssh_password, encryptionKey);
   if (input.ssh_path !== undefined) updateValues.sshPath = input.ssh_path;
   if (input.s3_endpoint !== undefined) updateValues.s3Endpoint = input.s3_endpoint;
   if (input.s3_bucket !== undefined) updateValues.s3Bucket = input.s3_bucket;
@@ -222,8 +233,12 @@ export async function activateBackupConfig(db: Database, id: string) {
       throw new ApiError('INCOMPLETE_CONFIG', 'S3 config missing required fields (endpoint, bucket, region, access/secret key)', 400);
     }
   } else {
-    if (!row.sshHost || !row.sshUser || !row.sshPath || !row.sshKeyEncrypted) {
-      throw new ApiError('INCOMPLETE_CONFIG', 'SSH config missing required fields (host, user, path, key)', 400);
+    // Phase 12.5 follow-up: SSH accepts EITHER key OR password.
+    if (!row.sshHost || !row.sshUser || !row.sshPath) {
+      throw new ApiError('INCOMPLETE_CONFIG', 'SSH config missing required fields (host, user, path)', 400);
+    }
+    if (!row.sshKeyEncrypted && !row.sshPasswordEncrypted) {
+      throw new ApiError('INCOMPLETE_CONFIG', 'SSH config requires either ssh_key or ssh_password', 400);
     }
   }
   await db.transaction(async (tx) => {
@@ -280,8 +295,11 @@ export async function getActiveBackupConfig(db: Database, encryptionKey: string)
   }
 
   if (row.storageType === 'ssh') {
-    if (!row.sshHost || !row.sshUser || !row.sshPath || !row.sshKeyEncrypted) {
-      throw new ApiError('ACTIVE_CONFIG_INCOMPLETE', 'Active SSH backup target is missing required fields', 500);
+    if (!row.sshHost || !row.sshUser || !row.sshPath) {
+      throw new ApiError('ACTIVE_CONFIG_INCOMPLETE', 'Active SSH backup target is missing required fields (host/user/path)', 500);
+    }
+    if (!row.sshKeyEncrypted && !row.sshPasswordEncrypted) {
+      throw new ApiError('ACTIVE_CONFIG_INCOMPLETE', 'Active SSH backup target has neither key nor password', 500);
     }
     return {
       kind: 'ssh',
@@ -290,7 +308,8 @@ export async function getActiveBackupConfig(db: Database, encryptionKey: string)
       port: row.sshPort ?? 22,
       user: row.sshUser,
       path: row.sshPath,
-      privateKey: decrypt(row.sshKeyEncrypted, encryptionKey),
+      privateKey: row.sshKeyEncrypted ? decrypt(row.sshKeyEncrypted, encryptionKey) : undefined,
+      password: row.sshPasswordEncrypted ? decrypt(row.sshPasswordEncrypted, encryptionKey) : undefined,
     };
   }
 
@@ -302,21 +321,22 @@ export async function testConnection(db: Database, id: string, encryptionKey: st
 
   let result: TestConnectionResult;
   if (row.storageType === 'ssh') {
-    if (!row.sshHost || !row.sshUser || !row.sshKeyEncrypted || !row.sshPath) {
+    const credCipher = row.sshKeyEncrypted ?? row.sshPasswordEncrypted;
+    if (!row.sshHost || !row.sshUser || !row.sshPath || !credCipher) {
       result = {
         ok: false,
         latencyMs: 0,
         error: {
           code: 'INCOMPLETE_CONFIG',
-          message: 'Incomplete SSH configuration: host, user, key, and path are required',
+          message: 'Incomplete SSH configuration: host, user, path, and (key or password) are required',
         },
       };
     } else {
-      // SSH probe not yet wired — decrypt as a smoke-test so we at least
-      // catch encryption-key mismatches. Phase C/future work can dial a
-      // TCP connection + exec a listing here.
+      // SSH probe not yet wired — decrypt the active credential as a
+      // smoke-test so we at least catch encryption-key mismatches.
+      // Future work can dial a TCP connection + exec a listing.
       try {
-        decrypt(row.sshKeyEncrypted, encryptionKey);
+        decrypt(credCipher, encryptionKey);
         result = { ok: true, latencyMs: 0 };
       } catch (err) {
         result = {
@@ -399,11 +419,11 @@ export async function testDraft(input: CreateBackupConfigInput): Promise<TestCon
     // covers reachability + throughput with a much richer signal.
     return { ok: true, latencyMs: 0 };
   }
-  if (!input.ssh_host || !input.ssh_user || !input.ssh_key || !input.ssh_path) {
+  if (!input.ssh_host || !input.ssh_user || !input.ssh_path || (!input.ssh_key && !input.ssh_password)) {
     return {
       ok: false,
       latencyMs: 0,
-      error: { code: 'INCOMPLETE_CONFIG', message: 'host, user, key, and path are required' },
+      error: { code: 'INCOMPLETE_CONFIG', message: 'host, user, path, and (key or password) are required' },
     };
   }
   // SSH probe intentionally minimal — real SSH dial + directory test

@@ -565,23 +565,28 @@ export async function resolveSnapshotStoreForClass(
   }
 
   if (cfg.storageType === 'ssh') {
-    // Phase 12.5: SSH/SFTP via rclone sftp backend. PEM private key
-    // is mounted as a Secret-volume file (multi-line PEM can't go in
-    // env vars — rclone's `key_pem` parser rejects literal newlines).
-    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshKeyEncrypted) {
-      throw new ApiError(
-        'TARGET_INCOMPLETE',
-        `SSH target ${cfg.name} is missing host/user/key`,
-        400,
-      );
+    // Phase 12.5: SSH/SFTP via rclone sftp backend. EITHER PEM private
+    // key (mounted as a Secret-volume file — multi-line PEM can't go
+    // in env vars) OR password (env-var, rclone-obscured at use-time).
+    if (!cfg.sshHost || !cfg.sshUser) {
+      throw new ApiError('TARGET_INCOMPLETE', `SSH target ${cfg.name} is missing host/user`, 400);
     }
-    let plainKey: string;
+    if (!cfg.sshKeyEncrypted && !cfg.sshPasswordEncrypted) {
+      throw new ApiError('TARGET_INCOMPLETE', `SSH target ${cfg.name} has neither key nor password`, 400);
+    }
+    let plainKey: string | undefined;
+    let obscuredPassword: string | undefined;
     try {
-      plainKey = decrypt(cfg.sshKeyEncrypted, key);
+      if (cfg.sshKeyEncrypted) plainKey = decrypt(cfg.sshKeyEncrypted, key);
+      if (cfg.sshPasswordEncrypted) {
+        const plainPw = decrypt(cfg.sshPasswordEncrypted, key);
+        const { rcloneObscure } = await import('./rclone-obscure.js');
+        obscuredPassword = rcloneObscure(plainPw);
+      }
     } catch (err) {
       throw new ApiError(
         'TARGET_CREDENTIAL_DECRYPT_FAILED',
-        `SSH key decrypt failed for target ${cfg.name} (key rotated?): ${(err as Error).message}`,
+        `SSH credential decrypt failed for target ${cfg.name} (PLATFORM_ENCRYPTION_KEY rotated?): ${(err as Error).message}`,
         500,
       );
     }
@@ -596,6 +601,7 @@ export async function resolveSnapshotStoreForClass(
       port: cfg.sshPort ?? 22,
       user: cfg.sshUser,
       privateKey: plainKey,
+      password: obscuredPassword,
       basePath,
     });
     // Phase 11 parity: attach k8s ctx so stat/delete/readSidecar can
@@ -790,12 +796,22 @@ export async function resolveSnapshotStoreByTargetId(
   }
 
   if (cfg.storageType === 'ssh') {
-    // Phase 12.5: SSH restore via stamped target_id. Same shape as
-    // CIFS — decrypt PEM, build store, attach k8s ctx for read paths.
-    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshKeyEncrypted) {
-      throw new ApiError('TARGET_INCOMPLETE', `SSH target ${cfg.name} is missing required fields`, 400);
+    // Phase 12.5: SSH restore via stamped target_id. EITHER key OR
+    // password auth (same shape as resolveSnapshotStoreForClass).
+    if (!cfg.sshHost || !cfg.sshUser) {
+      throw new ApiError('TARGET_INCOMPLETE', `SSH target ${cfg.name} is missing host/user`, 400);
     }
-    const plainKey = decrypt(cfg.sshKeyEncrypted, key);
+    if (!cfg.sshKeyEncrypted && !cfg.sshPasswordEncrypted) {
+      throw new ApiError('TARGET_INCOMPLETE', `SSH target ${cfg.name} has neither key nor password`, 400);
+    }
+    let plainKey: string | undefined;
+    let obscuredPassword: string | undefined;
+    if (cfg.sshKeyEncrypted) plainKey = decrypt(cfg.sshKeyEncrypted, key);
+    if (cfg.sshPasswordEncrypted) {
+      const plainPw = decrypt(cfg.sshPasswordEncrypted, key);
+      const { rcloneObscure } = await import('./rclone-obscure.js');
+      obscuredPassword = rcloneObscure(plainPw);
+    }
     const basePath = cfg.sshPath
       ? `${cfg.sshPath.replace(/\/+$/, '')}/snapshots/${snapshotClass}`
       : `snapshots/${snapshotClass}`;
@@ -804,6 +820,7 @@ export async function resolveSnapshotStoreByTargetId(
       port: cfg.sshPort ?? 22,
       user: cfg.sshUser,
       privateKey: plainKey,
+      password: obscuredPassword,
       basePath,
     });
     if (opts?.k8sCtx) {

@@ -64,7 +64,11 @@ export interface SshBackupTargetInput {
   readonly port: number;
   readonly user: string;
   readonly path: string;
-  readonly privateKey: string;      // plaintext PEM body, handed to K8s Secret
+  // Phase 12.5 follow-up: EITHER privateKey OR password is set (not
+  // both null). Reconciler picks whichever is present when building
+  // the Longhorn BackupTarget Secret.
+  readonly privateKey?: string;     // plaintext PEM body, handed to K8s Secret
+  readonly password?: string;       // plaintext password, handed to K8s Secret
 }
 
 // Discriminated union: reconciler callers pass one of these, and the
@@ -313,13 +317,17 @@ function buildEmptySecretData(): Record<string, string> {
 // SSH_PORT is written as a string because Kubernetes Secret values are
 // always strings; the consumer scripts treat `${SSH_PORT:-22}` as a string.
 export function buildSshSecretData(input: SshBackupTargetInput): Record<string, string> {
+  // Phase 12.5 follow-up: EITHER privateKey OR password is set. Empty
+  // strings for the unused field so switching key↔password leaves no
+  // stale data in the Secret on `replace`.
   const data: Record<string, string> = {
     TARGET_KIND: 'ssh',
     SSH_HOST: input.host,
     SSH_PORT: String(input.port),
     SSH_USER: input.user,
     SSH_PATH: input.path,
-    SSH_PRIVATE_KEY: input.privateKey,
+    SSH_PRIVATE_KEY: input.privateKey ?? '',
+    SSH_PASSWORD: input.password ?? '',
   };
   for (const k of S3_KEYS) data[k] = '';
   return data;
