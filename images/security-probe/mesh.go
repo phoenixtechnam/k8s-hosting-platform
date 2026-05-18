@@ -92,10 +92,18 @@ func firstIfaceIP(ifaceName string) *string {
 // (-1, -1) when /proc/net/wireguard is unreadable or ifaceName isn't
 // present. Best-effort — userspace wg-quick keeps state in
 // /var/run/wireguard/ which we deliberately don't mount.
+//
+// With hostNetwork: true on the DaemonSet, /proc/net/wireguard
+// reflects the host's network namespace. We try the natural path
+// first, then fall back to the hostPath-mounted location for
+// hostNetwork: false test environments.
 func wgPeerStats(hostRoot, ifaceName string) (int, int64) {
-	f, err := os.Open(filepath.Join(hostRoot, "proc/net/wireguard"))
+	f, err := os.Open("/proc/net/wireguard")
 	if err != nil {
-		return -1, -1
+		f, err = os.Open(filepath.Join(hostRoot, "proc/net/wireguard"))
+		if err != nil {
+			return -1, -1
+		}
 	}
 	defer f.Close()
 

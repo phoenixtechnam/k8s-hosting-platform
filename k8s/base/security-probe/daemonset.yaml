@@ -45,6 +45,19 @@ spec:
         app: security-probe
     spec:
       serviceAccountName: security-probe
+      # hostNetwork is REQUIRED for mesh interface detection.
+      # Without it, the container's netns has no view of wt0 /
+      # tailscale0 / wg0, so net.InterfaceByName returns ENOENT
+      # and the Mesh Status tab reports empty IP / peer count
+      # despite /sys/class/net (hostPath) showing the interface
+      # name. Trade-off: hostNetwork pods bypass NetworkPolicy,
+      # so egress containment relies on the host nftables (which
+      # we manage via firewall-reconciler) plus container hardening
+      # (distroless, drop ALL caps, readOnly rootfs, no shell).
+      # The NetworkPolicy is kept as documented intent + protection
+      # if hostNetwork ever flips back to false.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       # Tolerate control-plane and platform taints — the probe
       # must cover every node.
       tolerations:
