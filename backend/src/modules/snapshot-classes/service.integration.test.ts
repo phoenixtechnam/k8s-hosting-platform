@@ -37,12 +37,13 @@ describe.skipIf(!dbAvailable)('snapshot-classes service', () => {
     await db.execute(sql`DELETE FROM backup_configurations WHERE name LIKE 'test-%'`);
   });
 
-  it('listClasses returns all 3 classes with empty assignments by default', async () => {
+  it('listClasses returns all 4 classes with empty assignments by default', async () => {
     const result = await listClasses(db);
-    expect(result.classes).toHaveLength(3);
+    expect(result.classes).toHaveLength(4);
     const names = result.classes.map((c) => c.snapshotClass).sort();
     expect(names).toEqual([
       'system_backup',
+      'system_mail',
       'tenant_bundle',
       'tenant_snapshot',
     ]);

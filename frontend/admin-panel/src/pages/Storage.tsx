@@ -341,6 +341,7 @@ const CLASS_LABELS: Record<string, { label: string; color: string }> = {
   tenant_snapshot: { label: 'Tenant PVC', color: 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300' },
   tenant_bundle: { label: 'Tenant Bundle', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' },
   system_backup: { label: 'System Backup', color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' },
+  system_mail: { label: 'System Backup — Mail', color: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300' },
 };
 
 function classLabel(snapshotClass: string): { label: string; color: string } {

@@ -15,10 +15,11 @@ import { z } from 'zod';
 export const snapshotClassEnum = z.enum([
   'tenant_snapshot',
   'tenant_bundle',
-  // Single class for everything platform-side. `subsystem` (free-form
-  // varchar) still distinguishes etcd / secrets / longhorn / etc. for
-  // observability — routing-wise they all go to the same target.
-  'system_backup',
+  // System group — each class routes independently. `subsystem` (free-
+  // form varchar) distinguishes finer producers within a class (e.g.
+  // mail-rocksdb vs. mail-blob inside system_mail) for observability.
+  'system_backup', // etcd, secrets, longhorn, hostpath, postgres, …
+  'system_mail',   // Stalwart restic snapshots only — own target slot
 ]);
 export type SnapshotClass = z.infer<typeof snapshotClassEnum>;
 

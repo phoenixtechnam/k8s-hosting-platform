@@ -21,18 +21,26 @@ import type {
   AssignmentInput,
 } from '@k8s-hosting/api-contracts';
 
-const CLASS_META: Record<SnapshotClass, { label: string; description: string }> = {
+const CLASS_META: Record<SnapshotClass, { label: string; description: string; group: 'tenant' | 'system' }> = {
   tenant_snapshot: {
     label: 'Tenant PVC Snapshot',
     description: 'Per-tenant PVC tarballs (manual + pre-resize + pre-archive). Drives every tenant-level snapshot operation.',
+    group: 'tenant',
   },
   tenant_bundle: {
     label: 'Tenant Backup Bundle',
     description: 'Plesk-style restore bundles (files + mailboxes + config + secrets). Operator + tenant-scheduled.',
+    group: 'tenant',
   },
   system_backup: {
     label: 'System Backup',
-    description: 'Platform-side snapshots (etcd, secrets, Longhorn metadata, postgres). All system subsystems route here — the subsystem field distinguishes them for observability.',
+    description: 'Platform-side snapshots (etcd, secrets, Longhorn metadata, postgres). The subsystem field distinguishes producers for observability.',
+    group: 'system',
+  },
+  system_mail: {
+    label: 'System Backup — Mail',
+    description: 'Stalwart mail-server restic snapshots (RocksDB + blob store). Routed separately so operators can isolate mail bytes from the rest of the platform.',
+    group: 'system',
   },
 };
 
@@ -82,15 +90,61 @@ export default function SnapshotClassAssignments() {
         </div>
       )}
 
-      <div className="space-y-4">
-        {classes.map((cls) => (
-          <ClassRow
-            key={cls.snapshotClass}
-            view={cls}
-            availableTargets={configs.map((c) => ({ id: c.id, name: c.name, storageType: c.storageType }))}
-          />
-        ))}
-      </div>
+      <ClassGroupedList
+        classes={classes}
+        availableTargets={configs.map((c) => ({ id: c.id, name: c.name, storageType: c.storageType }))}
+      />
+    </div>
+  );
+}
+
+function ClassGroupedList({
+  classes,
+  availableTargets,
+}: {
+  readonly classes: readonly ClassView[];
+  readonly availableTargets: readonly { id: string; name: string; storageType: string }[];
+}) {
+  // Stable group order: tenant first, then system. Within each group,
+  // preserve the API response order (which the resolver returns
+  // alphabetically by snapshot_class).
+  const tenant = classes.filter((c) => CLASS_META[c.snapshotClass]?.group === 'tenant');
+  const system = classes.filter((c) => CLASS_META[c.snapshotClass]?.group === 'system');
+  const ungrouped = classes.filter((c) => !CLASS_META[c.snapshotClass]);
+
+  return (
+    <div className="space-y-8">
+      {tenant.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Tenant
+          </h2>
+          <div className="space-y-4">
+            {tenant.map((cls) => (
+              <ClassRow key={cls.snapshotClass} view={cls} availableTargets={availableTargets} />
+            ))}
+          </div>
+        </section>
+      )}
+      {system.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            System
+          </h2>
+          <div className="space-y-4">
+            {system.map((cls) => (
+              <ClassRow key={cls.snapshotClass} view={cls} availableTargets={availableTargets} />
+            ))}
+          </div>
+        </section>
+      )}
+      {ungrouped.length > 0 && (
+        <div className="space-y-4">
+          {ungrouped.map((cls) => (
+            <ClassRow key={cls.snapshotClass} view={cls} availableTargets={availableTargets} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -123,7 +177,14 @@ function ClassRow({
   readonly view: ClassView;
   readonly availableTargets: readonly AvailableTarget[];
 }) {
-  const meta = CLASS_META[view.snapshotClass];
+  // Fall back gracefully if a class is added on the backend before
+  // the frontend ships the matching CLASS_META entry — render the raw
+  // class id so the operator can still see + edit assignments.
+  const meta = CLASS_META[view.snapshotClass] ?? {
+    label: view.snapshotClass,
+    description: `Snapshot class ${view.snapshotClass}. Update the admin panel to add a description.`,
+    group: 'system' as const,
+  };
   // INTENTIONAL: draft is seeded once at mount and NOT synced from `view`
   // on subsequent renders. Adding a useEffect to sync would silently
   // discard the operator's unsaved edits when a sibling ClassRow's save

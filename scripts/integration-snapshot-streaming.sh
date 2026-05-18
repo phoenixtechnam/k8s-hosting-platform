@@ -109,7 +109,7 @@ cleanup() {
   echo
   step "Cleanup"
   # Empty assignments so RESTRICT doesn't block target delete.
-  for class in tenant_snapshot tenant_bundle system_backup; do
+  for class in tenant_snapshot tenant_bundle system_backup system_mail; do
     api PUT "/api/v1/admin/snapshots/classes/$class/assignments" '{"assignments":[]}' >/dev/null 2>&1 || true
   done
 
@@ -1447,6 +1447,101 @@ EOF
   pass "tenant_snapshot reassigned to minio (cleanup)"
 }
 
+# ── Mail-target binding (migration 0010) ─────────────────────────────────────
+#
+# 3 scenarios exercise the system_mail snapshot-class binding that
+# drives the stalwart-snapshot-restic-repo Secret in the mail namespace.
+# Each asserts the K8s-level side-effect (Secret data) rather than just
+# the API response, so the inline-sync hook + reconciler are both
+# covered as regressions.
+
+# Helper: read the RESTIC_REPOSITORY value out of the mail-restic Secret.
+# Empty string when the Secret is absent.
+mail_restic_repo() {
+  kubectl_dind get secret stalwart-snapshot-restic-repo -n mail \
+    -o jsonpath='{.data.RESTIC_REPOSITORY}' 2>/dev/null \
+    | base64 -d 2>/dev/null || true
+}
+
+test_mail_target_assign_creates_secret() {
+  step "L: system_mail assignment → stalwart-snapshot-restic-repo Secret created"
+  # Use the same minio target tenant_snapshot already routes to.
+  local resp http
+  resp=$(api_with_status PUT "/api/v1/admin/snapshots/classes/system_mail/assignments" \
+    "{\"assignments\":[{\"targetId\":\"$TARGET_ID\",\"priority\":0}]}")
+  http=$(echo "$resp" | tail -1)
+  if [ "$http" != "200" ]; then
+    fail "system_mail PUT returned $http"
+    return
+  fi
+  # Give the inline sync hook a moment to apply the Secret. The hook
+  # runs synchronously inside the PUT handler so the Secret should be
+  # present by the time the response returns, but k8s apply can take
+  # an extra tick to materialise.
+  sleep 1
+  local repo
+  repo=$(mail_restic_repo)
+  if [ -z "$repo" ]; then
+    fail "stalwart-snapshot-restic-repo Secret has no RESTIC_REPOSITORY after PUT"
+    return
+  fi
+  case "$repo" in
+    s3:*minio*) pass "RESTIC_REPOSITORY points at minio: $repo" ;;
+    *) fail "unexpected RESTIC_REPOSITORY value: $repo" ;;
+  esac
+}
+
+test_mail_target_reassign_updates_secret() {
+  step "M: reassigning system_mail to a different target updates the Secret"
+  # Create a second minio-like target with a distinct prefix so the
+  # resulting RESTIC_REPOSITORY URL is observably different.
+  local resp http alt_id
+  resp=$(api_with_status POST /api/v1/admin/backup-configs '{
+    "name": "e2e-mail-alt",
+    "storage_type": "s3",
+    "s3_endpoint": "http://minio.dev-minio.svc.cluster.local:9000",
+    "s3_bucket": "snapshots",
+    "s3_prefix": "alt-mail",
+    "s3_region": "us-east-1",
+    "s3_access_key": "minio-dev-access-key",
+    "s3_secret_key": "minio-dev-secret-key",
+    "retention_days": 7
+  }')
+  http=$(echo "$resp" | tail -1)
+  alt_id=$(echo "$resp" | head -n -1 | grep -oE '"id":"[^"]+"' | head -1 | sed 's/"id":"//;s/"$//')
+  if [ -z "$alt_id" ]; then
+    fail "could not create alt mail target ($http)"
+    return
+  fi
+
+  api PUT "/api/v1/admin/snapshots/classes/system_mail/assignments" \
+    "{\"assignments\":[{\"targetId\":\"$alt_id\",\"priority\":0}]}" >/dev/null
+  sleep 1
+  local repo
+  repo=$(mail_restic_repo)
+  case "$repo" in
+    *alt-mail/mail-snapshots*) pass "Secret rewrote to alt target prefix: $repo" ;;
+    *) fail "Secret did not pick up alt target prefix: $repo" ;;
+  esac
+
+  # Cleanup: revert to TARGET_ID and remove the alt config (after
+  # unbinding so the FK doesn't refuse delete).
+  api PUT "/api/v1/admin/snapshots/classes/system_mail/assignments" \
+    "{\"assignments\":[{\"targetId\":\"$TARGET_ID\",\"priority\":0}]}" >/dev/null
+  api DELETE "/api/v1/admin/backup-configs/$alt_id" >/dev/null 2>&1 || true
+}
+
+test_mail_target_clear_deletes_secret() {
+  step "N: clearing system_mail assignment → stalwart-snapshot-restic-repo Secret deleted"
+  api PUT "/api/v1/admin/snapshots/classes/system_mail/assignments" '{"assignments":[]}' >/dev/null
+  sleep 1
+  if kubectl_dind get secret stalwart-snapshot-restic-repo -n mail >/dev/null 2>&1; then
+    fail "Secret still exists after clearing assignment"
+  else
+    pass "Secret deleted"
+  fi
+}
+
 main() {
   echo "$(c_bold "═══ Phase 4+5+6+9+10 snapshot streaming + restore + quota + CIFS + speedtest E2E ═══")"
   acquire_jwt
@@ -1468,6 +1563,9 @@ main() {
   test_ssh_snapshot_full_cycle
   test_speedtest
   test_speedtest_auth_failure
+  test_mail_target_assign_creates_secret
+  test_mail_target_reassign_updates_secret
+  test_mail_target_clear_deletes_secret
 
   echo
   echo "$(c_bold "═══ Results ═══")"

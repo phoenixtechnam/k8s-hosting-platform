@@ -82,7 +82,33 @@ export async function snapshotClassesRoutes(app: FastifyInstance): Promise<void>
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
-    return success(await service.setAssignments(app.db, snapshotClass, parsed.data));
+    const result = await service.setAssignments(app.db, snapshotClass, parsed.data);
+
+    // system_mail assignments drive the stalwart-snapshot-restic-repo
+    // Secret in the mail namespace. Sync best-effort after the
+    // assignment commits — the assignment row is authoritative, and
+    // the periodic reconciler heals any Secret drift from a failed
+    // call here. We MUST NOT throw on sync failure: that would make
+    // the PUT response 500 while the DB write succeeded, leaving the
+    // operator unsure whether to retry.
+    if (snapshotClass === 'system_mail') {
+      const cfg = app.config as Record<string, unknown>;
+      const encryptionKey =
+        (cfg.PLATFORM_ENCRYPTION_KEY as string | undefined)
+        ?? process.env.PLATFORM_ENCRYPTION_KEY
+        ?? '0'.repeat(64); /* Dev-only fallback — matches mail-admin/routes.ts */
+      try {
+        const { syncMailResticSecretFromAssignment } = await import('../mail-admin/mail-target-sync.js');
+        const r = await syncMailResticSecretFromAssignment(app.db, encryptionKey, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        request.log.info({ action: r.action, targetId: r.targetId }, 'system_mail Secret synced after assignment update');
+      } catch (err) {
+        request.log.error({ err }, 'system_mail Secret sync failed after assignment update — reconciler will retry');
+      }
+    }
+
+    return success(result);
   });
 
   // ─── Probe assigned primary target ──────────────────────────────────
@@ -112,7 +138,7 @@ export async function snapshotClassesRoutes(app: FastifyInstance): Promise<void>
         latencyMs: Date.now() - t0,
         error: {
           code: 'NO_SNAPSHOT_TARGET',
-          message: `No target assigned to ${snapshotClass} — configure one at /settings/snapshot-classes`,
+          message: `No target assigned to ${snapshotClass} — configure one at /settings/backup-classes`,
         },
       };
       return success(resp);

@@ -834,6 +834,30 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // Mail-target sync: the stalwart-snapshot-restic-repo Secret
+        // is derived from the `system_mail` snapshot-class assignment.
+        // PUT /admin/snapshots/classes/system_mail/assignments fires
+        // a sync inline, but if that call fails (transient k8s 5xx,
+        // platform-api restarted mid-PUT, …) the Secret can drift from
+        // the assignment row. Reconcile boot-time + every 5 min so
+        // the assignment row stays authoritative and the Secret heals
+        // on its own.
+        try {
+          const { startMailTargetReconciler } = await import(
+            './modules/mail-admin/mail-target-scheduler.js'
+          );
+          const mailTargetHandle = startMailTargetReconciler(app.db, app.log, {
+            kubeconfigPath: kubePath,
+            encryptionKey:
+              (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+              ?? process.env.PLATFORM_ENCRYPTION_KEY
+              ?? '0'.repeat(64),
+          });
+          app.addHook('onClose', () => mailTargetHandle.stop());
+        } catch (err) {
+          app.log.warn({ err }, 'mail-target-scheduler: failed to start (non-blocking)');
+        }
+
         // M1: node-role taxonomy. Upserts cluster_nodes from k8s every
         // 60s. Shares the same k8s tenant instance as mail reconcilers
         // to avoid re-reading the kubeconfig. Stops cleanly on app

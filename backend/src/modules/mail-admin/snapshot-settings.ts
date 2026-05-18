@@ -22,7 +22,6 @@ import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { systemSettings, backupConfigurations } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { decrypt } from '../oidc/crypto.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import {
@@ -49,56 +48,10 @@ interface K8sBatchTenant {
   core: import('@kubernetes/client-node').CoreV1Api;
 }
 
-// ── Restic password management ─────────────────────────────────────────────────
-
-/**
- * Return the stable restic repository password. On first call, generates
- * a random 32-char password, stores it in the `stalwart-snapshot-restic-password`
- * Secret, and returns it. Subsequent calls return the same password from the
- * Secret, making it stable across backup-target changes.
- *
- * The separate Secret means the password survives re-creates of
- * `stalwart-snapshot-restic-repo` (which carries backend-specific env vars
- * that change when the target changes). restic repos keyed with this password
- * stay readable after a target switch — assuming the same repo path is used
- * or the operator runs `restic rekey` on the old repo when moving backends.
- */
-async function getOrCreateResticPassword(
-  core: import('@kubernetes/client-node').CoreV1Api,
-): Promise<string> {
-  try {
-    const secret = await core.readNamespacedSecret({
-      namespace: MAIL_NAMESPACE,
-      name: RESTIC_PASSWORD_SECRET,
-    }) as { data?: Record<string, string> };
-    const encoded = secret.data?.['RESTIC_PASSWORD'];
-    if (encoded) {
-      const pw = Buffer.from(encoded, 'base64').toString('utf8');
-      if (pw) return pw;
-    }
-  } catch (err) {
-    // 404 → Secret doesn't exist yet; generate and create below.
-    // isNotFound() handles both SDK v0 (.statusCode) and v1 (.code)
-    // error shapes (see shared/k8s-errors.ts).
-    if (!isNotFound(err)) throw err;
-  }
-
-  // Generate a random 32-char password: 4 × 8-char hex segments.
-  const { randomBytes } = await import('node:crypto');
-  const password = randomBytes(16).toString('hex'); // 32 hex chars
-  // backup-coverage: excluded:cluster-infrastructure
-  await core.createNamespacedSecret({
-    namespace: MAIL_NAMESPACE,
-    body: {
-      apiVersion: 'v1',
-      kind: 'Secret',
-      metadata: { name: RESTIC_PASSWORD_SECRET, namespace: MAIL_NAMESPACE },
-      type: 'Opaque',
-      data: { RESTIC_PASSWORD: Buffer.from(password).toString('base64') },
-    } as unknown as object,
-  });
-  return password;
-}
+// getOrCreateResticPassword moved to mail-target-sync.ts (re-exported
+// from there). rotateResticPassword (below) only deletes the password
+// Secret — the next sync regenerates a fresh password on its first
+// readNamespacedSecret miss.
 
 /**
  * Rotate the restic repository password.
@@ -208,10 +161,30 @@ export async function updateMailSnapshotSchedule(
 
 /**
  * Read the currently configured backup store for mail snapshots.
+ *
+ * Source of truth: `backup_target_assignments[snapshot_class='system_mail']`
+ * (the assignment row resolves via strict-primary). Falls back to the
+ * legacy `system_settings.mail_snapshot_backup_store_id` mirror only
+ * if no assignment exists yet — that's the transitional path for
+ * installs that haven't run migration 0010 (no longer reachable in
+ * practice, but kept for safety).
  */
 export async function getMailSnapshotBackupTarget(
   db: Database,
 ): Promise<MailSnapshotBackupTargetResponse> {
+  // Authoritative read: snapshot-classes assignment row.
+  const { resolvePrimaryTarget } = await import('../snapshot-classes/service.js');
+  const primary = await resolvePrimaryTarget(db, 'system_mail');
+  if (primary && primary.targetEnabled === 1) {
+    return mailSnapshotBackupTargetResponseSchema.parse({
+      backupStoreId: primary.targetId,
+      backupStoreName: primary.targetName,
+      storageType: primary.targetStorageType,
+    });
+  }
+
+  // Transitional fallback: read the legacy mirror column. Returns
+  // null shape when no assignment + no mirror is set.
   const [settings] = await db.select({
     backupStoreId: systemSettings.mailSnapshotBackupStoreId,
   }).from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
@@ -238,8 +211,24 @@ export async function getMailSnapshotBackupTarget(
 }
 
 /**
- * Update the backup store for mail snapshots.
- * Creates/deletes the stalwart-snapshot-restic-repo Secret accordingly.
+ * Update the backup store for mail snapshots — DEPRECATED.
+ *
+ * Source of truth moved to `backup_target_assignments[snapshot_class='system_mail']`
+ * in migration 0010. This function survives as a passthrough so the
+ * existing Mail Snapshot Settings UI keeps working until the frontend
+ * switches to the unified Backup Class Assignments page. Both paths
+ * take the same row lock (`setAssignments` transaction), so a
+ * concurrent PATCH-via-this-endpoint + PUT-via-snapshot-classes can't
+ * race into inconsistent state.
+ *
+ * Behaviour:
+ *   - update.backupStoreId === null → clears the system_mail
+ *     assignment (and as a side-effect, the route's hook deletes the
+ *     Secret + mirror via syncMailResticSecretFromAssignment).
+ *   - non-null → validates target exists + enabled, then writes a
+ *     single assignment at priority 0.
+ *
+ * Returns the resolved view as before for backward-compat.
  */
 export async function updateMailSnapshotBackupTarget(
   update: MailSnapshotBackupTargetUpdate,
@@ -247,14 +236,19 @@ export async function updateMailSnapshotBackupTarget(
   opts: SnapshotSettingsOptions,
   encryptionKey: string,
 ): Promise<MailSnapshotBackupTargetResponse> {
-  const { core } = await loadK8sTenants(opts.kubeconfigPath);
+  const { setAssignments } = await import('../snapshot-classes/service.js');
+  const { syncMailResticSecretFromAssignment } = await import('./mail-target-sync.js');
 
   if (!update.backupStoreId) {
-    // Clear: delete the restic repo Secret if it exists.
-    await db.update(systemSettings)
-      .set({ mailSnapshotBackupStoreId: null })
-      .where(eq(systemSettings.id, SETTINGS_ID));
-    await deleteResticSecret(core);
+    // Clear: empty assignment set → reconciler deletes the Secret.
+    await setAssignments(db, 'system_mail', { assignments: [] });
+    try {
+      await syncMailResticSecretFromAssignment(db, encryptionKey, {
+        kubeconfigPath: opts.kubeconfigPath,
+      });
+    } catch {
+      // Best-effort — periodic reconciler heals on next tick.
+    }
     return mailSnapshotBackupTargetResponseSchema.parse({
       backupStoreId: null,
       backupStoreName: null,
@@ -262,29 +256,25 @@ export async function updateMailSnapshotBackupTarget(
     });
   }
 
-  // Validate the store exists.
-  const [config] = await db.select().from(backupConfigurations)
-    .where(eq(backupConfigurations.id, update.backupStoreId));
-  if (!config) {
-    throw new ApiError(
-      'SNAPSHOT_BACKUP_STORE_NOT_FOUND',
-      `BackupStore ${update.backupStoreId} not found`,
-      404,
-    );
+  // setAssignments throws TARGET_NOT_FOUND / TARGET_DISABLED with the
+  // same 400 codes the new endpoint surfaces; the route maps them to
+  // ApiError so the caller sees identical error shapes.
+  const result = await setAssignments(db, 'system_mail', {
+    assignments: [{ targetId: update.backupStoreId, priority: 0 }],
+  });
+  try {
+    await syncMailResticSecretFromAssignment(db, encryptionKey, {
+      kubeconfigPath: opts.kubeconfigPath,
+    });
+  } catch {
+    // Best-effort.
   }
 
-  // Build the restic Secret data from the backup configuration.
-  const secretData = await buildResticSecretData(config, encryptionKey, core);
-  await applyResticSecret(core, secretData);
-
-  await db.update(systemSettings)
-    .set({ mailSnapshotBackupStoreId: update.backupStoreId })
-    .where(eq(systemSettings.id, SETTINGS_ID));
-
+  const assigned = result.assignments[0];
   return mailSnapshotBackupTargetResponseSchema.parse({
-    backupStoreId: update.backupStoreId,
-    backupStoreName: config.name,
-    storageType: config.storageType,
+    backupStoreId: assigned.targetId,
+    backupStoreName: assigned.targetName,
+    storageType: assigned.targetStorageType,
   });
 }
 
@@ -307,123 +297,7 @@ export async function recordMailSnapshotLastRun(
     .where(eq(systemSettings.id, SETTINGS_ID));
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-type BackupConfig = typeof backupConfigurations.$inferSelect;
-
-async function buildResticSecretData(
-  config: BackupConfig,
-  encryptionKey: string,
-  core: import('@kubernetes/client-node').CoreV1Api,
-): Promise<Record<string, string>> {
-  // Use a stable, randomly-generated password stored in a dedicated Secret.
-  // This replaces the old deterministic derivation (`mail-snapshot-${config.id}`)
-  // so the password survives backup-target changes without breaking existing repos.
-  const resticPassword = await getOrCreateResticPassword(core);
-
-  if (config.storageType === 's3') {
-    const accessKey = config.s3AccessKeyEncrypted
-      ? decrypt(config.s3AccessKeyEncrypted, encryptionKey)
-      : '';
-    const secretKey = config.s3SecretKeyEncrypted
-      ? decrypt(config.s3SecretKeyEncrypted, encryptionKey)
-      : '';
-    const endpoint = config.s3Endpoint ?? '';
-    const bucket = config.s3Bucket ?? '';
-    const prefix = config.s3Prefix ? `${config.s3Prefix}/mail-snapshots` : 'mail-snapshots';
-    // restic S3 URL: s3:https://endpoint/bucket/prefix
-    const repoUrl = endpoint
-      ? `s3:${endpoint}/${bucket}/${prefix}`
-      : `s3:s3.amazonaws.com/${bucket}/${prefix}`;
-    return {
-      RESTIC_REPOSITORY: repoUrl,
-      RESTIC_PASSWORD: resticPassword,
-      AWS_ACCESS_KEY_ID: accessKey,
-      AWS_SECRET_ACCESS_KEY: secretKey,
-    };
-  }
-
-  if (config.storageType === 'ssh') {
-    const sshHost = config.sshHost ?? '';
-    const sshPort = String(config.sshPort ?? 22);
-    const sshUser = config.sshUser ?? 'root';
-    // Normalise the path: strip trailing /mail-snapshots to avoid doubling.
-    const rawPath = config.sshPath ?? '/mail-snapshots';
-    const sshBasePath = rawPath.replace(/\/mail-snapshots\/?$/, '') || '/';
-    // restic SFTP URL: sftp:user@host:/base-path/mail-snapshots
-    const repoUrl = `sftp:${sshUser}@${sshHost}:${sshBasePath}/mail-snapshots`;
-    return {
-      RESTIC_REPOSITORY: repoUrl,
-      RESTIC_PASSWORD: resticPassword,
-      // restic uses SSH agent or known_hosts; key injection is out of scope
-      // for Phase 1 — SSH backup stores work when the host+port are reachable
-      // and the SFTP user allows password-less auth (key already provisioned).
-      SFTP_HOST: sshHost,
-      SFTP_PORT: sshPort,
-    };
-  }
-
-  if (config.storageType === 'cifs') {
-    // CIFS backup via systemd-mount at /mnt/stalwart-cifs-blobstore.
-    // restic uses the 'local' backend rooted at the CIFS mount path.
-    // This shares the same CIFS mount as the BlobStore (same share/path),
-    // but uses a sub-directory dedicated to snapshots to avoid collision.
-    const cifsPath = 'mail-snapshots';
-    return {
-      RESTIC_REPOSITORY: `/mnt/stalwart-cifs-blobstore/${cifsPath}`,
-      RESTIC_PASSWORD: resticPassword,
-    };
-  }
-
-  // hostpath — not applicable for restic (no remote endpoint)
-  return {
-    RESTIC_REPOSITORY: '',
-    RESTIC_PASSWORD: resticPassword,
-  };
-}
-
-async function applyResticSecret(
-  core: import('@kubernetes/client-node').CoreV1Api,
-  secretData: Record<string, string>,
-): Promise<void> {
-  const encoded: Record<string, string> = {};
-  for (const [k, v] of Object.entries(secretData)) {
-    encoded[k] = Buffer.from(v).toString('base64');
-  }
-  const body = {
-    apiVersion: 'v1',
-    kind: 'Secret',
-    metadata: { name: RESTIC_SECRET_NAME, namespace: MAIL_NAMESPACE },
-    type: 'Opaque',
-    data: encoded,
-  };
-  try {
-    // Try update first, then create.
-    await core.replaceNamespacedSecret({
-      namespace: MAIL_NAMESPACE,
-      name: RESTIC_SECRET_NAME,
-      body: body as unknown as object,
-    });
-  } catch (updateErr) {
-    if (!isNotFound(updateErr)) throw updateErr;
-    // backup-coverage: excluded:cluster-infrastructure
-    await core.createNamespacedSecret({
-      namespace: MAIL_NAMESPACE,
-      body: body as unknown as object,
-    });
-  }
-}
-
-async function deleteResticSecret(
-  core: import('@kubernetes/client-node').CoreV1Api,
-): Promise<void> {
-  try {
-    await core.deleteNamespacedSecret({
-      namespace: MAIL_NAMESPACE,
-      name: RESTIC_SECRET_NAME,
-    });
-  } catch (err) {
-    if (!isNotFound(err)) throw err;
-    // Already gone — fine.
-  }
-}
+// Helpers `buildResticSecretData`, `applyResticSecret`, `deleteResticSecret`,
+// and `getOrCreateResticPassword` moved to mail-target-sync.ts as part of
+// migration 0010 (mail target binding now lives on snapshot class system_mail).
+// Local references in this file go through syncMailResticSecretFromAssignment.
