@@ -270,6 +270,11 @@ export const hostingPlans = pgTable('hosting_plans', {
   maxSnapshotSizeBytes: bigint('max_snapshot_size_bytes', { mode: 'number' }).notNull().default(53687091200),
   maxSnapshotCount: integer('max_snapshot_count').notNull().default(10),
   maxSnapshotRetentionDays: integer('max_snapshot_retention_days').notNull().default(90),
+  // Phase A.1 of backup UI consolidation: tenant-bundle cron iterates
+  // tenants whose plan has this on (or who override it per-tenant).
+  // Default TRUE so paid plans are included automatically; freemium /
+  // trial plans can flip to FALSE if needed.
+  includeInScheduledBundles: boolean('include_in_scheduled_bundles').notNull().default(true),
   features: jsonb('features').$type<Record<string, unknown>>(),
   status: planStatusEnum().notNull().default('active'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -310,6 +315,10 @@ export const tenants = pgTable('tenants', {
   storageLimitOverride: numeric('storage_limit_override', { precision: 10, scale: 2 }),
   maxSubUsersOverride: integer('max_sub_users_override'),
   monthlyPriceOverride: numeric('monthly_price_override', { precision: 10, scale: 2 }),
+  // Phase A.1 of backup UI consolidation: per-tenant override.
+  // NULL = inherit hosting_plans.include_in_scheduled_bundles.
+  // TRUE/FALSE = explicit override regardless of plan default.
+  includeInScheduledBundlesOverride: boolean('include_in_scheduled_bundles'),
   // Phase 1 (tenant-panel email parity round 2): per-customer
   // mailbox count override. null = inherit from the plan's
   // max_mailboxes. Used by the limit check in mailboxes/service.ts.
@@ -2327,6 +2336,30 @@ export const backupTargetAssignments = pgTable('backup_target_assignments', {
 
 export type BackupTargetAssignment = typeof backupTargetAssignments.$inferSelect;
 export type NewBackupTargetAssignment = typeof backupTargetAssignments.$inferInsert;
+
+// ─── backup_schedules (Phase A.1 of UI consolidation, migration 0011) ──
+//
+// One row per subsystem. Tracks {enabled, cron, retention} so every
+// backup schedule has the same shape. The /admin/backups/schedules
+// CRUD enforces strict-gate: `enabled=true` is refused until the
+// relevant snapshot_class has at least one target assignment.
+//
+// Subsystems seeded by 0011: mail, tenant_bundle, system_pitr,
+// longhorn_recurring. New subsystems can be added without schema
+// migration since `subsystem` is free-form varchar.
+
+export const backupSchedules = pgTable('backup_schedules', {
+  subsystem: varchar('subsystem', { length: 64 }).primaryKey(),
+  enabled: boolean('enabled').notNull().default(false),
+  cronExpression: varchar('cron_expression', { length: 128 }),
+  retentionDays: integer('retention_days'),
+  retentionCount: integer('retention_count'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: varchar('updated_by', { length: 36 }),
+});
+
+export type BackupSchedule = typeof backupSchedules.$inferSelect;
+export type NewBackupSchedule = typeof backupSchedules.$inferInsert;
 
 // ─── Tenant lifecycle hook registry (migration 0069) ───
 //

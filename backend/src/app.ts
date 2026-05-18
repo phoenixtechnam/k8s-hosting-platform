@@ -86,6 +86,8 @@ import { buildSecurityHardeningRoutes } from './modules/security-hardening/route
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { snapshotClassesRoutes } from './modules/snapshot-classes/routes.js';
+import { backupSchedulesRoutes } from './modules/backup-schedules/routes.js';
+import { backupsOverviewRoutes } from './modules/backups-overview/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
 import { taskCenterRoutes } from './modules/tasks/routes.js';
 import { startTaskRetention } from './modules/tasks/retention.js';
@@ -430,6 +432,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
   await app.register(storageLifecycleRoutes, { prefix: '/api/v1' });
   await app.register(snapshotClassesRoutes, { prefix: '/api/v1' });
+  await app.register(backupSchedulesRoutes, { prefix: '/api/v1' });
+  await app.register(backupsOverviewRoutes, { prefix: '/api/v1' });
   await app.register(oidcRoutes, { prefix: '/api/v1' });
   await app.register(dnsServerRoutes, { prefix: '/api/v1' });
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });
@@ -715,6 +719,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => clearInterval(scheduleTimer));
       } catch (err) {
         app.log.warn({ err }, 'tenant-backup schedule: scheduler startup skipped');
+      }
+
+      // Phase A.4 of the backup UI consolidation: system-wide
+      // tenant-bundle scheduler. Reads backup_schedules.tenant_bundle
+      // and iterates all tenants whose plan (or per-tenant override)
+      // sets include_in_scheduled_bundles=TRUE. SYSTEM tenant
+      // participates. Coexists with the legacy per-tenant scheduler
+      // above for one release; legacy rows still fire from there.
+      try {
+        const { startGlobalBundleScheduler } = await import('./modules/tenant-bundles/global-scheduler.js');
+        const globalTimer = startGlobalBundleScheduler(app);
+        app.addHook('onClose', () => clearInterval(globalTimer));
+      } catch (err) {
+        app.log.warn({ err }, 'tenant-bundle global scheduler: startup skipped');
       }
 
       // System Backup sweeper (Phase 2.4c) — orphan-pending flip

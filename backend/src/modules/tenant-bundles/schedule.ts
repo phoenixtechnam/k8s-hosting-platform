@@ -115,7 +115,7 @@ export async function runScheduleTick(app: FastifyInstance): Promise<ScheduleTic
   return { considered, ranBundles, errors };
 }
 
-async function runOneScheduledBundle(app: FastifyInstance, tenantId: string, retentionDays: number): Promise<void> {
+export async function runOneScheduledBundle(app: FastifyInstance, tenantId: string, retentionDays: number): Promise<void> {
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.active, true)).limit(1);
   if (!cfg) throw new Error('no active backup target — schedule cannot fire');
 

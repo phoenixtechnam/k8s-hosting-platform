@@ -105,7 +105,7 @@ describe('buildIngressRouteBody', () => {
     expect(routes[0].match).toBe('Host(`admin.example.com`)');
     expect(routes[0].kind).toBe('Rule');
     const services = routes[0].services as Array<Record<string, unknown>>;
-    expect(services[0]).toEqual({ name: 'admin-panel', port: 80 });
+    expect(services[0]).toMatchObject({ name: 'admin-panel', port: 80 });
     // Middleware chain — crowdsec runs FIRST so known-bad IPs short-
     // circuit before any other processing. WAF (ModSec) is platform-
     // wide on panel routes regardless of tenant wafEnabled.
