@@ -75,7 +75,7 @@ describe('EditTenantModal', () => {
   it('renders form with heading when open', () => {
     renderEditModal(true);
     expect(screen.getByTestId('edit-tenant-modal')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Edit Client' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Edit Tenant' })).toBeInTheDocument();
   });
 
   it('pre-fills fields with current tenant data', () => {

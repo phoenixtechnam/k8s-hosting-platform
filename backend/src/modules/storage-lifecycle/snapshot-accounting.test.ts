@@ -15,8 +15,8 @@ async function insertTenant(tenantId: string, name: string): Promise<void> {
   // Plan + region rows are FK targets — reuse whatever the migrations
   // seeded. If they're missing we synthesise minimal rows.
   await db.execute(sql`
-    INSERT INTO regions (id, code, name, created_at)
-    VALUES ('region-test', 'test', 'Test', NOW())
+    INSERT INTO regions (id, code, name, provider, status, created_at)
+    VALUES ('region-test', 'test', 'Test', 'hetzner', 'active', NOW())
     ON CONFLICT (id) DO NOTHING
   `);
   await db.execute(sql`

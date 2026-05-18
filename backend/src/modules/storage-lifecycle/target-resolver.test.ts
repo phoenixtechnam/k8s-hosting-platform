@@ -43,7 +43,7 @@ describe.skipIf(!dbAvailable)('target-resolver', () => {
   it('resolveTargetFor throws NO_SNAPSHOT_TARGET when unassigned', async () => {
     await expect(resolveTargetFor(db, 'tenant_snapshot')).rejects.toMatchObject({
       code: 'NO_SNAPSHOT_TARGET',
-      statusCode: 409,
+      status: 409,
     });
   });
 

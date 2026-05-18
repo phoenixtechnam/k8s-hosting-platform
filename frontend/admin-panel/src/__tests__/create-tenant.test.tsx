@@ -33,15 +33,23 @@ describe('CreateTenantModal', () => {
 
   it('has required form fields', () => {
     renderModal(true);
-    expect(screen.getByTestId('company-name-input')).toBeRequired();
-    expect(screen.getByTestId('company-email-input')).toBeRequired();
+    // Updated to match the post-tenant-rename test ids in
+    // CreateTenantModal.tsx (tenant-*-input not company-*-input).
+    // Region is no longer surfaced in the form — auto-assigned to
+    // the platform-apex region server-side, so dropped from the test.
+    expect(screen.getByTestId('tenant-name-input')).toBeRequired();
+    expect(screen.getByTestId('primary-email-input')).toBeRequired();
     expect(screen.getByTestId('plan-select')).toBeRequired();
-    expect(screen.getByTestId('region-select')).toBeRequired();
   });
 
-  it('has optional contact email field', () => {
+  it('renders contact name field (UI-required, optional at API)', () => {
     renderModal(true);
-    expect(screen.getByTestId('contact-email-input')).not.toBeRequired();
+    // The form enforces contact-name via HTML `required`, but the API
+    // contract treats it as optional (see api-contracts/tenants.ts
+    // CreateTenantInput — contact_name is .optional()). The UI is the
+    // stricter source of truth for human operators; integration tests
+    // and scripted creates can omit and backfill later.
+    expect(screen.getByTestId('contact-name-input')).toBeRequired();
   });
 
   it('has submit and cancel buttons', () => {
@@ -50,11 +58,9 @@ describe('CreateTenantModal', () => {
     expect(screen.getByText('Cancel')).toBeInTheDocument();
   });
 
-  it('shows plan and region dropdowns', () => {
+  it('shows plan dropdown', () => {
     renderModal(true);
     expect(screen.getByTestId('plan-select')).toBeInTheDocument();
     expect(screen.getByText('Select plan...')).toBeInTheDocument();
-    expect(screen.getByTestId('region-select')).toBeInTheDocument();
-    expect(screen.getByText('Select region...')).toBeInTheDocument();
   });
 });
