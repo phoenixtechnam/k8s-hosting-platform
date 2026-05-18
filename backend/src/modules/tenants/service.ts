@@ -904,6 +904,11 @@ export async function updateTenant(
   if (input.max_mailboxes_override !== undefined) updateValues.maxMailboxesOverride = input.max_mailboxes_override;
   if (input.monthly_price_override !== undefined) updateValues.monthlyPriceOverride = input.monthly_price_override === null ? null : String(input.monthly_price_override);
   if (input.email_send_rate_limit !== undefined) updateValues.emailSendRateLimit = input.email_send_rate_limit;
+  // Phase A.1 of backup UI consolidation: per-tenant include override.
+  // null = inherit plan default; true/false = explicit override.
+  if (input.include_in_scheduled_bundles_override !== undefined) {
+    updateValues.includeInScheduledBundlesOverride = input.include_in_scheduled_bundles_override;
+  }
   // M5: re-pin a tenant to a different worker. M3 plumbing makes the
   // next deploy apply the pin; existing pods keep running on their
   // current node until a migration (M6) or scheduler-triggered

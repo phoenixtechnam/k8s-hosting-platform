@@ -254,18 +254,10 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/backups" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="backup-settings-link">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400"><HardDrive size={20} /></div>
-          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Backup Configuration</h2><p className="text-sm text-gray-500 dark:text-gray-400">Configure SSH and S3 backup storage targets</p></div>
-        </div>
-        <ChevronRight size={20} className="text-gray-400" />
-      </Link>
-
-      <Link to="/settings/backup-classes" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="backup-classes-link">
+      <Link to="/settings/backup-infrastructure" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="backup-infrastructure-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400"><GitBranch size={20} /></div>
-          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Backup Class Assignments</h2><p className="text-sm text-gray-500 dark:text-gray-400">Route each backup class (tenant snapshot, tenant bundle, system backup) to a backup target</p></div>
+          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Backup Infrastructure</h2><p className="text-sm text-gray-500 dark:text-gray-400">Targets (S3/SSH/CIFS) + class routing (tenant snapshot / bundle / system / mail) — 2-tab page</p></div>
         </div>
         <ChevronRight size={20} className="text-gray-400" />
       </Link>

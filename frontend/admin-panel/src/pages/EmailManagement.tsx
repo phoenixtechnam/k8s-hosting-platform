@@ -23,7 +23,6 @@ import MailStorageCard from '@/components/MailStorageCard';
 import StalwartBlobStoreCard from '@/components/StalwartBlobStoreCard';
 import MailDrCard from '@/components/MailDrCard';
 import MailPortExposureCard from '@/components/MailPortExposureCard';
-import MailSnapshotHealthCard from '@/components/MailSnapshotHealthCard';
 import MailArchiveCard from '@/components/MailArchiveCard';
 import MailHealthBanner from '@/components/MailHealthBanner';
 import MailSectionCard from '@/components/MailSectionCard';
@@ -219,7 +218,17 @@ export default function EmailManagement() {
                 </button>
               ))}
             </div>
-            {backupTab === 'snapshot' && <MailSnapshotHealthCard />}
+            {backupTab === 'snapshot' && (
+              <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Mail snapshot health, restic stats, schedule + Trigger Now have moved to{' '}
+                  <a href="/backups/system?tab=object" className="font-medium text-brand-600 dark:text-brand-400 hover:underline">
+                    System Backups → Object Backups
+                  </a>{' '}
+                  alongside the other system-side backup paths.
+                </p>
+              </div>
+            )}
             {backupTab === 'archive' && <MailArchiveCard />}
           </div>
         )}
