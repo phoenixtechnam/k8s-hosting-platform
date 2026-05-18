@@ -141,4 +141,10 @@ describe('NSENTER_BASH_ARGV', () => {
     // exits 127 and the fallback never fires).
     expect(argv[idx + 3]).toMatch(/\[ -x \/bin\/bash \].*exec \/bin\/bash.*exec \/bin\/sh/);
   });
+
+  it('exports TERM=xterm-256color so TUI programs render correctly', () => {
+    const argv = NSENTER_BASH_ARGV;
+    const idx = argv.indexOf('--');
+    expect(argv[idx + 3]).toMatch(/TERM=xterm-256color/);
+  });
 });

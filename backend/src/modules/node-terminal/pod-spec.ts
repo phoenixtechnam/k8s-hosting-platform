@@ -176,5 +176,10 @@ export const NSENTER_BASH_ARGV: readonly string[] = [
   // when the target exists; the `command -v` check avoids the
   // "exec: not found → exit 127" failure mode that swallows the
   // fallback when /bin/bash is missing (k3s, busybox, embedded).
-  '{ [ -x /bin/bash ] && exec /bin/bash -l; } ; exec /bin/sh -l',
+  //
+  // TERM=xterm-256color so xterm.js renders full-screen TUI programs
+  // (top, htop, vim, less, …) with colour + correct line-drawing
+  // escape sequences. Without an explicit TERM, kubectl-exec defaults
+  // to "dumb" and the host shell strips ANSI sequences from output.
+  'export TERM=xterm-256color; { [ -x /bin/bash ] && exec /bin/bash -l; } ; exec /bin/sh -l',
 ];

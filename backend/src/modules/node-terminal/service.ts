@@ -339,6 +339,40 @@ export async function attachExec(
   const stdin = new PassThrough();
   let closed = false;
 
+  // Resize forwarding to kubelet. The k8s exec WebSocket multiplexes
+  // streams over channel-prefixed frames (V4 protocol):
+  //   channel 0 = stdin
+  //   channel 1 = stdout
+  //   channel 2 = stderr
+  //   channel 3 = error
+  //   channel 4 = resize  ← JSON {"Width": cols, "Height": rows}
+  //
+  // @kubernetes/client-node does NOT auto-forward terminal size — the
+  // PassThrough streams above only carry stdin/stdout/stderr. Without
+  // this, programs like top/htop start at the default 80x24 and never
+  // resize, even when xterm sends fresh resize frames on every layout
+  // change.
+  let wsConn: { close?: () => void; send?: (data: Buffer) => void } | undefined;
+  // Wrapped in an object so the closure write in sendResizeToKubelet
+  // propagates through TS's control-flow analysis on later reads.
+  const pending: { resize: { cols: number; rows: number } | null } = { resize: null };
+
+  const sendResizeToKubelet = (cols: number, rows: number): void => {
+    if (!wsConn?.send) {
+      // Exec stream not ready yet — buffer the latest size; we'll
+      // flush it once `await exec.exec()` resolves below.
+      pending.resize = { cols, rows };
+      return;
+    }
+    // Reject ridiculous sizes — k8s caps at uint16 in practice.
+    if (cols < 1 || rows < 1 || cols > 10_000 || rows > 10_000) return;
+    const payload = `{"Width":${cols},"Height":${rows}}`;
+    const buf = Buffer.alloc(1 + Buffer.byteLength(payload, 'utf8'));
+    buf[0] = 4; // resize channel
+    buf.write(payload, 1, 'utf8');
+    try { wsConn.send(buf); } catch { /* socket may have closed concurrently */ }
+  };
+
   // Wire the stdin handler BEFORE the 'connected' frame goes out so
   // any data the client sends in response to that frame isn't lost in
   // the gap between connect-ack and exec-stream-attach. The
@@ -359,9 +393,7 @@ export async function attachExec(
       }
       if (parsed.type === 'resize' && typeof parsed.cols === 'number' && typeof parsed.rows === 'number') {
         markActivity(sessionId);
-        // k8s exec resize is managed internally by @kubernetes/client-node
-        // when tty=true. We intentionally accept and discard — the field
-        // is forward-compatible for clients that expect ack frames.
+        sendResizeToKubelet(parsed.cols, parsed.rows);
         return;
       }
       // Any other frame (ping/pong/etc.) is silently accepted but does
@@ -397,7 +429,6 @@ export async function attachExec(
   socket.on('close', () => { void finalize('client_close'); });
   socket.on('error', () => { void finalize('error'); });
 
-  let wsConn: { close?: () => void } | undefined;
   try {
     const exec = new k8s.Exec(ctx.kubeConfig);
     wsConn = await exec.exec(
@@ -411,7 +442,14 @@ export async function attachExec(
       stderr,
       stdin,
       true, // tty
-    ) as { close?: () => void };
+    ) as { close?: () => void; send?: (data: Buffer) => void };
+    // Flush any resize that arrived between the WS upgrade and the
+    // exec stream becoming ready.
+    if (pending.resize) {
+      const { cols, rows } = pending.resize;
+      pending.resize = null;
+      sendResizeToKubelet(cols, rows);
+    }
   } catch (err) {
     sendFrame(socket, {
       type: 'error',
