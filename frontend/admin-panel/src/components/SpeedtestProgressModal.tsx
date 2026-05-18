@@ -73,9 +73,22 @@ export default function SpeedtestProgressModal({
     const poll = async () => {
       try {
         // The /me/tasks endpoint filters to the current user's tasks.
-        // We look up the row by refId === operationId.
+        // When operationId is set, lock on by refId. Otherwise (the
+        // proactive-open case before POST returns), fall back to the
+        // most-recently-started backup.speedtest task — usually the
+        // one we just kicked off; the modal re-locks via operationId
+        // once the parent passes it in.
         const resp = await apiFetch<{ data: { tasks: TaskRow[] } }>('/api/v1/me/tasks');
-        const row = resp?.data?.tasks?.find((t) => t.refId === operationId) ?? null;
+        const tasks = resp?.data?.tasks ?? [];
+        let row: TaskRow | null;
+        if (operationId) {
+          row = tasks.find((t) => t.refId === operationId) ?? null;
+        } else {
+          // Sort newest-first; pick the latest backup.speedtest task.
+          const speedtests = tasks.filter((t) => t.kind === 'backup.speedtest');
+          speedtests.sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''));
+          row = speedtests[0] ?? null;
+        }
         if (!stopped) setTask(row);
 
         // Also refresh the backup-config row to surface persisted results.

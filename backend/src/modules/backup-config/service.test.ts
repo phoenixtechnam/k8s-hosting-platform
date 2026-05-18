@@ -16,6 +16,17 @@ vi.mock('@aws-sdk/client-s3', () => ({
   },
 }));
 
+// Mock the SSH + CIFS probes so testConnection doesn't actually dial
+// the network in unit tests. Each probe is replaced with a function
+// that returns ok=true with a small latency, mirroring what a healthy
+// probe would return.
+vi.mock('./ssh-probe.js', () => ({
+  probeSsh: vi.fn().mockResolvedValue({ ok: true, latencyMs: 42 }),
+}));
+vi.mock('./cifs-probe.js', () => ({
+  probeCifs: vi.fn().mockResolvedValue({ ok: true, latencyMs: 11 }),
+}));
+
 const {
   createBackupConfig,
   listBackupConfigs,
