@@ -119,6 +119,11 @@ export const updateTenantSchema = z.object({
   // into the destructive path; the orchestrator still verifies the
   // current usedBytes fits in the new size with a 10% buffer.
   confirm_destructive_shrink: z.boolean().optional(),
+  // Phase A.1 of backup UI consolidation: per-tenant override of the
+  // plan's include_in_scheduled_bundles. null clears the override
+  // (tenant inherits the plan default); true/false explicitly opt
+  // in/out regardless of plan.
+  include_in_scheduled_bundles_override: z.boolean().nullable().optional(),
 });
 
 // ─── Response Schemas (what the backend returns) ─────────────────────────────

@@ -10,7 +10,9 @@ import Tenants from '@/pages/Tenants';
 import TenantDetail from '@/pages/TenantDetail';
 import Domains from '@/pages/Domains';
 import Monitoring from '@/pages/Monitoring';
-import Storage from '@/pages/Storage';
+import SystemBackups from '@/pages/SystemBackups';
+import TenantBackups from '@/pages/TenantBackups';
+import TenantBackupDetail from '@/pages/TenantBackupDetail';
 import CronJobs from '@/pages/CronJobs';
 import Settings from '@/pages/Settings';
 import Applications from '@/pages/Applications';
@@ -20,12 +22,8 @@ import DomainDetail from '@/pages/DomainDetail';
 import OidcSettings from '@/pages/OidcSettings';
 import DnsServers from '@/pages/DnsServers';
 import PlanManagement from '@/pages/PlanManagement';
-import BackupSettings from '@/pages/BackupSettings';
-import SnapshotClassAssignments from '@/pages/SnapshotClassAssignments';
-import SystemBackupPage from '@/pages/SystemBackup/SystemBackupPage';
+import BackupInfrastructure from '@/pages/BackupInfrastructure';
 import RestoreCartPage from '@/pages/RestoreCart';
-import RestoreCartsList from '@/pages/RestoreCartsList';
-import TenantBackup from '@/pages/TenantBackup';
 import AdminUsers from '@/pages/AdminUsers';
 import HealthDashboard from '@/pages/HealthDashboard';
 import ExportImport from '@/pages/ExportImport';
@@ -95,7 +93,9 @@ export default function App() {
             <Route path="domains" element={<Domains />} />
             <Route path="tenants/:tenantId/domains/:domainId" element={<DomainDetail />} />
             <Route path="applications" element={<Applications />} />
-            <Route path="storage" element={<Storage />} />
+            <Route path="backups/system" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SystemBackups /></ProtectedRoute>} />
+            <Route path="backups/tenants" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantBackups /></ProtectedRoute>} />
+            <Route path="backups/tenants/:tenantId" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantBackupDetail /></ProtectedRoute>} />
             <Route path="cron-jobs" element={<CronJobs />} />
             <Route path="security" element={<Security />} />
             <Route path="monitoring" element={<Monitoring />} />
@@ -105,14 +105,9 @@ export default function App() {
             <Route path="settings/dns" element={<DnsServers />} />
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
-            <Route path="settings/backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupSettings /></ProtectedRoute>} />
-            <Route path="settings/backup-classes" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SnapshotClassAssignments /></ProtectedRoute>} />
-            {/* Legacy redirect — the page was called "Snapshot Class Assignments" before. */}
-            <Route path="settings/snapshot-classes" element={<Navigate to="/settings/backup-classes" replace />} />
+            <Route path="settings/backup-infrastructure" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupInfrastructure /></ProtectedRoute>} />
+            {/* Restore Cart kept as drill-in flow off /backups/tenants/:id. */}
             <Route path="restore" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartPage /></ProtectedRoute>} />
-            <Route path="restores" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartsList /></ProtectedRoute>} />
-            <Route path="tenant-backup" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantBackup /></ProtectedRoute>} />
-            <Route path="system-backup" element={<ProtectedRoute allowedRoles={['super_admin']}><SystemBackupPage /></ProtectedRoute>} />
             <Route path="nodes-and-storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesAndStorage /></ProtectedRoute>} />
             {/* Legacy direct-link compatibility: redirect to the new top-level page with the matching tab pre-selected. */}
             <Route path="settings/nodes-and-storage" element={<Navigate to="/nodes-and-storage" replace />} />
