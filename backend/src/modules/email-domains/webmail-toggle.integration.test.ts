@@ -34,7 +34,10 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
     tenantId = tenant.id;
   });
 
-  it('enableEmailForDomain publishes a webmail.<domain> A record by default', async () => {
+  // 2026-05-18: per-tenant webmail defaults OFF. The test was inverted
+  // from "publishes by default" to "no record published by default,
+  // opt-in publishes it" to match the new contract.
+  it('enableEmailForDomain does NOT publish webmail.<domain> A record by default', async () => {
     const db = getTestDb();
     const domain = await seedDomain(db, tenantId, { domainName: 'webmail-test.example.com' });
     await enableEmailForDomain(
@@ -53,6 +56,28 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
     const webmailRecord = records.find(
       (r) => r.recordType === 'A' && r.recordName === 'webmail.webmail-test.example.com',
     );
+    expect(webmailRecord).toBeUndefined();
+  });
+
+  it('enableEmailForDomain with webmail_enabled=true publishes the webmail A record (opt-in)', async () => {
+    const db = getTestDb();
+    const domain = await seedDomain(db, tenantId, { domainName: 'webmail-optin.example.com' });
+    await enableEmailForDomain(
+      db as never,
+      tenantId,
+      domain.id,
+      { webmail_enabled: true } as never,
+      '0'.repeat(64),
+    );
+
+    const records = await db
+      .select()
+      .from(dnsRecords)
+      .where(eq(dnsRecords.domainId, domain.id));
+
+    const webmailRecord = records.find(
+      (r) => r.recordType === 'A' && r.recordName === 'webmail.webmail-optin.example.com',
+    );
     expect(webmailRecord).toBeDefined();
     expect(webmailRecord?.recordValue).toBeTruthy();
   });
@@ -64,7 +89,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       db as never,
       tenantId,
       domain.id,
-      {},
+      { webmail_enabled: true } as never,
       '0'.repeat(64),
     );
 
@@ -103,7 +128,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       db as never,
       tenantId,
       domain.id,
-      {},
+      { webmail_enabled: true } as never,
       '0'.repeat(64),
     );
 
@@ -168,7 +193,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       db as never,
       tenantId,
       domain.id,
-      {},
+      { webmail_enabled: true } as never,
       '0'.repeat(64),
     );
 
@@ -205,7 +230,7 @@ describe.skipIf(!dbAvailable)('Email domain webmail DNS toggle (integration)', (
       db as never,
       tenantId,
       domain.id,
-      {},
+      { webmail_enabled: true } as never,
       '0'.repeat(64),
     );
 

@@ -2,7 +2,8 @@ import { eq, and, sql } from 'drizzle-orm';
 import { emailDomains, domains, mailboxes, tenants, emailAliases, dnsRecords } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
-import { getMailServerHostname } from '../webmail-settings/service.js';
+import { getMailServerHostname, getDefaultWebmailEngine } from '../webmail-settings/service.js';
+import { serviceNameForEngine } from '../webmail-router/reconciler.js';
 import { notifyTenantEmailBootstrapped } from '../notifications/events.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 
@@ -719,8 +720,21 @@ export async function ensureWebmailIngress(
   const ingressName = `${safeName}-ingress`;
   const externalSvcName = `${safeName}-upstream`;
 
-  // Step 1: ensure the ExternalName service that points at the shared
-  // Roundcube service in the mail namespace
+  // Step 1: ensure the ExternalName service that points at the
+  // currently-active webmail engine Service in the `mail` namespace.
+  //
+  // 2026-05-18: ExternalName used to be hardcoded to
+  // `roundcube.mail.svc.cluster.local`. When the operator flipped the
+  // platform default engine to Bulwark (and the Roundcube Deployment
+  // was scaled to 0 by `reconcileEngineDeployments`), every per-tenant
+  // webmail.<clientdomain> route went dark while the platform-wide
+  // webmail.<apex> URL kept working. We now resolve the active engine
+  // the same way the webmail-router does, and a parallel periodic
+  // reconciler (startPerTenantWebmailRouter) re-applies this Ingress
+  // on every engine flip so the ExternalName follows.
+  const activeEngine = await getDefaultWebmailEngine(db);
+  const engineServiceName = serviceNameForEngine(activeEngine);
+  const externalName = `${engineServiceName}.mail.svc.cluster.local`;
   const externalSvcBody = {
     metadata: {
       name: externalSvcName,
@@ -729,11 +743,16 @@ export async function ensureWebmailIngress(
         'app.kubernetes.io/part-of': 'hosting-platform',
         'app.kubernetes.io/component': 'webmail-upstream',
         'app.kubernetes.io/managed-by': 'k8s-hosting-platform',
+        // Stamp the engine so a quick `kubectl get svc -l ...` shows
+        // which engine each per-tenant route currently targets. The
+        // reconciler reads this label to detect drift cheaply
+        // (label compare beats reading + diffing the full spec).
+        'platform.phoenix-host.net/webmail-engine': activeEngine,
       },
     },
     spec: {
       type: 'ExternalName',
-      externalName: 'roundcube.mail.svc.cluster.local',
+      externalName,
       ports: [{ port: 80, targetPort: 80, protocol: 'TCP', name: 'http' }],
     },
   };

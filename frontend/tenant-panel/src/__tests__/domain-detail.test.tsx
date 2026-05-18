@@ -113,6 +113,76 @@ describe('Client DomainDetail page', () => {
     await waitFor(() => expect(screen.getByTestId('domain-not-found')).toBeInTheDocument());
   });
 
+  // 2026-05-18: read-only managed-webmail row on the Routing tab.
+  // Renders only when the email_domain row for this domain has
+  // webmailEnabled === 1; otherwise hidden.
+  it('renders the managed-webmail row on the Routing tab when per-domain webmail is enabled', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url.includes('/email/domains'))
+        return Promise.resolve({
+          data: [
+            {
+              id: 'ed1',
+              domainId: 'd1',
+              domainName: 'example.com',
+              enabled: 1,
+              webmailEnabled: 1,
+              webmailStatus: 'ready',
+              maxMailboxes: 0,
+              maxQuotaMb: 0,
+            },
+          ],
+        });
+      if (url.includes('/platform/ingress-base-domain'))
+        return Promise.resolve({ data: { ingressBaseDomain: 'ingress.platform.net' } });
+      if (url.includes('/domains') && !url.includes('/dns-records'))
+        return Promise.resolve({
+          data: [MOCK_DOMAIN],
+          pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 },
+        });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<DomainDetail />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('domain-name-heading')).toHaveTextContent('example.com'));
+
+    const row = await screen.findByTestId('managed-webmail-row');
+    expect(row).toBeInTheDocument();
+    expect(screen.getByTestId('managed-webmail-hostname')).toHaveTextContent('webmail.example.com');
+    expect(screen.getByTestId('managed-webmail-status')).toHaveTextContent('Ready');
+  });
+
+  it('hides the managed-webmail row when per-domain webmail is NOT enabled (post-2026-05-18 default)', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url.includes('/email/domains'))
+        return Promise.resolve({
+          data: [
+            {
+              id: 'ed1',
+              domainId: 'd1',
+              domainName: 'example.com',
+              enabled: 1,
+              webmailEnabled: 0,
+              maxMailboxes: 0,
+              maxQuotaMb: 0,
+            },
+          ],
+        });
+      if (url.includes('/platform/ingress-base-domain'))
+        return Promise.resolve({ data: { ingressBaseDomain: 'ingress.platform.net' } });
+      if (url.includes('/domains') && !url.includes('/dns-records'))
+        return Promise.resolve({
+          data: [MOCK_DOMAIN],
+          pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 },
+        });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<DomainDetail />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('routing-tab')).toBeInTheDocument());
+    expect(screen.queryByTestId('managed-webmail-row')).not.toBeInTheDocument();
+  });
+
   it('delete modal renders the cascade preview with DNS records, mailboxes, aliases, ingress routes and webmail hostname', async () => {
     setupMocks();
     const user = userEvent.setup();

@@ -29,6 +29,9 @@
 import { eq, inArray } from 'drizzle-orm';
 import { emailDomains, domains, tenants } from '../../db/schema.js';
 import { certificateNameFor } from '../certificates/service.js';
+import { getDefaultWebmailEngine } from '../webmail-settings/service.js';
+import { serviceNameForEngine } from '../webmail-router/reconciler.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -157,6 +160,121 @@ export async function reconcileWebmailCertificates(
 }
 
 /**
+ * 2026-05-18: re-target every per-tenant webmail.<clientdomain>
+ * ExternalName Service so it points at the currently-active webmail
+ * engine (Roundcube or Bulwark), matching the behaviour of the
+ * platform-wide webmail-router for `webmail.<apex>`.
+ *
+ * Before this reconciler, `ensureWebmailIngress` published an
+ * ExternalName Service hardcoded to `roundcube.mail.svc.cluster.local`
+ * — when the operator flipped the engine to Bulwark, Roundcube was
+ * scaled to 0 and every per-tenant route returned 503 until someone
+ * manually toggled `webmail_enabled` on each row.
+ *
+ * Drift detection is label-based for cheapness: each ExternalName
+ * Service carries `platform.phoenix-host.net/webmail-engine: <engine>`
+ * stamped by `ensureWebmailIngress`. If the label doesn't match the
+ * active engine, we MERGE_PATCH both the label and `spec.externalName`
+ * in a single API call. Pre-2026-05-18 Services missing the label are
+ * patched once and then converge.
+ *
+ * Missing ExternalName Service (e.g. delete-by-hand) triggers a full
+ * `ensureWebmailIngress` re-bootstrap. Disabled rows
+ * (`webmailEnabled !== 1`) are skipped.
+ */
+export const WEBMAIL_ENGINE_LABEL = 'platform.phoenix-host.net/webmail-engine';
+
+interface ExternalNameServiceShape {
+  metadata?: {
+    labels?: Record<string, string>;
+  };
+  spec?: {
+    externalName?: string;
+  };
+}
+
+export async function reconcilePerTenantWebmailEngineRouting(
+  db: Database,
+  k8s: K8sClients,
+): Promise<{ scanned: number; patched: number; rebuilt: number; errors: number }> {
+  const engine = await getDefaultWebmailEngine(db);
+  const expectedService = serviceNameForEngine(engine);
+  const expectedExternalName = `${expectedService}.mail.svc.cluster.local`;
+
+  const candidates = await db
+    .select({
+      id: emailDomains.id,
+      domainName: domains.domainName,
+      tenantNamespace: tenants.kubernetesNamespace,
+      webmailEnabled: emailDomains.webmailEnabled,
+    })
+    .from(emailDomains)
+    .innerJoin(domains, eq(emailDomains.domainId, domains.id))
+    .innerJoin(tenants, eq(emailDomains.tenantId, tenants.id))
+    .where(eq(emailDomains.webmailEnabled, 1));
+
+  let patched = 0;
+  let rebuilt = 0;
+  let errors = 0;
+
+  for (const row of candidates) {
+    const hostname = `webmail.${row.domainName}`;
+    const safeName = hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50);
+    const externalSvcName = `${safeName}-upstream`;
+    const namespace = row.tenantNamespace;
+
+    try {
+      let live: ExternalNameServiceShape;
+      try {
+        live = (await k8s.core.readNamespacedService({
+          namespace,
+          name: externalSvcName,
+        } as unknown as Parameters<typeof k8s.core.readNamespacedService>[0])) as ExternalNameServiceShape;
+      } catch (err) {
+        const statusCode = (err as { statusCode?: number; code?: number })?.statusCode
+          ?? (err as { code?: number })?.code;
+        if (statusCode === 404) {
+          // The ExternalName service was deleted out-of-band. Bootstrap
+          // the full Ingress + Service via the canonical path.
+          const { ensureWebmailIngress } = await import('./service.js');
+          await ensureWebmailIngress(db, k8s, row.id);
+          rebuilt += 1;
+          continue;
+        }
+        throw err;
+      }
+
+      const currentEngine = live.metadata?.labels?.[WEBMAIL_ENGINE_LABEL];
+      const currentExternalName = live.spec?.externalName;
+      if (currentEngine === engine && currentExternalName === expectedExternalName) {
+        continue;
+      }
+
+      await k8s.core.patchNamespacedService(
+        {
+          namespace,
+          name: externalSvcName,
+          body: {
+            metadata: { labels: { [WEBMAIL_ENGINE_LABEL]: engine } },
+            spec: { externalName: expectedExternalName },
+          },
+        } as unknown as Parameters<typeof k8s.core.patchNamespacedService>[0],
+        MERGE_PATCH,
+      );
+      patched += 1;
+    } catch (err) {
+      errors += 1;
+      console.warn(
+        `[webmail-reconciler] per-tenant engine reconcile failed for ${hostname}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  return { scanned: candidates.length, patched, rebuilt, errors };
+}
+
+/**
  * Start the webmail cert status reconciler on a 5-minute timer
  * (configurable via webmail_reconciler_interval_minutes platform
  * setting in a future iteration). The first pass runs after a 90s
@@ -184,6 +302,22 @@ export function startWebmailReconciler(
     } catch (err) {
       console.warn(
         '[webmail-reconciler] cycle error:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    // 2026-05-18: also re-target per-tenant webmail Ingresses to
+    // the active engine. Runs in the same tick (and same try-isolate
+    // pattern) so a failure in one pass doesn't block the other.
+    try {
+      const result = await reconcilePerTenantWebmailEngineRouting(db, k8s);
+      if (result.patched > 0 || result.rebuilt > 0 || result.errors > 0) {
+        console.log(
+          `[webmail-reconciler] per-tenant engine routing: scanned=${result.scanned} patched=${result.patched} rebuilt=${result.rebuilt} errors=${result.errors}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        '[webmail-reconciler] per-tenant engine routing error:',
         err instanceof Error ? err.message : String(err),
       );
     }
