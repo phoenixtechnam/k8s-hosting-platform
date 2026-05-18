@@ -532,8 +532,8 @@ fi
 # the new pin. With auto-fill (target=""), both clients should land
 # on node_name=null.
 log "── tenant-level pin propagation ──"
-LOCAL_DB_PIN=$(api GET "/tenants/$LOCAL_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
-HA_DB_PIN=$(api GET "/tenants/$HA_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
+LOCAL_DB_PIN=$(api GET "/tenants/$LOCAL_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('nodeName') or 'NULL')" 2>/dev/null)
+HA_DB_PIN=$(api GET "/tenants/$HA_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('nodeName') or 'NULL')" 2>/dev/null)
 [[ "$LOCAL_DB_PIN" == "NULL" ]] && ok "LOCAL clients.node_name cleared (auto-pin propagated to DB)" \
   || fail "LOCAL clients.node_name=$LOCAL_DB_PIN (expected NULL after auto re-pin)"
 [[ "$HA_DB_PIN"    == "NULL" ]] && ok "HA clients.node_name cleared" \

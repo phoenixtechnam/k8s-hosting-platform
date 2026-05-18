@@ -229,7 +229,9 @@ else
     -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
     -d "{\"name\":\"Passkey E2E $STAMP\",\"primary_email\":\"passkey-e2e-$STAMP@phoenix-host.net\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
   CID=$(echo "$CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
-  CLIENT_USER_PWD=$(echo "$CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['clientUser']['generatedPassword'])" 2>/dev/null || echo "")
+  # Field was renamed `clientUser` → `tenantUser` in api-contracts; the
+  # old name in this script returned empty and tripped the guard at L235.
+  CLIENT_USER_PWD=$(echo "$CREATE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['tenantUser']['generatedPassword'])" 2>/dev/null || echo "")
   CLIENT_USER_EMAIL="passkey-e2e-$STAMP@phoenix-host.net"
 
   if [[ -n "$CID" && -n "$CLIENT_USER_PWD" ]]; then

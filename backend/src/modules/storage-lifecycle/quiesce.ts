@@ -137,7 +137,13 @@ export async function waitForQuiesced(
   timeoutMs = 120_000,
 ): Promise<number> {
   const start = Date.now();
-  const listPods = async (): Promise<number> => {
+  // listPods returns the count and the pod-name+phase list for the
+  // remaining pods. The names are surfaced in the timeout error so
+  // operators can see WHICH workload didn't drain — the original
+  // "1 pod(s) still running" was useless when triaging the
+  // 2026-05-18 staging shrink failure.
+  type RemainingPod = { name: string; phase: string; owner: string | null };
+  const listPods = async (): Promise<RemainingPod[]> => {
     // Tenant namespaces are single-tenant dedicated — every non-Job
     // pod here could hold the PVC's RWO lock. The earlier label
     // filter (`platform.io/managed=true`) excluded system sidecars
@@ -146,18 +152,35 @@ export async function waitForQuiesced(
     // the mount was still bound. Include ALL non-succeeded,
     // non-completed pods.
     const pods = await k8s.core.listNamespacedPod({ namespace });
-    const items = (pods as { items?: Array<{ status?: { phase?: string } }> }).items ?? [];
+    const items = (pods as { items?: Array<{
+      metadata?: { name?: string; ownerReferences?: Array<{ kind?: string; name?: string }> };
+      status?: { phase?: string };
+    }> }).items ?? [];
     // Completed Jobs are a no-op for PVC lock — exclude them so we
     // don't hang forever on finished snapshot/restore Jobs.
-    return items.filter((p) => p.status?.phase !== 'Succeeded' && p.status?.phase !== 'Failed').length;
+    return items
+      .filter((p) => p.status?.phase !== 'Succeeded' && p.status?.phase !== 'Failed')
+      .map((p) => {
+        const owner = p.metadata?.ownerReferences?.[0];
+        return {
+          name: p.metadata?.name ?? '?',
+          phase: p.status?.phase ?? '?',
+          owner: owner ? `${owner.kind ?? '?'}/${owner.name ?? '?'}` : null,
+        };
+      });
   };
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const count = await listPods();
-    if (count === 0) return 0;
+    const remaining = await listPods();
+    if (remaining.length === 0) return 0;
     if (Date.now() - start > timeoutMs) {
-      throw new Error(`quiesce: ${count} pod(s) still running after ${timeoutMs}ms`);
+      const detail = remaining
+        .map((r) => `${r.name} (phase=${r.phase}${r.owner ? `, owner=${r.owner}` : ''})`)
+        .join('; ');
+      throw new Error(
+        `quiesce: ${remaining.length} pod(s) still running after ${timeoutMs}ms in ns=${namespace}: ${detail}`,
+      );
     }
     await new Promise((r) => setTimeout(r, 2000));
   }

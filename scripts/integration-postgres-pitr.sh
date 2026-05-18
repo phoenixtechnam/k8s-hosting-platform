@@ -256,7 +256,14 @@ if [[ "$LEAKED_VS" -gt 0 || "$LEAKED_VSC" -gt 0 || "$LEAKED_LH" -gt 0 ]]; then
     $KUBECTL delete "$vsc" --wait=false 2>&1 | tail -1
   done
   for lh in $($KUBECTL get snapshot.longhorn.io -n longhorn-system -o name 2>/dev/null | grep "pitr-handoff-"); do
-    $KUBECTL delete -n longhorn-system "$lh" 2>&1 | tail -1
+    # --wait=false + --timeout=30s: snapshot finalizers can hang
+    # indefinitely when the longhorn-manager controller isn't
+    # processing them (observed 2026-05-18: a stuck finalizer kept
+    # this call running for 6h41m, blocking the whole suite). Match
+    # the fire-and-forget semantics used by the VS / VSC cleanups
+    # above — the orphan-snapshot is best-effort cleanup, not a
+    # correctness gate.
+    $KUBECTL delete -n longhorn-system "$lh" --wait=false --timeout=30s 2>&1 | tail -1
   done
 else
   pass "no leaked VolumeSnapshots / VolumeSnapshotContents / longhorn snapshots"
