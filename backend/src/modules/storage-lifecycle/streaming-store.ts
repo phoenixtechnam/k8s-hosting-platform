@@ -1043,6 +1043,13 @@ export async function createEphemeralCredentialsSecret(
   secretName: string,
   data: Record<string, string>,
 ): Promise<string> {
+  // Per-Job rclone credentials Secret (Phase 12 of snapshot-storage).
+  // Holds plaintext rclone keys lifted from backup_configurations.*_
+  // encrypted columns; ownerReferences point at the Job so cluster GC
+  // reaps it when ttlSecondsAfterFinished fires. Orphan-sweep cron
+  // mops up GC misses within an hour. Ephemeral by design — losing
+  // it across a restore is correct (next snapshot Job creates fresh).
+  // backup-coverage: excluded:transient-restore-token
   await k8s.core.createNamespacedSecret({
     namespace,
     body: {
