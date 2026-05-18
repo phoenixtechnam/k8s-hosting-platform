@@ -99,7 +99,9 @@ export default function App() {
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
             <Route path="settings/backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupSettings /></ProtectedRoute>} />
-            <Route path="settings/snapshot-classes" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SnapshotClassAssignments /></ProtectedRoute>} />
+            <Route path="settings/backup-classes" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SnapshotClassAssignments /></ProtectedRoute>} />
+            {/* Legacy redirect — the page was called "Snapshot Class Assignments" before. */}
+            <Route path="settings/snapshot-classes" element={<Navigate to="/settings/backup-classes" replace />} />
             <Route path="restore" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartPage /></ProtectedRoute>} />
             <Route path="restores" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><RestoreCartsList /></ProtectedRoute>} />
             <Route path="tenant-backup" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><TenantBackup /></ProtectedRoute>} />

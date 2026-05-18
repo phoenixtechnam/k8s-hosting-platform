@@ -666,7 +666,7 @@ export default function BackupSettings() {
                     {usedBy.map((c) => (
                       <Link
                         key={c.snapshotClass}
-                        to="/settings/snapshot-classes"
+                        to="/settings/backup-classes"
                         className="rounded bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 font-medium text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-900/60"
                         title={`priority ${c.priority}`}
                       >

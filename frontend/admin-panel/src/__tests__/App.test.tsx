@@ -56,7 +56,7 @@ describe('Layout', () => {
 
   it('shows sidebar nav items', () => {
     renderWithProviders(<Layout />);
-    expect(screen.getByText('Clients')).toBeInTheDocument();
+    expect(screen.getByText('Tenants')).toBeInTheDocument();
     expect(screen.getByText('Monitoring')).toBeInTheDocument();
     expect(screen.getByText('Settings')).toBeInTheDocument();
   });
