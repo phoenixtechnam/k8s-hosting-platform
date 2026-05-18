@@ -272,12 +272,14 @@ export function useNodeTerminal(nodeName: string): UseNodeTerminalResult {
   }, []);
 
   // Tear down on unmount.
+  // Mount-only cleanup. Deps intentionally empty — we want a single
+  // unmount-time teardown that uses whatever session was active at
+  // that moment.
   useEffect(() => () => {
     tearDownSocket();
     if (session) {
       void deleteSession(session.nodeName, session.sessionId);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return {

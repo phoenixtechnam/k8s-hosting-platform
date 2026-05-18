@@ -71,7 +71,8 @@ export default function NodeTerminalModal({ nodeName, onClose }: NodeTerminalMod
       xtermRef.current = null;
       disconnect();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Mount-only — the xterm + ws lifecycle is anchored to the modal
+    // open/close, not to changes in connect/disconnect identity.
   }, []);
 
   // Resize the terminal whenever the connection toggles — once we
