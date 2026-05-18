@@ -103,6 +103,16 @@ export async function enableEmailForDomain(
   // already enforced inside provisionEmailDns. Removed to avoid
   // signalling a guard that doesn't exist at this call-site.
 
+  // 2026-05-18: per-tenant webmail.<clientdomain> defaults OFF. Most
+  // tenants are well-served by the platform-wide webmail.<apex> URL,
+  // which the platform automatically provisions + keeps in sync with
+  // the active webmail engine (Bulwark/Roundcube). The per-domain
+  // vanity subdomain adds DNS + cert lifecycle work for every tenant
+  // domain without changing functionality. Operators who want it can
+  // opt in by passing `webmail_enabled: true` at enable time or
+  // toggling it later via PATCH /email/domains/:id.
+  const webmailEnabledFlag = input.webmail_enabled === true ? 1 : 0;
+
   if (!existing) {
     await db.insert(emailDomains).values({
       id,
@@ -111,12 +121,15 @@ export async function enableEmailForDomain(
       enabled: 1,
       // max_mailboxes + max_quota_mb removed in migration 0019.
       catchAllAddress: input.catch_all_address ?? null,
+      webmailEnabled: webmailEnabledFlag,
     });
   }
 
   // Provision MX, SPF, DMARC, SRV, autoconfig, MTA-STS, webmail DNS records.
   // DKIM TXT record is NO LONGER provisioned here — Stalwart 0.16 generates
   // the DKIM key natively; the dns-sync reconciler publishes its dnsZoneFile.
+  // webmail.<clientdomain> CNAME is only added when webmailEnabledFlag=1
+  // (opt-in per 2026-05-18 default flip).
   const mailServerHostname = await getMailServerHostname(db);
   await provisionEmailDns(
     db,
@@ -126,7 +139,7 @@ export async function enableEmailForDomain(
     '', // dkimPublicKey: empty — DKIM not provisioned here in M13
     encryptionKey,
     mailServerHostname,
-    { webmailEnabled: true },
+    { webmailEnabled: webmailEnabledFlag === 1 },
   );
 
   // Provision the domain principal in Stalwart 0.16 via JMAP.

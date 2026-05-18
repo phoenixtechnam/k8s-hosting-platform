@@ -7,6 +7,15 @@ import { z } from 'zod';
 
 export const enableEmailDomainSchema = z.object({
   catch_all_address: z.string().email().optional(),
+  // 2026-05-18: per-tenant webmail subdomain (webmail.<clientdomain>)
+  // now defaults OFF. The shared platform-wide webmail URL
+  // (webmail.<apex>) is the recommended entry point — it works for
+  // every tenant without per-domain DNS + cert lifecycle overhead.
+  // Operators or tenant_admins who want a vanity webmail URL per
+  // customer domain can opt in by setting this to true at enable
+  // time, OR toggle it later via PATCH /email/domains/:id
+  // {webmail_enabled: true}.
+  webmail_enabled: z.boolean().optional().default(false),
 });
 
 export type EnableEmailDomainInput = z.infer<typeof enableEmailDomainSchema>;

@@ -636,13 +636,42 @@ function MailboxesTab({
     } catch { /* error shown */ }
   };
 
+  // 2026-05-18: WEBMAIL button shows a spinner while the SSO round-trip
+  // is in flight + auto-clears once the new tab opens, OR after a 5s
+  // safety timeout if the popup blocker (or browser quirks) prevents
+  // `window.open` from returning a tracked reference. Tracked per
+  // mailbox so two simultaneous clicks each spin independently.
+  const [openingWebmailFor, setOpeningWebmailFor] = useState<string | null>(null);
+
   const handleOpenWebmail = async (mailboxId: string) => {
+    setOpeningWebmailFor(mailboxId);
+    // Safety timeout: even if `window.open` succeeds, browsers don't
+    // surface a "tab is now visible" event. 5s is enough for a fresh
+    // Bulwark SPA to paint (cold-start ~2s + network); after that, we
+    // clear the spinner regardless so the button isn't stuck.
+    const safetyTimer = setTimeout(() => setOpeningWebmailFor(null), 5000);
     try {
       const result = await webmailToken.mutateAsync(mailboxId);
-      // Phase 2b: backend returns a ready-to-open URL with the SSO token
-      // already embedded as ?_jwt=… for the jwt_auth Roundcube plugin.
-      window.open(result.data.webmailUrl, '_blank', 'noopener,noreferrer');
-    } catch { /* will show error */ }
+      // Backend returns a ready-to-open URL. For Bulwark this is
+      // /api/auth/impersonate?token=<JWT>; for Roundcube it's
+      // /?_task=login&_jwt=<JWT>. window.open returns the new
+      // window's reference — null when blocked by the popup blocker.
+      const win = window.open(result.data.webmailUrl, '_blank', 'noopener,noreferrer');
+      if (!win) {
+        // Popup blocked — leave the spinner up; the 5s safety clears
+        // it. (The mutation onError would also surface this but the
+        // mutation succeeded — only window.open was blocked.)
+        return;
+      }
+      // Clear immediately on successful open — no need to wait the
+      // full 5s.
+      clearTimeout(safetyTimer);
+      setOpeningWebmailFor(null);
+    } catch {
+      clearTimeout(safetyTimer);
+      setOpeningWebmailFor(null);
+      // The mutation will surface the error toast via its own state.
+    }
   };
 
   const domainName = emailDomain.domainName;
@@ -725,8 +754,24 @@ function MailboxesTab({
                   <td className="px-5 py-3.5"><StatusBadge status={mb.status === 'active' ? 'active' : 'suspended'} /></td>
                   <td className="px-5 py-3.5 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <button type="button" onClick={() => handleOpenWebmail(mb.id)} className="inline-flex items-center gap-1 rounded-md border border-brand-200 dark:border-brand-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30" data-testid={`webmail-${mb.id}`}>
-                        <ExternalLink size={12} /> Webmail
+                      <button
+                        type="button"
+                        onClick={() => handleOpenWebmail(mb.id)}
+                        disabled={openingWebmailFor === mb.id}
+                        // 2026-05-18: WEBMAIL button is now green (was
+                        // brand-blue) — emphasises the primary action
+                        // on the row. Spinner replaces the icon during
+                        // the SSO round-trip; cleared on tab-open or
+                        // 5s safety timeout (whichever first).
+                        className="inline-flex items-center gap-1 rounded-md border border-emerald-200 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/30 px-2.5 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 disabled:opacity-60 disabled:cursor-wait"
+                        data-testid={`webmail-${mb.id}`}
+                      >
+                        {openingWebmailFor === mb.id ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <ExternalLink size={12} />
+                        )}
+                        Webmail
                       </button>
                       <button type="button" onClick={() => setEditingMailbox(mb as Mailbox)} className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700" data-testid={`edit-mailbox-${mb.id}`}>
                         <Edit2 size={12} /> Edit

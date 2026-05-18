@@ -186,6 +186,49 @@ describe('enableEmailForDomain', () => {
       status: 404,
     });
   });
+
+  // 2026-05-18: per-tenant webmail.<clientdomain> now defaults OFF.
+  // Verify the insert + DNS provisioning both honour the flag in
+  // both directions (omitted → 0, explicit true → 1).
+  it('defaults webmailEnabled=0 when webmail_enabled omitted from input', async () => {
+    const dnsMod = await import('./dns-provisioning.js');
+    const provisionSpy = vi.mocked(dnsMod.provisionEmailDns);
+    provisionSpy.mockClear();
+
+    const db = createMockDb();
+    await enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64));
+
+    // emailDomains insert payload — webmailEnabled must be 0.
+    const insertCall = (db as any)._mocks.insertValues.mock.calls[0][0];
+    expect(insertCall.webmailEnabled).toBe(0);
+
+    // provisionEmailDns must be called with webmailEnabled:false so
+    // no webmail.<clientdomain> CNAME is published.
+    expect(provisionSpy).toHaveBeenCalled();
+    const lastArg = provisionSpy.mock.calls.at(-1)?.[7];
+    expect(lastArg).toEqual({ webmailEnabled: false });
+  });
+
+  it('honours webmail_enabled:true opt-in (insert + DNS both set)', async () => {
+    const dnsMod = await import('./dns-provisioning.js');
+    const provisionSpy = vi.mocked(dnsMod.provisionEmailDns);
+    provisionSpy.mockClear();
+
+    const db = createMockDb();
+    await enableEmailForDomain(
+      db,
+      'c1',
+      'd1',
+      { webmail_enabled: true } as any,
+      '0'.repeat(64),
+    );
+
+    const insertCall = (db as any)._mocks.insertValues.mock.calls[0][0];
+    expect(insertCall.webmailEnabled).toBe(1);
+
+    const lastArg = provisionSpy.mock.calls.at(-1)?.[7];
+    expect(lastArg).toEqual({ webmailEnabled: true });
+  });
 });
 
 describe('disableEmailForDomain', () => {
