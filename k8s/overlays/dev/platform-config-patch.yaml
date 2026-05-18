@@ -48,3 +48,9 @@ data:
   tunnel-base-url: "ws://tunnels.${DOMAIN}:2010"
   private-worker-frps-image: "fatedier/frps:v0.62.1"
   private-worker-agent-image: "private-worker-agent:latest"
+  # Admin node-terminal (ADR-041 — privileged root shell on cluster
+  # nodes via nsenter into host PID 1). ON in dev so the integration
+  # harness can exercise it.
+  node-terminal-enabled: "true"
+  # Allowlist for publicWssOrigin — host portion of cors-origins.
+  platform-public-hosts: "admin.${DOMAIN},client.${DOMAIN}"

@@ -229,7 +229,29 @@ export function buildIngressRouteBody(
       match: `Host(\`${r.host}\`)`,
       kind: 'Rule',
       middlewares: panelMiddlewares,
-      services: [{ name: r.serviceName, port: 80 }],
+      services: [{
+        name: r.serviceName,
+        port: 80,
+        // HA-3 stickiness for the node-terminal feature (ADR-041):
+        // the in-memory session registry lives per-replica, so the
+        // browser MUST stay pinned to one admin-panel pod whose nginx
+        // (with Service-level ClientIP affinity on platform-api) pins
+        // to one platform-api replica. Without this, scaling
+        // admin-panel beyond 1 replica breaks WS upgrades.
+        //
+        // Traefik sets/reads the cookie; no application code needed.
+        // Secure + HttpOnly + Lax — admin panel is always HTTPS, the
+        // browser never reads this cookie, cross-site form posts
+        // shouldn't affect routing.
+        sticky: {
+          cookie: {
+            name: 'platform_panel_replica',
+            secure: true,
+            httpOnly: true,
+            sameSite: 'lax',
+          },
+        },
+      }],
     };
     traefikRoutes.push(panelRoute);
   }
