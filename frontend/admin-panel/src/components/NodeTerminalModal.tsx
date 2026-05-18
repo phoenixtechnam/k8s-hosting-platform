@@ -13,7 +13,7 @@ interface NodeTerminalModalProps {
 // Capitalize the first character so a node name like `k8s-local` renders
 // as `K8s-local` in the title (operator request — node names are
 // case-insensitive identifiers so this is purely cosmetic).
-function titleCase(name: string): string {
+export function titleCase(name: string): string {
   if (!name) return name;
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
@@ -284,6 +284,39 @@ export function NodeTerminalStepUpDialog({
         >
           <X size={14} /> Cancel
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Provisioning-loading overlay ─────────────────────────────────────
+//
+// Sits between the step-up dialog and the modal opening. After the
+// operator's credential is verified, the backend still needs to spawn
+// the privileged Pod and wait for it to reach Running (5-30s on a
+// cold image pull). Without a visible state during that window the UI
+// looks frozen.
+
+interface OpeningOverlayProps {
+  readonly nodeName: string;
+}
+
+export function NodeTerminalOpeningOverlay({ nodeName }: OpeningOverlayProps) {
+  return (
+    <div
+      className="fixed inset-0 z-[65] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      data-testid={`node-terminal-opening-${nodeName}`}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex flex-col items-center gap-4 rounded-lg border border-zinc-700 bg-zinc-900 px-8 py-6 text-zinc-200 shadow-2xl">
+        <Loader2 size={28} className="animate-spin text-zinc-400" aria-hidden="true" />
+        <div className="text-sm">
+          Opening shell on <code className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-zinc-100">{titleCase(nodeName)}</code>…
+        </div>
+        <div className="text-xs text-zinc-500">
+          Provisioning the privileged pod (may take ~30s on first use).
+        </div>
       </div>
     </div>
   );

@@ -346,20 +346,29 @@ export async function attachExec(
   // it into the k8s API server stream.
   socket.on('message', (raw: Buffer | string) => {
     if (closed) return;
-    markActivity(sessionId);
     try {
       const text = typeof raw === 'string' ? raw : raw.toString('utf-8');
       const parsed = JSON.parse(text) as { type?: unknown; data?: unknown; cols?: unknown; rows?: unknown };
       if (parsed.type === 'stdin' && typeof parsed.data === 'string') {
+        // markActivity ONLY on user-driven frames — keepalive pings
+        // must not refresh the 15-min idle timer (otherwise minimized
+        // sessions never expire).
+        markActivity(sessionId);
         stdin.write(parsed.data);
         return;
       }
       if (parsed.type === 'resize' && typeof parsed.cols === 'number' && typeof parsed.rows === 'number') {
+        markActivity(sessionId);
         // k8s exec resize is managed internally by @kubernetes/client-node
         // when tty=true. We intentionally accept and discard — the field
         // is forward-compatible for clients that expect ack frames.
         return;
       }
+      // Any other frame (ping/pong/etc.) is silently accepted but does
+      // NOT count as activity. The WS-level protocol ping the server
+      // sends every 30s + the browser's auto-pong already keeps the
+      // socket alive across NAT/proxies — no application-level keepalive
+      // is needed here.
     } catch {
       // Malformed frame — drop. Don't crash the WS.
     }

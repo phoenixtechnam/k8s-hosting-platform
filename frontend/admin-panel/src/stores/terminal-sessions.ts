@@ -54,8 +54,6 @@ interface SessionRefs {
    *  hidden graveyard when not in the modal; moved into the modal body
    *  via appendChild when restored. */
   hostEl: HTMLDivElement;
-  /** Heartbeat interval id — cleared on terminate. */
-  heartbeat: ReturnType<typeof setInterval>;
 }
 
 const sessionRefs = new Map<string, SessionRefs>();
@@ -195,6 +193,16 @@ interface TerminalSessionsState {
   readonly stepUpError: string | null;
   /** A user-visible error that surfaced AFTER step-up cleared (e.g. node not Ready). */
   readonly openError: string | null;
+  /**
+   * Set while an open-flow is in progress for this node — covers BOTH the
+   * step-up roundtrip AND the slow provisioning phase (POST /sessions →
+   * waitForPodRunning, which can take 5-30s on a cold image pull). UI
+   * uses it to disable the Terminal button + show a loading overlay
+   * between auth and the modal opening.
+   *
+   * Cleared once the modal opens (activeId is set) OR on terminal error.
+   */
+  readonly openingFor: string | null;
 
   openFresh: (nodeName: string) => Promise<void>;
   /** Continue the openFresh flow after a successful step-up; usually called by the modal's dialog. */
@@ -274,14 +282,14 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
       }
     });
 
-    // Heartbeat — keep mid-NAT proxies from culling the socket.
-    const heartbeat = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        try { ws.send(JSON.stringify({ type: 'ping' })); } catch { /* socket gone */ }
-      }
-    }, 25_000);
+    // Connection keepalive comes from the server's WS-protocol-level
+    // ping every 30s + the browser's automatic pong response — no
+    // application-level ping needed. Sending app-level pings would
+    // also bump server-side `lastActivityAt`, defeating the 15-min
+    // idle-timeout that's supposed to clean up parked minimized
+    // sessions.
 
-    sessionRefs.set(created.sessionId, { term, fitAddon, ws, hostEl, heartbeat });
+    sessionRefs.set(created.sessionId, { term, fitAddon, ws, hostEl });
 
     const summary: SessionSummary = {
       id: created.sessionId,
@@ -289,7 +297,14 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
       createdAt: Date.now(),
       minimized: false,
     };
-    set((s) => ({ sessions: [...s.sessions, summary], activeId: created.sessionId }));
+    // Atomic state transition: drop the loading overlay AND open the
+    // modal in a single set() so React doesn't render the in-between
+    // state where both are visible for a frame.
+    set((s) => ({
+      sessions: [...s.sessions, summary],
+      activeId: created.sessionId,
+      openingFor: null,
+    }));
     return created.sessionId;
   }
 
@@ -299,23 +314,30 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
     pendingStepUp: null,
     stepUpError: null,
     openError: null,
+    openingFor: null,
 
     openFresh: async (nodeName: string) => {
-      set({ stepUpError: null, openError: null });
+      set({ stepUpError: null, openError: null, openingFor: nodeName });
       try {
         // Preflight — surface step-up requirement before POSTing.
         const status = await fetchStepUpStatus().catch(() => null);
         if (status?.required) {
           set({ pendingStepUp: { methods: status.methods, nodeName } });
+          // openingFor stays set — the user is still inside the open
+          // flow; the UI shows the dialog instead of the loading
+          // overlay. Cleared on success (activeId set in provisionSession)
+          // OR explicit cancel.
           return;
         }
         await provisionSession(nodeName);
+        // provisionSession's atomic set() already cleared openingFor.
       } catch (e) {
         const err = e as Error & { stepUp?: { methods: StepUpMethod[] } };
         if (err.stepUp) {
           set({ pendingStepUp: { methods: err.stepUp.methods, nodeName } });
+          // openingFor stays set (see above)
         } else {
-          set({ openError: err.message ?? 'Failed to open terminal', activeId: null });
+          set({ openError: err.message ?? 'Failed to open terminal', activeId: null, openingFor: null });
         }
       }
     },
@@ -323,16 +345,17 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
     resumeAfterStepUp: async () => {
       const pending = get().pendingStepUp;
       if (!pending) return;
-      set({ pendingStepUp: null, stepUpError: null });
+      set({ pendingStepUp: null, stepUpError: null, openingFor: pending.nodeName });
       try {
         await provisionSession(pending.nodeName);
+        // provisionSession's atomic set() already cleared openingFor.
       } catch (e) {
         const err = e as Error & { stepUp?: { methods: StepUpMethod[] } };
         if (err.stepUp) {
           // Still required (e.g. multi-method) — re-prompt.
           set({ pendingStepUp: { methods: err.stepUp.methods, nodeName: pending.nodeName } });
         } else {
-          set({ openError: err.message ?? 'Failed to open terminal' });
+          set({ openError: err.message ?? 'Failed to open terminal', openingFor: null });
         }
       }
     },
@@ -383,7 +406,6 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
       const refs = sessionRefs.get(sessionId);
       const session = get().sessions.find((s) => s.id === sessionId);
       if (refs) {
-        clearInterval(refs.heartbeat);
         try { refs.ws.close(1000, 'client_close'); } catch { /* socket gone */ }
         try { refs.term.dispose(); } catch { /* already disposed */ }
         try { refs.hostEl.remove(); } catch { /* not in DOM */ }

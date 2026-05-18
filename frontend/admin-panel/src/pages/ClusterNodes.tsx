@@ -272,6 +272,13 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
   // navigation away from this page. The store handles step-up + WS +
   // xterm; this page just hands off the node name.
   const openTerminal = useTerminalSessions((s) => s.openFresh);
+  // openingFor is the node currently inside an open-flow (covers both
+  // the step-up phase and the slow Pod-provisioning phase). The
+  // Terminal button shows a spinner + is disabled when its node is
+  // the one being opened — prevents double-clicks and gives feedback
+  // during the 5-30s window between click and modal-render.
+  const openingFor = useTerminalSessions((s) => s.openingFor);
+  const opening = openingFor === node.name;
   const deleteNodeMutation = useDeleteNode(node.name);
   const ready = readyCondition(node);
   const stale = staleness(node.lastSeenAt);
@@ -470,11 +477,15 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
                 <button
                   type="button"
                   onClick={() => void openTerminal(node.name)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200 dark:hover:bg-red-900/50"
+                  disabled={opening}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-70 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200 dark:hover:bg-red-900/50"
                   data-testid={`terminal-node-${node.name}-button`}
                   title="Open a root shell on this node (audited)"
                 >
-                  <TerminalIcon size={14} /> Terminal
+                  {opening
+                    ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                    : <TerminalIcon size={14} />}
+                  {opening ? 'Opening…' : 'Terminal'}
                 </button>
               )}
               <button

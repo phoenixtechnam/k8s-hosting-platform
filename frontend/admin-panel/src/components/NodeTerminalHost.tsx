@@ -3,6 +3,7 @@ import {
   NodeTerminalModal,
   NodeTerminalStepUpDialog,
   NodeTerminalOpenErrorBanner,
+  NodeTerminalOpeningOverlay,
 } from './NodeTerminalModal';
 import { BackgroundTerminalsDock } from './BackgroundTerminalsDock';
 
@@ -24,11 +25,16 @@ export function NodeTerminalHost() {
   const pendingStepUp = useTerminalSessions((s) => s.pendingStepUp);
   const stepUpError = useTerminalSessions((s) => s.stepUpError);
   const openError = useTerminalSessions((s) => s.openError);
+  const openingFor = useTerminalSessions((s) => s.openingFor);
   const verifyStepUpPassword = useTerminalSessions((s) => s.verifyStepUpPassword);
   const verifyStepUpPasskey = useTerminalSessions((s) => s.verifyStepUpPasskey);
   const openFresh = useTerminalSessions((s) => s.openFresh);
 
   const active = activeId ? sessions.find((s) => s.id === activeId) : undefined;
+  // Show the provisioning overlay only when: an open-flow is in
+  // progress, the modal isn't already open for it, AND we're not
+  // currently in the step-up phase (which has its own dialog).
+  const showOpeningOverlay = openingFor !== null && !active && !pendingStepUp;
 
   // Hold a reference to the pending node-name for the error banner's
   // Retry action (the openFresh state machine clears pendingStepUp on
@@ -40,6 +46,7 @@ export function NodeTerminalHost() {
   return (
     <>
       {active && <NodeTerminalModal sessionId={active.id} nodeName={active.nodeName} />}
+      {showOpeningOverlay && openingFor && <NodeTerminalOpeningOverlay nodeName={openingFor} />}
       {pendingStepUp && (
         <NodeTerminalStepUpDialog
           nodeName={pendingStepUp.nodeName}
