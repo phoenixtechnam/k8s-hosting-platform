@@ -16,7 +16,7 @@
  * Last-writer-wins on system_settings.last_known_platform_ips is acceptable.
  */
 
-import { and, eq, isNull, lt, not, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, lt, not, inArray, or, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
 import { domains, systemSettings, tenants } from '../../db/schema.js';
@@ -28,6 +28,51 @@ import type { PlatformIngressIps } from './verification.js';
 const CRON_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_CANDIDATES_PER_TICK = 200;
+
+/**
+ * Exported for tests: fetch the list of domains the verify-cron would
+ * process on its next tick. Encapsulates the SQL-side filter so the
+ * SYSTEM-tenant conditional-skip rule can be regression-tested without
+ * spinning up the full cron loop.
+ *
+ * Filter rules:
+ *   - exclude `status IN (suspended, deleted)`
+ *   - cache_at IS NULL OR cache_at < since
+ *   - SYSTEM-tenant conditional skip: include the row when the owning
+ *     tenant is non-system OR when the row has a non-null dns_group_id
+ *     (operator has migrated to platform-managed DNS — verification
+ *     should run for real on those).
+ */
+export async function fetchVerifyCandidates(
+  db: Database,
+  since: Date,
+  limit = MAX_CANDIDATES_PER_TICK,
+): Promise<Array<{ id: string; domainName: string; dnsMode: 'primary' | 'cname' | 'secondary'; status: string; verifiedAt: Date | null; tenantId: string; createdAt: Date }>> {
+  return db
+    .select({
+      id: domains.id,
+      domainName: domains.domainName,
+      dnsMode: domains.dnsMode,
+      status: domains.status,
+      verifiedAt: domains.verifiedAt,
+      tenantId: domains.tenantId,
+      createdAt: domains.createdAt,
+    })
+    .from(domains)
+    .innerJoin(tenants, eq(tenants.id, domains.tenantId))
+    .where(
+      and(
+        not(inArray(domains.status, ['suspended', 'deleted'])),
+        or(eq(tenants.isSystem, false), isNotNull(domains.dnsGroupId)),
+        or(
+          isNull(domains.verificationCacheAt),
+          lt(domains.verificationCacheAt, since),
+        ),
+      ),
+    )
+    .orderBy(sql`${domains.verificationCacheAt} ASC NULLS FIRST`)
+    .limit(limit);
+}
 const BETWEEN_DOMAINS_MS = 250;
 const GRACE_WINDOW_START_MS = 72 * 60 * 60 * 1000; // 72h
 const GRACE_WINDOW_END_MS = 90 * 60 * 60 * 1000;   // 90h
@@ -129,40 +174,11 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
     createdAt: Date;
   }>;
   try {
-    // SYSTEM-tenant filter (ADR-040): the platform apex domain owned
-    // by the SYSTEM tenant is configured by the operator at bootstrap
-    // (A records on the parent zone) — it doesn't have its own NS
-    // delegation, so verifyNsDelegation falls over with ENODATA every
-    // tick and flips the row to `unverified`. The SYSTEM domain isn't
-    // a tenant-managed surface; skip it. ensureSystemApexDomain stamps
-    // status='verified' on insert as belt-and-braces.
-    candidates = await db
-      .select({
-        id: domains.id,
-        domainName: domains.domainName,
-        dnsMode: domains.dnsMode,
-        status: domains.status,
-        verifiedAt: domains.verifiedAt,
-        tenantId: domains.tenantId,
-        createdAt: domains.createdAt,
-      })
-      .from(domains)
-      .innerJoin(tenants, eq(tenants.id, domains.tenantId))
-      .where(
-        and(
-          not(inArray(domains.status, ['suspended', 'deleted'])),
-          eq(tenants.isSystem, false),
-          or(
-            isNull(domains.verificationCacheAt),
-            lt(domains.verificationCacheAt, since),
-          ),
-        ),
-      )
-      // HIGH fix from code review: PostgreSQL default puts NULLs LAST.
-      // Without NULLS FIRST, freshly created domains (cache_at=null) sort
-      // after stale-cached rows and can starve when the 200-row limit is hit.
-      .orderBy(sql`${domains.verificationCacheAt} ASC NULLS FIRST`)
-      .limit(MAX_CANDIDATES_PER_TICK);
+    // SYSTEM-tenant CONDITIONAL skip + cache-age filter — see
+    // fetchVerifyCandidates() above for the full rule set. Exported
+    // helper so the ADR-040 conditional-skip rule is regression-
+    // tested in isolation.
+    candidates = await fetchVerifyCandidates(db, since);
   } catch (err) {
     log.warn({ err }, '[verify-cron] failed to fetch candidates — skipping tick');
     return;
@@ -213,9 +229,11 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
   const graceStart = new Date(Date.now() - GRACE_WINDOW_START_MS);
   const graceEnd = new Date(Date.now() - GRACE_WINDOW_END_MS);
   try {
-    // ADR-040: same SYSTEM-tenant exclusion as the main candidate
-    // query — never send "domain unverified" notifications about the
-    // platform's own apex.
+    // ADR-040: same conditional SYSTEM-tenant exclusion as the main
+    // candidate query — skip the SYSTEM apex when it's still on the
+    // operator-managed parent-zone setup (dns_group_id IS NULL), but
+    // include it once the operator migrates to platform-managed DNS
+    // so legitimate verification failures still trigger notifications.
     const graceTargets = await db
       .select({
         id: domains.id,
@@ -228,7 +246,7 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
       .where(
         and(
           isNull(domains.verifiedAt),
-          eq(tenants.isSystem, false),
+          or(eq(tenants.isSystem, false), isNotNull(domains.dnsGroupId)),
           lt(domains.createdAt, graceStart),
           not(lt(domains.createdAt, graceEnd)),
         ),
@@ -262,10 +280,10 @@ export async function startVerificationCron(
   // Immediate first tick if there are un-cached unverified domains
   void (async () => {
     try {
-      // ADR-040: don't count SYSTEM-owned domains when deciding
-      // whether to fire the initial-tick — otherwise every fresh
-      // bootstrap would trigger the cron on a domain it can't
-      // verify.
+      // ADR-040: conditional SYSTEM-tenant skip — see the main
+      // candidate query comment. A bootstrap-default SYSTEM apex
+      // (no DNS group bound) shouldn't trigger the initial tick;
+      // a platform-managed apex (group bound) should.
       const uncached = await db
         .select({ id: domains.id })
         .from(domains)
@@ -273,7 +291,7 @@ export async function startVerificationCron(
         .where(
           and(
             isNull(domains.verificationCacheAt),
-            eq(tenants.isSystem, false),
+            or(eq(tenants.isSystem, false), isNotNull(domains.dnsGroupId)),
             not(inArray(domains.status, ['suspended', 'deleted'])),
           ),
         )
