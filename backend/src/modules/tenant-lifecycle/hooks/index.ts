@@ -22,8 +22,16 @@ import { registerClusterScopedRefsCleanupHook } from './cluster-scoped-refs.js';
 import { registerCustomDeploymentsScaleHook } from './k8s-custom-deployments.js';
 // ADR-039 Phase 8 — purge orphan Bulwark settings on archive.
 import { registerBulwarkSettingsPurgeHook } from './bulwark-settings-purge.js';
+// ADR-040 — SYSTEM tenant protection. Runs first on suspended /
+// archived / deleted; aborts the transition if the target is SYSTEM.
+import { registerSystemTenantGuardHook } from './system-tenant-guard.js';
 
 export function registerAllLifecycleHooks(): void {
+  // ADR-040: SYSTEM tenant guard runs FIRST on destructive transitions
+  // so no other hook does any work before we know the target is safe
+  // to mutate. order:1, blocking:abort, maxAttempts:1.
+  registerSystemTenantGuardHook();
+
   // Phase 2: PV/Longhorn cleanup on delete.
   registerPvCleanupReleasedHook();
 

@@ -40,6 +40,11 @@ export default function Clients() {
   const nextCursor = data?.pagination?.cursor ?? null;
   const { sortedData: sortedTenants, sortKey, sortDirection, onSort } = useSortable(tenants, 'name');
 
+  // ADR-040: SYSTEM tenant is shown in the list but never selectable
+  // for bulk suspend / delete / reactivate. Bulk endpoints already
+  // reject SYSTEM ids defensively; this is the UI affordance.
+  const selectableTenants = tenants.filter((t) => !t.isSystem);
+
   const tenantIds = tenants.map((c) => c.id);
   const { data: metricsData, isLoading: metricsLoading } = useAllTenantMetrics(tenantIds);
   const metricsMap: Record<string, ResourceMetrics | null> = metricsData?.data ?? {};
@@ -152,9 +157,9 @@ export default function Clients() {
                   <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                     <th className="w-10 px-3 py-3">
                       <SelectCheckbox
-                        checked={selection.isAllSelected(tenants)}
-                        indeterminate={selection.isIndeterminate(tenants)}
-                        onChange={() => selection.isAllSelected(tenants) ? selection.deselectAll() : selection.selectAll(tenants)}
+                        checked={selection.isAllSelected(selectableTenants)}
+                        indeterminate={selection.isIndeterminate(selectableTenants)}
+                        onChange={() => selection.isAllSelected(selectableTenants) ? selection.deselectAll() : selection.selectAll(selectableTenants)}
                       />
                     </th>
                     <SortableHeader label="Client" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
@@ -182,12 +187,26 @@ export default function Clients() {
                         <SelectCheckbox
                           checked={selection.isSelected(tenant.id)}
                           onChange={() => selection.toggle(tenant.id)}
+                          disabled={tenant.isSystem}
+                          aria-label={tenant.isSystem
+                            ? 'SYSTEM tenant cannot be bulk-selected (platform-protected)'
+                            : `Select ${tenant.name}`}
                         />
                       </td>
                       <td className="px-5 py-3.5">
-                        <span className="font-medium text-gray-900 dark:text-gray-100">
-                          {tenant.name}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-gray-900 dark:text-gray-100">
+                            {tenant.name}
+                          </span>
+                          {tenant.isSystem && (
+                            <span
+                              className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                              title="SYSTEM tenant — owns the platform apex domain and reserved mailbox space. Cannot be suspended, archived, or deleted."
+                            >
+                              SYSTEM
+                            </span>
+                          )}
+                        </div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">
                           {tenant.primaryEmail}
                         </div>

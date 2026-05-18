@@ -342,7 +342,12 @@ export default function TenantDetail() {
               snapshot, restorable) or Delete (hard remove) cover
               every operator intent. The Decommission API endpoint is
               retained for backward compatibility with curl callers. */}
-          {tenant.status === 'active' && (
+          {/* ADR-040: SYSTEM tenant cannot transition through suspend /
+              archive / delete. Hide every destructive action; the
+              backend service-layer + lifecycle hook would reject anyway
+              but the UI affordance prevents the operator from going
+              down a dead-end path. */}
+          {tenant.status === 'active' && !tenant.isSystem && (
             <button
               onClick={handleSuspend}
               disabled={updateTenant.isPending}
@@ -354,7 +359,7 @@ export default function TenantDetail() {
               <span className="hidden sm:inline">Suspend</span>
             </button>
           )}
-          {tenant.status === 'suspended' && (
+          {tenant.status === 'suspended' && !tenant.isSystem && (
             <button
               onClick={handleReactivate}
               disabled={updateTenant.isPending}
@@ -366,7 +371,7 @@ export default function TenantDetail() {
               <span className="hidden sm:inline">Reactivate</span>
             </button>
           )}
-          {(tenant.status === 'active' || tenant.status === 'suspended') && (tenant as Record<string, unknown>).provisioningStatus === 'provisioned' && (
+          {(tenant.status === 'active' || tenant.status === 'suspended') && !tenant.isSystem && (tenant as Record<string, unknown>).provisioningStatus === 'provisioned' && (
             <button
               onClick={handleArchive}
               disabled={updateTenant.isPending}
@@ -378,7 +383,7 @@ export default function TenantDetail() {
               <span className="hidden sm:inline">Archive</span>
             </button>
           )}
-          {tenant.status === 'archived' && (
+          {tenant.status === 'archived' && !tenant.isSystem && (
             <button
               onClick={handleReactivate}
               disabled={updateTenant.isPending}
@@ -390,17 +395,36 @@ export default function TenantDetail() {
               <span className="hidden sm:inline">Restore</span>
             </button>
           )}
-          <button
-            onClick={() => setDeleteOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-red-900/20"
-            data-testid="delete-button"
-            title="Hard delete — removes the tenant row, the namespace, and triggers all orphan-cleanup hooks (DNS zones, backup bundles, PVs, cluster-scoped refs). Irreversible."
-          >
-            <Trash2 size={14} />
-            <span className="hidden sm:inline">Delete</span>
-          </button>
+          {!tenant.isSystem && (
+            <button
+              onClick={() => setDeleteOpen(true)}
+              className="inline-flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-red-900/20"
+              data-testid="delete-button"
+              title="Hard delete — removes the tenant row, the namespace, and triggers all orphan-cleanup hooks (DNS zones, backup bundles, PVs, cluster-scoped refs). Irreversible."
+            >
+              <Trash2 size={14} />
+              <span className="hidden sm:inline">Delete</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {/* ADR-040: SYSTEM tenant banner. Explains why the destructive
+          action buttons aren't shown and what this tenant is for. */}
+      {tenant.isSystem && (
+        <div
+          className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-200"
+          data-testid="system-tenant-banner"
+        >
+          <p className="font-medium">SYSTEM tenant — platform-managed</p>
+          <p className="mt-1 text-amber-800 dark:text-amber-300">
+            This tenant owns the platform apex domain and the platform&rsquo;s reserved mailbox space
+            (e.g. <code>noreply@</code>, <code>postmaster@</code>). It cannot be suspended, archived,
+            or deleted. You can still provision websites and mailboxes under the apex through the
+            normal flows.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm lg:col-span-2">
@@ -682,15 +706,29 @@ function LifecycleStatusControl({
     return (
       <div className="flex items-center gap-2">
         <StatusBadge status={tenant.status} />
-        <button
-          type="button"
-          onClick={startEdit}
-          className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-          data-testid="lifecycle-status-edit"
-          title="Change tenant lifecycle status"
-        >
-          Change…
-        </button>
+        {/* ADR-040: SYSTEM tenant status is locked at "active". The
+            "Change…" button is hidden because every destination
+            (suspended / archived) is blocked at the backend; offering
+            the control would lead the operator down a dead-end path. */}
+        {!tenant.isSystem && (
+          <button
+            type="button"
+            onClick={startEdit}
+            className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+            data-testid="lifecycle-status-edit"
+            title="Change tenant lifecycle status"
+          >
+            Change…
+          </button>
+        )}
+        {tenant.isSystem && (
+          <span
+            className="text-xs text-gray-500 dark:text-gray-400"
+            title="SYSTEM tenant status is locked at active (ADR-040)"
+          >
+            (locked)
+          </span>
+        )}
       </div>
     );
   }

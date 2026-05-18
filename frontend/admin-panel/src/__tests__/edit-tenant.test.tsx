@@ -23,6 +23,7 @@ const mockTenant: Tenant = {
   status: 'active',
   planId: 'plan-001',
   regionId: 'region-001',
+  isSystem: false,
   cpuLimitOverride: null,
   memoryLimitOverride: null,
   storageLimitOverride: null,

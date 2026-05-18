@@ -3,6 +3,7 @@ import { dnsRecords, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getActiveServers, getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
+import { getReservedPlatformHostnames } from '../system-tenant/reserved-subdomains.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
 import type { DnsRecord as DnsRecordRow } from '../../db/schema.js';
@@ -106,6 +107,78 @@ export async function listDnsRecords(db: Database, tenantId: string, domainId: s
     .where(eq(dnsRecords.domainId, domainId));
 }
 
+/**
+ * ADR-040 §3 Q5 reservation enforcement for DNS records.
+ *
+ * Refuses records that:
+ *   (a) Have an effective FQDN (record_name + parent domain) matching
+ *       a platform-reserved hostname. Catches a tenant who somehow
+ *       owns a parent zone like `<apex>` adding `admin` as a record.
+ *   (b) Are CNAME/A/AAAA records whose *value* points at a reserved
+ *       platform hostname. Blocks the hijack-by-CNAME pattern where a
+ *       tenant points their own zone at `admin.<apex>`.
+ *
+ * Throws `RESERVED_PLATFORM_HOSTNAME` (HTTP 409) when either applies.
+ */
+async function assertNotReservedHostname(
+  db: Database,
+  domainId: string,
+  input: CreateDnsRecordInput,
+): Promise<void> {
+  // .where() (no .limit()) — domains.id is unique, so at most one row.
+  // Keeping the chain simple so existing dns-records unit-test mocks
+  // (which mock select→from→where but not limit) continue to work.
+  const [parent] = await db.select({ domainName: domains.domainName })
+    .from(domains).where(eq(domains.id, domainId));
+  if (!parent) return; // verifyDomainOwnership already threw; defensive
+
+  const reserved = await getReservedPlatformHostnames(db);
+  const lower = (s: string) => s.trim().replace(/\.+$/, '').toLowerCase();
+  const parentDomain = lower(parent.domainName);
+
+  // Case (a): effective FQDN of this record (label + parent).
+  const recordName = input.record_name ? lower(input.record_name) : '';
+  const effectiveFqdn = recordName === '' || recordName === '@'
+    ? parentDomain
+    : `${recordName}.${parentDomain}`;
+  if (reserved.fqdns.has(effectiveFqdn)) {
+    const reason = reserved.reasons.get(effectiveFqdn) ?? 'platform-reserved hostname';
+    throw new ApiError(
+      'RESERVED_PLATFORM_HOSTNAME',
+      `DNS record '${effectiveFqdn}' collides with a platform-reserved hostname (${reason}).`,
+      409,
+      {
+        hostname: effectiveFqdn,
+        reservedFor: reason,
+      },
+    );
+  }
+
+  // Case (b): record-value targets pointing at a reserved hostname.
+  // Cover every record type whose value is a hostname rather than an
+  // arbitrary string. CNAME/A/AAAA are the obvious hijack vectors;
+  // MX/NS/SRV are checked for completeness so a future audit can't
+  // find a record type that points at a reserved hostname unchecked.
+  // (TXT/SPF/CAA values are strings, not hostnames — not checked.)
+  const targetType = input.record_type as string;
+  const hostnameTargetTypes = new Set(['CNAME', 'A', 'AAAA', 'MX', 'NS', 'SRV']);
+  if (hostnameTargetTypes.has(targetType)) {
+    const target = lower(input.record_value);
+    if (reserved.fqdns.has(target)) {
+      const reason = reserved.reasons.get(target) ?? 'platform-reserved hostname';
+      throw new ApiError(
+        'RESERVED_PLATFORM_HOSTNAME',
+        `DNS record target '${target}' is a platform-reserved hostname (${reason}).`,
+        409,
+        {
+          hostname: target,
+          reservedFor: reason,
+        },
+      );
+    }
+  }
+}
+
 export async function createDnsRecord(
   db: Database,
   tenantId: string,
@@ -113,6 +186,18 @@ export async function createDnsRecord(
   input: CreateDnsRecordInput,
 ) {
   await verifyDomainOwnership(db, tenantId, domainId);
+
+  // SYSTEM tenant reservation (ADR-040 §3 Q5): refuse records whose
+  // effective FQDN resolves to a platform-reserved hostname. This
+  // closes the "register a customer domain → CNAME `admin.<apex>` to
+  // a tenant deployment" hijack that the domain-create check alone
+  // can't catch. The check fires when:
+  //   record_name + parent_domain == reserved fqdn   (DNS record on
+  //   the tenant's own zone pointing at a reserved hostname target)
+  // For CNAME/A/AAAA we also check whether the record_value (target)
+  // matches a reserved hostname — refusing those prevents a tenant
+  // from creating a CNAME on their own apex pointing at an admin UI.
+  await assertNotReservedHostname(db, domainId, input);
 
   const id = crypto.randomUUID();
 
@@ -161,6 +246,19 @@ export async function updateDnsRecord(
 
   if (!record) {
     throw new ApiError('DNS_RECORD_NOT_FOUND', `DNS record '${recordId}' not found`, 404);
+  }
+
+  // ADR-040 §3 Q5: also enforce reserved-hostname rules on UPDATE.
+  // Without this, a tenant could create a benign record and PATCH
+  // its `record_value` to a platform-reserved hostname, bypassing the
+  // create-time check. Re-use the same helper as createDnsRecord by
+  // synthesizing the input shape with the updated value.
+  if (input.record_value !== undefined) {
+    await assertNotReservedHostname(db, domainId, {
+      record_type: record.recordType,
+      record_name: record.recordName,
+      record_value: input.record_value,
+    } as CreateDnsRecordInput);
   }
 
   const updateValues: Record<string, unknown> = {};

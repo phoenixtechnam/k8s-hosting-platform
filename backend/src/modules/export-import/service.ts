@@ -20,12 +20,25 @@ interface ImportResult {
 }
 
 export async function exportAll(db: Database): Promise<ExportData> {
-  const [allTenants, allDomains, allPlans, allDnsServers] = await Promise.all([
-    db.select().from(tenants),
+  // SYSTEM tenant + apex domain are platform-internal (ADR-040) — each
+  // install creates its own via ensureSystemTenant at first boot. We
+  // exclude them from the operator export/import bundle so a restore
+  // can't ship a stale SYSTEM row, an apex domain bound to a previous
+  // install's tenant id, or a duplicate is_system=true row that would
+  // hit the partial unique index.
+  const [allTenants, allDomainsRaw, allPlans, allDnsServers] = await Promise.all([
+    db.select().from(tenants).where(eq(tenants.isSystem, false)),
     db.select().from(domains),
     db.select().from(hostingPlans),
     db.select().from(dnsServers),
   ]);
+
+  // Re-derive system tenant ids so we can also drop SYSTEM-owned domains
+  // (the apex). One row at most by design.
+  const systemTenantIds = new Set(
+    (await db.select({ id: tenants.id }).from(tenants).where(eq(tenants.isSystem, true))).map((r) => r.id),
+  );
+  const allDomains = allDomainsRaw.filter((d) => !systemTenantIds.has(d.tenantId));
 
   // Mask encrypted fields on DNS servers
   const maskedDnsServers = allDnsServers.map((s) => ({
@@ -116,6 +129,17 @@ export async function importData(
     try {
       if (!tenant.id || !tenant.name || !tenant.primaryEmail) {
         errors.push(`Client missing required fields: ${JSON.stringify(tenant).slice(0, 100)}`);
+        continue;
+      }
+
+      // SYSTEM tenant rows are platform-internal (ADR-040) and managed
+      // by ensureSystemTenant on each install. Skip them defensively
+      // so a stale or hand-edited export bundle can't corrupt the
+      // receiver's SYSTEM row or trigger the partial unique-index
+      // violation. The receiving cluster's own bootstrap pass owns
+      // the SYSTEM row.
+      if (tenant.isSystem === true) {
+        skipped++;
         continue;
       }
 

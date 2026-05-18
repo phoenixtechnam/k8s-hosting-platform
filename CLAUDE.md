@@ -160,6 +160,31 @@ an `applyXxx()` entry in `cascades.ts` that calls `dispatchTransition`.
 `LIFECYCLE_HOOK_<NAME>=disable` short-circuits the hook to `noop`.
 Use only during external-provider outages.
 
+## SYSTEM tenant + reserved platform hostnames (ADR-040)
+
+On every bootstrap (and every backend startup, self-healing) a single
+`tenants.is_system=TRUE` row is provisioned by
+`backend/src/modules/system-tenant/bootstrap.ts`. It owns the apex
+domain row and the `_system@<apex>` mailbox-admin account. Cannot be
+suspended, archived, or deleted — service-layer guards + a
+`system-tenant-guard` lifecycle hook (`order:1, blocking:abort`) +
+SQL filters on the expiry-checker + storage-lifecycle schedulers all
+enforce this. Use the SYSTEM tenant to provision platform-owned
+websites and transactional mailboxes (`noreply@`, `postmaster@`,
+etc.) through the normal flows. Partial unique index on
+`is_system=TRUE` enforces "at most one SYSTEM row" at the DB layer.
+
+**Reserved platform subdomains** — `backend/src/modules/system-tenant/reserved-subdomains.ts:getReservedPlatformHostnames(db)`
+composes the runtime-derived set from static config helpers,
+`platform_settings` URL keys (longhorn/stalwart/webmail/mail), and a
+static deny list. Refused at `domains/service.ts:createDomain` and
+`dns-records/service.ts:createDnsRecord` with HTTP 409
+`RESERVED_PLATFORM_HOSTNAME` — applies to every tenant including
+SYSTEM (the apex itself bypasses via direct insert in
+`ensureSystemApexDomain`). 5s TTL cache; admin edits to
+Settings → Platform URLs propagate automatically. CI guard:
+`scripts/ci-system-tenant-check.sh`.
+
 ## Admin-only UIs (Longhorn, Stalwart, future)
 
 Every Ingress that exposes an admin-only web UI (Longhorn dashboard, Stalwart web-admin, etc.) MUST:

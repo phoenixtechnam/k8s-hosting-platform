@@ -38,22 +38,44 @@ function createMockDb(options?: {
 }
 
 describe('export service', () => {
+  // exportAll's first SELECT (tenants, is_system=false filter) is
+  // chained: `.from(tenants).where(...)`. The second SELECT
+  // (is_system=true ids for SYSTEM-owned domain filtering) is also
+  // chained. The remaining three SELECTs (domains/plans/dnsServers)
+  // call `.from()` directly without `.where()`. The mock below
+  // returns thenable objects with both `.where()` and direct-resolve
+  // semantics so a single chain handler serves all callers.
+  function buildExportMockDb(results: unknown[][]) {
+    let callIdx = 0;
+    return {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockImplementation(() => {
+          const rows = results[callIdx++] ?? [];
+          return {
+            where: vi.fn().mockResolvedValue(rows),
+            then: (resolve: (v: unknown) => void) => resolve(rows),
+            [Symbol.toStringTag]: 'Promise',
+          };
+        }),
+      }),
+    } as any;
+  }
+
   it('export includes all resource types', async () => {
     const clientsData = [{ id: 'c1', name: 'Acme', primaryEmail: 'admin@acme.com' }];
+    // SYSTEM-tenant-id lookup query — return empty so no domain filtering happens.
+    const systemTenantIdsData: unknown[] = [];
     const domainsData = [{ id: 'd1', tenantId: 'c1', domainName: 'acme.com' }];
     const plansData = [{ id: 'p1', code: 'starter', name: 'Starter' }];
     const dnsData = [{ id: 'dns1', displayName: 'Primary', providerType: 'powerdns', connectionConfigEncrypted: 'SECRET' }];
 
-    let callIdx = 0;
-    const results = [clientsData, domainsData, plansData, dnsData];
-
-    const db = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockImplementation(() => {
-          return Promise.resolve(results[callIdx++] ?? []);
-        }),
-      }),
-    } as any;
+    const db = buildExportMockDb([
+      clientsData, // SELECT tenants WHERE isSystem=false
+      domainsData, // SELECT domains
+      plansData,   // SELECT hostingPlans
+      dnsData,     // SELECT dnsServers
+      systemTenantIdsData, // SELECT id FROM tenants WHERE isSystem=true
+    ]);
 
     const result = await exportAll(db);
 
@@ -80,16 +102,13 @@ describe('export service', () => {
       updatedAt: new Date(),
     }];
 
-    let callIdx = 0;
-    const results = [[], [], [], dnsData];
-
-    const db = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockImplementation(() => {
-          return Promise.resolve(results[callIdx++] ?? []);
-        }),
-      }),
-    } as any;
+    const db = buildExportMockDb([
+      [],     // tenants
+      [],     // domains
+      [],     // hostingPlans
+      dnsData, // dnsServers
+      [],     // system tenant ids
+    ]);
 
     const result = await exportAll(db);
 

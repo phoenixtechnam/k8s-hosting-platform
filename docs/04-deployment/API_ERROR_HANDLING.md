@@ -147,6 +147,8 @@ All error responses must follow this structure:
 | `CANNOT_MODIFY_SYSTEM_RESOURCE` | 409 | Cannot modify system resource | This resource is managed by system |
 | `INCOMPATIBLE_PLAN` | 409 | Current plan incompatible with requested action | Upgrade plan or contact support |
 | `PLAN_CHANGE_IN_PROGRESS` | 409 | Plan change already in progress | Wait for current change to complete |
+| `SYSTEM_TENANT_PROTECTED` | 409 | Cannot {action} SYSTEM tenant — platform-protected (ADR-040) | No action — SYSTEM tenant is by design indelible |
+| `RESERVED_PLATFORM_HOSTNAME` | 409 | '{hostname}' is reserved for platform use ({reason}) | Pick a different hostname, or update Settings → Platform URLs first |
 
 ### Resource Limits (5000-5999)
 

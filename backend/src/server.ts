@@ -4,6 +4,7 @@ import { buildApp } from './app.js';
 import { suspendExpiredTenants } from './modules/subscriptions/expiry-checker.js';
 import { runAutoUpgradePass } from './modules/deployments/auto-upgrade-cron.js';
 import { createK8sClients } from './modules/k8s-provisioner/k8s-client.js';
+import { bootstrapSystemTenant } from './modules/system-tenant/bootstrap.js';
 
 const config = loadConfig();
 const db = getDb(config.DATABASE_URL);
@@ -30,6 +31,32 @@ process.on('SIGTERM', shutdown);
 
 await app.listen({ port: config.PORT, host: '0.0.0.0' });
 console.log(`Server listening on port ${config.PORT}`);
+
+// SYSTEM tenant self-healing pass (ADR-040). Runs on every startup
+// (~10 ms when the row already exists) so a Postgres restore from a
+// pre-SYSTEM backup, or accidental direct-SQL deletion, gets caught
+// before any operator action. seed.ts must have created hosting_plans
+// + regions first; if missing, log and continue — the platform can
+// still serve requests, just without an indelible SYSTEM row.
+(async () => {
+  try {
+    const getStartupK8s = () => {
+      try { return createK8sClients(config.KUBECONFIG_PATH); } catch { return null; }
+    };
+    const result = await bootstrapSystemTenant(db, {
+      k8s: getStartupK8s(),
+      log: {
+        info: (msg) => app.log.info(msg),
+        warn: (msg, err) => app.log.warn({ err }, msg),
+      },
+    });
+    if (result.created) {
+      app.log.info(`[system-tenant] bootstrap created SYSTEM tenant ${result.tenantId}`);
+    }
+  } catch (err) {
+    app.log.warn({ err }, '[system-tenant] startup bootstrap failed (continuing)');
+  }
+})();
 
 // Check for expired subscriptions every hour
 const EXPIRY_CHECK_INTERVAL = 60 * 60 * 1000;

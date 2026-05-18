@@ -15,12 +15,19 @@ export async function suspendExpiredTenants(db: Database): Promise<number> {
   // Find candidates first so we can iterate per-tenant and run the
   // full cascade (ingress swap etc.). A bare UPDATE would skip the k8s
   // side entirely.
+  // SYSTEM tenant protection (ADR-040): exclude is_system=true from
+  // the candidate query. The updateTenant guard already blocks setting
+  // subscription_expires_at on SYSTEM, but a direct-SQL write or a
+  // missed code path could still leave a value there — this is the
+  // belt-and-braces second line of defense. CI guard
+  // scripts/ci-system-tenant-check.sh asserts this filter is present.
   const candidates = await db
     .select({ id: tenants.id, namespace: tenants.kubernetesNamespace })
     .from(tenants)
     .where(
       and(
         eq(tenants.status, 'active'),
+        eq(tenants.isSystem, false),
         isNotNull(tenants.subscriptionExpiresAt),
         lt(tenants.subscriptionExpiresAt, new Date()),
       ),

@@ -162,9 +162,18 @@ export function startStorageLifecycleScheduler(
       // configure an assignment before auto-archive can run.
       if (settings.autoArchiveEnabled) {
         const threshold = new Date(Date.now() - settings.autoArchiveAfterDays * 24 * 60 * 60 * 1000);
+        // SYSTEM tenant protection (ADR-040): is_system=false filter is
+        // defense-in-depth — status='suspended' on SYSTEM is already
+        // blocked at the service layer, but a direct-SQL write could
+        // bypass that. CI guard scripts/ci-system-tenant-check.sh
+        // asserts this filter is present.
         const rows = await db.select({ id: tenants.id, namespace: tenants.kubernetesNamespace, suspendedAt: tenants.suspendedAt })
           .from(tenants)
-          .where(and(eq(tenants.status, 'suspended'), lt(tenants.suspendedAt, threshold)));
+          .where(and(
+            eq(tenants.status, 'suspended'),
+            eq(tenants.isSystem, false),
+            lt(tenants.suspendedAt, threshold),
+          ));
 
         let snapshotCtx: Awaited<ReturnType<typeof buildSnapshotCtx>> | null = null;
         if (rows.length > 0) {
@@ -191,9 +200,15 @@ export function startStorageLifecycleScheduler(
       // Auto-delete: same pattern against `archivedAt`.
       if (settings.autoDeleteEnabled) {
         const threshold = new Date(Date.now() - settings.autoDeleteAfterDays * 24 * 60 * 60 * 1000);
+        // SYSTEM tenant protection (ADR-040): see auto-archive query
+        // above. CI guard ensures the filter survives refactors.
         const rows = await db.select({ id: tenants.id, namespace: tenants.kubernetesNamespace, archivedAt: tenants.archivedAt })
           .from(tenants)
-          .where(and(eq(tenants.status, 'archived'), lt(tenants.archivedAt, threshold)));
+          .where(and(
+            eq(tenants.status, 'archived'),
+            eq(tenants.isSystem, false),
+            lt(tenants.archivedAt, threshold),
+          ));
         for (const row of rows) {
           try {
             console.log(`[tenant-lifecycle] auto-deleting ${row.id} (archived since ${row.archivedAt?.toISOString() ?? 'unknown'})`);

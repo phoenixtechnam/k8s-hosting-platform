@@ -61,22 +61,36 @@ interface SelectCheckboxProps {
   readonly checked: boolean;
   readonly indeterminate?: boolean;
   readonly onChange: () => void;
+  /** When true, the checkbox renders dimmed + non-interactive. ADR-040
+   *  uses this for SYSTEM tenant rows that can never be bulk-selected. */
+  readonly disabled?: boolean;
+  /** Accessibility label override — replaces the default "select row"
+   *  semantics with a more descriptive text (e.g. "SYSTEM tenant cannot
+   *  be bulk-selected"). */
+  readonly 'aria-label'?: string;
 }
 
-export function SelectCheckbox({ checked, indeterminate, onChange }: SelectCheckboxProps) {
+export function SelectCheckbox({ checked, indeterminate, onChange, disabled, ...rest }: SelectCheckboxProps) {
+  const ariaLabel = (rest as Record<string, unknown>)['aria-label'] as string | undefined;
   return (
     <button
       type="button"
       role="checkbox"
       aria-checked={indeterminate ? 'mixed' : checked}
-      onClick={onChange}
+      aria-disabled={disabled || undefined}
+      aria-label={ariaLabel}
+      title={disabled ? ariaLabel : undefined}
+      disabled={disabled}
+      onClick={disabled ? undefined : onChange}
       className={clsx(
         'flex h-4 w-4 items-center justify-center rounded border transition-colors',
         'focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1',
         'dark:focus:ring-offset-gray-800',
-        checked || indeterminate
-          ? 'border-blue-600 bg-blue-600 dark:border-blue-500 dark:bg-blue-500'
-          : 'border-gray-300 bg-white hover:border-gray-400 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-gray-500',
+        disabled
+          ? 'cursor-not-allowed border-gray-200 bg-gray-100 opacity-50 dark:border-gray-700 dark:bg-gray-800'
+          : (checked || indeterminate)
+            ? 'border-blue-600 bg-blue-600 dark:border-blue-500 dark:bg-blue-500'
+            : 'border-gray-300 bg-white hover:border-gray-400 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-gray-500',
       )}
       data-testid="select-checkbox"
     >

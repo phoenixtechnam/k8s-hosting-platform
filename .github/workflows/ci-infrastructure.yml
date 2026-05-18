@@ -79,6 +79,14 @@ jobs:
       - name: Verify bootstrap.sh firewall rules
         run: ./scripts/ci-firewall-check.sh
 
+  system-tenant-guard:
+    name: SYSTEM tenant protection guardrail (ADR-040)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify SYSTEM tenant scheduler filters + DB invariants
+        run: ./scripts/ci-system-tenant-check.sh
+
   no-dex-in-production:
     name: Dex must not ship in production
     runs-on: ubuntu-latest

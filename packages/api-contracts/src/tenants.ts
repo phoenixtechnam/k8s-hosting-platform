@@ -133,6 +133,11 @@ export const tenantResponseSchema = z.object({
   billingAddress: billingAddressResponseSchema,
   kubernetesNamespace: z.string(),
   planId: uuidField,
+  // SYSTEM tenant flag (ADR-040). True on exactly one row — the
+  // platform-owned tenant that owns the apex domain and the reserved
+  // mailbox space. UI uses this to render a "SYSTEM" pill, hide
+  // destructive actions, and exclude the row from bulk-select.
+  isSystem: z.boolean().default(false),
   // regionId is always populated on the response (server auto-fills
   // platform apex on create when the client omits it). The UI hides
   // the field; it's surfaced here for API clients that need it.

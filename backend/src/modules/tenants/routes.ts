@@ -111,6 +111,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
                 status: { type: 'string' },
                 storageTier: { type: 'string' },
                 nodeName: { type: ['string', 'null'] },
+                isSystem: { type: 'boolean' },
                 createdAt: { type: 'string' },
                 // The auto-created tenant_admin user surfaces here on
                 // create (and only here — never on subsequent reads)
@@ -277,6 +278,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
                   regionId: { type: 'string' },
                   status: { type: 'string' },
                   storageLifecycleState: { type: 'string' },
+                  isSystem: { type: 'boolean' },
                   createdBy: { type: ['string', 'null'] },
                   subscriptionExpiresAt: { type: ['string', 'null'] },
                   createdAt: { type: 'string' },

@@ -5,6 +5,7 @@ import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getTenantById } from '../tenants/service.js';
 import { getActiveServersForDomain, getProviderForServer, getDefaultGroup, getPrimaryServersForGroup, getActiveServers, getProviderGroupById } from '../dns-servers/service.js';
+import { getReservedPlatformHostnames } from '../system-tenant/reserved-subdomains.js';
 import { reconcileIngress } from './k8s-ingress.js';
 import { deleteDomainCertificate, ensureDomainCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
@@ -147,6 +148,39 @@ export async function createDomain(db: Database, tenantId: string, input: Create
       'master_ip is required when dns_mode is secondary',
       400,
       { field: 'master_ip' },
+    );
+  }
+
+  // SYSTEM tenant reservation (ADR-040 §3 Q5): block hostnames the
+  // platform uses for its own UIs/services. Reserved set is computed
+  // at runtime from static config + platform_settings URL keys +
+  // a static deny list, cached 5s, so changes via the admin Settings
+  // → Platform URLs UI propagate without code changes. The SYSTEM
+  // bootstrap's apex-domain insert goes through a direct DB insert
+  // path that doesn't call this function, so the apex can still be
+  // owned by SYSTEM despite being in the reserved set.
+  const reserved = await getReservedPlatformHostnames(db);
+  const requestedHost = input.domain_name.trim().replace(/\.+$/, '').toLowerCase();
+  if (reserved.fqdns.has(requestedHost)) {
+    const reason = reserved.reasons.get(requestedHost) ?? 'platform-reserved hostname';
+    throw new ApiError(
+      'RESERVED_PLATFORM_HOSTNAME',
+      `'${requestedHost}' is reserved for platform use (${reason}). It cannot be registered as a tenant domain.`,
+      409,
+      {
+        hostname: requestedHost,
+        reservedFor: reason,
+        operatorError: {
+          code: 'RESERVED_PLATFORM_HOSTNAME',
+          title: 'Reserved platform hostname',
+          detail: `'${requestedHost}' is used by the platform itself (${reason}). It cannot be registered as a tenant domain.`,
+          remediation: [
+            'Pick a different hostname for the tenant domain.',
+            'If the platform should no longer use this hostname, update Settings → Platform URLs first.',
+          ],
+          retryable: false,
+        },
+      },
     );
   }
 

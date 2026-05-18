@@ -4,6 +4,7 @@ import { tenants, domains, deployments, cronJobs, users, hostingPlans, clusterNo
 import { tenantNotFound } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
+import { assertNotSystem } from '../system-tenant/guards.js';
 import type { Database } from '../../db/index.js';
 import type { CreateTenantInput, UpdateTenantInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
@@ -735,6 +736,29 @@ export async function updateTenant(
 ) {
   const existing = await getTenantById(db, id); // throws if not found
 
+  // SYSTEM tenant protection (ADR-040). Block ANY status transition
+  // away from 'active' (the only valid SYSTEM state) AND any attempt
+  // to set subscription_expires_at — the latter would otherwise let
+  // the auto-suspend cron pick up SYSTEM after the expiry date,
+  // bypassing the status-change guard. Other edits (name, contact,
+  // overrides like max_mailboxes_override) remain allowed so admins
+  // can adjust the SYSTEM tenant's mailbox ceiling.
+  //
+  // The catch-all `input.status !== 'active'` is deliberately broad —
+  // it covers `suspended`, `archived`, `pending`, and any future
+  // status enum value added to tenantStatusEnum. The system-tenant-
+  // guard lifecycle hook only handles `suspended`/`archived`/`deleted`
+  // transitions, so this guard is the only thing protecting SYSTEM
+  // from a `status: 'pending'` PATCH that would otherwise stick.
+  if (existing.isSystem) {
+    if (input.status !== undefined && input.status !== 'active') {
+      assertNotSystem(existing, 'change status of');
+    }
+    if (input.subscription_expires_at !== undefined && input.subscription_expires_at !== null) {
+      assertNotSystem(existing, 'set subscription expiry on');
+    }
+  }
+
   // Storage policy:
   //   • shrink (target < current MiB) → reject with STORAGE_RESIZE_REQUIRED.
   //     Operator must call POST /storage/resize explicitly so the
@@ -1211,6 +1235,11 @@ export async function deleteTenant(
   k8sTenants?: K8sClients,
 ): Promise<{ transitionId: string | null }> {
   const tenant = await getTenantById(db, id);
+
+  // SYSTEM tenant protection (ADR-040). Blocks hard-delete before any
+  // cascade dispatch — the lifecycle hook `system-tenant-guard` also
+  // catches this, but service-layer is the first line of defense.
+  assertNotSystem(tenant, 'delete');
 
   // Unified hard-delete cascade via tenant-lifecycle/cascades.ts —
   // namespace delete + DB row cascade in one function. Falls through

@@ -333,6 +333,13 @@ export const tenants = pgTable('tenants', {
   archivedAt: timestamp('archived_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+  // SYSTEM tenant flag — at most one row may have is_system=TRUE
+  // (enforced by partial unique index in migration 0008). The SYSTEM
+  // tenant owns the platform apex domain and the platform-reserved
+  // mailbox space (noreply@, postmaster@, etc.) and is protected
+  // against suspend/archive/delete by service-layer guards plus the
+  // system-tenant-guard lifecycle hook (ADR-040).
+  isSystem: boolean('is_system').notNull().default(false),
 }, (table) => [
   uniqueIndex('tenants_namespace_unique').on(table.kubernetesNamespace),
   index('tenants_region_idx').on(table.regionId),

@@ -46,13 +46,19 @@ describe('listDnsRecords', () => {
 
 describe('createDnsRecord', () => {
   it('should create and return a DNS record', async () => {
-    // First call: verifyDomainOwnership returns domain
-    // Second call: insert (returns void)
-    // Third call: select created record
+    // Call sequence (ADR-040 reserved-subdomain check added between
+    // verifyDomainOwnership and the final select):
+    //   1. verifyDomainOwnership                       → [DOMAIN]
+    //   2. assertNotReservedHostname → parent domain   → [DOMAIN]
+    //   3. getReservedPlatformHostnames → system_settings → []
+    //   4. getReservedPlatformHostnames → platform_settings → []
+    //   5. (insert happens here — not a select)
+    //   6. final read of created record                → [RECORD]
     let callCount = 0;
     const whereFn = vi.fn().mockImplementation(() => {
       callCount++;
-      if (callCount === 1) return Promise.resolve([DOMAIN]);
+      if (callCount === 1 || callCount === 2) return Promise.resolve([DOMAIN]);
+      if (callCount === 3 || callCount === 4) return Promise.resolve([]);
       return Promise.resolve([RECORD]);
     });
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });

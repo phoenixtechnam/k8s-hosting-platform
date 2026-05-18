@@ -61,6 +61,19 @@ export async function bulkUpdateTenantStatus(
         continue;
       }
 
+      // SYSTEM tenant protection (ADR-040). Bulk suspend hits this
+      // guard; reactivate is allowed (it's a no-op when already active
+      // and the lifecycle hook for `active` is unguarded — SYSTEM
+      // never leaves active in the first place).
+      if (tenant.isSystem && action === 'suspend') {
+        failed.push({
+          id,
+          transitionId: null,
+          error: `Cannot suspend SYSTEM tenant (platform-protected, ADR-040)`,
+        });
+        continue;
+      }
+
       // Dispatch through the cascade so hooks fire; skip k8s-only cascades
       // when k8s isn't available (unit-test / DB-only deploy).
       if (action === 'suspend') {
@@ -173,6 +186,18 @@ export async function bulkDeleteTenants(
 
       if (!tenant) {
         failed.push({ id, transitionId: null, error: `Client '${id}' not found` });
+        continue;
+      }
+
+      // SYSTEM tenant protection (ADR-040). Bulk delete must skip
+      // SYSTEM with an operator-visible reason so the chip popover
+      // shows why one row in the batch was refused.
+      if (tenant.isSystem) {
+        failed.push({
+          id,
+          transitionId: null,
+          error: `Cannot delete SYSTEM tenant (platform-protected, ADR-040)`,
+        });
         continue;
       }
 
