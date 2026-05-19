@@ -130,6 +130,26 @@ spec:
               port: http
             initialDelaySeconds: 30
             periodSeconds: 30
+          volumeMounts:
+            # Mount the platform's CRS exclusion file at the standard
+            # CRS pre-rules path. The image globs every *.conf under
+            # /etc/modsecurity.d/owasp-crs/rules/ at startup, so this
+            # file is auto-loaded. `subPath` is REQUIRED — without it
+            # the whole rules dir would be replaced with just our one
+            # file and the cluster would have effectively no WAF.
+            # See exclusion-rules-configmap.yaml for the rule body
+            # and scope rationale.
+            - name: exclusion-rules
+              mountPath: /etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+              subPath: REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+              readOnly: true
+      volumes:
+        - name: exclusion-rules
+          configMap:
+            name: modsec-crs-exclusions
+            items:
+              - key: REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+                path: REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
       affinity:
         # Spread the 2 replicas across nodes so a single-node failure
         # doesn't take both WAF instances down.

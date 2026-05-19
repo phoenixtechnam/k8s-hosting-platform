@@ -1,0 +1,69 @@
+# OWASP CRS exclusion rules for the platform-api host.
+#
+# Mounted into modsec-crs at
+# /etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+# (CRS auto-loads every *.conf in that dir; the "-BEFORE-CRS" name
+# ensures we run before the main rules so `ctl:ruleRemoveTargetById`
+# takes effect.)
+#
+# The class of false-positives this fixes: CRS LFI rules (930xxx)
+# scan `ARGS_NAMES` — the NAMES of POST/JSON body fields — against
+# a dictionary of "interesting" path fragments like `.secrets`,
+# `.passwd`, `.config`. JSON APIs with camelCase field names like
+# `secretsRestoredCount`, `configPath`, `lastLogin` match these
+# substrings constantly. The fix is to remove ARGS_NAMES from each
+# 930xxx rule's variable list — ARG VALUES, REQUEST_FILENAME, and
+# headers are STILL scanned, so real LFI is still detected. Only
+# the false-positive surface (the field NAMES themselves) is dropped.
+#
+# Scoped to the platform-api hostnames only:
+#   admin.<apex>, client.<apex>, api.<apex>
+# Tenant-facing routes (tenant.<tenant-domain>) keep full WAF
+# coverage so any user-uploaded-file endpoint there still benefits
+# from ARGS_NAMES inspection.
+#
+# Hit pattern that caused this exclusion (staging 2026-05-19):
+#   POST /api/v1/system-backup/dr-drill/runs body field
+#   `secretsRestoredCount` matched `.secrets` in CRS's
+#   lfi-os-files.data dictionary → 403 from rule 930120.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: modsec-crs-exclusions
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: modsec-crs
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+data:
+  REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf: |
+    # ── Platform-API JSON-field-name LFI false-positive exclusion ──
+    #
+    # Match only requests to the platform-api hosts. The expression
+    # `^(admin|client|api)\.` covers admin.<apex>, client.<apex>, and
+    # api.<apex> across every cluster (staging/prod/dev). Tenant
+    # hosts (tenant.<tenant-domain>) and webmail etc. are NOT
+    # matched and get the full CRS variable scope.
+    SecRule REQUEST_HEADERS:Host "@rx ^(admin|client|api)\." \
+        "id:9000100,\
+         phase:1,\
+         pass,\
+         nolog,\
+         ctl:ruleRemoveTargetById=930100;ARGS_NAMES,\
+         ctl:ruleRemoveTargetById=930110;ARGS_NAMES,\
+         ctl:ruleRemoveTargetById=930120;ARGS_NAMES,\
+         ctl:ruleRemoveTargetById=930130;ARGS_NAMES"
+
+    # ── Same false-positive class on RFI rules (931xxx) ──
+    # `ARGS_NAMES` of a JSON field can match common URL fragments
+    # the RFI rules look for. Same scope, same defense preserved on
+    # ARG values + headers.
+    SecRule REQUEST_HEADERS:Host "@rx ^(admin|client|api)\." \
+        "id:9000101,\
+         phase:1,\
+         pass,\
+         nolog,\
+         ctl:ruleRemoveTargetById=931100;ARGS_NAMES,\
+         ctl:ruleRemoveTargetById=931110;ARGS_NAMES,\
+         ctl:ruleRemoveTargetById=931120;ARGS_NAMES,\
+         ctl:ruleRemoveTargetById=931130;ARGS_NAMES"
