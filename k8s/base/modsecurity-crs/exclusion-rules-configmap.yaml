@@ -44,7 +44,15 @@ data:
     # api.<apex> across every cluster (staging/prod/dev). Tenant
     # hosts (tenant.<tenant-domain>) and webmail etc. are NOT
     # matched and get the full CRS variable scope.
-    SecRule REQUEST_HEADERS:Host "@rx ^(admin|client|api)\." \
+    # IMPORTANT: the Traefik modsecurity plugin proxies every
+    # forwarded request with `Host: modsec-crs.traefik.svc.cluster.
+    # local` (the modsec Service hostname) and puts the ORIGINAL
+    # hostname in X-Forwarded-Host. Matching Host directly never
+    # fires — match X-Forwarded-Host instead. Found 2026-05-19
+    # debugging staging POST /system-backup/dr-drill/runs that
+    # silently kept getting 403 even after the exclusion was
+    # mounted + modsec rolled.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|client|api)\." \
         "id:9000100,\
          phase:1,\
          pass,\
@@ -58,7 +66,15 @@ data:
     # `ARGS_NAMES` of a JSON field can match common URL fragments
     # the RFI rules look for. Same scope, same defense preserved on
     # ARG values + headers.
-    SecRule REQUEST_HEADERS:Host "@rx ^(admin|client|api)\." \
+    # IMPORTANT: the Traefik modsecurity plugin proxies every
+    # forwarded request with `Host: modsec-crs.traefik.svc.cluster.
+    # local` (the modsec Service hostname) and puts the ORIGINAL
+    # hostname in X-Forwarded-Host. Matching Host directly never
+    # fires — match X-Forwarded-Host instead. Found 2026-05-19
+    # debugging staging POST /system-backup/dr-drill/runs that
+    # silently kept getting 403 even after the exclusion was
+    # mounted + modsec rolled.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|client|api)\." \
         "id:9000101,\
          phase:1,\
          pass,\
