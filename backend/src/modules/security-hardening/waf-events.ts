@@ -17,6 +17,7 @@
 import { and, desc, eq, gte, ilike, inArray, isNull, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { wafLogs } from '../../db/schema.js';
+import { getScraperStatus } from '../ingress-routes/waf-log-scraper.js';
 
 // Matches SecurityHardeningDeps.db — kept loose to share the same instance
 // across the security-hardening module.
@@ -133,8 +134,9 @@ export async function listWafEvents(
   const events = slice.map(rowToEvent);
 
   const stats = await computeStats(db);
+  const scraperStatus = getScraperStatus();
 
-  return { events, truncated, stats };
+  return { events, truncated, stats, scraperStatus };
 }
 
 /**

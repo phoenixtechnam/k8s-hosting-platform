@@ -100,11 +100,40 @@ export const wafEventsStatsSchema = z.object({
 });
 export type WafEventsStats = z.infer<typeof wafEventsStatsSchema>;
 
+export const wafScraperStatusSchema = z.object({
+  /** True once the in-process scheduler has fired at least one cycle. */
+  hasRunOnce: z.boolean(),
+  /** ISO timestamp of the most recent cycle completion. null before first cycle. */
+  lastRunAt: z.string().datetime().nullable(),
+  /** Did the last cycle find a modsec-crs pod to read logs from? */
+  modsecPodFound: z.boolean(),
+  /** Lines parsed / rows inserted on the last cycle. */
+  lastCycleScraped: z.number().int().min(0),
+  lastCycleInserted: z.number().int().min(0),
+  /** Up to 5 most-recent errors from the last cycle (each ≤256 chars). */
+  lastCycleErrors: z.array(z.string()),
+  /** Configured polling interval in ms (informational — operator-visible). */
+  scrapeIntervalMs: z.number().int().positive(),
+});
+export type WafScraperStatus = z.infer<typeof wafScraperStatusSchema>;
+
 export const wafEventsResponseSchema = z.object({
   events: z.array(wafEventSchema),
   /** Whether the query was capped by `limit`. */
   truncated: z.boolean(),
   /** Window stats for the same filters (24h fixed regardless of `sinceSeconds`). */
   stats: wafEventsStatsSchema,
+  /** Live status of the in-process scraper — lets the UI distinguish
+   * "modsec not deployed" from "scraper running but quiet". */
+  scraperStatus: wafScraperStatusSchema,
 });
 export type WafEventsResponse = z.infer<typeof wafEventsResponseSchema>;
+
+export const wafRefreshResponseSchema = z.object({
+  triggeredAt: z.string().datetime(),
+  scraped: z.number().int().min(0),
+  inserted: z.number().int().min(0),
+  modsecPodFound: z.boolean(),
+  errors: z.array(z.string()),
+});
+export type WafRefreshResponse = z.infer<typeof wafRefreshResponseSchema>;
