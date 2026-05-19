@@ -116,6 +116,10 @@ PARALLEL=(
   "passkey:integration-passkey-e2e.sh"
   "firewall:integration-firewall-e2e.sh"
   "drain:integration-drain-e2e.sh"
+  # WAF + CrowdSec IP-blocking coverage on every Traefik DS pod.
+  # Each phase 4 round takes ~70s for bouncer cache refresh, so the
+  # whole suite is ~3 min; safely parallel with everything else.
+  "waf-crowdsec:integration-waf-crowdsec.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).

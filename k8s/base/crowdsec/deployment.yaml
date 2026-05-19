@@ -59,7 +59,9 @@ spec:
         fsGroup: 1000
       containers:
         - name: crowdsec
-          image: docker.io/crowdsecurity/crowdsec:v1.7.0
+          # v1.7.8 (2026-05-11) — latest stable on the v1.7.x line. Includes
+          # CVE patches + LAPI metrics-endpoint improvements since v1.7.0.
+          image: docker.io/crowdsecurity/crowdsec:v1.7.8
           imagePullPolicy: IfNotPresent
           env:
             - name: DISABLE_AGENT
