@@ -49,6 +49,113 @@
 - Load testing -- Week 11
 - First production migration -- Week 12
 - Monitoring stack deployment (Prometheus + Alertmanager + Loki)
+- **Backup architecture simplification (Path A++)** — see milestone below
+
+---
+
+## Milestone: Backup Architecture Simplification (Path A++)
+
+**Driving RFC**: [`BACKUP_ARCHITECTURE_RFC.md`](./BACKUP_ARCHITECTURE_RFC.md) — locked design.
+**Related ADRs**: ADR-042 (Stalwart logical export, deferred), ADR-043 (rclone-serve-s3 shim, **WITHDRAWN 2026-05-19**).
+**Estimate**: ~58 hours (~7-8 working days).
+**Critical path**: R1 → R2 → R3 → R-S1 → R-S2 → R-S3 → R-S4 → R12 (~32 h — baseline ships the user-visible simplification *and* working S3-free SYSTEM backups).
+
+> **Revision 2026-05-19 (late round-5)**: `SYSTEM.postgres` swaps from barman-cloud to **`cnpg-plugin-pgbackrest`**; `SYSTEM.etcd` swaps from k3s `--etcd-s3` to a small **`backup-rclone-etcd` CronJob**. **Eliminates S3 dependency from SYSTEM entirely** (every target type now fully covered, no degradation states). PITR + incremental backups preserved (pgBackRest is the v2 storage path CNPG itself is moving toward). The 'per-subsystem degradation badges' work-item (R5) is **OBSOLETE**, replaced by R-S1..R-S6 (pgBackRest plugin install, platform-api wiring, etcd CronJob, restore procedures, migration runbook, DR drill). Net effort change: +6 h vs the badge-based approach, for a meaningfully simpler operator model.
+
+### Goals (verbatim from RFC §1, revision 2026-05-19)
+
+1. **One operator mental model**: 3 backup classes (SYSTEM, TENANT, MAIL); each is one card with a single target picker.
+2. **Two backup layers with distinct vocabulary**: **Fast rollback** (Longhorn snapshots, retain=6, 1h cadence, opt-in subsystems) and **Disaster recovery** (remote backups, operator-configured, optional).
+3. **Remote backup purely optional**: cluster with no target rows still runs fast-rollback for opted-in subsystems.
+4. **Universal target compatibility for SYSTEM** *(revised — was "graceful per-subsystem degradation")*: pgBackRest + etcd-CronJob support every target type (S3, SFTP, CIFS, NFS). No subsystem-disabled states.
+5. **Tenant PVCs on-demand-only** — automatic backup removed; tenant bundle is canonical DR; on-demand snapshots available in both admin and tenant panels.
+6. **Dedup/compression by default** wherever mechanism supports it.
+
+### Implementation phases (revision 2026-05-19)
+
+| # | Phase | Hours | Risk |
+|---|---|---|---|
+| R1 | Schema migration 0012 (4 → 3 classes; single target per class; backfill) | 4 | L |
+| R2 | bootstrap.sh adds `RecurringJob local-thin-1h` retain=6 default; label opt-in volumes | 3 | L |
+| R3 | Adaptive housekeeper CronJob (10% cap with 500 MiB floor; disk-pressure handling; audit log) | 4 | L |
+| R4 | New storage classes `longhorn-ha` + `longhorn-local`; deprecate old four | 6 | M |
+| ~~R5~~ | ~~Soften strict-gate; per-subsystem graceful degradation badges~~ **OBSOLETE** — no degradation states post-pgBackRest. Trivial reachability validator folds into R-S2 | ~~4~~ 0 | n/a |
+| R6 | Drop tenant PVC automatic backup; on-demand snapshot endpoint + UI affordance (admin + tenant panel); TTL housekeeper; global quotas | 6 | M |
+| **R-S1** | **NEW** — Install `cnpg-plugin-pgbackrest` (Flux manifest, pinned by digest); verify against pinned CNPG version; smoke-test default S3 path | 2 | L |
+| **R-S2** | **NEW** — platform-api wiring: SYSTEM target → `PluginConfiguration` CR + target Secret + CNPG `Cluster` plugin patch; handles S3/SFTP/CIFS/NFS; CIFS/NFS injects initContainer kernel mount | 5 | M |
+| ~~R7~~ | ~~CNPG `spec.backup` reconciler (gated on SYSTEM = S3) + restore wizard~~ **SUPERSEDED by R-S1+R-S2**; restore wizard moves to R-S4 | ~~9~~ 0 | n/a |
+| R8 | Secrets bundle multi-target upload + UI card; modify `make secrets-fetch` | 4 | L |
+| **R-S3** | **NEW** — `backup-rclone-etcd` CronJob: image (alpine + rclone + k3s-binary, ~30 MiB, pinned digest); CronJob with `nodeSelector: control-plane`, hourly upload + retention; platform-api reconciler from SYSTEM target | 3 | L |
+| ~~R9~~ | ~~k3s `--etcd-s3` defaults in bootstrap.sh (gated on SYSTEM = S3) + UI surfacing~~ **SUPERSEDED by R-S3** | ~~3~~ 0 | n/a |
+| **R-S4** | **NEW** — Restore procedures: `BACKUP_RESTORE.md` runbook + `restore-postgres.sh` (drives pgBackRest restore CR) + `restore-etcd.sh` (rclone download + `k3s etcd-snapshot restore`); unified restore wizard at `/backups/system` | 5 | M |
+| R10 | Drop tar+gzip+rclone tenant_snapshot path entirely (tenant DR = bundles only) | 4 | L |
+| **R11** | **DEFERRED** — Stalwart-on-Longhorn migration (follow-up RFC after v1 soak) | n/a | n/a |
+| R12 | Flat per-subsystem UI on `/backups/system` and `/backups/tenants/:id`; rename `/settings/backup-infrastructure` → `/settings/remote-storage-targets` | 6 | L |
+| R13 | Drop dead code (legacy WalArchiveTab, multi-target paths, tenant_snapshot scheduler, barman-cloud reconciler post-migration) | 3 | L |
+| R14 | Mail storage visibility on local-path (bytes used / available, growth rate, last-restic-run size on `/backups/system` MAIL card) — required because R11 is deferred | 3 | L |
+| **R-S5** | **NEW** — Migration runbook for existing clusters running barman-cloud: keep both engines for one full pgBackRest cycle, then strip barman-cloud + age out its bucket. Smoke against staging | 3 | M |
+| **R-S6** | **NEW** — E2E DR drill: backup → simulated cluster loss → restore from each of (S3, SFTP, CIFS, NFS) targets; PITR test (restore to specific timestamp); etcd restore on fresh control-plane node | 4 | M |
+
+### On-demand tenant PVC snapshots — Admin + Tenant Panel
+
+Replaces the automatic tenant-snapshot mechanism that was dropped. UX is operator-visible in both panels:
+
+**Admin Panel** (`/backups/tenants/:tenantId`):
+- "Take snapshot now" button per tenant PVC
+- List of existing on-demand snapshots: `created_at`, `expires_at`, `size_bytes`, `label`
+- Delete (with confirm dialog)
+- Restore (with destructive-overwrite confirm — pod scaled to 0, Longhorn revert, scale back)
+
+**Tenant Panel** (under "Storage" or similar):
+- Same affordances, scoped to the customer's own PVC
+- Tenants encouraged to snapshot before risky file operations
+- Quota visible: "X of N concurrent snapshots used"
+
+**Global settings** (NEW page `Admin Settings → Tenant Settings`):
+- `tenant_on_demand_snapshot_ttl_hours` (default **24**)
+- `tenant_on_demand_snapshot_max_concurrent` (default **3** per tenant)
+- Both are cluster-wide globals, not per-plan (revisit if customer segmentation needs differ)
+
+### Backup classes (locked, revision 2026-05-19)
+
+| Class | Subsystems | Target compatibility |
+|---|---|---|
+| **SYSTEM** | postgres (pgBackRest plugin), etcd (rclone CronJob), secrets-bundle, bulwark, crowdsec, monitoring | **Any target (S3 / SFTP / CIFS / NFS)** — no degradation states |
+| **TENANT** | tenant-bundle | any target |
+| **MAIL** | stalwart-rocksdb | any target (restic) |
+
+### UI vocabulary (canonical)
+
+| Phrase | Meaning |
+|---|---|
+| **Fast rollback** | Longhorn snapshot, local-thin, retain=6, opted-in subsystems only |
+| **Disaster recovery** | Remote backup to operator-configured target |
+
+Replaces all prior terminology ("filesystem snapshots", "object backups", "local thin", "remote", etc.).
+
+### Deferred items (do NOT include in v1)
+
+- **R11 Stalwart-on-Longhorn migration** — needs perf benchmark on staging; separate follow-up RFC. Until then: Stalwart on `local-path`, restic for DR, R14 surfaces disk usage.
+- **ADR-042 `stalwart -e` logical export** — DB-level corruption survival; deferred until R11 ships AND a real demand surfaces.
+- **ADR-043 `rclone serve s3` shim** — **WITHDRAWN 2026-05-19**, superseded by R-S1..R-S6 (pgBackRest plugin + etcd CronJob). The empirical eval is preserved as historical reference.
+
+### Success criteria for v1 (revision 2026-05-19)
+
+- [ ] 3 backup classes (SYSTEM/TENANT/MAIL) visible in `/settings/remote-storage-targets?tab=classes`
+- [ ] Operator can pick **any target type** for SYSTEM (S3, SFTP, CIFS, NFS) — no degradation badges shown
+- [ ] Postgres backups via `cnpg-plugin-pgbackrest` succeed against an SFTP target (verified by E2E in R-S6)
+- [ ] Postgres PITR restore to a specific timestamp succeeds (verified by E2E in R-S6)
+- [ ] etcd backups via `backup-rclone-etcd` CronJob land on the configured target hourly
+- [ ] etcd restore on a fresh control-plane node from a non-S3 target succeeds (verified by E2E in R-S6)
+- [ ] Fast-rollback layer active on system-db (retain=6, 1h cadence) verifiable via `kubectl get volumes.longhorn.io`
+- [ ] Adaptive housekeeper prevents any volume's snapshot delta from exceeding 10% of `spec.size`
+- [ ] Tenants can create / list / delete / restore on-demand PVC snapshots from tenant panel
+- [ ] Admin operators can do the same from `/backups/tenants/:id`
+- [ ] `/backups/system` shows mail storage usage (bytes, growth) even with Stalwart on local-path
+- [ ] No snapshot CronJob continues to fire for tenant PVCs (tenant DR is bundles only)
+- [ ] No `system-backup-target` or barman-cloud reconciler Secret remains stale when SYSTEM target is unassigned
+- [ ] All old URLs (`/storage`, `/system-backup`, `/tenant-backup`) return 404 (no backward compat)
+- [ ] Migration runbook (R-S5) successfully migrates a staging cluster from barman-cloud to pgBackRest with no DR-window gap
 
 ---
 
