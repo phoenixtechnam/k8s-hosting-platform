@@ -1087,14 +1087,18 @@ export const routeAuthUsers = pgTable('route_auth_users', {
 
 // ─── WAF Logs ───
 
+// route_id + tenant_id are NULLABLE since 0013_waf_logs_admin_hosts. Admin-host
+// events (admin.<apex>, api.<apex>, etc.) don't have an ingress_routes row, so
+// the scraper writes them with route_id=NULL and hostname populated. The
+// per-route endpoint /tenants/.../waf-logs still filters by route_id which only
+// matches rows that DO have one. Cluster-wide listing uses /admin/security/waf-events.
 export const wafLogs = pgTable('waf_logs', {
   id: varchar('id', { length: 36 }).primaryKey(),
   routeId: varchar('route_id', { length: 36 })
-    .notNull()
-    .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
+    .references(() => ingressRoutes.id, { onDelete: 'set null' }),
   tenantId: varchar('tenant_id', { length: 36 })
-    .notNull()
-    .references(() => tenants.id, { onDelete: 'cascade' }),
+    .references(() => tenants.id, { onDelete: 'set null' }),
+  hostname: varchar('hostname', { length: 255 }).notNull().default(''),
   ruleId: varchar('rule_id', { length: 50 }).notNull(),
   severity: varchar('severity', { length: 20 }).notNull(),
   message: text('message').notNull(),
@@ -1107,6 +1111,8 @@ export const wafLogs = pgTable('waf_logs', {
   index('waf_logs_route_idx').on(table.routeId),
   index('waf_logs_tenant_idx').on(table.tenantId),
   index('waf_logs_created_idx').on(table.createdAt),
+  index('waf_logs_hostname_created_idx').on(table.hostname, table.createdAt),
+  index('waf_logs_rule_id_created_idx').on(table.ruleId, table.createdAt),
 ]);
 
 // ─── SSH Keys ───

@@ -99,3 +99,4 @@ export * from './security-hardening.js';
 export * from './secrets-audit.js';
 export * from './secrets-bundle.js';
 export * from './dr-drill.js';
+export * from './waf-events.js';

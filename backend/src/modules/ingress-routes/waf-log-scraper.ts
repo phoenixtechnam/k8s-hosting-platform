@@ -23,7 +23,7 @@
  * "No ingress controller pod found" 60x/minute.
  */
 
-import { eq, and, inArray, desc, notInArray, sql } from 'drizzle-orm';
+import { eq, and, inArray, desc, notInArray, sql, isNull } from 'drizzle-orm';
 import crypto from 'crypto';
 import { wafLogs, ingressRoutes, domains } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -32,8 +32,19 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 const SCRAPE_INTERVAL_MS = 30_000;
 const LOG_SINCE_SECONDS = 35;
 const MAX_LOGS_PER_ROUTE = 50;
+// Admin/api/client/platform hosts have route_id=NULL. Cap them as one global
+// bucket so a single noisy admin endpoint can't flood the table.
+const MAX_LOGS_FOR_ADMIN_HOSTS = 500;
+// Field caps mirror the api-contracts Zod schema — bound DB row size against
+// attacker-controlled requestUri / message stuffing.
+const MAX_REQUEST_URI_LEN = 2048;
+const MAX_MESSAGE_LEN = 500;
 const INGRESS_NAMESPACE = 'traefik';
 const INGRESS_LABEL = 'app=modsec-crs';
+
+function truncate(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n);
+}
 
 interface ParsedWafEvent {
   readonly uniqueId: string;
@@ -199,22 +210,27 @@ export async function scrapeWafLogs(
   const tenantMap = new Map<string, string>();
   for (const d of domainRows) tenantMap.set(d.id, d.tenantId);
 
-  // 4. Insert events (skip duplicates via unique_id hash)
+  // 4. Insert events (skip duplicates via unique_id hash). Events whose
+  // hostname doesn't match an ingress_routes row get inserted with
+  // route_id=NULL + tenant_id=NULL — admin/api/client/platform hosts that
+  // are not per-tenant routes. They're visible in the cluster-wide WAF
+  // events viewer (/admin/security/waf-events, super_admin only).
+  let adminHostsTouched = false;
   for (const event of events) {
     const route = routeMap.get(event.hostname);
-    if (!route) continue;
-    const tenantId = tenantMap.get(route.domainId);
-    if (!tenantId) continue;
+    const tenantId = route ? tenantMap.get(route.domainId) ?? null : null;
+    if (!route) adminHostsTouched = true;
 
     try {
       await db.insert(wafLogs).values({
         id: crypto.randomUUID(),
-        routeId: route.id,
+        routeId: route?.id ?? null,
         tenantId,
+        hostname: truncate(event.hostname, 255),
         ruleId: event.ruleId,
         severity: event.severity,
-        message: event.message,
-        requestUri: event.requestUri,
+        message: truncate(event.message, MAX_MESSAGE_LEN),
+        requestUri: truncate(event.requestUri, MAX_REQUEST_URI_LEN),
         requestMethod: event.requestMethod,
         sourceIp: event.sourceIp,
       });
@@ -228,7 +244,7 @@ export async function scrapeWafLogs(
     }
   }
 
-  // 5. Prune old logs (keep last MAX_LOGS_PER_ROUTE per route)
+  // 5a. Prune old logs (keep last MAX_LOGS_PER_ROUTE per route).
   for (const route of routes) {
     try {
       const [{ count: logCount }] = await db
@@ -253,6 +269,34 @@ export async function scrapeWafLogs(
       }
     } catch {
       // Non-fatal — pruning failure shouldn't break the scraper
+    }
+  }
+
+  // 5b. Prune admin-host bucket (route_id IS NULL) — capped globally.
+  if (adminHostsTouched) {
+    try {
+      const [{ count: adminCount }] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(wafLogs)
+        .where(isNull(wafLogs.routeId));
+
+      if (Number(adminCount ?? 0) > MAX_LOGS_FOR_ADMIN_HOSTS) {
+        const keepRows = await db
+          .select({ id: wafLogs.id })
+          .from(wafLogs)
+          .where(isNull(wafLogs.routeId))
+          .orderBy(desc(wafLogs.createdAt))
+          .limit(MAX_LOGS_FOR_ADMIN_HOSTS);
+
+        const keepIds = keepRows.map(r => r.id);
+        if (keepIds.length > 0) {
+          await db.delete(wafLogs).where(
+            and(isNull(wafLogs.routeId), notInArray(wafLogs.id, keepIds)),
+          );
+        }
+      }
+    } catch {
+      // Non-fatal
     }
   }
 

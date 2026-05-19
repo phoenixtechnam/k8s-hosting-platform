@@ -1,13 +1,17 @@
 /**
  * Security / Firewall / Node Hardening — Settings → Security & Hardening
  *
- * Read-mostly observability page. 6 tabs:
+ * Read-mostly observability page. 10 tabs:
  *   1. Overview          — banner summary + node table
  *   2. SSH Lockdown      — per-node SSH posture + guided runbook modal
  *   3. Mesh Status       — detected mesh provider per node + install hints
  *   4. Firewall Posture  — mode, peer counts, public ports per node
  *   5. Node Hardening    — CIS-style check matrix
- *   6. Security Events   — recent audit log entries (security-relevant)
+ *   6. K8s Posture       — pod security standards + privileged pods
+ *   7. Authentication    — Dex / oauth2-proxy health + failed-login counts
+ *   8. Network Policies  — bulk NetworkPolicy template catalog (P2.4)
+ *   9. Security Events   — recent audit log entries (security-relevant)
+ *  10. WAF Events        — cluster-wide ModSec/CRS events (admin + tenant hosts)
  *
  * Plus Phase 2 cards on Overview:
  *   - Calico WG verification
@@ -26,7 +30,7 @@
  * Settings.tsx.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ChevronLeft,
@@ -42,19 +46,27 @@ import {
   Clock,
   Info,
   Copy,
+  Filter,
+  Globe,
 } from 'lucide-react';
 import {
   useSecurityHardeningSnapshot,
   useRefreshSecurityHardening,
 } from '@/hooks/use-security-hardening';
+import { useWafEvents } from '@/hooks/use-waf-events';
 import type {
   NodeSecuritySnapshot,
   CisFinding,
   CisSeverity,
   SecurityHardeningSnapshot,
+  WafEvent,
+  WafEventScope,
+  WafEventSeverity,
+  WafEventsQuery,
+  WafEventsResponse,
 } from '@k8s-hosting/api-contracts';
 
-type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events';
+type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events' | 'waf';
 
 const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -66,6 +78,7 @@ const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'auth', label: 'Authentication' },
   { id: 'netpol', label: 'Network Policies' },
   { id: 'events', label: 'Security Events' },
+  { id: 'waf', label: 'WAF Events' },
 ];
 
 export default function SecurityHardeningSettings() {
@@ -166,6 +179,10 @@ export default function SecurityHardeningSettings() {
       {snapshot && activeTab === 'auth' && <AuthTab snapshot={snapshot} />}
       {snapshot && activeTab === 'netpol' && <NetworkPolicyTab />}
       {snapshot && activeTab === 'events' && <EventsTab snapshot={snapshot} />}
+      {/* WAF tab is unconditional — it has its own data hook and surfaces its own
+          loading/error states, so it shouldn't go blank when the security-hardening
+          snapshot is slow or failing (the snapshot is a DaemonSet-driven read). */}
+      {activeTab === 'waf' && <WafEventsTab />}
     </div>
   );
 }
@@ -999,5 +1016,299 @@ apt-get install -y wireguard
 systemctl enable --now wg-quick@wg0`}</pre>
       </details>
     </div>
+  );
+}
+
+// ─── WAF Events tab ─────────────────────────────────────────────────────
+//
+// Cluster-wide view of ModSec/CRS events from the waf_logs table. Includes
+// admin/api/client-host events that have no per-tenant ingress_route — those
+// are invisible in the per-route /tenants/.../waf-logs endpoint and were the
+// motivation for this tab (e.g. the 930120 LFI FP on POST
+// /admin/system-backup/dr-drill/runs on 2026-05-19).
+
+const SINCE_OPTIONS: ReadonlyArray<{ readonly label: string; readonly seconds: number }> = [
+  { label: 'Last hour', seconds: 3_600 },
+  { label: 'Last 24 hours', seconds: 86_400 },
+  { label: 'Last 7 days', seconds: 604_800 },
+  { label: 'All', seconds: 0 },
+];
+
+const SEVERITY_OPTIONS: ReadonlyArray<{ readonly label: string; readonly value: '' | WafEventSeverity }> = [
+  { label: 'All severities', value: '' },
+  { label: 'Critical only', value: 'critical' },
+  { label: 'Warning only', value: 'warning' },
+  { label: 'Info only', value: 'info' },
+];
+
+const SCOPE_OPTIONS: ReadonlyArray<{ readonly label: string; readonly value: '' | WafEventScope }> = [
+  { label: 'All scopes', value: '' },
+  { label: 'Admin/platform hosts only', value: 'admin-host' },
+  { label: 'Tenant routes only', value: 'tenant-route' },
+];
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(handle);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+function WafEventsTab() {
+  const [ruleId, setRuleId] = useState('');
+  const [severity, setSeverity] = useState<'' | WafEventSeverity>('');
+  const [host, setHost] = useState('');
+  const [scope, setScope] = useState<'' | WafEventScope>('');
+  const [sinceSeconds, setSinceSeconds] = useState(86_400);
+
+  // Debounce text inputs so a keystroke doesn't fan out into one request per
+  // character — the backend would re-run the same expensive cluster-wide
+  // query 13 times for "admin.example".
+  const debouncedRuleId = useDebouncedValue(ruleId, 400);
+  const debouncedHost = useDebouncedValue(host, 400);
+
+  const query: WafEventsQuery = useMemo(() => {
+    const q: WafEventsQuery = { sinceSeconds, limit: 200 };
+    if (debouncedRuleId.trim()) q.ruleId = debouncedRuleId.trim();
+    if (severity) q.severity = severity;
+    if (debouncedHost.trim()) q.host = debouncedHost.trim();
+    if (scope) q.scope = scope;
+    return q;
+  }, [debouncedRuleId, severity, debouncedHost, scope, sinceSeconds]);
+
+  const { data, isLoading, isError, error } = useWafEvents(query);
+  const payload: WafEventsResponse | undefined = data?.data;
+
+  return (
+    <section className="space-y-4" data-testid="waf-events-tab">
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
+        Cluster-wide WAF events from the ModSecurity / OWASP CRS rule engine.
+        Includes <strong>admin/api/client/platform-host</strong> events that have
+        no per-tenant ingress route (e.g. CRS rule 930120 blocking
+        <code className="text-xs mx-1">POST /admin/system-backup/dr-drill/runs</code>),
+        plus the same per-route events surfaced under each Domain.
+        Scraper polls the <code className="text-xs">modsec-crs</code> pod every 30s;
+        admin-host events are capped at 500 globally, per-route at 50.
+      </div>
+
+      {/* Stats panel */}
+      {payload?.stats && <WafStatsPanel stats={payload.stats} />}
+
+      {/* Filter bar */}
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3" data-testid="waf-filters">
+        <div className="flex flex-wrap items-end gap-3">
+          <FilterField label="Rule ID(s)" hint="comma-separated">
+            <input
+              type="text"
+              value={ruleId}
+              onChange={(e) => setRuleId(e.target.value)}
+              placeholder="930120,931100"
+              className="w-40 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
+              data-testid="waf-filter-rule"
+            />
+          </FilterField>
+          <FilterField label="Severity">
+            <select
+              value={severity}
+              onChange={(e) => setSeverity(e.target.value as '' | WafEventSeverity)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              data-testid="waf-filter-severity"
+            >
+              {SEVERITY_OPTIONS.map((o) => (
+                <option key={o.value || 'all'} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </FilterField>
+          <FilterField label="Host substring">
+            <input
+              type="text"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              placeholder="admin."
+              className="w-44 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
+              data-testid="waf-filter-host"
+            />
+          </FilterField>
+          <FilterField label="Scope">
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as '' | WafEventScope)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              data-testid="waf-filter-scope"
+            >
+              {SCOPE_OPTIONS.map((o) => (
+                <option key={o.value || 'all'} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </FilterField>
+          <FilterField label="Window">
+            <select
+              value={sinceSeconds}
+              onChange={(e) => setSinceSeconds(Number(e.target.value))}
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              data-testid="waf-filter-since"
+            >
+              {SINCE_OPTIONS.map((o) => (
+                <option key={o.seconds} value={o.seconds}>{o.label}</option>
+              ))}
+            </select>
+          </FilterField>
+          <button
+            type="button"
+            onClick={() => { setRuleId(''); setSeverity(''); setHost(''); setScope(''); setSinceSeconds(86_400); }}
+            className="ml-auto inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+            data-testid="waf-filter-clear"
+          >
+            <Filter size={12} /> Clear filters
+          </button>
+        </div>
+      </div>
+
+      {isLoading && <SkeletonLoader />}
+      {isError && (
+        <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-4 text-sm text-red-700 dark:text-red-300">
+          Failed to load WAF events: {error instanceof Error ? error.message : String(error)}
+        </div>
+      )}
+
+      {payload && (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-900 dark:text-gray-100 flex items-center justify-between">
+            <span>Events ({payload.events.length}{payload.truncated ? '+' : ''})</span>
+            {payload.truncated && (
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                Result capped — narrow filters to see older events
+              </span>
+            )}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm" data-testid="waf-events-table">
+              <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
+                <tr>
+                  <th className="px-4 py-2 text-left">When</th>
+                  <th className="px-4 py-2 text-left">Rule</th>
+                  <th className="px-4 py-2 text-left">Severity</th>
+                  <th className="px-4 py-2 text-left">Host</th>
+                  <th className="px-4 py-2 text-left">Source IP</th>
+                  <th className="px-4 py-2 text-left">Request</th>
+                  <th className="px-4 py-2 text-left">Message</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                {payload.events.map((ev) => <WafEventRow key={ev.id} ev={ev} />)}
+                {payload.events.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
+                      No WAF events match the current filters. Last scraper write was{' '}
+                      {payload.stats.mostRecentAt
+                        ? `${Math.floor((Date.now() - new Date(payload.stats.mostRecentAt).getTime()) / 1000)}s ago`
+                        : 'never (table empty)'}.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WafStatsPanel({ stats }: { stats: WafEventsResponse['stats'] }) {
+  const hours = Math.round(stats.windowSeconds / 3_600);
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3" data-testid="waf-stats-panel">
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+        <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
+          <Activity size={14} /> Events ({hours}h)
+        </div>
+        <div className="text-2xl font-semibold text-gray-900 dark:text-gray-100 mt-2">
+          {stats.totalEvents.toLocaleString()}
+        </div>
+        <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          {stats.totalEventsAdminHost.toLocaleString()} admin / {stats.totalEventsTenantRoute.toLocaleString()} tenant
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+        <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
+          <ShieldAlert size={14} /> Top rules ({hours}h)
+        </div>
+        <ul className="mt-2 space-y-1 text-xs" data-testid="waf-top-rules">
+          {stats.topRules.length === 0 && <li className="text-gray-500">No events in window</li>}
+          {stats.topRules.slice(0, 5).map((r) => (
+            <li key={r.ruleId} className="flex items-baseline justify-between gap-2">
+              <span className="font-mono text-gray-700 dark:text-gray-200 shrink-0">{r.ruleId}</span>
+              <span className="truncate text-gray-600 dark:text-gray-400 text-[11px] flex-1" title={r.sampleMessage}>{r.sampleMessage}</span>
+              <span className="font-medium text-gray-900 dark:text-gray-100 shrink-0">{r.count}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+        <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
+          <Globe size={14} /> Top hosts ({hours}h)
+        </div>
+        <ul className="mt-2 space-y-1 text-xs" data-testid="waf-top-hosts">
+          {stats.topHosts.length === 0 && <li className="text-gray-500">No events in window</li>}
+          {stats.topHosts.slice(0, 5).map((h) => (
+            <li key={`${h.hostname}-${h.scope}`} className="flex items-baseline justify-between gap-2">
+              <span className="font-mono text-gray-700 dark:text-gray-200 truncate" title={h.hostname}>{h.hostname || '(empty)'}</span>
+              <span className="text-[10px] uppercase text-gray-500 shrink-0">{h.scope === 'admin-host' ? 'admin' : 'tenant'}</span>
+              <span className="font-medium text-gray-900 dark:text-gray-100 shrink-0">{h.count}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function WafEventRow({ ev }: { ev: WafEvent }) {
+  const sevTone =
+    ev.severity === 'critical'
+      ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200'
+      : ev.severity === 'warning'
+        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200'
+        : 'bg-gray-100 text-gray-700 dark:bg-gray-700/40 dark:text-gray-300';
+  return (
+    <tr>
+      <td className="px-4 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 whitespace-nowrap">
+        {new Date(ev.occurredAt).toISOString().replace('T', ' ').slice(0, 19)}
+      </td>
+      <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{ev.ruleId}</td>
+      <td className="px-4 py-2">
+        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${sevTone}`}>
+          {ev.severity}
+        </span>
+      </td>
+      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">
+        <span className="font-mono">{ev.hostname || '(unknown)'}</span>
+        {ev.scope === 'admin-host' && (
+          <span className="ml-1 text-[9px] uppercase text-amber-700 dark:text-amber-300">admin</span>
+        )}
+      </td>
+      <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">{ev.sourceIp || '—'}</td>
+      <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">
+        {ev.requestMethod ? `${ev.requestMethod} ` : ''}{ev.requestUri || '/'}
+      </td>
+      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">{ev.message}</td>
+    </tr>
+  );
+}
+
+function FilterField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1 text-xs text-gray-600 dark:text-gray-400">
+      <span>
+        {label}
+        {hint && <span className="ml-1 text-[10px] text-gray-400">({hint})</span>}
+      </span>
+      {children}
+    </label>
   );
 }
