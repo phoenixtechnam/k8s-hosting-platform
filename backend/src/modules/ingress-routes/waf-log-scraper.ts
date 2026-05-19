@@ -55,6 +55,24 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n);
 }
 
+/**
+ * Cheap JSON-string field extractor that avoids a full JSON.parse on every
+ * audit line (some are 4-8 KB and most are noise for our purposes).
+ * Returns the value of `"<key>":"<value>"` — case-sensitive, no escape
+ * handling beyond the common ones, returns the string between the next
+ * pair of unescaped quotes. Good enough for the well-defined ModSec
+ * audit-log shape; refuse pathological inputs by capping at 512 chars.
+ */
+function extractJsonField(line: string, key: string): string | null {
+  const needle = `"${key}":"`;
+  const idx = line.indexOf(needle);
+  if (idx < 0) return null;
+  const start = idx + needle.length;
+  const end = line.indexOf('"', start);
+  if (end < 0 || end - start > 512) return null;
+  return line.slice(start, end);
+}
+
 // ─── Scraper health snapshot ─────────────────────────────────────────────
 //
 // Process-local state updated every cycle so the WAF Events tab can
@@ -169,8 +187,12 @@ export async function scrapeWafLogs(
   let scraped = 0;
   let inserted = 0;
 
-  // 1. Read recent controller logs
-  let logOutput: string;
+  // 1. Read recent logs from ALL modsec-crs replicas. Traefik load-balances
+  // requests across pods via the Service, so any given attack event lands
+  // on exactly one pod — reading only pods[0] would miss ~half the events
+  // on a 2-replica deployment. We concat all replica logs and dedupe via
+  // ModSecurity's unique_id in pass 2.
+  let logOutput = '';
   try {
     const pods = await (k8s.core as unknown as {
       listNamespacedPod: (args: { namespace: string; labelSelector: string }) => Promise<{
@@ -181,31 +203,43 @@ export async function scrapeWafLogs(
       labelSelector: INGRESS_LABEL,
     });
 
-    const podName = pods.items?.[0]?.metadata?.name;
-    // SKIP path: modsec-crs not running (e.g. single-node cluster where the
-    // anti-affinity replicas=2 doesn't satisfy). Don't spam errors — the
-    // scheduler caller treats this as a no-op cycle.
-    if (!podName) {
+    const podNames = (pods.items ?? [])
+      .map((p) => p.metadata?.name)
+      .filter((n): n is string => typeof n === 'string' && n.length > 0);
+
+    // SKIP path: no modsec-crs pods (e.g. single-node cluster where the
+    // anti-affinity replicas=2 doesn't satisfy). Don't spam errors —
+    // scraperStatus.modsecPodFound=false surfaces this in the UI banner.
+    if (podNames.length === 0) {
       status.modsecPodFound = false;
       return { scraped: 0, inserted: 0, errors: [] };
     }
     status.modsecPodFound = true;
 
-    logOutput = await (k8s.core as unknown as {
+    const readLog = (k8s.core as unknown as {
       readNamespacedPodLog: (args: {
         name: string;
         namespace: string;
         sinceSeconds?: number;
       }) => Promise<string>;
-    }).readNamespacedPodLog({
-      name: podName,
-      namespace: INGRESS_NAMESPACE,
-      sinceSeconds: LOG_SINCE_SECONDS,
-    });
+    }).readNamespacedPodLog;
 
-    if (typeof logOutput !== 'string') logOutput = '';
+    // Parallel reads — at 30s cadence + ~35s window, even a 5-pod deployment
+    // costs ~5 small log fetches per cycle. Fail soft per-pod.
+    const results = await Promise.allSettled(
+      podNames.map((name) =>
+        readLog({ name, namespace: INGRESS_NAMESPACE, sinceSeconds: LOG_SINCE_SECONDS }),
+      ),
+    );
+    for (const r of results) {
+      if (r.status === 'fulfilled' && typeof r.value === 'string') {
+        logOutput += r.value + '\n';
+      } else if (r.status === 'rejected') {
+        errors.push(`Pod log read failed: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+      }
+    }
   } catch (err) {
-    return { scraped: 0, inserted: 0, errors: [`Failed to read controller logs: ${err instanceof Error ? err.message : String(err)}`] };
+    return { scraped: 0, inserted: 0, errors: [`Failed to list modsec-crs pods: ${err instanceof Error ? err.message : String(err)}`] };
   }
 
   // 2. Parse ModSecurity events — two-pass to resolve hostnames
@@ -213,8 +247,29 @@ export async function scrapeWafLogs(
   const lines = logOutput.split('\n');
   const allParsed: ParsedWafEvent[] = [];
   const uidToHostname = new Map<string, string>();
+  const uidToXfHost = new Map<string, string>();
+  const uidToRealIp = new Map<string, string>();
 
   for (const line of lines) {
+    // 1a. JSON audit-log lines contain the REAL client-facing hostname in
+    // request.headers["X-Forwarded-Host"] — the [error] line only knows
+    // about `server: localhost` (nginx server_name on the modsec pod) and
+    // `[hostname "modsec-crs.traefik.svc.cluster.local"]` (the Service
+    // hostname the Traefik plugin proxies to). Without this, every event
+    // would collapse under hostname="localhost" and the Top Hosts panel
+    // would be useless.
+    if (line.length > 0 && line.charCodeAt(0) === 0x7b /* { */ && line.includes('"transaction"')) {
+      const xfHost = extractJsonField(line, 'X-Forwarded-Host');
+      const xRealIp = extractJsonField(line, 'X-Real-Ip');
+      const jsonUid = extractJsonField(line, 'unique_id');
+      if (jsonUid) {
+        if (xfHost) uidToXfHost.set(jsonUid, xfHost);
+        if (xRealIp) uidToRealIp.set(jsonUid, xRealIp);
+      }
+      // JSON lines don't match the parser's [id "..."] regex — skip per-line parse.
+      continue;
+    }
+
     const event = parseModSecurityLine(line);
     if (!event) continue;
     allParsed.push(event);
@@ -231,16 +286,26 @@ export async function scrapeWafLogs(
     if (event.requestMethod !== 'GET') uidToHostname.set(`${uidPrefix}:method`, event.requestMethod);
   }
 
-  // Pass 2: Assign resolved hostnames and deduplicate
+  // Pass 2: Assign resolved hostnames and deduplicate.
+  // Hostname preference: JSON-line X-Forwarded-Host (real client host) >
+  // [error]-line server: value (nginx server_name, typically 'localhost' or
+  // the modsec Service hostname) > event-line hostname (the [hostname "..."]
+  // field, also a proxy artifact). IP preference: JSON-line X-Real-Ip > [error]
+  // tenant: > event-line sourceIp.
   const events: ParsedWafEvent[] = [];
   const seenUids = new Set<string>();
   for (const event of allParsed) {
     if (seenUids.has(event.uniqueId)) continue;
     seenUids.add(event.uniqueId);
     const uidPrefix = event.uniqueId.split(':')[0];
-    const resolvedHostname = uidToHostname.get(uidPrefix) || event.hostname;
+    const resolvedHostname =
+      uidToXfHost.get(uidPrefix) ||
+      uidToHostname.get(uidPrefix) ||
+      event.hostname;
     if (!resolvedHostname || resolvedHostname === '127.0.0.1') continue;
-    const resolvedIp = event.sourceIp !== '0.0.0.0' ? event.sourceIp : (uidToHostname.get(`${uidPrefix}:ip`) || '0.0.0.0');
+    const resolvedIp =
+      uidToRealIp.get(uidPrefix) ||
+      (event.sourceIp !== '0.0.0.0' ? event.sourceIp : (uidToHostname.get(`${uidPrefix}:ip`) || '0.0.0.0'));
     const resolvedUri = event.requestUri !== '/' ? event.requestUri : (uidToHostname.get(`${uidPrefix}:uri`) || '/');
     const resolvedMethod = event.requestMethod !== 'GET' ? event.requestMethod : (uidToHostname.get(`${uidPrefix}:method`) || 'GET');
     events.push({ ...event, hostname: resolvedHostname, sourceIp: resolvedIp, requestUri: resolvedUri, requestMethod: resolvedMethod });
