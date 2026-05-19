@@ -313,7 +313,10 @@ TRAEFIK_CHART_VERSION="40.2.0"           # app v3.7.1 "Langres"; verify: helm se
 # every panel + tenant IngressRoute (the `crowdsec@traefik` Middleware
 # in k8s/base/traefik/middlewares-crowdsec.yaml).
 CROWDSEC_PLUGIN_MODULE="github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
-CROWDSEC_PLUGIN_VERSION="v1.4.4"
+# v1.6.0 (2026-04-27): slog logging + appsec content-length bypass fix.
+# Upgrading from v1.4.4 — same Config struct shape so the Middleware spec
+# in k8s/base/traefik/middlewares-crowdsec.yaml needs no further changes.
+CROWDSEC_PLUGIN_VERSION="v1.6.0"
 # ModSecurity-CRS proxy — tenant-opt-in WAF (the `modsecurity-crs@
 # traefik` Middleware). Proxies request bodies to the modsec-crs
 # Deployment in k8s/base/modsecurity-crs/ for OWASP CRS verdict.

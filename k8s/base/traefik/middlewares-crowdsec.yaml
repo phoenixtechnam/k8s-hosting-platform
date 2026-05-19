@@ -36,19 +36,39 @@ metadata:
 spec:
   plugin:
     crowdsec:
-      # CrowdSec LAPI URL inside the cluster. Cross-namespace ref is
-      # allowed because the Traefik helm install sets
-      # providers.kubernetesCRD.allowCrossNamespace=true (see
-      # bootstrap.sh).
-      crowdsecLapiUrl: http://crowdsec.crowdsec.svc.cluster.local:8080
+      # CrowdSec LAPI URL inside the cluster — split into three fields
+      # because the maxlerebourg plugin's `Config` struct has NO
+      # `crowdsecLapiUrl` field despite the README using that name in
+      # examples. Setting `crowdsecLapiUrl` is a silent no-op; the
+      # plugin falls back to its default `CrowdsecLapiHost: "crowdsec:8080"`
+      # (bare hostname) — and the bare hostname fails DNS resolution
+      # from the `traefik` namespace, which is why bouncers never pulled
+      # and registered IPs were always stale.
+      #
+      # The three fields below ARE the real ones. Cross-namespace ref
+      # is allowed because Traefik helm install sets
+      # providers.kubernetesCRD.allowCrossNamespace=true (see bootstrap.sh).
+      # WARNING: Use crowdsecLapiScheme: https when LAPI is external to
+      # the cluster — http would leak the bouncer key in transit.
+      # http is safe ONLY for in-cluster LAPI (this default) because the
+      # NetworkPolicy in k8s/base/crowdsec/networkpolicy.yaml restricts
+      # ingress on :8080 to the traefik and platform namespaces.
+      crowdsecLapiScheme: http
+      crowdsecLapiHost: crowdsec.crowdsec.svc.cluster.local:8080
+      crowdsecLapiPath: /
       # API key the bouncer uses to authenticate to LAPI. Pulled at
       # plugin-load time from the K8s Secret `crowdsec-bouncer-key` in
-      # the traefik namespace (key `traefik-bouncer-key`). The plugin
-      # supports loading from a Secret directly via this special prefix.
+      # the traefik namespace (key `bouncer-key`). The plugin supports
+      # loading from a file via this special path.
       crowdsecLapiKeyFile: /var/run/secrets/crowdsec/bouncer-key
       # Refresh decision cache every 60s. Lower = faster reaction to
       # new bans, higher = less LAPI traffic. 60s is the plugin default.
       updateIntervalSeconds: 60
+      # After 3 consecutive pull failures, the plugin stops logging the
+      # same error on every tick (caps log noise during a prolonged
+      # LAPI outage). The bouncer still attempts to reconnect; this
+      # only suppresses repeat error lines. v1.6.0 default is 0 (infinite).
+      updateMaxFailure: 3
       # ACCEPTED TRADE-OFF — Fail-open semantics + single-replica LAPI:
       # If the CrowdSec LAPI is unreachable (pod drain, PVC fault,
       # api.crowdsec.net blocked at egress), the plugin allows traffic
