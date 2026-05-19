@@ -44,7 +44,12 @@ const MAX_LOGS_FOR_ADMIN_HOSTS = 500;
 const MAX_REQUEST_URI_LEN = 2048;
 const MAX_MESSAGE_LEN = 500;
 const INGRESS_NAMESPACE = 'traefik';
-const INGRESS_LABEL = 'app=modsec-crs';
+// The modsec-crs Deployment in k8s/base/modsecurity-crs/deployment.yaml uses
+// `app.kubernetes.io/name=modsec-crs`. The short `app=modsec-crs` label was
+// never set, so this selector was silently matching zero pods on every cycle
+// since the 2026-05-15 Traefik migration. The bug only became visible after
+// the WAF Events tab surfaced an empty scraperStatus banner on 2026-05-19.
+const INGRESS_LABEL = 'app.kubernetes.io/name=modsec-crs';
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n);
