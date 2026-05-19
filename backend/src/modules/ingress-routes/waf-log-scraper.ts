@@ -216,19 +216,23 @@ export async function scrapeWafLogs(
     }
     status.modsecPodFound = true;
 
-    const readLog = (k8s.core as unknown as {
+    // Bind to k8s.core because the @kubernetes/client-node generated API
+    // methods rely on `this` (an internal HTTP request helper). Extracting
+    // `const readLog = k8s.core.readNamespacedPodLog` and calling `readLog()`
+    // loses `this` and throws "Cannot read properties of undefined (reading 'api')".
+    const coreApi = k8s.core as unknown as {
       readNamespacedPodLog: (args: {
         name: string;
         namespace: string;
         sinceSeconds?: number;
       }) => Promise<string>;
-    }).readNamespacedPodLog;
+    };
 
     // Parallel reads — at 30s cadence + ~35s window, even a 5-pod deployment
     // costs ~5 small log fetches per cycle. Fail soft per-pod.
     const results = await Promise.allSettled(
       podNames.map((name) =>
-        readLog({ name, namespace: INGRESS_NAMESPACE, sinceSeconds: LOG_SINCE_SECONDS }),
+        coreApi.readNamespacedPodLog({ name, namespace: INGRESS_NAMESPACE, sinceSeconds: LOG_SINCE_SECONDS }),
       ),
     );
     for (const r of results) {
