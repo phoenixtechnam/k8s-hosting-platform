@@ -100,3 +100,4 @@ export * from './secrets-audit.js';
 export * from './secrets-bundle.js';
 export * from './dr-drill.js';
 export * from './waf-events.js';
+export * from './crowdsec.js';

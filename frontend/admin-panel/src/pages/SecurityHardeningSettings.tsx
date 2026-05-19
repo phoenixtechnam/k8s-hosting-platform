@@ -50,12 +50,21 @@ import {
   Globe,
   Play,
   Pause,
+  Ban,
+  Trash2,
+  Plus,
 } from 'lucide-react';
 import {
   useSecurityHardeningSnapshot,
   useRefreshSecurityHardening,
 } from '@/hooks/use-security-hardening';
 import { useRefreshWafScraper, useWafEvents } from '@/hooks/use-waf-events';
+import {
+  useAddCrowdsecBan,
+  useCrowdsecDecisions,
+  useCrowdsecStatus,
+  useDeleteCrowdsecDecision,
+} from '@/hooks/use-crowdsec';
 import type {
   NodeSecuritySnapshot,
   CisFinding,
@@ -67,9 +76,13 @@ import type {
   WafEventsQuery,
   WafEventsResponse,
   WafScraperStatus,
+  CrowdsecDecision,
+  CrowdsecDecisionScope,
+  CrowdsecListDecisionsQuery,
+  CrowdsecStatus,
 } from '@k8s-hosting/api-contracts';
 
-type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events' | 'waf';
+type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events' | 'waf' | 'bans';
 
 const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -82,6 +95,7 @@ const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'netpol', label: 'Network Policies' },
   { id: 'events', label: 'Security Events' },
   { id: 'waf', label: 'WAF Events' },
+  { id: 'bans', label: 'Banned IPs' },
 ];
 
 export default function SecurityHardeningSettings() {
@@ -186,6 +200,9 @@ export default function SecurityHardeningSettings() {
           loading/error states, so it shouldn't go blank when the security-hardening
           snapshot is slow or failing (the snapshot is a DaemonSet-driven read). */}
       {activeTab === 'waf' && <WafEventsTab />}
+      {/* Banned IPs tab is also unconditional — uses CrowdSec LAPI, not the
+          security-hardening snapshot. */}
+      {activeTab === 'bans' && <BannedIpsTab />}
     </div>
   );
 }
@@ -1066,6 +1083,9 @@ function WafEventsTab() {
   const [scope, setScope] = useState<'' | WafEventScope>('');
   const [sinceSeconds, setSinceSeconds] = useState(86_400);
   const [live, setLive] = useState(false);
+  // Lifted to tab-level so the BanIpModal can render once and survive
+  // any WafEventRow re-mounting from the 30s refetch.
+  const [banModalPrefill, setBanModalPrefill] = useState<{ value: string; reason: string } | null>(null);
 
   // Debounce text inputs so a keystroke doesn't fan out into one request per
   // character — the backend would re-run the same expensive cluster-wide
@@ -1255,13 +1275,20 @@ function WafEventsTab() {
                   <th className="px-4 py-2 text-left">Source IP</th>
                   <th className="px-4 py-2 text-left">Request</th>
                   <th className="px-4 py-2 text-left">Message</th>
+                  <th className="px-4 py-2 text-left">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                {payload.events.map((ev) => <WafEventRow key={ev.id} ev={ev} />)}
+                {payload.events.map((ev) => (
+                  <WafEventRow
+                    key={ev.id}
+                    ev={ev}
+                    onBan={(ip) => setBanModalPrefill({ value: ip, reason: `WAF: rule ${ev.ruleId} on ${ev.hostname} (${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'})` })}
+                  />
+                ))}
                 {payload.events.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500 text-sm">
+                    <td colSpan={8} className="px-4 py-8 text-center text-gray-500 text-sm">
                       <WafEmptyState
                         scraperStatus={payload.scraperStatus}
                         lastInsertAt={payload.stats.mostRecentAt}
@@ -1274,6 +1301,18 @@ function WafEventsTab() {
             </table>
           </div>
         </div>
+      )}
+
+      {banModalPrefill && (
+        <BanIpModal
+          // key forces remount when the operator clicks "Ban IP" on a different
+          // WAF row while the modal is already open from a previous row —
+          // without it, the modal's internal state would still hold the first
+          // row's prefill values.
+          key={`${banModalPrefill.value}|${banModalPrefill.reason}`}
+          prefill={banModalPrefill}
+          onClose={() => setBanModalPrefill(null)}
+        />
       )}
     </section>
   );
@@ -1469,13 +1508,15 @@ function WafStatsPanel({ stats }: { stats: WafEventsResponse['stats'] }) {
   );
 }
 
-function WafEventRow({ ev }: { ev: WafEvent }) {
+function WafEventRow({ ev, onBan }: { ev: WafEvent; onBan: (ip: string) => void }) {
   const sevTone =
     ev.severity === 'critical'
       ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200'
       : ev.severity === 'warning'
         ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200'
         : 'bg-gray-100 text-gray-700 dark:bg-gray-700/40 dark:text-gray-300';
+  // Don't offer a Ban button for the parser's "no IP extractable" placeholder.
+  const banAvailable = Boolean(ev.sourceIp && ev.sourceIp !== '0.0.0.0');
   return (
     <tr>
       <td className="px-4 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 whitespace-nowrap">
@@ -1498,6 +1539,19 @@ function WafEventRow({ ev }: { ev: WafEvent }) {
         {ev.requestMethod ? `${ev.requestMethod} ` : ''}{ev.requestUri || '/'}
       </td>
       <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">{ev.message}</td>
+      <td className="px-4 py-2">
+        {banAvailable && (
+          <button
+            type="button"
+            onClick={() => onBan(ev.sourceIp as string)}
+            className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-2 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
+            data-testid={`waf-ban-${ev.id}`}
+            title={`Ban ${ev.sourceIp} via CrowdSec`}
+          >
+            <Ban size={11} /> Ban IP
+          </button>
+        )}
+      </td>
     </tr>
   );
 }
@@ -1511,5 +1565,387 @@ function FilterField({ label, hint, children }: { label: string; hint?: string; 
       </span>
       {children}
     </label>
+  );
+}
+
+// ─── Banned IPs tab ─────────────────────────────────────────────────────
+//
+// Surfaces active CrowdSec decisions (community blocklist + scenario hits +
+// operator-added manual bans). Enforcement is cluster-wide because the
+// Traefik DaemonSet's crowdsec middleware queries the LAPI on every
+// request — see backend/src/modules/security-hardening/crowdsec.ts.
+
+const DURATION_OPTIONS: ReadonlyArray<{ readonly label: string; readonly value: string }> = [
+  { label: '1 hour', value: '1h' },
+  { label: '4 hours', value: '4h' },
+  { label: '12 hours', value: '12h' },
+  { label: '1 day', value: '24h' },
+  { label: '7 days', value: '168h' },
+  { label: '30 days', value: '720h' },
+];
+
+function BannedIpsTab() {
+  const [q, setQ] = useState('');
+  const [scope, setScope] = useState<'' | CrowdsecDecisionScope>('');
+  const [manualOnly, setManualOnly] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+
+  const debouncedQ = useDebouncedValue(q, 400);
+
+  const query: CrowdsecListDecisionsQuery = useMemo(() => {
+    const out: CrowdsecListDecisionsQuery = {};
+    if (debouncedQ.trim()) out.q = debouncedQ.trim();
+    if (scope) out.scope = scope;
+    if (manualOnly) out.manualOnly = true;
+    return out;
+  }, [debouncedQ, scope, manualOnly]);
+
+  const { data, isLoading, isError, error, refetch, isFetching } = useCrowdsecDecisions(query);
+  const status = useCrowdsecStatus();
+  const del = useDeleteCrowdsecDecision();
+
+  const payload = data?.data;
+
+  return (
+    <section className="space-y-4" data-testid="banned-ips-tab">
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
+        Active CrowdSec ban decisions (community blocklist + scenario triggers + operator-added manual bans).
+        Enforcement is cluster-wide — the <code className="text-xs">crowdsec</code> Traefik middleware queries the
+        LAPI on every request, so a ban applies on every node simultaneously. Adding or removing a ban here
+        propagates to all <code className="text-xs">traefik</code> DaemonSet pods within a few seconds.
+      </div>
+
+      {status.data?.data && <CrowdsecStatusPanel status={status.data.data} />}
+
+      {/* Controls */}
+      <div className="flex flex-wrap items-end justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <FilterField label="Search" hint="IP / CIDR / country">
+            <input
+              type="text"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="1.2.3.4 or US"
+              className="w-44 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
+              data-testid="bans-filter-q"
+            />
+          </FilterField>
+          <FilterField label="Scope">
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as '' | CrowdsecDecisionScope)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              data-testid="bans-filter-scope"
+            >
+              <option value="">All scopes</option>
+              <option value="Ip">IP</option>
+              <option value="Range">Range (CIDR)</option>
+              <option value="Country">Country</option>
+              <option value="AS">AS</option>
+            </select>
+          </FilterField>
+          <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
+            <input
+              type="checkbox"
+              checked={manualOnly}
+              onChange={(e) => setManualOnly(e.target.checked)}
+              data-testid="bans-filter-manual"
+            />
+            Manual bans only
+          </label>
+        </div>
+        <div className="flex items-center gap-2">
+          {isFetching && <span className="text-xs text-brand-600 dark:text-brand-400">reloading…</span>}
+          <button
+            type="button"
+            onClick={() => { void refetch(); }}
+            disabled={isFetching}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+            data-testid="bans-reload"
+          >
+            <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
+            Reload
+          </button>
+          <button
+            type="button"
+            onClick={() => setAddOpen(true)}
+            className="inline-flex items-center gap-1 rounded-md border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-sm font-medium text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
+            data-testid="bans-add-manual"
+          >
+            <Plus size={14} /> Add manual ban
+          </button>
+        </div>
+      </div>
+
+      {isLoading && <SkeletonLoader />}
+      {isError && (
+        <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-4 text-sm text-red-700 dark:text-red-300">
+          Failed to load decisions: {error instanceof Error ? error.message : String(error)}
+        </div>
+      )}
+
+      {payload && (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-900 dark:text-gray-100 flex items-center justify-between">
+            <span>Active bans ({payload.decisions.length} shown / {payload.totalActive} total)</span>
+            {del.isError && (
+              <span className="text-xs text-red-600 dark:text-red-400">
+                Unban failed: {del.error?.message ?? 'unknown error'}
+              </span>
+            )}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm" data-testid="bans-table">
+              <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
+                <tr>
+                  <th className="px-4 py-2 text-left">Scope</th>
+                  <th className="px-4 py-2 text-left">Value</th>
+                  <th className="px-4 py-2 text-left">Type</th>
+                  <th className="px-4 py-2 text-left">Origin</th>
+                  <th className="px-4 py-2 text-left">Reason</th>
+                  <th className="px-4 py-2 text-left">Time left</th>
+                  <th className="px-4 py-2 text-left">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                {payload.decisions.map((d) => (
+                  <DecisionRow
+                    key={d.id}
+                    d={d}
+                    onUnban={() => del.mutate(d.id)}
+                    isUnbanning={del.isPending && del.variables === d.id}
+                  />
+                ))}
+                {payload.decisions.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500 text-sm">
+                      {payload.totalActive > 0
+                        ? 'No bans match the current filters. Clear filters to see all.'
+                        : 'No active bans. The community blocklist refreshes hourly — check back, or add a manual ban above.'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {addOpen && (
+        <BanIpModal
+          prefill={{ value: '', reason: '' }}
+          onClose={() => setAddOpen(false)}
+        />
+      )}
+    </section>
+  );
+}
+
+function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
+  const coverageOk = status.coverage.traefikPodsTotal > 0 && status.coverage.traefikPodsCovered === status.coverage.traefikPodsTotal;
+  const fullCoverage = coverageOk && status.coverage.traefikPodsTotal === status.coverage.nodesTotal;
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3" data-testid="crowdsec-status-panel">
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+        <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
+          <ShieldAlert size={14} /> LAPI
+        </div>
+        <div className="text-base font-semibold mt-1 flex items-center gap-2">
+          {status.lapiHealthy
+            ? <span className="text-emerald-700 dark:text-emerald-300">healthy</span>
+            : <span className="text-red-700 dark:text-red-300">unreachable</span>}
+        </div>
+        <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          {status.lapiError ?? `${status.scenariosLoaded} scenarios loaded`}
+        </div>
+        <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          Community blocklist:{' '}
+          {status.communityBlocklistEnabled
+            ? <span className="text-emerald-600 dark:text-emerald-400">enabled</span>
+            : <span className="text-amber-600 dark:text-amber-400">disabled</span>}
+          {!status.capiAuthenticated && <span className="text-amber-600 dark:text-amber-400"> (CAPI auth failed)</span>}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+        <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
+          <Globe size={14} /> Enforcement coverage
+        </div>
+        <div className="text-base font-semibold mt-1">
+          {fullCoverage
+            ? <span className="text-emerald-700 dark:text-emerald-300">all {status.coverage.traefikPodsCovered} / {status.coverage.nodesTotal} nodes</span>
+            : <span className="text-amber-700 dark:text-amber-300">{status.coverage.traefikPodsCovered} / {status.coverage.traefikPodsTotal} Traefik pods</span>}
+        </div>
+        <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          Bouncer enforces on every Traefik replica via the crowdsec middleware.
+        </div>
+        <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          modsec-crs pods: {status.coverage.modsecPodsTotal} (independent — feeds WAF Events tab)
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+        <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
+          <Activity size={14} /> Bouncers ({status.bouncers.length})
+        </div>
+        <ul className="mt-2 space-y-1 text-xs" data-testid="crowdsec-bouncers">
+          {status.bouncers.length === 0 && <li className="text-amber-600 dark:text-amber-400">No bouncers registered — bans won't be enforced!</li>}
+          {status.bouncers.map((b) => (
+            <li key={b.name} className="flex items-center justify-between gap-2">
+              <span className="font-mono text-gray-700 dark:text-gray-200">{b.name}</span>
+              <span className={b.online ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                {b.online ? 'online' : 'stale'}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function DecisionRow({ d, onUnban, isUnbanning }: { d: CrowdsecDecision; onUnban: () => void; isUnbanning: boolean }) {
+  const expiresIn = d.expiresAt
+    ? formatAge(Math.max(0, Math.floor((new Date(d.expiresAt).getTime() - Date.now()) / 1000))).replace(' ago', '')
+    : d.duration;
+  return (
+    <tr>
+      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 whitespace-nowrap">{d.scope}</td>
+      <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{d.value}</td>
+      <td className="px-4 py-2 text-xs">
+        <span className="inline-flex items-center rounded-full bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200 px-2 py-0.5 text-[10px] font-medium">
+          {d.type}{d.simulated && <span className="ml-1 opacity-70">(sim)</span>}
+        </span>
+      </td>
+      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">
+        <span className="font-mono">{d.origin || '—'}</span>
+        {d.manualByOperator && <span className="ml-1 text-[9px] uppercase text-amber-700 dark:text-amber-300">manual</span>}
+      </td>
+      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 max-w-md truncate" title={d.scenario}>{d.scenario}</td>
+      <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 whitespace-nowrap">{expiresIn}</td>
+      <td className="px-4 py-2">
+        <button
+          type="button"
+          onClick={onUnban}
+          disabled={isUnbanning}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          data-testid={`bans-unban-${d.id}`}
+          title={`Unban ${d.value} (decision id ${d.id})`}
+        >
+          <Trash2 size={11} /> {isUnbanning ? 'Unbanning…' : 'Unban'}
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+// ─── Shared Ban-IP modal (used by WAF Events row + Banned IPs tab) ──────
+
+function BanIpModal({
+  prefill,
+  onClose,
+}: {
+  prefill: { value: string; reason: string };
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(prefill.value);
+  const [scope, setScope] = useState<CrowdsecDecisionScope>('Ip');
+  const [duration, setDuration] = useState('4h');
+  const [reason, setReason] = useState(prefill.reason);
+  const add = useAddCrowdsecBan();
+
+  const valid = /^[a-fA-F0-9.:/]+$/.test(value) && value.length >= 1 && reason.trim().length >= 3;
+
+  const onSubmit = () => {
+    if (!valid) return;
+    add.mutate(
+      { value, scope, duration, reason: reason.trim() },
+      { onSuccess: () => onClose() },
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-900 shadow-xl" data-testid="ban-ip-modal">
+        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Ban IP (CrowdSec)</h3>
+          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-3 text-sm">
+          <div>
+            <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">IP / CIDR</label>
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="1.2.3.4 or 1.2.3.0/24"
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-mono"
+              data-testid="ban-modal-value"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Scope</label>
+              <select
+                value={scope}
+                onChange={(e) => setScope(e.target.value as CrowdsecDecisionScope)}
+                className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+                data-testid="ban-modal-scope"
+              >
+                <option value="Ip">IP</option>
+                <option value="Range">Range (CIDR)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Duration</label>
+              <select
+                value={duration}
+                onChange={(e) => setDuration(e.target.value)}
+                className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+                data-testid="ban-modal-duration"
+              >
+                {DURATION_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Reason</label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Reason for the ban — surfaced in the decisions list"
+              rows={3}
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+              data-testid="ban-modal-reason"
+            />
+            <div className="text-[10px] text-gray-500 mt-1">
+              Will be stored as <code>admin-panel:&lt;your-userId&gt;:{reason.trim() || '<reason>'}</code> so it's
+              distinguishable from automatic bans.
+            </div>
+          </div>
+          {add.isError && (
+            <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-2 text-xs text-red-700 dark:text-red-300">
+              {add.error?.message ?? 'Ban failed'}
+            </div>
+          )}
+        </div>
+        <div className="border-t border-gray-200 dark:border-gray-700 px-5 py-3 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-md px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={!valid || add.isPending}
+            className="rounded-md px-3 py-1.5 text-sm border border-red-300 bg-red-600 dark:bg-red-700 text-white hover:bg-red-700 dark:hover:bg-red-600 disabled:opacity-50"
+            data-testid="ban-modal-submit"
+          >
+            {add.isPending ? 'Banning…' : 'Ban'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

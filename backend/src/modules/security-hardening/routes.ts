@@ -27,6 +27,16 @@ import { listWafEvents } from './waf-events.js';
 import { wafEventsQuerySchema } from '@k8s-hosting/api-contracts';
 import { scrapeWafLogs, getScraperStatus } from '../ingress-routes/waf-log-scraper.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import {
+  addBan,
+  deleteDecisionById,
+  getStatus as getCrowdsecStatus,
+  listDecisions,
+} from './crowdsec.js';
+import {
+  crowdsecAddBanRequestSchema,
+  crowdsecListDecisionsQuerySchema,
+} from '@k8s-hosting/api-contracts';
 
 interface AuthedRequest {
   readonly user?: { readonly sub?: string };
@@ -137,6 +147,103 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
             inserted: 0,
             modsecPodFound: getScraperStatus().modsecPodFound,
             errors: [err instanceof Error ? err.message : String(err)],
+          });
+        }
+      },
+    );
+
+    // ─── CrowdSec / Banned IPs ────────────────────────────────────────────
+
+    const kubeconfigPath = k8sOpts.kubeconfigPath;
+
+    app.get(
+      '/admin/security/crowdsec/decisions',
+      { preHandler: requireRole('super_admin') },
+      async (req: FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecListDecisionsQuerySchema.safeParse(req.query ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_QUERY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        try {
+          const response = await listDecisions(kubeconfigPath, parsed.data);
+          return success(response);
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_UNREACHABLE',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.post(
+      '/admin/security/crowdsec/decisions',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecAddBanRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor, ban: parsed.data }, 'crowdsec: manual ban added');
+        try {
+          const result = await addBan(kubeconfigPath, parsed.data, actor);
+          return success({
+            message: result.message,
+            value: parsed.data.value,
+            scope: parsed.data.scope,
+            duration: parsed.data.duration,
+            reason: parsed.data.reason,
+          });
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_BAN_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.delete(
+      '/admin/security/crowdsec/decisions/:id',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const { id } = req.params as { id: string };
+        const n = Number(id);
+        if (!Number.isInteger(n) || n < 0) {
+          return reply.status(400).send({ error: 'INVALID_ID', message: 'id must be a non-negative integer' });
+        }
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor, decisionId: n }, 'crowdsec: decision deletion (unban)');
+        try {
+          const result = await deleteDecisionById(kubeconfigPath, n);
+          return success(result);
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_UNBAN_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.get(
+      '/admin/security/crowdsec/status',
+      { preHandler: requireRole('super_admin') },
+      async (_req: FastifyRequest, reply: FastifyReply) => {
+        try {
+          const status = await getCrowdsecStatus(kubeconfigPath);
+          return success(status);
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_STATUS_FAILED',
+            message: err instanceof Error ? err.message : String(err),
           });
         }
       },
