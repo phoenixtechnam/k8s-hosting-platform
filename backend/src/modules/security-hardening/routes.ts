@@ -1,17 +1,20 @@
 /**
  * Security / Firewall / Node Hardening admin routes.
  *
- *   GET  /admin/security-hardening          — full snapshot envelope
- *   POST /admin/security-hardening/refresh  — bump probe DaemonSet annotation
- *   GET  /admin/security/waf-events         — cluster-wide ModSec/CRS events
+ *   GET  /admin/security-hardening              — full snapshot envelope
+ *   POST /admin/security-hardening/refresh      — bump probe DaemonSet annotation
+ *   GET  /admin/security/waf-events             — cluster-wide ModSec/CRS events
+ *   POST /admin/security/waf-events/refresh     — force one immediate scrape cycle
  *
  * All endpoints are super_admin only. The snapshot is the highest-
  * level posture surface in the platform — surfaces SSH exposure,
  * firewall mode, CIS findings, and the Phase 2 augmentation cards.
- * The refresh endpoint patches the DaemonSet template annotation,
+ * The probe-refresh endpoint patches the DaemonSet template annotation,
  * which causes a rolling restart of all probe pods. waf-events
  * queries the waf_logs table populated by the existing
- * waf-log-scraper (modules/ingress-routes/waf-log-scraper.ts).
+ * waf-log-scraper (modules/ingress-routes/waf-log-scraper.ts);
+ * waf-events/refresh runs one scrape cycle inline so an operator
+ * doesn't have to wait the 30s for the next scheduled tick.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -22,6 +25,8 @@ import { buildSecurityHardeningSnapshot, triggerProbeRefresh } from './service.j
 import { loadSecurityHardeningClients } from './k8s-client.js';
 import { listWafEvents } from './waf-events.js';
 import { wafEventsQuerySchema } from '@k8s-hosting/api-contracts';
+import { scrapeWafLogs, getScraperStatus } from '../ingress-routes/waf-log-scraper.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 interface AuthedRequest {
   readonly user?: { readonly sub?: string };
@@ -84,6 +89,56 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         }
         const response = await listWafEvents(deps.db, parsed.data);
         return success(response);
+      },
+    );
+
+    // Rate-limit immediate-refresh to once per 3s per process. The scraper
+    // reads modsec pod logs over the K8s API, and the live-tail toggle
+    // in the UI refetches every 3s — without a floor an over-eager
+    // operator could trigger an inline scrape per refetch and pin kube-API.
+    let lastRefreshAt = 0;
+    const REFRESH_MIN_GAP_MS = 3_000;
+
+    app.post(
+      '/admin/security/waf-events/refresh',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest, reply: FastifyReply) => {
+        const now = Date.now();
+        if (now - lastRefreshAt < REFRESH_MIN_GAP_MS) {
+          // Don't run the cycle — surface current status so the UI can
+          // still update its "last scraper run" indicator.
+          const s = getScraperStatus();
+          return reply.status(429).send({
+            error: 'RATE_LIMITED',
+            message: `Refresh allowed once per ${REFRESH_MIN_GAP_MS / 1000}s.`,
+            retryAfterMs: REFRESH_MIN_GAP_MS - (now - lastRefreshAt),
+            scraperStatus: s,
+          });
+        }
+        lastRefreshAt = now;
+        const userId = userOf(req);
+        app.log.info({ userId }, 'waf-events: manual scraper refresh triggered');
+        const k8s = createK8sClients(k8sOpts.kubeconfigPath);
+        try {
+          const result = await scrapeWafLogs(deps.db, k8s);
+          return success({
+            triggeredAt: new Date(now).toISOString(),
+            scraped: result.scraped,
+            inserted: result.inserted,
+            modsecPodFound: getScraperStatus().modsecPodFound,
+            errors: result.errors,
+          });
+        } catch (err) {
+          // Don't 500 — surface the error in the response so the UI can
+          // render it next to the empty state.
+          return success({
+            triggeredAt: new Date(now).toISOString(),
+            scraped: 0,
+            inserted: 0,
+            modsecPodFound: getScraperStatus().modsecPodFound,
+            errors: [err instanceof Error ? err.message : String(err)],
+          });
+        }
       },
     );
   };

@@ -25,9 +25,13 @@
 
 import { eq, and, inArray, desc, notInArray, sql, isNull } from 'drizzle-orm';
 import crypto from 'crypto';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { wafLogs, ingressRoutes, domains } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LooseDb = NodePgDatabase<any>;
 
 const SCRAPE_INTERVAL_MS = 30_000;
 const LOG_SINCE_SECONDS = 35;
@@ -44,6 +48,54 @@ const INGRESS_LABEL = 'app=modsec-crs';
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n);
+}
+
+// ─── Scraper health snapshot ─────────────────────────────────────────────
+//
+// Process-local state updated every cycle so the WAF Events tab can
+// distinguish "modsec not deployed" from "scraper running but quiet" from
+// "scraper never started". Read via getScraperStatus(); written only by
+// runCycle()/scrapeWafLogs().
+
+// Shape must match wafScraperStatusSchema in api-contracts (mutable
+// arrays so the Zod-inferred type assigns cleanly).
+export interface WafScraperStatus {
+  hasRunOnce: boolean;
+  lastRunAt: string | null;
+  modsecPodFound: boolean;
+  lastCycleScraped: number;
+  lastCycleInserted: number;
+  /** Up to 5 most-recent errors from the last cycle, each ≤256 chars. */
+  lastCycleErrors: string[];
+  scrapeIntervalMs: number;
+}
+
+const status: {
+  hasRunOnce: boolean;
+  lastRunAt: string | null;
+  modsecPodFound: boolean;
+  lastCycleScraped: number;
+  lastCycleInserted: number;
+  lastCycleErrors: string[];
+} = {
+  hasRunOnce: false,
+  lastRunAt: null,
+  modsecPodFound: false,
+  lastCycleScraped: 0,
+  lastCycleInserted: 0,
+  lastCycleErrors: [],
+};
+
+export function getScraperStatus(): WafScraperStatus {
+  return {
+    hasRunOnce: status.hasRunOnce,
+    lastRunAt: status.lastRunAt,
+    modsecPodFound: status.modsecPodFound,
+    lastCycleScraped: status.lastCycleScraped,
+    lastCycleInserted: status.lastCycleInserted,
+    lastCycleErrors: [...status.lastCycleErrors],
+    scrapeIntervalMs: SCRAPE_INTERVAL_MS,
+  };
 }
 
 interface ParsedWafEvent {
@@ -105,7 +157,7 @@ function parseModSecurityLine(line: string): ParsedWafEvent | null {
  * and insert new events into the waf_logs table.
  */
 export async function scrapeWafLogs(
-  db: Database,
+  db: Database | LooseDb,
   k8s: K8sClients,
 ): Promise<{ scraped: number; inserted: number; errors: string[] }> {
   const errors: string[] = [];
@@ -128,7 +180,11 @@ export async function scrapeWafLogs(
     // SKIP path: modsec-crs not running (e.g. single-node cluster where the
     // anti-affinity replicas=2 doesn't satisfy). Don't spam errors — the
     // scheduler caller treats this as a no-op cycle.
-    if (!podName) return { scraped: 0, inserted: 0, errors: [] };
+    if (!podName) {
+      status.modsecPodFound = false;
+      return { scraped: 0, inserted: 0, errors: [] };
+    }
+    status.modsecPodFound = true;
 
     logOutput = await (k8s.core as unknown as {
       readNamespacedPodLog: (args: {
@@ -316,6 +372,9 @@ export function startWafLogScraper(
   const runCycle = async () => {
     try {
       const result = await scrapeWafLogs(db, k8s);
+      status.lastCycleScraped = result.scraped;
+      status.lastCycleInserted = result.inserted;
+      status.lastCycleErrors = result.errors.slice(-5).map((e) => e.slice(0, 256));
       if (result.inserted > 0) {
         console.log(`[waf-log-scraper] scraped=${result.scraped} inserted=${result.inserted}`);
       }
@@ -323,7 +382,12 @@ export function startWafLogScraper(
         console.warn('[waf-log-scraper] errors:', result.errors.join('; '));
       }
     } catch (err) {
-      console.warn('[waf-log-scraper] cycle error:', err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      status.lastCycleErrors = [msg.slice(0, 256)];
+      console.warn('[waf-log-scraper] cycle error:', msg);
+    } finally {
+      status.hasRunOnce = true;
+      status.lastRunAt = new Date().toISOString();
     }
   };
 

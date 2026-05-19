@@ -48,12 +48,14 @@ import {
   Copy,
   Filter,
   Globe,
+  Play,
+  Pause,
 } from 'lucide-react';
 import {
   useSecurityHardeningSnapshot,
   useRefreshSecurityHardening,
 } from '@/hooks/use-security-hardening';
-import { useWafEvents } from '@/hooks/use-waf-events';
+import { useRefreshWafScraper, useWafEvents } from '@/hooks/use-waf-events';
 import type {
   NodeSecuritySnapshot,
   CisFinding,
@@ -64,6 +66,7 @@ import type {
   WafEventSeverity,
   WafEventsQuery,
   WafEventsResponse,
+  WafScraperStatus,
 } from '@k8s-hosting/api-contracts';
 
 type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events' | 'waf';
@@ -1062,6 +1065,7 @@ function WafEventsTab() {
   const [host, setHost] = useState('');
   const [scope, setScope] = useState<'' | WafEventScope>('');
   const [sinceSeconds, setSinceSeconds] = useState(86_400);
+  const [live, setLive] = useState(false);
 
   // Debounce text inputs so a keystroke doesn't fan out into one request per
   // character — the backend would re-run the same expensive cluster-wide
@@ -1078,8 +1082,15 @@ function WafEventsTab() {
     return q;
   }, [debouncedRuleId, severity, debouncedHost, scope, sinceSeconds]);
 
-  const { data, isLoading, isError, error } = useWafEvents(query);
+  const { data, isLoading, isError, isFetching, error, refetch } = useWafEvents(query, { live });
   const payload: WafEventsResponse | undefined = data?.data;
+  const refresh = useRefreshWafScraper();
+
+  const onRefresh = () => {
+    // 1. Trigger an inline scrape cycle (server rate-limits to 1/3s).
+    // 2. Refetch the listing immediately — don't wait for the polling tick.
+    refresh.mutate(undefined, { onSettled: () => { void refetch(); } });
+  };
 
   return (
     <section className="space-y-4" data-testid="waf-events-tab">
@@ -1091,6 +1102,56 @@ function WafEventsTab() {
         plus the same per-route events surfaced under each Domain.
         Scraper polls the <code className="text-xs">modsec-crs</code> pod every 30s;
         admin-host events are capped at 500 globally, per-route at 50.
+      </div>
+
+      {/* Scraper-status banner — explains an empty table BEFORE the operator wonders. */}
+      {payload?.scraperStatus && (
+        <WafScraperStatusBanner
+          status={payload.scraperStatus}
+          eventsInView={payload.events.length}
+          lastInsertAt={payload.stats.mostRecentAt}
+        />
+      )}
+
+      {/* Live-tail + refresh controls */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3" data-testid="waf-controls">
+        <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+          <span>
+            Auto-refresh:{' '}
+            <span className={live ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'text-gray-700 dark:text-gray-300'}>
+              {live ? 'live (3s)' : '30s'}
+            </span>
+          </span>
+          {isFetching && <span className="text-brand-600 dark:text-brand-400">· reloading…</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setLive((v) => !v)}
+            className={[
+              'inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium',
+              live
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200 dark:border-emerald-700'
+                : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700',
+            ].join(' ')}
+            data-testid="waf-live-toggle"
+            aria-pressed={live}
+          >
+            {live ? <Pause size={14} /> : <Play size={14} />}
+            {live ? 'Stop live tail' : 'Live tail'}
+          </button>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refresh.isPending}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+            data-testid="waf-refresh-now"
+            title="Force a scrape cycle now (rate-limited to once per 3s)"
+          >
+            <RefreshCw size={14} className={refresh.isPending ? 'animate-spin' : ''} />
+            Refresh now
+          </button>
+        </div>
       </div>
 
       {/* Stats panel */}
@@ -1200,11 +1261,12 @@ function WafEventsTab() {
                 {payload.events.map((ev) => <WafEventRow key={ev.id} ev={ev} />)}
                 {payload.events.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
-                      No WAF events match the current filters. Last scraper write was{' '}
-                      {payload.stats.mostRecentAt
-                        ? `${Math.floor((Date.now() - new Date(payload.stats.mostRecentAt).getTime()) / 1000)}s ago`
-                        : 'never (table empty)'}.
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-500 text-sm">
+                      <WafEmptyState
+                        scraperStatus={payload.scraperStatus}
+                        lastInsertAt={payload.stats.mostRecentAt}
+                        hasActiveFilters={Boolean(ruleId || severity || host || scope)}
+                      />
                     </td>
                   </tr>
                 )}
@@ -1214,6 +1276,145 @@ function WafEventsTab() {
         </div>
       )}
     </section>
+  );
+}
+
+function ageSeconds(iso: string | null): number | null {
+  if (!iso) return null;
+  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+}
+
+function formatAge(seconds: number): string {
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ago`;
+}
+
+// Distinguishes the three reasons an operator might see "no events":
+//   1. modsec-crs pod not running         → scraper has nothing to read
+//   2. scraper hasn't fired its first cycle yet (≤15s after process boot)
+//   3. scraper is healthy but cluster is genuinely quiet
+function WafScraperStatusBanner({
+  status,
+  eventsInView,
+  lastInsertAt,
+}: {
+  status: WafScraperStatus;
+  eventsInView: number;
+  lastInsertAt: string | null;
+}) {
+  const intervalS = Math.round(status.scrapeIntervalMs / 1000);
+  const sinceLastRun = ageSeconds(status.lastRunAt);
+  const sinceLastInsert = ageSeconds(lastInsertAt);
+
+  // Healthy + recent insert + table populated = happy path, suppress banner
+  // so it doesn't add visual noise to an operator who is just browsing.
+  if (status.hasRunOnce && status.modsecPodFound && eventsInView > 0) {
+    return null;
+  }
+
+  let variant: 'good' | 'warn' | 'bad' = 'warn';
+  let title = '';
+  let detail: React.ReactNode = null;
+
+  if (!status.hasRunOnce) {
+    variant = 'warn';
+    title = 'Scraper has not run yet';
+    detail = <>The platform-api scheduler fires its first cycle ~15s after process start. If you just rolled out the deployment, give it a moment.</>;
+  } else if (!status.modsecPodFound) {
+    variant = 'bad';
+    title = 'modsec-crs pod not found';
+    detail = (
+      <>
+        The scraper ran <span className="font-medium">{sinceLastRun !== null ? formatAge(sinceLastRun) : 'recently'}</span> but found no pod with{' '}
+        <code className="text-xs">app=modsec-crs</code> in the <code className="text-xs">traefik</code> namespace.
+        This is normal in single-node clusters where the anti-affinity replicas=2 doesn't satisfy.
+        Without it, no events will be captured.
+      </>
+    );
+  } else if (eventsInView === 0 && sinceLastInsert !== null && sinceLastInsert > 24 * 3600) {
+    variant = 'good';
+    title = 'No events in window';
+    detail = (
+      <>
+        Scraper is healthy (last cycle {sinceLastRun !== null ? formatAge(sinceLastRun) : 'unknown'}, every {intervalS}s) — no CRS rules fired in the selected window.
+        Most-recent event was {formatAge(sinceLastInsert)}; widen the Window filter to see it.
+      </>
+    );
+  } else if (eventsInView === 0) {
+    variant = 'good';
+    title = 'Scraper healthy — cluster is quiet';
+    detail = (
+      <>
+        Last cycle {sinceLastRun !== null ? formatAge(sinceLastRun) : 'unknown'} (every {intervalS}s). No CRS rules fired during the current window — that's a good sign.
+      </>
+    );
+  } else {
+    return null;
+  }
+
+  const tone =
+    variant === 'good' ? 'border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100' :
+    variant === 'warn' ? 'border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 text-amber-900 dark:text-amber-100' :
+                         'border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 text-red-900 dark:text-red-100';
+  const Icon = variant === 'good' ? CheckCircle2 : variant === 'warn' ? Clock : AlertTriangle;
+
+  return (
+    <div className={`rounded-lg border p-4 ${tone}`} data-testid="waf-scraper-status">
+      <div className="flex items-start gap-3">
+        <Icon size={18} className="mt-0.5 shrink-0" />
+        <div className="flex-1 text-sm">
+          <div className="font-semibold mb-1">{title}</div>
+          <div className="text-xs leading-relaxed">{detail}</div>
+          {status.lastCycleErrors.length > 0 && (
+            <details className="mt-2 text-xs">
+              <summary className="cursor-pointer font-medium">
+                Last cycle errors ({status.lastCycleErrors.length})
+              </summary>
+              <ul className="mt-1 list-disc pl-5 font-mono text-[11px]">
+                {status.lastCycleErrors.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            </details>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WafEmptyState({
+  scraperStatus,
+  lastInsertAt,
+  hasActiveFilters,
+}: {
+  scraperStatus: WafScraperStatus;
+  lastInsertAt: string | null;
+  hasActiveFilters: boolean;
+}) {
+  const sinceLastInsert = ageSeconds(lastInsertAt);
+  if (!scraperStatus.hasRunOnce) {
+    return <span>Waiting for the first scraper cycle.</span>;
+  }
+  if (!scraperStatus.modsecPodFound) {
+    return <span>No <code className="text-xs">modsec-crs</code> pod available — see status banner above.</span>;
+  }
+  if (hasActiveFilters) {
+    return (
+      <span>
+        No events match the current filters
+        {lastInsertAt && ` — last scraper write was ${formatAge(sinceLastInsert ?? 0)}`}.
+        Clear filters to see the full window.
+      </span>
+    );
+  }
+  if (!lastInsertAt) {
+    return <span>Scraper is healthy but no CRS rules have fired yet (table is empty).</span>;
+  }
+  return (
+    <span>
+      No events in the selected window. Last scraper write was {formatAge(sinceLastInsert ?? 0)} — widen the Window filter to see it.
+    </span>
   );
 }
 
