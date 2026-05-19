@@ -1744,8 +1744,32 @@ function BannedIpsTab() {
 function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
   const coverageOk = status.coverage.traefikPodsTotal > 0 && status.coverage.traefikPodsCovered === status.coverage.traefikPodsTotal;
   const fullCoverage = coverageOk && status.coverage.traefikPodsTotal === status.coverage.nodesTotal;
+  // Bans are only enforced if at least one bouncer has pulled recently
+  // (default <5min ago). If every registered bouncer is stale, the
+  // Traefik plugin isn't actually reaching the LAPI — bans won't fire
+  // regardless of how many decisions are in the table.
+  const liveBouncers = status.bouncers.filter((b) => b.online).length;
+  const enforcementBroken = status.bouncers.length > 0 && liveBouncers === 0;
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-3" data-testid="crowdsec-status-panel">
+    <div className="space-y-3" data-testid="crowdsec-status-panel">
+      {enforcementBroken && (
+        <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-3 text-sm" data-testid="crowdsec-enforcement-warning">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={16} className="text-red-600 dark:text-red-300 mt-0.5 shrink-0" />
+            <div>
+              <div className="font-semibold text-red-900 dark:text-red-100">
+                Bans aren't being enforced — all {status.bouncers.length} bouncer{status.bouncers.length === 1 ? '' : 's'} stale
+              </div>
+              <div className="text-xs text-red-800 dark:text-red-200 mt-1">
+                No bouncer has pulled decisions from the LAPI in the last 5 minutes.
+                Adding a manual ban here will succeed but won't actually block traffic until at least one bouncer reconnects.
+                Check the Traefik <code className="text-[11px]">crowdsec</code> middleware plugin can resolve <code className="text-[11px]">crowdsec.crowdsec.svc.cluster.local:8080</code> — bare-hostname DNS lookup failures are the common cause.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
         <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
           <ShieldAlert size={14} /> LAPI
@@ -1799,6 +1823,7 @@ function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
             </li>
           ))}
         </ul>
+      </div>
       </div>
     </div>
   );
