@@ -342,8 +342,25 @@ export async function deleteDecisionById(
 
 // ─── Status / coverage ─────────────────────────────────────────────────
 
-interface CscliMachineRow { name?: string; ipAddress?: string; lastHeartbeat?: string; status?: string }
-interface CscliBouncerRow { name?: string; ip?: string; ip_address?: string; type?: string; lastPull?: string; revoked?: boolean }
+// cscli emits snake_case (last_pull, last_push, ip_address) for bouncers
+// but camelCase (machineId, ipAddress) for machines — confirmed against
+// CrowdSec v1.7.0. Earlier versions of this code assumed the camelCase
+// shape for both and every bouncer rendered as offline.
+interface CscliMachineRow {
+  machineId?: string;
+  ipAddress?: string;
+  last_push?: string;
+  isValidated?: boolean;
+}
+interface CscliBouncerRow {
+  name?: string;
+  ip_address?: string;
+  type?: string;
+  last_pull?: string;
+  revoked?: boolean;
+}
+
+const PULL_FRESHNESS_MS = 5 * 60_000;
 
 async function fetchMachinesAndBouncers(kc: k8s.KubeConfig, podName: string): Promise<{
   machines: CrowdsecMachine[]; bouncers: CrowdsecBouncer[];
@@ -359,10 +376,10 @@ async function fetchMachinesAndBouncers(kc: k8s.KubeConfig, podName: string): Pr
       const parsed = JSON.parse(machinesRes.value.stdout) as CscliMachineRow[];
       for (const m of parsed) {
         machines.push({
-          name: String(m.name ?? ''),
+          name: String(m.machineId ?? ''),
           ipAddress: String(m.ipAddress ?? ''),
-          lastHeartbeatAt: m.lastHeartbeat ?? null,
-          online: typeof m.lastHeartbeat === 'string' && (Date.now() - new Date(m.lastHeartbeat).getTime()) < 5 * 60_000,
+          lastHeartbeatAt: m.last_push ?? null,
+          online: typeof m.last_push === 'string' && (Date.now() - new Date(m.last_push).getTime()) < PULL_FRESHNESS_MS,
         });
       }
     } catch { /* swallow — machines list is best-effort */ }
@@ -371,13 +388,13 @@ async function fetchMachinesAndBouncers(kc: k8s.KubeConfig, podName: string): Pr
     try {
       const parsed = JSON.parse(bouncersRes.value.stdout) as CscliBouncerRow[];
       for (const b of parsed) {
-        const lastPull = b.lastPull;
+        if (b.revoked) continue;
         bouncers.push({
           name: String(b.name ?? ''),
-          ipAddress: String(b.ip ?? b.ip_address ?? ''),
+          ipAddress: String(b.ip_address ?? ''),
           type: String(b.type ?? ''),
-          lastApiPullAt: lastPull ?? null,
-          online: typeof lastPull === 'string' && (Date.now() - new Date(lastPull).getTime()) < 5 * 60_000,
+          lastApiPullAt: b.last_pull ?? null,
+          online: typeof b.last_pull === 'string' && (Date.now() - new Date(b.last_pull).getTime()) < PULL_FRESHNESS_MS,
         });
       }
     } catch { /* swallow */ }
