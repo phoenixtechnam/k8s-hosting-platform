@@ -211,6 +211,39 @@ export function renderShimConfig(
     bucketLines.push(`${className}-raw:`);
   }
 
+  // `rclone serve s3` accepts ONE remote:path and exposes its
+  // top-level DIRECTORIES as buckets. Our per-class remotes are
+  // independent (different crypt keys per class) so we union them
+  // via a `combine` backend that maps each class to its own
+  // subdirectory at the served root.
+  //
+  //     [buckets]
+  //     type = combine
+  //     upstreams = system=system: system-raw=system-raw: …
+  //
+  // The launcher.sh then runs `rclone serve s3 buckets:` (singular).
+  // Each upstream key becomes a virtual top-level dir in the served
+  // tree, which `serve s3` exposes as a bucket of the same name.
+  if (assignedClasses.length > 0) {
+    const upstreams: string[] = [];
+    for (const cls of assignedClasses) {
+      upstreams.push(`${cls}=${cls}:`);
+      upstreams.push(`${cls}-raw=${cls}-raw:`);
+    }
+    sections.push(
+      [
+        '[buckets]',
+        'type = combine',
+        // rclone's combine takes a quoted, space-separated list of
+        // `dirName=remote:path` pairs. We don't quote individual
+        // pairs because none of our names contain spaces — bucket
+        // tokens are validated by the launcher.
+        `upstreams = ${upstreams.join(' ')}`,
+        '',
+      ].join('\n')
+    );
+  }
+
   const rcloneConf = sections.join('\n');
   const bucketsTxt = bucketLines.join('\n') + '\n';
 

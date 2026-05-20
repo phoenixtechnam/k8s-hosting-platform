@@ -118,11 +118,18 @@ data:
       while :; do sleep 30; done
     fi
 
-    log "launching rclone serve s3 with buckets: $${BUCKETS_OK}"
+    # `rclone serve s3` accepts ONE remote:path and serves the
+    # top-level DIRECTORIES under it as buckets. The renderer
+    # emits a `[buckets]` combine backend that unions every
+    # assigned class's crypt + raw remote into one tree, with each
+    # class becoming a top-level directory (= bucket). The
+    # buckets.txt validation step above is now a SAFETY CHECK
+    # ensuring the renderer emitted at least one assignment; the
+    # actual remote we launch against is the fixed `buckets:`
+    # combine remote.
+    log "launching rclone serve s3 buckets: (combine of $${BUCKETS_OK})"
 
     # Performance flags carried from BACKUP_ARCHITECTURE_RFC §13a.
-    # shellcheck disable=SC2086
-    set -- $BUCKETS_OK
     exec rclone serve s3 \
       --config "$CONFIG" \
       --addr "$ADDR" \
@@ -130,4 +137,4 @@ data:
       --no-checksum \
       --s3-chunk-size 16M \
       --s3-upload-concurrency 4 \
-      "$@"
+      buckets:
