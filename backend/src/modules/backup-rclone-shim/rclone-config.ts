@@ -202,8 +202,18 @@ export function renderShimConfig(
     }
 
     const crypt = deriveCryptCredentials(rawKey, className);
-    sections.push(renderCryptSection(className, crypt));
-    sections.push(renderRawAliasSection(className));
+    // Anchor crypt + alias to the target's bucket+prefix (S3) or
+    // path (SFTP / CIFS / NFS). Without this, writes to the shim's
+    // virtual bucket get forwarded to `<className>-upstream:` with
+    // NO upstream-bucket scope — rclone's S3 backend then treats the
+    // first path segment of the incoming write as the upstream
+    // bucket name and returns NoSuchBucket on the upstream PUT.
+    // Surfaced 2026-05-20 during staging E2E: barman-cloud-backup
+    // wrote to s3://system/postgres/system-db/... which the shim
+    // forwarded as s3://postgres/system-db/... to Hetzner → 404.
+    const upstreamPath = upstreamRemotePath(target);
+    sections.push(renderCryptSection(className, crypt, upstreamPath));
+    sections.push(renderRawAliasSection(className, upstreamPath));
 
     // buckets.txt: one entry per "bucket" served. Order is
     // encrypted-then-raw, matching the rendered config sections.
@@ -421,9 +431,29 @@ function posixSubpathFor(t: BackupTargetConfig): string {
   return '';
 }
 
+/**
+ * Build the path component to append to `<className>-upstream:` so that
+ * crypt + alias writes land in the correct bucket+prefix on the upstream
+ * provider. Trailing slash is significant — without it, rclone treats
+ * the segment as a file name and overwrites/erroneously-strips.
+ */
+function upstreamRemotePath(t: BackupTargetConfig): string {
+  if (t.storageType === 's3' && t.s3Bucket) {
+    const prefix = t.s3Prefix?.replace(/^\/+|\/+$/g, '') ?? '';
+    return prefix.length > 0
+      ? `${t.s3Bucket}/${prefix}/`
+      : `${t.s3Bucket}/`;
+  }
+  // SFTP, CIFS, NFS already have their paths baked into the upstream
+  // remote definition (sftp `path` field, or the local mountpoint for
+  // POSIX mounts). No extra path component needed.
+  return '';
+}
+
 function renderCryptSection(
   className: BackupClass,
-  crypt: { obscuredPassword: string; obscuredSalt: string }
+  crypt: { obscuredPassword: string; obscuredSalt: string },
+  upstreamPath: string,
 ): string {
   // Encrypted bucket: rclone `crypt` backend wrapping the upstream.
   // filename_encryption=off keeps backup paths readable on the upstream
@@ -432,7 +462,7 @@ function renderCryptSection(
   return [
     `[${className}]`,
     `type = crypt`,
-    `remote = ${className}-upstream:`,
+    `remote = ${className}-upstream:${upstreamPath}`,
     `filename_encryption = off`,
     `directory_name_encryption = false`,
     `password = ${crypt.obscuredPassword}`,
@@ -441,13 +471,13 @@ function renderCryptSection(
   ].join('\n');
 }
 
-function renderRawAliasSection(className: BackupClass): string {
+function renderRawAliasSection(className: BackupClass, upstreamPath: string): string {
   // Raw bucket: passthrough alias. Self-encrypting callers (restic,
   // age-encrypted secrets-bundle) use this to avoid double-encryption.
   return [
     `[${className}-raw]`,
     `type = alias`,
-    `remote = ${className}-upstream:`,
+    `remote = ${className}-upstream:${upstreamPath}`,
     '',
   ].join('\n');
 }
