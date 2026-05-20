@@ -33,8 +33,28 @@ import type {
 } from '@k8s-hosting/api-contracts';
 
 const CROWDSEC_NAMESPACE = 'crowdsec';
+// Platform-api uses its own pre-registered bouncer key so it shows up
+// as a single named bouncer "platform-api" in `cscli bouncers list`
+// instead of one per (pod IP, pod restart) tuple under the shared
+// Traefik key. Bootstrap.sh's generate_platform_api_bouncer_key()
+// creates this Secret + runs `cscli bouncers add platform-api -k
+// <key>` so CrowdSec maps it to a stable name. Falls back to the
+// shared Traefik key on clusters bootstrapped before that function
+// existed — those clusters will continue to show the platform-api as
+// `traefik@<pod-ip>` until they're re-bootstrapped or the secret is
+// created manually (the new key + bouncer registration are
+// idempotent on re-runs).
+const PLATFORM_API_BOUNCER_SECRET = 'platform-api-bouncer-key';
 const CROWDSEC_BOUNCER_SECRET = 'crowdsec-bouncer-key';
 const CROWDSEC_BOUNCER_SECRET_KEY = 'bouncer-key';
+// User-Agent for platform-api's LAPI calls. CrowdSec uses this string
+// to derive the bouncer name when auto-registering. Without an explicit
+// UA, Node.js's undici defaults to literally "node", which CrowdSec
+// logs as "bad user agent 'node'" and registers under `traefik@<ip>`
+// (suffixing onto the shared Traefik bouncer name). Setting a
+// distinguishable UA + using our own pre-registered bouncer key
+// keeps platform-api as a single entry instead of one per pod IP.
+const PLATFORM_API_USER_AGENT = 'Hosting-Platform-Admin/1.0';
 const LAPI_BASE_URL = process.env.CROWDSEC_LAPI_URL ?? 'http://crowdsec.crowdsec.svc.cluster.local:8080';
 const TRAEFIK_NAMESPACE = 'traefik';
 const TRAEFIK_DAEMONSET = 'traefik';
@@ -73,14 +93,41 @@ async function loadBouncerKey(kc: k8s.KubeConfig): Promise<string> {
     return cachedBouncerKey.value;
   }
   const core = kc.makeApiClient(k8s.CoreV1Api);
-  const secret = await core.readNamespacedSecret({
-    name: CROWDSEC_BOUNCER_SECRET,
-    namespace: CROWDSEC_NAMESPACE,
-  });
-  const data = (secret as unknown as { data?: Record<string, string> }).data ?? {};
+  // Prefer the platform-api-specific Secret (pre-registered via
+  // cscli bouncers add by bootstrap.sh). Falls back to the shared
+  // Traefik bouncer key on clusters bootstrapped before that path
+  // existed — those see the old per-pod-IP entries until the
+  // operator re-runs bootstrap or creates the new Secret manually.
+  let secret: { data?: Record<string, string> } | null = null;
+  let usedName = PLATFORM_API_BOUNCER_SECRET;
+  try {
+    secret = (await core.readNamespacedSecret({
+      name: PLATFORM_API_BOUNCER_SECRET,
+      namespace: CROWDSEC_NAMESPACE,
+    })) as unknown as { data?: Record<string, string> };
+  } catch (err) {
+    // Only a TRUE 404 falls back to the shared Traefik key. Network
+    // errors, 5xx, auth failures, etc. re-throw — silently swallowing
+    // them into the fallback path would be a security regression
+    // (platform-api would use the wrong key on transient API-server
+    // blips, possibly authenticating as a different bouncer).
+    // statusCode is the @kubernetes/client-node HTTP status; code is
+    // a Node.js errno (ECONNRESET, etc.) — only the numeric 404
+    // match counts as a real "Secret doesn't exist" signal.
+    const e = err as { statusCode?: unknown; code?: unknown };
+    const isHttp404 = e.statusCode === 404 || e.code === 404;
+    if (!isHttp404) throw err;
+    // Backward-compat fallback to the shared Traefik bouncer key.
+    secret = (await core.readNamespacedSecret({
+      name: CROWDSEC_BOUNCER_SECRET,
+      namespace: CROWDSEC_NAMESPACE,
+    })) as unknown as { data?: Record<string, string> };
+    usedName = CROWDSEC_BOUNCER_SECRET;
+  }
+  const data = secret?.data ?? {};
   const b64 = data[CROWDSEC_BOUNCER_SECRET_KEY];
   if (!b64) {
-    throw new Error(`Secret ${CROWDSEC_NAMESPACE}/${CROWDSEC_BOUNCER_SECRET} missing key "${CROWDSEC_BOUNCER_SECRET_KEY}"`);
+    throw new Error(`Secret ${CROWDSEC_NAMESPACE}/${usedName} missing key "${CROWDSEC_BOUNCER_SECRET_KEY}"`);
   }
   const decoded = Buffer.from(b64, 'base64').toString('utf-8').trim();
   cachedBouncerKey = { value: decoded, loadedAt: Date.now() };
@@ -105,7 +152,17 @@ async function lapiGet<T>(path: string, key: string): Promise<T> {
   const timeout = setTimeout(() => ctrl.abort(), LAPI_HTTP_TIMEOUT_MS);
   try {
     const res = await fetch(`${LAPI_BASE_URL}${path}`, {
-      headers: { 'X-Api-Key': key, Accept: 'application/json' },
+      // User-Agent is required: Node.js's undici defaults to literally
+      // "node", which CrowdSec rejects as "bad user agent" and falls
+      // back to creating a per-source-IP bouncer entry under the
+      // shared Traefik bouncer name. Setting an explicit UA + using
+      // the platform-api-specific pre-registered bouncer key keeps
+      // CrowdSec mapping to a single stable bouncer entry.
+      headers: {
+        'X-Api-Key': key,
+        'Accept': 'application/json',
+        'User-Agent': PLATFORM_API_USER_AGENT,
+      },
       signal: ctrl.signal,
     });
     if (!res.ok) {
@@ -121,7 +178,10 @@ async function lapiHealth(): Promise<{ healthy: boolean; error: string | null }>
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), LAPI_HTTP_TIMEOUT_MS);
   try {
-    const res = await fetch(`${LAPI_BASE_URL}/health`, { signal: ctrl.signal });
+    const res = await fetch(`${LAPI_BASE_URL}/health`, {
+      headers: { 'User-Agent': PLATFORM_API_USER_AGENT },
+      signal: ctrl.signal,
+    });
     return { healthy: res.ok, error: res.ok ? null : `HTTP ${res.status}` };
   } catch (err) {
     return { healthy: false, error: err instanceof Error ? err.message : String(err) };
