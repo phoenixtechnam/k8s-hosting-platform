@@ -170,14 +170,23 @@ func applyExclusions(bl crowdsecBlocklist, ex exclusionSet) (filtered crowdsecBl
 }
 
 // prefixContainsOrEquals returns true if outer contains inner OR
-// equals inner. Both prefixes MUST be the same family — caller
-// guarantees this by splitting v4 / v6 upstream.
+// equals inner. Cross-family always false.
 //
 // netip.Prefix.Contains() works on addresses, not prefixes — we need
 // "is every address in inner also in outer?". Equivalent: outer.Bits()
 // must be <= inner.Bits() AND outer.Masked() must equal inner.Masked()
 // truncated to outer.Bits().
+//
+// CRITICAL: callers must Unmap() v4-in-v6 addresses BEFORE handing
+// prefixes to this function. A v4-mapped-in-v6 address (`::ffff:1.2.3.4`)
+// has `.Is4() == false` but `.Is4In6() == true`. Without normalization,
+// such an address-in-v4-exclusion would slip past the family guard and
+// escape the exclusion filter — landing in the nft drop set and bricking
+// SSH for an operator IP that LAPI happened to encode in mapped form.
+// The .Unmap() call below is the belt to the upstream braces.
 func prefixContainsOrEquals(outer, inner netip.Prefix) bool {
+	outer = unmapPrefix(outer)
+	inner = unmapPrefix(inner)
 	if outer.Addr().Is4() != inner.Addr().Is4() {
 		return false
 	}
@@ -190,6 +199,33 @@ func prefixContainsOrEquals(outer, inner netip.Prefix) bool {
 		return false
 	}
 	return truncated.Addr() == outer.Masked().Addr()
+}
+
+// unmapPrefix normalises a netip.Prefix so v4-in-v6 mapped
+// addresses (`::ffff:1.2.3.4`) become bare v4. The bit width is
+// preserved when the original was already-bare v4 or already-bare v6;
+// for a mapped address the bit width also has to be re-scoped (the
+// mapped form uses 128-bit prefixes; bare v4 uses 32-bit).
+//
+// Exported nowhere — used internally by prefixContainsOrEquals and
+// callers that build exclusionSet / crowdsecBlocklist from external
+// data (LAPI fetch, informer cache).
+func unmapPrefix(p netip.Prefix) netip.Prefix {
+	a := p.Addr().Unmap()
+	if a == p.Addr() {
+		return p // already canonical
+	}
+	// Mapped → bare v4. The original bit width was in the 96-128 range
+	// (the v6 prefix portion). Re-scope to v4 bits (subtract the 96-bit
+	// v4-in-v6 prefix). Clamp at [0, 32].
+	bits := p.Bits() - 96
+	if bits < 0 {
+		bits = 0
+	}
+	if bits > 32 {
+		bits = 32
+	}
+	return netip.PrefixFrom(a, bits)
 }
 
 // enforceCap truncates the blocklist if either family exceeds
@@ -293,9 +329,21 @@ type crowdsecReconciler struct {
 	// never be banned. Stage B implements this; Stage A keeps it nil.
 	computeExclusions func(ctx context.Context) (exclusionSet, error)
 
-	// tripCount counts consecutive self-protect trips. After
-	// selfProtectTripBudget the reconciler enters quiescent mode.
+	// tripCount counts SELF-PROTECT trips since the last quiescent
+	// transition. NOT reset by healthy ticks — a flickering LAPI stream
+	// alternating good/bad data would otherwise reset the counter every
+	// healthy tick and the quiescent transition would never happen.
+	// The counter only resets on pod restart (by virtue of struct init).
 	tripCount atomic.Int32
+
+	// quiescent latches true when tripCount reaches selfProtectTripBudget.
+	// Once true, every tick short-circuits at the top — no LAPI fetch,
+	// no exclusion compute, no nft writes. Recovery requires a pod
+	// restart (which is itself the operator-visible signal that "the
+	// reconciler had to be manually unstuck"). atomic.Bool because
+	// tick() and run() may race (in practice they're single-threaded
+	// per reconciler, but the atomic makes future concurrency safe).
+	quiescent atomic.Bool
 }
 
 // run is the goroutine entry. Exits cleanly when ctx is canceled.
@@ -332,6 +380,13 @@ func (cr *crowdsecReconciler) run(ctx context.Context) {
 // tick is one reconcile pass. Separated from run() so tests can drive
 // it directly without spinning the timer.
 func (cr *crowdsecReconciler) tick(ctx context.Context) {
+	// Quiescent latch: once self-protect tripped enough, this stays
+	// true for the pod's lifetime. Operator-visible signal that the
+	// reconciler stopped trying. Recovery is a pod restart.
+	if cr.quiescent.Load() {
+		slog.Warn("crowdsec-l4-reconciler: quiescent — skipping tick (restart pod to recover)")
+		return
+	}
 	startedAt := time.Now()
 
 	// Stage A: stub fetch + stub exclusions. Stage B fills these in.
@@ -361,6 +416,11 @@ func (cr *crowdsecReconciler) tick(ctx context.Context) {
 	//    that's an alarm worth raising (could be a compromised bouncer
 	//    key, poisoned community blocklist, or the Console pushing a
 	//    bad scenario). Skip the rest of the tick on trip.
+	//
+	//    The trip counter does NOT reset on healthy ticks — a flickering
+	//    LAPI stream alternating good/bad data would otherwise reset
+	//    every healthy tick and the quiescent latch would never engage.
+	//    Counter resets only on pod restart.
 	if shouldSelfProtectTrip(bl, ex) {
 		newTrip := cr.tripCount.Add(1)
 		intV4, intV6 := selfProtectIntersection(bl, ex)
@@ -373,13 +433,12 @@ func (cr *crowdsecReconciler) tick(ctx context.Context) {
 			"intersect_v6", intV6,
 		)
 		if newTrip >= selfProtectTripBudget {
+			cr.quiescent.Store(true)
 			slog.Error("crowdsec-l4-reconciler: self-protect budget exhausted — quiescent until restart",
 				"budget", selfProtectTripBudget)
 		}
 		return
 	}
-	// Healthy tick → reset trip counter.
-	cr.tripCount.Store(0)
 
 	// 2. Apply exclusions.
 	filtered, droppedByExclusion := applyExclusions(bl, ex)

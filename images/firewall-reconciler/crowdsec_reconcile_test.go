@@ -289,10 +289,16 @@ func TestTick_TripCounterIncrementsAndQuiesces(t *testing.T) {
 	if r.tripCount.Load() != selfProtectTripBudget {
 		t.Errorf("after %d trips, count=%d", selfProtectTripBudget, r.tripCount.Load())
 	}
+	if !r.quiescent.Load() {
+		t.Errorf("at budget exhaustion quiescent should latch true")
+	}
 }
 
-func TestTick_HealthyResetsTrip(t *testing.T) {
-	// 1) Trip once.
+func TestTick_HealthyDoesNotResetTripCounter(t *testing.T) {
+	// HIGH 2 defense: healthy tick MUST NOT reset the trip counter,
+	// else a flickering LAPI (bad/good/bad/good) would never engage
+	// the quiescent latch.
+	// 1) Trip twice.
 	r := &crowdsecReconciler{
 		mode: crowdsecL4ModeDryRun,
 		fetchDecisions: func(_ context.Context) (crowdsecBlocklist, error) {
@@ -303,16 +309,73 @@ func TestTick_HealthyResetsTrip(t *testing.T) {
 		},
 	}
 	r.tick(context.Background())
-	if r.tripCount.Load() != 1 {
-		t.Fatalf("expected trip=1 after first tick, got %d", r.tripCount.Load())
+	r.tick(context.Background())
+	if r.tripCount.Load() != 2 {
+		t.Fatalf("expected trip=2 after 2 bad ticks, got %d", r.tripCount.Load())
 	}
-	// 2) Replace fetch with healthy data → trip count resets to 0.
+	// 2) Healthy tick → trip count STAYS at 2 (NOT reset).
 	r.fetchDecisions = func(_ context.Context) (crowdsecBlocklist, error) {
 		return crowdsecBlocklist{V4: []netip.Prefix{mustPrefix(t, "5.6.7.8/32")}}, nil
 	}
 	r.tick(context.Background())
-	if r.tripCount.Load() != 0 {
-		t.Errorf("healthy tick should reset trip counter, got %d", r.tripCount.Load())
+	if r.tripCount.Load() != 2 {
+		t.Errorf("healthy tick reset trip counter to %d — flickering LAPI would defeat the budget", r.tripCount.Load())
+	}
+	// 3) Another bad tick → trip count = 3 → quiescent latches.
+	r.fetchDecisions = func(_ context.Context) (crowdsecBlocklist, error) {
+		return crowdsecBlocklist{V4: []netip.Prefix{mustPrefix(t, "10.0.0.2/32")}}, nil
+	}
+	r.tick(context.Background())
+	if !r.quiescent.Load() {
+		t.Errorf("3rd bad tick should latch quiescent, but it's still false")
+	}
+}
+
+func TestTick_QuiescentShortCircuits(t *testing.T) {
+	// Once quiescent is true, subsequent ticks must NOT call fetch or
+	// compute — they short-circuit at the top. Set quiescent manually
+	// and verify the stubs never fire.
+	calls := 0
+	r := &crowdsecReconciler{
+		mode: crowdsecL4ModeDryRun,
+		fetchDecisions: func(_ context.Context) (crowdsecBlocklist, error) {
+			calls++
+			return crowdsecBlocklist{}, nil
+		},
+	}
+	r.quiescent.Store(true)
+	r.tick(context.Background())
+	r.tick(context.Background())
+	if calls != 0 {
+		t.Errorf("quiescent reconciler should NOT call fetchDecisions, got %d calls", calls)
+	}
+}
+
+func TestPrefixContainsOrEquals_V4InV6Normalization(t *testing.T) {
+	// HIGH 1 defense: a v4-mapped-in-v6 address (`::ffff:1.2.3.4`)
+	// must be normalised so it's treated as bare v4. Without this, an
+	// LAPI-returned v4-mapped ban would slip past the v4 exclusion
+	// filter (because Is4()=false vs Is4()=true) and brick SSH for an
+	// operator IP encoded in mapped form.
+	mapped := netip.MustParseAddr("::ffff:1.2.3.4")
+	bareV4 := netip.MustParseAddr("1.2.3.4")
+	if mapped.Is4() {
+		t.Fatal("test setup wrong — mapped should report Is4()=false before Unmap()")
+	}
+
+	// Inner is the mapped form (as if LAPI returned it).
+	// Outer is the bare v4 exclusion (operator's trusted range).
+	// Without normalization the family guard returns false and the
+	// containment check fails.
+	mappedPrefix := netip.PrefixFrom(mapped, 128)
+	bareV4Prefix := netip.PrefixFrom(bareV4, 32)
+	bareV4Range := mustPrefix(t, "1.2.3.0/24")
+
+	if !prefixContainsOrEquals(bareV4Range, mappedPrefix) {
+		t.Error("v4-mapped-in-v6 inner inside v4 outer should match after normalization")
+	}
+	if !prefixContainsOrEquals(bareV4Prefix, mappedPrefix) {
+		t.Error("equal mapped vs bare v4 should match after normalization")
 	}
 }
 
