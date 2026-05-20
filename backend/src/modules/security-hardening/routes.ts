@@ -29,12 +29,20 @@ import { scrapeWafLogs, getScraperStatus } from '../ingress-routes/waf-log-scrap
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   addBan,
+  addStaticBan,
   deleteDecisionById,
   getStatus as getCrowdsecStatus,
   listDecisions,
 } from './crowdsec.js';
 import {
+  addAllowlistEntry,
+  listAllowlistEntries,
+  removeAllowlistEntry,
+} from './crowdsec-allowlists.js';
+import {
+  crowdsecAddAllowlistRequestSchema,
   crowdsecAddBanRequestSchema,
+  crowdsecAddStaticBanRequestSchema,
   crowdsecListDecisionsQuerySchema,
 } from '@k8s-hosting/api-contracts';
 
@@ -243,6 +251,114 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         } catch (err) {
           return reply.status(502).send({
             error: 'CROWDSEC_STATUS_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    // ─── F2 — Allowlist (cscli allowlists wrapper) ──────────────────────
+
+    app.get(
+      '/admin/security/crowdsec/allowlist',
+      { preHandler: requireRole('super_admin') },
+      async (_req: FastifyRequest, reply: FastifyReply) => {
+        try {
+          const entries = await listAllowlistEntries(kubeconfigPath);
+          return success({ entries });
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_ALLOWLIST_LIST_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.post(
+      '/admin/security/crowdsec/allowlist',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecAddAllowlistRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor, entry: parsed.data }, 'crowdsec: allowlist entry added');
+        try {
+          const result = await addAllowlistEntry(kubeconfigPath, parsed.data, actor);
+          return success({
+            message: result.message,
+            value: parsed.data.value,
+            scope: parsed.data.scope,
+            comment: parsed.data.comment,
+          });
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_ALLOWLIST_ADD_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.delete(
+      '/admin/security/crowdsec/allowlist/:value',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const { value } = req.params as { value: string };
+        const decoded = decodeURIComponent(value);
+        // Strict regex match — value is interpolated into the cscli argv.
+        if (!/^[a-fA-F0-9.:/]+$/.test(decoded) || decoded.length > 64) {
+          return reply.status(400).send({
+            error: 'INVALID_VALUE',
+            message: 'value must be an IP or CIDR (≤64 chars, [a-fA-F0-9.:/]+)',
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor, value: decoded }, 'crowdsec: allowlist entry removed');
+        try {
+          const result = await removeAllowlistEntry(kubeconfigPath, decoded);
+          return success(result);
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_ALLOWLIST_REMOVE_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    // ─── F2 — Static (long-duration) operator ban ───────────────────────
+
+    app.post(
+      '/admin/security/crowdsec/static-blocklist',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecAddStaticBanRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor, ban: parsed.data }, 'crowdsec: static ban added (1y duration)');
+        try {
+          const result = await addStaticBan(kubeconfigPath, parsed.data, actor);
+          return success({
+            message: result.message,
+            value: parsed.data.value,
+            scope: parsed.data.scope,
+            duration: '8760h',
+            reason: parsed.data.reason,
+          });
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_STATIC_BAN_FAILED',
             message: err instanceof Error ? err.message : String(err),
           });
         }

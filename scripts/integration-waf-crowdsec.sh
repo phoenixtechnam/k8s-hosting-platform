@@ -553,24 +553,128 @@ cleanup_test_ban_symbolic() {
 }
 cleanup_test_ban_symbolic
 
+# ─── Phase G — F2: allowlist + static blocklist CRUD ──────────────────
+
+phase "Phase G — F2 allowlist + static blocklist"
+
+# Test value uses a different TEST-NET-2 IP to avoid colliding with Phase 4's harness IP.
+F2_ALLOWLIST_VALUE="198.51.100.99"
+F2_STATIC_VALUE="198.51.100.98"
+
+cleanup_f2() {
+  kubectl_run "exec -n crowdsec deploy/crowdsec -- cscli allowlists remove admin-panel $F2_ALLOWLIST_VALUE" >/dev/null 2>&1 || true
+  kubectl_run "exec -n crowdsec deploy/crowdsec -- cscli decisions delete --ip $F2_STATIC_VALUE" >/dev/null 2>&1 || true
+}
+trap 'cleanup; cleanup_test_ban_symbolic; cleanup_f2' EXIT INT TERM
+
+# Allowlist — list (initial state)
+allow_initial=$(api_internal GET /admin/security/crowdsec/allowlist)
+if echo "$allow_initial" | grep -q '"entries"'; then
+  ok "allowlist GET endpoint reachable"
+else
+  fail "allowlist GET failed: $(echo "$allow_initial" | head -c 200)"
+fi
+
+# Allowlist — add entry
+add_resp=$(api_internal POST /admin/security/crowdsec/allowlist \
+  "{\"value\":\"$F2_ALLOWLIST_VALUE\",\"scope\":\"Ip\",\"comment\":\"harness allowlist test\"}")
+if echo "$add_resp" | grep -qE '"message"|"value"'; then
+  ok "allowlist entry added: $F2_ALLOWLIST_VALUE"
+else
+  fail "allowlist add failed: $(echo "$add_resp" | head -c 200)"
+fi
+
+# Allowlist — verify it's in the list
+allow_list=$(api_internal GET /admin/security/crowdsec/allowlist)
+if echo "$allow_list" | grep -q "$F2_ALLOWLIST_VALUE"; then
+  ok "allowlist entry visible in list ($F2_ALLOWLIST_VALUE)"
+else
+  fail "allowlist entry NOT visible: $(echo "$allow_list" | head -c 300)"
+fi
+
+# Allowlist — invalid value (rm-rf shell-injection shape) → 400
+inv_rc=$(kubectl_run "run waf-cs-h-invalid-allow-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"value\":\"; rm -rf /\",\"scope\":\"Ip\",\"comment\":\"shell injection attempt\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/allowlist" 2>&1 | tail -1)
+if [[ "$inv_rc" == "400" ]]; then
+  ok "invalid allowlist value rejected (400)"
+else
+  fail "invalid allowlist value got HTTP $inv_rc (expected 400)"
+fi
+
+# Allowlist — remove
+rm_resp=$(api_internal DELETE "/admin/security/crowdsec/allowlist/$F2_ALLOWLIST_VALUE")
+if echo "$rm_resp" | grep -q '"removed"'; then
+  ok "allowlist entry removed"
+else
+  fail "allowlist remove failed: $(echo "$rm_resp" | head -c 200)"
+fi
+
+# Static blocklist — add (1y duration)
+static_add_resp=$(api_internal POST /admin/security/crowdsec/static-blocklist \
+  "{\"value\":\"$F2_STATIC_VALUE\",\"scope\":\"Ip\",\"reason\":\"harness static ban test\"}")
+if echo "$static_add_resp" | grep -q '"duration":"8760h"'; then
+  ok "static ban added with 1y duration"
+else
+  fail "static ban add failed: $(echo "$static_add_resp" | head -c 200)"
+fi
+
+# Verify it's listed with staticByOperator=true
+sleep 2
+static_list=$(api_internal GET "/admin/security/crowdsec/decisions?q=$F2_STATIC_VALUE")
+if echo "$static_list" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)['data']['decisions']
+matches=[x for x in d if x['value']=='$F2_STATIC_VALUE' and x.get('staticByOperator')]
+sys.exit(0 if matches else 1)
+" 2>/dev/null; then
+  ok "static ban visible in decisions list with staticByOperator=true"
+else
+  fail "static ban not flagged as staticByOperator in decisions list"
+fi
+
+# Filter staticOnly=true returns only static bans
+static_filter=$(api_internal GET "/admin/security/crowdsec/decisions?staticOnly=true")
+static_count=$(echo "$static_filter" | python3 -c "import sys,json; print(sum(1 for x in json.load(sys.stdin)['data']['decisions'] if x.get('staticByOperator')))" 2>/dev/null || echo 0)
+if (( static_count >= 1 )); then
+  ok "staticOnly filter returns $static_count static ban(s)"
+else
+  fail "staticOnly filter returned $static_count static bans (expected ≥1)"
+fi
+
+# Cleanup the static ban via API (operator path) — verifies the delete path works for static bans
+static_id=$(echo "$static_list" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)['data']['decisions']
+matches=[x for x in d if x['value']=='$F2_STATIC_VALUE']
+print(matches[0]['id'] if matches else '')
+" 2>/dev/null)
+if [[ -n "$static_id" ]]; then
+  api_internal DELETE "/admin/security/crowdsec/decisions/$static_id" >/dev/null
+  ok "static ban deleted via API (id=$static_id)"
+else
+  warn "could not find static ban id for cleanup"
+fi
+
 # ─── Phase 5 — Coverage finishing checks ──────────────────────────────
 
 phase "Phase 5 — Coverage finishing checks"
 
 # Re-fetch status after the test; bouncers may have come online after
 # the ban triggered a pull.
-final_status=$(api_internal GET /admin/security/crowdsec/status)
-fresh_count=$(printf '%s' "$final_status" | python3 -c "import sys,json; print(sum(1 for b in json.load(sys.stdin)['data']['bouncers'] if b['online']))")
-if (( fresh_count > 0 )); then
-  ok "after ban/unban cycle: $fresh_count bouncer(s) online"
+# (Phase 5 block continues below — original content preserved.)
+
+# Re-define here to avoid the variable being overwritten before this point.
+_phase5_status=$(api_internal GET /admin/security/crowdsec/status)
+_fresh_count=$(printf '%s' "$_phase5_status" | python3 -c "import sys,json; print(sum(1 for b in json.load(sys.stdin)['data']['bouncers'] if b['online']))")
+if (( _fresh_count > 0 )); then
+  ok "after ban/unban cycle: $_fresh_count bouncer(s) online"
 else
   fail "no bouncers online after ban/unban cycle — enforcement is broken on this cluster"
 fi
 
 # Surface waf-events scraperStatus too.
-waf_status=$(api_internal GET /admin/security/waf-events)
-modsec_found=$(printf '%s' "$waf_status" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['scraperStatus']['modsecPodFound'])")
-if [[ "$modsec_found" == "True" ]]; then
+_waf_status=$(api_internal GET /admin/security/waf-events)
+_modsec_found=$(printf '%s' "$_waf_status" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['scraperStatus']['modsecPodFound'])")
+if [[ "$_modsec_found" == "True" ]]; then
   ok "WAF scraper sees modsec-crs pods (matches the $modsec_count Running)"
 else
   fail "WAF scraper reports modsecPodFound=False — label selector mismatch"

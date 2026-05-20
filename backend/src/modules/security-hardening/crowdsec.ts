@@ -18,9 +18,9 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
-import { PassThrough } from 'node:stream';
 import { Buffer } from 'node:buffer';
 import { createKubeConfig } from '../container-console/service.js';
+import { cscliExec, findCrowdsecPodName } from './cscli-exec.js';
 import type {
   CrowdsecAddBanRequest,
   CrowdsecBouncer,
@@ -33,8 +33,6 @@ import type {
 } from '@k8s-hosting/api-contracts';
 
 const CROWDSEC_NAMESPACE = 'crowdsec';
-const CROWDSEC_DEPLOYMENT = 'crowdsec';
-const CROWDSEC_CONTAINER = 'crowdsec';
 const CROWDSEC_BOUNCER_SECRET = 'crowdsec-bouncer-key';
 const CROWDSEC_BOUNCER_SECRET_KEY = 'bouncer-key';
 const LAPI_BASE_URL = process.env.CROWDSEC_LAPI_URL ?? 'http://crowdsec.crowdsec.svc.cluster.local:8080';
@@ -49,7 +47,14 @@ const MODSEC_LABEL_SELECTOR = 'app.kubernetes.io/name=modsec-crs';
  */
 export const MANUAL_BAN_REASON_PREFIX = 'admin-panel:';
 
-const CSCLI_EXEC_TIMEOUT_MS = 15_000;
+/**
+ * Long-duration "static" operator bans (F2). Distinguished from transient
+ * MANUAL bans by the prefix so the UI can flag them with staticByOperator=true.
+ */
+export const MANUAL_STATIC_BAN_REASON_PREFIX = 'admin-panel-static:';
+
+const STATIC_BAN_DURATION = '8760h'; // 1 year — schema's upper bound
+
 const LAPI_HTTP_TIMEOUT_MS = 8_000;
 
 // ─── KubeConfig loading + bouncer key caching ──────────────────────────
@@ -125,104 +130,7 @@ async function lapiHealth(): Promise<{ healthy: boolean; error: string | null }>
   }
 }
 
-// ─── cscli exec helper ────────────────────────────────────────────────
-
-async function findCrowdsecPodName(kc: k8s.KubeConfig): Promise<string> {
-  const core = kc.makeApiClient(k8s.CoreV1Api);
-  const pods = await (core as unknown as {
-    listNamespacedPod: (args: { namespace: string; labelSelector: string }) => Promise<{
-      items: { metadata?: { name?: string }; status?: { phase?: string } }[];
-    }>;
-  }).listNamespacedPod({
-    namespace: CROWDSEC_NAMESPACE,
-    labelSelector: 'app.kubernetes.io/name=crowdsec',
-  });
-  const running = (pods.items ?? []).find((p) => p.status?.phase === 'Running' && p.metadata?.name);
-  if (!running?.metadata?.name) {
-    throw new Error(`No Running pod found for app.kubernetes.io/name=crowdsec in ${CROWDSEC_NAMESPACE}`);
-  }
-  return running.metadata.name;
-}
-
-/**
- * Run a cscli command inside the CrowdSec pod, collect stdout/stderr.
- * Times out after CSCLI_EXEC_TIMEOUT_MS so a hung exec can't block the
- * Fastify worker.
- */
-async function cscliExec(
-  kc: k8s.KubeConfig,
-  podName: string,
-  args: string[],
-): Promise<{ stdout: string; stderr: string }> {
-  const exec = new k8s.Exec(kc);
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-
-  stdout.on('data', (c: Buffer) => stdoutChunks.push(c));
-  stderr.on('data', (c: Buffer) => stderrChunks.push(c));
-
-  // Race-safe: a `done` flag prevents double-resolve, and the timeout
-  // closes the WebSocket via a holder that's populated below — if the
-  // timer fires BEFORE exec.exec()'s Promise resolves the holder is
-  // still empty, so we mark `done` and let the eventual resolved
-  // connection close itself in the .then() (which checks `done`).
-  let done = false;
-  let timer: NodeJS.Timeout | null = null;
-  const wsHolder: { conn: { close?: () => void } | null } = { conn: null };
-  const finish = (err: Error | null, value?: { stdout: string; stderr: string }) => {
-    if (done) return;
-    done = true;
-    if (timer) { clearTimeout(timer); timer = null; }
-    try { wsHolder.conn?.close?.(); } catch { /* swallow */ }
-    if (err) deferredReject(err); else deferredResolve(value as { stdout: string; stderr: string });
-  };
-
-  let deferredResolve!: (v: { stdout: string; stderr: string }) => void;
-  let deferredReject!: (e: Error) => void;
-  const result = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    deferredResolve = resolve;
-    deferredReject = reject;
-  });
-
-  timer = setTimeout(() => {
-    finish(new Error(`cscli exec timed out after ${CSCLI_EXEC_TIMEOUT_MS}ms`));
-  }, CSCLI_EXEC_TIMEOUT_MS);
-
-  exec.exec(
-    CROWDSEC_NAMESPACE,
-    podName,
-    CROWDSEC_CONTAINER,
-    ['cscli', ...args],
-    stdout,
-    stderr,
-    null,
-    false,
-    (status) => {
-      const so = Buffer.concat(stdoutChunks).toString('utf-8');
-      const se = Buffer.concat(stderrChunks).toString('utf-8');
-      if (status.status === 'Success') {
-        finish(null, { stdout: so, stderr: se });
-      } else {
-        finish(new Error(`cscli ${args.join(' ')} failed: ${status.message ?? status.status} stderr=${se}`));
-      }
-    },
-  ).then((conn) => {
-    const handle = conn as unknown as { close?: () => void };
-    if (done) {
-      // The timer already fired — close the connection that we couldn't
-      // close from the timer because it hadn't been returned yet.
-      try { handle.close?.(); } catch { /* swallow */ }
-      return;
-    }
-    wsHolder.conn = handle;
-  }).catch((err) => {
-    finish(err instanceof Error ? err : new Error(String(err)));
-  });
-
-  return result;
-}
+// cscli exec helper moved to cscli-exec.ts (shared with allowlists).
 
 // ─── Decision shape mapping ───────────────────────────────────────────
 
@@ -248,6 +156,7 @@ function parseLapiDecision(d: LapiRawDecision): CrowdsecDecision | null {
     duration,
     expiresAt: parseDurationToAbsolute(duration),
     manualByOperator: origin === 'cscli' && scenario.startsWith(MANUAL_BAN_REASON_PREFIX),
+    staticByOperator: origin === 'cscli' && scenario.startsWith(MANUAL_STATIC_BAN_REASON_PREFIX),
     simulated: Boolean(d.simulated),
   };
 }
@@ -288,6 +197,7 @@ export async function listDecisions(
   let filtered = all;
   if (query.scope) filtered = filtered.filter((d) => d.scope === query.scope);
   if (query.manualOnly) filtered = filtered.filter((d) => d.manualByOperator);
+  if (query.staticOnly) filtered = filtered.filter((d) => d.staticByOperator);
   if (query.q) {
     const q = query.q.toLowerCase();
     filtered = filtered.filter((d) => d.value.toLowerCase().includes(q));
@@ -316,6 +226,33 @@ export async function addBan(
     'decisions', 'add',
     targetFlag, req.value,
     '--duration', req.duration,
+    '--reason', scenario,
+    '--type', 'ban',
+  ];
+  const { stdout, stderr } = await cscliExec(kc, podName, cscliArgs);
+  return { message: (stdout + stderr).trim().slice(0, 500) };
+}
+
+/**
+ * F2 — Static (long-duration) operator ban. Same code path as addBan but
+ * with the static prefix + 8760h duration (1 year — the schema's upper
+ * bound). The list endpoint flags these with staticByOperator=true.
+ * Operators have to re-add yearly; alternative storage (own DB table +
+ * reconciler) was deferred per the F2 design.
+ */
+export async function addStaticBan(
+  kubeconfigPath: string | undefined,
+  req: { value: string; scope: 'Ip' | 'Range' | 'Country' | 'AS'; reason: string },
+  actor: string,
+): Promise<{ message: string }> {
+  const kc = createKubeConfig(kubeconfigPath);
+  const podName = await findCrowdsecPodName(kc);
+  const scenario = `${MANUAL_STATIC_BAN_REASON_PREFIX}${actor}:${req.reason}`;
+  const targetFlag = req.scope === 'Range' ? '--range' : '--ip';
+  const cscliArgs = [
+    'decisions', 'add',
+    targetFlag, req.value,
+    '--duration', STATIC_BAN_DURATION,
     '--reason', scenario,
     '--type', 'ban',
   ];

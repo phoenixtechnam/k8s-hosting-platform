@@ -60,10 +60,14 @@ import {
 } from '@/hooks/use-security-hardening';
 import { useRefreshWafScraper, useWafEvents } from '@/hooks/use-waf-events';
 import {
+  useAddCrowdsecAllowlistEntry,
   useAddCrowdsecBan,
+  useAddCrowdsecStaticBan,
+  useCrowdsecAllowlist,
   useCrowdsecDecisions,
   useCrowdsecStatus,
   useDeleteCrowdsecDecision,
+  useRemoveCrowdsecAllowlistEntry,
 } from '@/hooks/use-crowdsec';
 import type {
   NodeSecuritySnapshot,
@@ -76,6 +80,7 @@ import type {
   WafEventsQuery,
   WafEventsResponse,
   WafScraperStatus,
+  CrowdsecAllowlistEntry,
   CrowdsecDecision,
   CrowdsecDecisionScope,
   CrowdsecListDecisionsQuery,
@@ -1588,7 +1593,9 @@ function BannedIpsTab() {
   const [q, setQ] = useState('');
   const [scope, setScope] = useState<'' | CrowdsecDecisionScope>('');
   const [manualOnly, setManualOnly] = useState(false);
+  const [staticOnly, setStaticOnly] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [staticAddOpen, setStaticAddOpen] = useState(false);
 
   const debouncedQ = useDebouncedValue(q, 400);
 
@@ -1597,8 +1604,9 @@ function BannedIpsTab() {
     if (debouncedQ.trim()) out.q = debouncedQ.trim();
     if (scope) out.scope = scope;
     if (manualOnly) out.manualOnly = true;
+    if (staticOnly) out.staticOnly = true;
     return out;
-  }, [debouncedQ, scope, manualOnly]);
+  }, [debouncedQ, scope, manualOnly, staticOnly]);
 
   const { data, isLoading, isError, error, refetch, isFetching } = useCrowdsecDecisions(query);
   const status = useCrowdsecStatus();
@@ -1616,6 +1624,10 @@ function BannedIpsTab() {
       </div>
 
       {status.data?.data && <CrowdsecStatusPanel status={status.data.data} />}
+
+      {/* F2 — Allowlist + Static blocklist (operator-managed lists) */}
+      <AllowlistCard />
+      <StaticBlocklistCard onOpenAdd={() => setStaticAddOpen(true)} />
 
       {/* Controls */}
       <div className="flex flex-wrap items-end justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
@@ -1652,6 +1664,15 @@ function BannedIpsTab() {
               data-testid="bans-filter-manual"
             />
             Manual bans only
+          </label>
+          <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
+            <input
+              type="checkbox"
+              checked={staticOnly}
+              onChange={(e) => setStaticOnly(e.target.checked)}
+              data-testid="bans-filter-static"
+            />
+            Static (1y) bans only
           </label>
         </div>
         <div className="flex items-center gap-2">
@@ -1736,6 +1757,9 @@ function BannedIpsTab() {
           prefill={{ value: '', reason: '' }}
           onClose={() => setAddOpen(false)}
         />
+      )}
+      {staticAddOpen && (
+        <StaticBanModal onClose={() => setStaticAddOpen(false)} />
       )}
     </section>
   );
@@ -1844,7 +1868,8 @@ function DecisionRow({ d, onUnban, isUnbanning }: { d: CrowdsecDecision; onUnban
       </td>
       <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">
         <span className="font-mono">{d.origin || '—'}</span>
-        {d.manualByOperator && <span className="ml-1 text-[9px] uppercase text-amber-700 dark:text-amber-300">manual</span>}
+        {d.staticByOperator && <span className="ml-1 text-[9px] uppercase text-purple-700 dark:text-purple-300">static</span>}
+        {d.manualByOperator && !d.staticByOperator && <span className="ml-1 text-[9px] uppercase text-amber-700 dark:text-amber-300">manual</span>}
       </td>
       <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 max-w-md truncate" title={d.scenario}>{d.scenario}</td>
       <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 whitespace-nowrap">{expiresIn}</td>
@@ -1968,6 +1993,237 @@ function BanIpModal({
             data-testid="ban-modal-submit"
           >
             {add.isPending ? 'Banning…' : 'Ban'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── F2 — Allowlist card (operator-managed; immune from any ban) ────────
+
+function AllowlistCard() {
+  const list = useCrowdsecAllowlist();
+  const addMut = useAddCrowdsecAllowlistEntry();
+  const removeMut = useRemoveCrowdsecAllowlistEntry();
+  const [value, setValue] = useState('');
+  const [comment, setComment] = useState('');
+  const [scope, setScope] = useState<'Ip' | 'Range'>('Ip');
+
+  const entries = list.data?.data?.entries ?? [];
+  const valid = /^[a-fA-F0-9.:/]+$/.test(value) && value.length >= 1 && comment.trim().length >= 3;
+
+  const onAdd = () => {
+    if (!valid) return;
+    addMut.mutate(
+      { value, scope, comment: comment.trim() },
+      { onSuccess: () => { setValue(''); setComment(''); } },
+    );
+  };
+
+  return (
+    <div className="rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50/40 dark:bg-emerald-900/10" data-testid="allowlist-card">
+      <div className="px-4 py-3 border-b border-emerald-300 dark:border-emerald-700 text-sm font-medium text-emerald-900 dark:text-emerald-100">
+        Allowlist — IPs that are NEVER banned
+        <span className="ml-2 text-[11px] font-normal text-emerald-800 dark:text-emerald-200/70">
+          Immune from community blocklist, scenario hits, manual bans, and L4 enforcement. Populate before enabling L4 or auto-ban.
+        </span>
+      </div>
+      <div className="px-4 py-3">
+        <div className="flex flex-wrap items-end gap-2 mb-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase text-gray-600 dark:text-gray-400">IP / CIDR</label>
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="203.0.113.42 or 198.51.100.0/24"
+              className="w-56 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
+              data-testid="allowlist-add-value"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase text-gray-600 dark:text-gray-400">Scope</label>
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as 'Ip' | 'Range')}
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              data-testid="allowlist-add-scope"
+            >
+              <option value="Ip">IP</option>
+              <option value="Range">Range (CIDR)</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
+            <label className="text-[10px] uppercase text-gray-600 dark:text-gray-400">Reason / description</label>
+            <input
+              type="text"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="office IP — never ban"
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              data-testid="allowlist-add-comment"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={onAdd}
+            disabled={!valid || addMut.isPending}
+            className="inline-flex items-center gap-1 rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-100 dark:bg-emerald-900/30 px-3 py-1.5 text-sm font-medium text-emerald-800 dark:text-emerald-200 hover:bg-emerald-200 dark:hover:bg-emerald-900/40 disabled:opacity-50"
+            data-testid="allowlist-add-submit"
+          >
+            <Plus size={14} /> {addMut.isPending ? 'Adding…' : 'Add to allowlist'}
+          </button>
+        </div>
+        {addMut.isError && (
+          <div className="text-xs text-red-600 dark:text-red-400 mb-2">
+            Add failed: {addMut.error?.message ?? 'unknown'}
+          </div>
+        )}
+        {removeMut.isError && (
+          <div className="text-xs text-red-600 dark:text-red-400 mb-2">
+            Remove failed: {removeMut.error?.message ?? 'unknown'}
+          </div>
+        )}
+        {list.isLoading && <div className="text-xs text-gray-500">Loading allowlist…</div>}
+        {list.isError && <div className="text-xs text-red-600">Failed to load allowlist</div>}
+        {!list.isLoading && entries.length === 0 && (
+          <div className="text-xs text-gray-500 italic">Allowlist is empty. Add at least your office / operator IP before enabling L4 enforcement.</div>
+        )}
+        {entries.length > 0 && (
+          <table className="min-w-full text-xs" data-testid="allowlist-table">
+            <thead className="text-gray-500 uppercase text-[10px]">
+              <tr>
+                <th className="px-2 py-1 text-left">Value</th>
+                <th className="px-2 py-1 text-left">Scope</th>
+                <th className="px-2 py-1 text-left">Comment</th>
+                <th className="px-2 py-1 text-left">Added by</th>
+                <th className="px-2 py-1"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-emerald-200/40 dark:divide-emerald-900/40">
+              {entries.map((e: CrowdsecAllowlistEntry) => (
+                <tr key={e.value}>
+                  <td className="px-2 py-1 font-mono">{e.value}</td>
+                  <td className="px-2 py-1">{e.scope}</td>
+                  <td className="px-2 py-1">{e.comment || <span className="text-gray-400">—</span>}</td>
+                  <td className="px-2 py-1 font-mono text-[10px]">{e.addedBy || <span className="text-gray-400">—</span>}</td>
+                  <td className="px-2 py-1 text-right">
+                    <button
+                      type="button"
+                      onClick={() => removeMut.mutate(e.value)}
+                      disabled={removeMut.isPending && removeMut.variables === e.value}
+                      className="inline-flex items-center gap-1 text-[11px] text-red-700 dark:text-red-300 hover:underline disabled:opacity-50"
+                      data-testid={`allowlist-remove-${e.value}`}
+                    >
+                      <Trash2 size={11} /> Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── F2 — Static blocklist card (operator-managed; 1-year duration) ─────
+
+function StaticBlocklistCard({ onOpenAdd }: { onOpenAdd: () => void }) {
+  return (
+    <div className="rounded-lg border border-purple-300 dark:border-purple-700 bg-purple-50/40 dark:bg-purple-900/10 p-4" data-testid="static-blocklist-card">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-medium text-purple-900 dark:text-purple-100">Static blocklist — long-term bans (1 year)</div>
+          <div className="text-[11px] text-purple-800 dark:text-purple-200/70 mt-1">
+            For known-bad IPs from your own threat intelligence. Static bans appear in the table below with a <code className="text-[10px]">static</code> badge and a <strong>1 year</strong> expiry (re-add manually if still needed).
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onOpenAdd}
+          className="inline-flex items-center gap-1 rounded-md border border-purple-300 dark:border-purple-700 bg-purple-100 dark:bg-purple-900/30 px-3 py-1.5 text-sm font-medium text-purple-800 dark:text-purple-200 hover:bg-purple-200 dark:hover:bg-purple-900/40"
+          data-testid="static-blocklist-add"
+        >
+          <Plus size={14} /> Add static ban
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── F2 — Static-ban add modal ─────────────────────────────────────────
+
+function StaticBanModal({ onClose }: { onClose: () => void }) {
+  const [value, setValue] = useState('');
+  const [scope, setScope] = useState<'Ip' | 'Range'>('Ip');
+  const [reason, setReason] = useState('');
+  const mut = useAddCrowdsecStaticBan();
+  const valid = /^[a-fA-F0-9.:/]+$/.test(value) && value.length >= 1 && reason.trim().length >= 3;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-900 shadow-xl" data-testid="static-ban-modal">
+        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-3">
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Add static ban (1 year)</h3>
+          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-700">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-3 text-sm">
+          <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 p-2 text-xs text-amber-800 dark:text-amber-200">
+            Static bans last <strong>1 year</strong>. The operator must re-add manually after expiry. For shorter bans use the regular &ldquo;Add manual ban&rdquo; flow.
+          </div>
+          <div>
+            <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">IP / CIDR</label>
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-mono"
+              data-testid="static-ban-modal-value"
+            />
+          </div>
+          <div>
+            <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Scope</label>
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as 'Ip' | 'Range')}
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+              data-testid="static-ban-modal-scope"
+            >
+              <option value="Ip">IP</option>
+              <option value="Range">Range (CIDR)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs uppercase text-gray-600 dark:text-gray-400 mb-1">Reason</label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={3}
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+              data-testid="static-ban-modal-reason"
+            />
+          </div>
+          {mut.isError && (
+            <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-2 text-xs text-red-700 dark:text-red-300">
+              {mut.error?.message ?? 'Ban failed'}
+            </div>
+          )}
+        </div>
+        <div className="border-t border-gray-200 dark:border-gray-700 px-5 py-3 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-md px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => mut.mutate({ value, scope, reason: reason.trim() }, { onSuccess: () => onClose() })}
+            disabled={!valid || mut.isPending}
+            className="rounded-md px-3 py-1.5 text-sm border border-purple-300 bg-purple-600 dark:bg-purple-700 text-white hover:bg-purple-700 dark:hover:bg-purple-600 disabled:opacity-50"
+            data-testid="static-ban-modal-submit"
+          >
+            {mut.isPending ? 'Adding…' : 'Add static ban'}
           </button>
         </div>
       </div>

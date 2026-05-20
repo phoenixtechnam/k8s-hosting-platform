@@ -13,11 +13,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
+  CrowdsecAddAllowlistRequest,
+  CrowdsecAddAllowlistResponse,
   CrowdsecAddBanRequest,
   CrowdsecAddBanResponse,
+  CrowdsecAddStaticBanRequest,
   CrowdsecDeleteByIdResponse,
+  CrowdsecListAllowlistResponse,
   CrowdsecListDecisionsQuery,
   CrowdsecListDecisionsResponse,
+  CrowdsecRemoveAllowlistResponse,
   CrowdsecStatus,
 } from '@k8s-hosting/api-contracts';
 
@@ -73,6 +78,60 @@ export function useDeleteCrowdsecDecision() {
       apiFetch(`/api/v1/admin/security/crowdsec/decisions/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: DECISIONS_KEY });
+    },
+  });
+}
+
+// ─── F2 — Allowlist + Static blocklist hooks ──────────────────────────
+
+const ALLOWLIST_KEY = ['crowdsec', 'allowlist'] as const;
+
+export function useCrowdsecAllowlist() {
+  return useQuery<Envelope<CrowdsecListAllowlistResponse>>({
+    queryKey: ALLOWLIST_KEY,
+    queryFn: () => apiFetch('/api/v1/admin/security/crowdsec/allowlist'),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useAddCrowdsecAllowlistEntry() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<CrowdsecAddAllowlistResponse>, Error, CrowdsecAddAllowlistRequest>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/security/crowdsec/allowlist', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ALLOWLIST_KEY });
+    },
+  });
+}
+
+export function useRemoveCrowdsecAllowlistEntry() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<CrowdsecRemoveAllowlistResponse>, Error, string>({
+    mutationFn: (value) =>
+      apiFetch(`/api/v1/admin/security/crowdsec/allowlist/${encodeURIComponent(value)}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ALLOWLIST_KEY });
+    },
+  });
+}
+
+export function useAddCrowdsecStaticBan() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<CrowdsecAddBanResponse>, Error, CrowdsecAddStaticBanRequest>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/security/crowdsec/static-blocklist', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['crowdsec', 'decisions'] });
     },
   });
 }

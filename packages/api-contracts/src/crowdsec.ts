@@ -41,6 +41,8 @@ export const crowdsecDecisionSchema = z.object({
   expiresAt: z.string().datetime().nullable(),
   /** True if this was added by the platform-api UI (origin=cscli AND scenario starts with "admin-panel:"). */
   manualByOperator: z.boolean(),
+  /** True if this is a long-duration "static" ban (origin=cscli AND scenario starts with "admin-panel-static:"). */
+  staticByOperator: z.boolean(),
   /** True if simulated (won't actually be enforced). */
   simulated: z.boolean(),
 });
@@ -53,6 +55,8 @@ export const crowdsecListDecisionsQuerySchema = z.object({
   scope: crowdsecDecisionScopeSchema.optional(),
   /** Filter to only operator-added bans (origin=cscli + admin-panel prefix). */
   manualOnly: z.coerce.boolean().optional(),
+  /** Filter to only static (long-duration) operator-added bans. */
+  staticOnly: z.coerce.boolean().optional(),
 });
 export type CrowdsecListDecisionsQuery = z.infer<typeof crowdsecListDecisionsQuerySchema>;
 
@@ -65,12 +69,41 @@ export type CrowdsecListDecisionsResponse = z.infer<typeof crowdsecListDecisions
 
 // ─── Add manual ban ─────────────────────────────────────────────────────
 
+/**
+ * Sum a CrowdSec duration string like "4h30m12s" or "7d" into milliseconds.
+ * Returns NaN for unparseable input. Exported so backend + frontend can
+ * apply the same numeric clamp without drift.
+ */
+export function crowdsecDurationToMs(duration: string): number {
+  const re = /(\d+)([smhd])/g;
+  let total = 0;
+  let matched = false;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(duration)) !== null) {
+    matched = true;
+    const n = Number(m[1]);
+    const mult = m[2] === 's' ? 1_000 : m[2] === 'm' ? 60_000 : m[2] === 'h' ? 3_600_000 : 86_400_000;
+    total += n * mult;
+  }
+  return matched ? total : NaN;
+}
+
+/** Maximum ban duration: 8760h = 1 year. addStaticBan uses exactly this. */
+export const MAX_BAN_DURATION_MS = 8760 * 60 * 60 * 1000;
+/** Minimum ban duration: 1 minute. */
+export const MIN_BAN_DURATION_MS = 60 * 1000;
+
 export const crowdsecAddBanRequestSchema = z.object({
   /** IPv4, IPv6 or CIDR. */
   value: z.string().min(1).max(64).regex(/^[a-fA-F0-9.:/]+$/, 'value must be an IP or CIDR'),
   scope: crowdsecDecisionScopeSchema.default('Ip'),
-  /** CrowdSec duration string: e.g. "1h", "4h30m", "7d". Min 1m, max 8760h (1y). */
-  duration: z.string().min(2).max(16).regex(/^\d+[smhd](\d+[smhd])*$/, 'must be a CrowdSec duration like "4h" or "30m"'),
+  /** CrowdSec duration string: e.g. "1h", "4h30m", "7d". Min 1m, max 8760h (1y) — enforced numerically below. */
+  duration: z.string().min(2).max(16)
+    .regex(/^\d+[smhd](\d+[smhd])*$/, 'must be a CrowdSec duration like "4h" or "30m"')
+    .refine((v) => {
+      const ms = crowdsecDurationToMs(v);
+      return ms >= MIN_BAN_DURATION_MS && ms <= MAX_BAN_DURATION_MS;
+    }, `duration must be between 1m and 8760h (1 year)`),
   /**
    * Operator-supplied reason — surfaced in the decisions list. Required so
    * bans aren't anonymous. Restricted to single-line printable text: no CR,
@@ -132,6 +165,70 @@ export const crowdsecCoverageSchema = z.object({
   nodesTotal: z.number().int().min(0),
 });
 export type CrowdsecCoverage = z.infer<typeof crowdsecCoverageSchema>;
+
+// ─── F2 — allowlist (cscli allowlists wrapper) ──────────────────────────
+
+export const crowdsecAllowlistEntrySchema = z.object({
+  /** IP, CIDR, or country code depending on scope. */
+  value: z.string().min(1).max(64),
+  scope: crowdsecDecisionScopeSchema,
+  /** Operator-supplied reason / comment. Single line. */
+  comment: z.string().max(200),
+  /** Who added it (sub claim). */
+  addedBy: z.string().nullable(),
+  /** When (ISO). */
+  addedAt: z.string().datetime().nullable(),
+  /** Expiration if any. null = never expires. */
+  expiresAt: z.string().datetime().nullable(),
+});
+export type CrowdsecAllowlistEntry = z.infer<typeof crowdsecAllowlistEntrySchema>;
+
+export const crowdsecListAllowlistResponseSchema = z.object({
+  entries: z.array(crowdsecAllowlistEntrySchema),
+});
+export type CrowdsecListAllowlistResponse = z.infer<typeof crowdsecListAllowlistResponseSchema>;
+
+export const crowdsecAddAllowlistRequestSchema = z.object({
+  /** IPv4, IPv6, or CIDR. */
+  value: z.string().min(1).max(64).regex(/^[a-fA-F0-9.:/]+$/, 'value must be an IP or CIDR'),
+  /** Default Ip; Range = CIDR. */
+  scope: crowdsecDecisionScopeSchema.default('Ip'),
+  /**
+   * Operator-supplied comment surfaced in the listing. Required so entries
+   * aren't anonymous. Single line of printable text (CR/LF rejected to
+   * avoid log-injection via cscli output).
+   */
+  comment: z.string().min(3).max(200).regex(/^[^\r\n\x00-\x1f]+$/, 'comment must be single line of printable text'),
+});
+export type CrowdsecAddAllowlistRequest = z.infer<typeof crowdsecAddAllowlistRequestSchema>;
+
+export const crowdsecAddAllowlistResponseSchema = z.object({
+  message: z.string(),
+  value: z.string(),
+  scope: crowdsecDecisionScopeSchema,
+  comment: z.string(),
+});
+export type CrowdsecAddAllowlistResponse = z.infer<typeof crowdsecAddAllowlistResponseSchema>;
+
+export const crowdsecRemoveAllowlistResponseSchema = z.object({
+  message: z.string(),
+  removed: z.number().int().min(0),
+});
+export type CrowdsecRemoveAllowlistResponse = z.infer<typeof crowdsecRemoveAllowlistResponseSchema>;
+
+// ─── F2 — static (long-duration) ban ────────────────────────────────────
+//
+// Implementation note: there's no "permanent" decision type in CrowdSec;
+// we re-use `addBan` with the maximum supported duration `8760h` (1 year)
+// and a distinguishing scenario prefix `admin-panel-static:` so the list
+// endpoint can flag them as `staticByOperator: true`.
+
+export const crowdsecAddStaticBanRequestSchema = z.object({
+  value: z.string().min(1).max(64).regex(/^[a-fA-F0-9.:/]+$/, 'value must be an IP or CIDR'),
+  scope: crowdsecDecisionScopeSchema.default('Ip'),
+  reason: z.string().min(3).max(200).regex(/^[^\r\n\x00-\x1f]+$/, 'reason must be single line of printable text'),
+});
+export type CrowdsecAddStaticBanRequest = z.infer<typeof crowdsecAddStaticBanRequestSchema>;
 
 export const crowdsecStatusSchema = z.object({
   /** True if the LAPI /health endpoint responded OK on the most-recent check. */
