@@ -53,12 +53,21 @@ spec:
     # Old 8-CPU ceiling blocked postgres-3 join during Apply HA.
     # PITR adds ~1.3 GB transient (temp postgres 512 Mi + bootstrap-
     # controller 384 Mi + snapshot-recovery Job 384 Mi via LimitRange
-    # defaults) — fits inside 16 Gi limits.memory headroom. No pods
+    # defaults) — fits inside 20 Gi limits.memory headroom. No pods
     # cap: CPU/memory quotas already bound resource consumption.
+    #
+    # 2026-05-20 bump: 16→20 CPU + 16Gi→20Gi memory. The 16-CPU
+    # ceiling reliably blocked every platform-api rolling update
+    # (surge=1 new pod × 1.5 CPU limit = 1500m, didn't fit when
+    # steady-state usage was ~15400m). Paired with dropping
+    # platform-api limits.cpu 1500m → 750m in the same change,
+    # so the steady-state baseline drops by 1500m AND the surge
+    # headroom grows by 4000m. Rolling updates now fit with
+    # ~5GB CPU + ~5GB memory of margin.
     requests.cpu: "8"
     requests.memory: 8Gi
-    limits.cpu: "16"
-    limits.memory: 16Gi
+    limits.cpu: "20"
+    limits.memory: 20Gi
 ---
 # LimitRange for platform namespace — supplies default container
 # resource limits/requests so pods that don't specify them (e.g.
