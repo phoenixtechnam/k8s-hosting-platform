@@ -48,7 +48,7 @@ import {
   createWafRuleExclusionRequestSchema,
   updateWafRuleExclusionRequestSchema,
 } from '@k8s-hosting/api-contracts';
-import { listRecentRuns, loadConfig as loadAutobanConfig, SETTING_KEYS as AUTOBAN_SETTING_KEYS } from '../crowdsec-autoban/scheduler.js';
+import { calibrateAutoban, listRecentRuns, loadConfig as loadAutobanConfig, SETTING_KEYS as AUTOBAN_SETTING_KEYS } from '../crowdsec-autoban/scheduler.js';
 import {
   createExclusion as createWafExclusion,
   deleteExclusion as deleteWafExclusion,
@@ -704,6 +704,46 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         } catch (err) {
           return reply.status(500).send({
             error: 'AUTOBAN_RUNS_LOAD_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    // F3 UI — calibration dry-run. Replays the last N hours of waf_logs
+    // through the evaluator (forcing enabled=true) and returns aggregate
+    // stats so operators can preview what enabling auto-ban would do
+    // BEFORE actually flipping it. No side effects.
+    //
+    // Query: ?hours=24 (default), 1..168 (1h..7d).
+    // Body (optional): partial CrowdsecAutobanConfig to override the
+    // saved config — lets the UI try-out a lower threshold without
+    // saving. Body is ignored if not a JSON object.
+    app.post(
+      '/admin/security/crowdsec/autoban/calibrate',
+      { preHandler: requireRole('super_admin') },
+      async (req: FastifyRequest, reply: FastifyReply) => {
+        const hoursRaw = Number((req.query as { hours?: string }).hours ?? 24);
+        if (!Number.isFinite(hoursRaw) || hoursRaw < 1 || hoursRaw > 168) {
+          return reply.status(400).send({
+            error: 'INVALID_HOURS',
+            message: 'hours must be a number between 1 and 168',
+          });
+        }
+        const override = (req.body && typeof req.body === 'object') ? req.body as Record<string, unknown> : undefined;
+        try {
+          const result = await calibrateAutoban(
+            deps.db,
+            hoursRaw,
+            // Trust the existing Zod schema on the patch route for
+            // override; calibration is read-only so partial validation
+            // here is acceptable.
+            override as Partial<import('@k8s-hosting/api-contracts').CrowdsecAutobanConfig> | undefined,
+          );
+          return success(result);
+        } catch (err) {
+          return reply.status(500).send({
+            error: 'AUTOBAN_CALIBRATION_FAILED',
             message: err instanceof Error ? err.message : String(err),
           });
         }

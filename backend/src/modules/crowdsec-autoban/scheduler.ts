@@ -137,16 +137,26 @@ async function recentlyBannedIpsFromDb(db: Db): Promise<Set<string>> {
 
 async function pastBansPerIpFromDb(db: Db, candidateIps: string[]): Promise<Map<string, number>> {
   if (candidateIps.length === 0) return new Map();
-  const rows = await db.execute(sql`
-    SELECT source_ip, COUNT(*)::int AS cnt FROM crowdsec_autoban_runs
-    WHERE outcome = 'banned'
-      AND triggered_at > NOW() - INTERVAL '24 hours'
-      AND source_ip = ANY(${candidateIps}::text[])
-    GROUP BY source_ip
-  `);
+  // Same Drizzle ${arr}::text[] gotcha as loadSettings: switch to the
+  // typed query builder + inArray() so the array binds as a single
+  // text[] parameter (not a row tuple).
+  const rows = await db
+    .select({
+      sourceIp: crowdsecAutobanRuns.sourceIp,
+      cnt: sql<number>`COUNT(*)::int`,
+    })
+    .from(crowdsecAutobanRuns)
+    .where(
+      and(
+        sql`${crowdsecAutobanRuns.outcome} = 'banned'`,
+        sql`${crowdsecAutobanRuns.triggeredAt} > NOW() - INTERVAL '24 hours'`,
+        inArray(crowdsecAutobanRuns.sourceIp, candidateIps),
+      ),
+    )
+    .groupBy(crowdsecAutobanRuns.sourceIp);
   const map = new Map<string, number>();
-  for (const r of ((rows as unknown as { rows?: { source_ip: string; cnt: number }[] }).rows) ?? []) {
-    map.set(r.source_ip, Number(r.cnt));
+  for (const r of rows) {
+    map.set(r.sourceIp, Number(r.cnt));
   }
   return map;
 }
@@ -365,6 +375,107 @@ export function startCrowdsecAutobanScheduler(deps: SchedulerDeps): NodeJS.Timeo
 
 export async function listRecentRuns(db: Db, limit = 50): Promise<Array<typeof crowdsecAutobanRuns.$inferSelect>> {
   return db.select().from(crowdsecAutobanRuns).orderBy(desc(crowdsecAutobanRuns.triggeredAt)).limit(Math.min(limit, 200));
+}
+
+/**
+ * F3 UI — calibration dry-run.
+ *
+ * Replays the last N hours of waf_logs through the evaluator (forcing
+ * enabled=true even if the live config has it disabled) and returns
+ * aggregate stats: total events considered, distinct IPs that WOULD
+ * have been banned, hypothetical-bans count, and the top rules driving
+ * those decisions. Zero side effects — does NOT write to
+ * crowdsec_autoban_runs, does NOT call cscli, does NOT check allowlist.
+ *
+ * Operators use this BEFORE flipping `enabled: true` so they can
+ * calibrate thresholds + excludedRuleIds against real WAF traffic
+ * without risking over-banning. `overrideConfig` lets the UI experiment
+ * with not-yet-saved settings (e.g. lower threshold) without persisting.
+ */
+export interface CalibrationResult {
+  readonly windowSeconds: number;
+  readonly totalEventsConsidered: number;
+  readonly distinctSourceIpsAboveThreshold: number;
+  readonly hypotheticalBans: number;
+  readonly topRulesInBatch: ReadonlyArray<{ readonly ruleId: string; readonly distinctIps: number; readonly eventCount: number }>;
+}
+
+export async function calibrateAutoban(
+  db: Db,
+  hoursBack: number,
+  overrideConfig?: Partial<CrowdsecAutobanConfig>,
+): Promise<CalibrationResult> {
+  const baseConfig = await loadConfig(db);
+  const config: CrowdsecAutobanConfig = {
+    ...baseConfig,
+    ...overrideConfig,
+    enabled: true,
+  };
+
+  // Pull every waf_logs row from the last N hours. Capped at 10000
+  // rows to keep the calibration request bounded — on a busy cluster
+  // with a giant attack window we'd rather show "lots, sampled" than
+  // OOM the api pod.
+  const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+  const wafRows = await db
+    .select({
+      id: wafLogs.id,
+      createdAt: wafLogs.createdAt,
+      sourceIp: wafLogs.sourceIp,
+      hostname: wafLogs.hostname,
+      ruleId: wafLogs.ruleId,
+      severity: wafLogs.severity,
+      tenantId: wafLogs.tenantId,
+    })
+    .from(wafLogs)
+    .where(gt(wafLogs.createdAt, since))
+    .orderBy(desc(wafLogs.createdAt))
+    .limit(10_000);
+
+  const evaluable: WafLogRow[] = wafRows
+    .filter((r) => r.sourceIp && r.sourceIp !== '0.0.0.0')
+    .map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt as unknown as string),
+      sourceIp: r.sourceIp,
+      hostname: r.hostname,
+      ruleId: r.ruleId,
+      severity: r.severity,
+      tenantId: r.tenantId,
+    }));
+
+  // Empty LRU + empty past-bans: calibration assumes nothing has been
+  // banned yet so the hypothetical-bans count is a worst-case ceiling.
+  const decisions = evaluateWafBatch(evaluable, config, new Set(), new Map());
+
+  const bans = decisions.filter((d) => d.outcome === 'banned');
+  const distinctSourceIpsAboveThreshold = new Set(bans.map((d) => d.sourceIp)).size;
+
+  // Top rules — aggregate ruleId across banned IPs.
+  const ruleAgg = new Map<string, { distinctIps: Set<string>; eventCount: number }>();
+  for (const d of bans) {
+    for (const rid of d.ruleIds) {
+      let agg = ruleAgg.get(rid);
+      if (!agg) {
+        agg = { distinctIps: new Set(), eventCount: 0 };
+        ruleAgg.set(rid, agg);
+      }
+      agg.distinctIps.add(d.sourceIp);
+      agg.eventCount += d.eventCount;
+    }
+  }
+  const topRulesInBatch = [...ruleAgg.entries()]
+    .map(([ruleId, agg]) => ({ ruleId, distinctIps: agg.distinctIps.size, eventCount: agg.eventCount }))
+    .sort((a, b) => b.distinctIps - a.distinctIps || b.eventCount - a.eventCount)
+    .slice(0, 10);
+
+  return {
+    windowSeconds: config.windowSeconds,
+    totalEventsConsidered: evaluable.length,
+    distinctSourceIpsAboveThreshold,
+    hypotheticalBans: bans.length,
+    topRulesInBatch,
+  };
 }
 
 // Re-export for backend tests that need the watermark key name.

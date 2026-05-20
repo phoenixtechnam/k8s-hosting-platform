@@ -70,13 +70,17 @@ import {
   useAddCrowdsecAllowlistEntry,
   useAddCrowdsecBan,
   useAddCrowdsecStaticBan,
+  useCalibrateAutoban,
   useCrowdsecAllowlist,
+  useCrowdsecAutobanConfig,
+  useCrowdsecAutobanRuns,
   useCrowdsecConsoleStatus,
   useCrowdsecDecisions,
   useCrowdsecStatus,
   useDeleteCrowdsecDecision,
   useDisenrollCrowdsecConsole,
   useEnrollCrowdsecConsole,
+  usePatchCrowdsecAutobanConfig,
   usePatchCrowdsecConsoleMeta,
   useRemoveCrowdsecAllowlistEntry,
 } from '@/hooks/use-crowdsec';
@@ -96,6 +100,10 @@ import type {
   CrowdsecDecisionScope,
   CrowdsecListDecisionsQuery,
   CrowdsecStatus,
+  CrowdsecAutobanCalibrationResponse,
+  CrowdsecAutobanConfig,
+  CrowdsecAutobanOutcome,
+  CrowdsecAutobanRun,
   WafRuleExclusion,
   WafRuleExclusionScope,
 } from '@k8s-hosting/api-contracts';
@@ -1689,6 +1697,9 @@ function BannedIpsTab() {
       {/* F5 — CrowdSec Console enrollment (opt-in, super_admin only) */}
       <CrowdsecConsoleCard />
 
+      {/* F3 UI — Auto-ban config + recent runs + calibration dry-run */}
+      <CrowdsecAutobanCard />
+
       {/* Controls */}
       <div className="flex flex-wrap items-end justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
         <div className="flex flex-wrap items-end gap-3">
@@ -2702,5 +2713,360 @@ function CrowdsecConsoleCard() {
         </button>
       </div>
     </div>
+  );
+}
+
+// ─── F3 UI — Auto-ban config + recent runs + calibration card ─────────
+
+function CrowdsecAutobanCard() {
+  const cfg = useCrowdsecAutobanConfig();
+  const runs = useCrowdsecAutobanRuns(50);
+  const patch = usePatchCrowdsecAutobanConfig();
+  const calibrate = useCalibrateAutoban();
+
+  const live = cfg.data?.data;
+  // Local draft so the operator can adjust multiple fields and Save once.
+  const [draft, setDraft] = useState<CrowdsecAutobanConfig | null>(null);
+  useEffect(() => {
+    if (live && draft === null) setDraft(live);
+  }, [live, draft]);
+
+  const [calibHours, setCalibHours] = useState(24);
+  const [calibResult, setCalibResult] = useState<CrowdsecAutobanCalibrationResponse | null>(null);
+  const [calibError, setCalibError] = useState<string | null>(null);
+
+  if (cfg.isLoading || !draft) {
+    return (
+      <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-900/10 p-4">
+        <SkeletonLoader />
+      </div>
+    );
+  }
+
+  const dirty =
+    live !== undefined
+    && (live.enabled !== draft.enabled
+      || live.windowSeconds !== draft.windowSeconds
+      || live.eventThreshold !== draft.eventThreshold
+      || live.minSeverity !== draft.minSeverity
+      || live.initialBanDuration !== draft.initialBanDuration
+      || live.repeatBackoffMultiplier !== draft.repeatBackoffMultiplier
+      || live.maxBanDuration !== draft.maxBanDuration
+      || live.excludedRuleIds.join(',') !== draft.excludedRuleIds.join(',')
+      || live.includeTenantRoutes !== draft.includeTenantRoutes);
+
+  const onSave = () => {
+    if (!live) return;
+    const patchBody: Partial<CrowdsecAutobanConfig> = {};
+    (Object.keys(draft) as Array<keyof CrowdsecAutobanConfig>).forEach((k) => {
+      if (JSON.stringify((draft as Record<string, unknown>)[k]) !== JSON.stringify((live as Record<string, unknown>)[k])) {
+        (patchBody as Record<string, unknown>)[k] = draft[k];
+      }
+    });
+    patch.mutate(patchBody as never);
+  };
+
+  const onCalibrate = () => {
+    setCalibError(null);
+    setCalibResult(null);
+    calibrate.mutate(
+      { hours: calibHours, override: draft },
+      {
+        onSuccess: (r) => setCalibResult(r.data),
+        onError: (e) => setCalibError(e instanceof Error ? e.message : String(e)),
+      },
+    );
+  };
+
+  return (
+    <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-900/10 p-4 space-y-4" data-testid="crowdsec-autoban-card">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1">
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+            WAF Auto-Ban <span className="ml-2 text-[10px] uppercase rounded px-1.5 py-0.5 bg-amber-200/60 dark:bg-amber-800/40 text-amber-800 dark:text-amber-200">opt-in</span>
+          </h4>
+          <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+            Auto-bans source IPs that trip enough WAF rules in the rolling
+            window. <strong>Use the Calibrate button below to preview what
+            enabling would do</strong> against your real WAF traffic before
+            flipping the toggle.
+          </p>
+        </div>
+        <div>
+          {draft.enabled ? (
+            <span className="rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 text-[10px] uppercase">enabled</span>
+          ) : (
+            <span className="rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-2 py-0.5 text-[10px] uppercase">disabled</span>
+          )}
+        </div>
+      </div>
+
+      {/* Config form */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+        <label className="flex items-center gap-2 col-span-1 sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={draft.enabled}
+            onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
+            data-testid="autoban-enabled"
+          />
+          <span className="text-gray-700 dark:text-gray-200 font-medium">Enable auto-ban scheduler</span>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-gray-700 dark:text-gray-200">Window (seconds, 60–3600)</span>
+          <input
+            type="number" min={60} max={3600}
+            value={draft.windowSeconds}
+            onChange={(e) => setDraft({ ...draft, windowSeconds: Number(e.target.value) || 0 })}
+            className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1"
+            data-testid="autoban-window"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-gray-700 dark:text-gray-200">Event threshold (2–100)</span>
+          <input
+            type="number" min={2} max={100}
+            value={draft.eventThreshold}
+            onChange={(e) => setDraft({ ...draft, eventThreshold: Number(e.target.value) || 0 })}
+            className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1"
+            data-testid="autoban-threshold"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-gray-700 dark:text-gray-200">Min severity</span>
+          <select
+            value={draft.minSeverity}
+            onChange={(e) => setDraft({ ...draft, minSeverity: e.target.value as 'warning' | 'critical' })}
+            className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1"
+            data-testid="autoban-severity"
+          >
+            <option value="critical">critical (only critical events trigger)</option>
+            <option value="warning">warning (warning + critical)</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-gray-700 dark:text-gray-200">Initial ban duration</span>
+          <input
+            value={draft.initialBanDuration}
+            onChange={(e) => setDraft({ ...draft, initialBanDuration: e.target.value })}
+            placeholder="1h"
+            className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 font-mono"
+            data-testid="autoban-initial-duration"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-gray-700 dark:text-gray-200">Repeat-offender multiplier (1–10)</span>
+          <input
+            type="number" step={0.5} min={1} max={10}
+            value={draft.repeatBackoffMultiplier}
+            onChange={(e) => setDraft({ ...draft, repeatBackoffMultiplier: Number(e.target.value) || 1 })}
+            className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1"
+            data-testid="autoban-backoff"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-gray-700 dark:text-gray-200">Max ban duration cap</span>
+          <input
+            value={draft.maxBanDuration}
+            onChange={(e) => setDraft({ ...draft, maxBanDuration: e.target.value })}
+            placeholder="7d"
+            className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 font-mono"
+            data-testid="autoban-max-duration"
+          />
+        </label>
+        <label className="flex flex-col gap-1 sm:col-span-2">
+          <span className="text-gray-700 dark:text-gray-200">Excluded CRS rule IDs (comma-separated, digits only)</span>
+          <input
+            value={draft.excludedRuleIds.join(',')}
+            onChange={(e) => setDraft({
+              ...draft,
+              excludedRuleIds: e.target.value.split(',').map((s) => s.trim()).filter((s) => /^[0-9]+$/.test(s)),
+            })}
+            placeholder="949110,913100"
+            className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 font-mono"
+            data-testid="autoban-excluded"
+          />
+          <span className="text-[10px] text-gray-500">Meta-score rules (949110, 913100) are excluded by default — they accumulate scores and lead to mass false-positive bans if included.</span>
+        </label>
+        <label className="flex items-center gap-2 col-span-1 sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={draft.includeTenantRoutes}
+            onChange={(e) => setDraft({ ...draft, includeTenantRoutes: e.target.checked })}
+            data-testid="autoban-tenant-routes"
+          />
+          <span className="text-gray-700 dark:text-gray-200">
+            Include tenant routes <span className="text-gray-500">(default off — a tenant&apos;s own customer base shouldn&apos;t be auto-banned for tripping WAF on the tenant&apos;s site)</span>
+          </span>
+        </label>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-amber-200 dark:border-amber-800">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!dirty || patch.isPending}
+          className="rounded-md px-3 py-1.5 text-xs border border-amber-300 bg-amber-600 dark:bg-amber-700 text-white hover:bg-amber-700 dark:hover:bg-amber-600 disabled:opacity-50"
+          data-testid="autoban-save"
+        >
+          {patch.isPending ? 'Saving…' : dirty ? 'Save config' : 'Saved'}
+        </button>
+        {dirty && live && (
+          <button
+            type="button"
+            onClick={() => setDraft(live)}
+            disabled={patch.isPending}
+            className="rounded-md px-3 py-1.5 text-xs border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            Discard changes
+          </button>
+        )}
+        <span className="grow" />
+        <label className="text-[11px] text-gray-700 dark:text-gray-200">
+          Calibrate against last
+          <input
+            type="number"
+            min={1}
+            max={168}
+            value={calibHours}
+            onChange={(e) => setCalibHours(Math.max(1, Math.min(168, Number(e.target.value) || 24)))}
+            className="ml-1 w-14 rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-1 py-0.5 text-xs"
+            data-testid="autoban-calib-hours"
+          />
+          h of waf_logs
+        </label>
+        <button
+          type="button"
+          onClick={onCalibrate}
+          disabled={calibrate.isPending}
+          className="rounded-md px-3 py-1.5 text-xs border border-blue-300 bg-blue-600 dark:bg-blue-700 text-white hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
+          data-testid="autoban-calibrate"
+        >
+          {calibrate.isPending ? 'Calibrating…' : 'Calibrate (dry-run)'}
+        </button>
+      </div>
+
+      {calibError && (
+        <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-3 py-2 text-xs text-red-700 dark:text-red-200">
+          {calibError}
+        </div>
+      )}
+
+      {calibResult && (
+        <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-900/10 p-3 space-y-2">
+          <div className="text-xs font-semibold text-blue-900 dark:text-blue-200">
+            Dry-run result — replayed {calibResult.totalEventsConsidered.toLocaleString()} events
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <CalibStat label="Hypothetical bans" value={calibResult.hypotheticalBans.toLocaleString()} />
+            <CalibStat label="Distinct IPs" value={calibResult.distinctSourceIpsAboveThreshold.toLocaleString()} />
+            <CalibStat label="Window" value={`${calibResult.windowSeconds}s`} />
+            <CalibStat label="Top rules" value={String(calibResult.topRulesInBatch.length)} />
+          </div>
+          {calibResult.topRulesInBatch.length > 0 && (
+            <div className="text-[11px]">
+              <div className="text-blue-900 dark:text-blue-200 mt-1 mb-1 font-medium">Top rules driving bans:</div>
+              <table className="min-w-full text-[11px]">
+                <thead className="text-gray-500 dark:text-gray-400">
+                  <tr><th className="text-left pr-3">Rule</th><th className="text-left pr-3">Distinct IPs</th><th className="text-left">Events</th></tr>
+                </thead>
+                <tbody>
+                  {calibResult.topRulesInBatch.map((r) => (
+                    <tr key={r.ruleId}>
+                      <td className="font-mono pr-3">{r.ruleId}</td>
+                      <td className="pr-3">{r.distinctIps}</td>
+                      <td>{r.eventCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {!draft.enabled && (
+            <div className="text-[11px] text-blue-700 dark:text-blue-300 italic">
+              Auto-ban is currently disabled — these numbers are what WOULD have happened.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Recent runs table */}
+      <div>
+        <div className="text-xs font-semibold text-gray-800 dark:text-gray-200 mb-1">
+          Recent decisions (last 50)
+        </div>
+        {runs.isLoading && <SkeletonLoader />}
+        {runs.isError && (
+          <div className="text-xs text-red-700 dark:text-red-300">Failed to load runs.</div>
+        )}
+        {runs.data?.data.runs && runs.data.data.runs.length === 0 && (
+          <div className="text-xs text-gray-500 italic">
+            No decisions yet. The scheduler runs every 60s; enable it above to start auto-banning.
+          </div>
+        )}
+        {runs.data?.data.runs && runs.data.data.runs.length > 0 && (
+          <div className="overflow-x-auto rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+            <table className="min-w-full text-[11px]">
+              <thead className="bg-gray-50 dark:bg-gray-900 text-gray-500 dark:text-gray-400 uppercase">
+                <tr>
+                  <th className="text-left px-3 py-1">When</th>
+                  <th className="text-left px-3 py-1">Source IP</th>
+                  <th className="text-left px-3 py-1">Host</th>
+                  <th className="text-left px-3 py-1">Rules</th>
+                  <th className="text-left px-3 py-1">Events</th>
+                  <th className="text-left px-3 py-1">Outcome</th>
+                  <th className="text-left px-3 py-1">Detail</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                {runs.data.data.runs.map((r) => (
+                  <AutobanRunRow key={r.id} r={r} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CalibStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-blue-200 dark:border-blue-800 bg-white dark:bg-gray-800 p-2">
+      <div className="text-[10px] uppercase text-gray-500 dark:text-gray-400">{label}</div>
+      <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{value}</div>
+    </div>
+  );
+}
+
+function AutobanRunRow({ r }: { r: CrowdsecAutobanRun }) {
+  const outcomeTone: Record<CrowdsecAutobanOutcome, string> = {
+    banned: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200',
+    skipped_allowlisted: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200',
+    skipped_excluded_rule: 'bg-gray-100 dark:bg-gray-700/40 text-gray-700 dark:text-gray-300',
+    skipped_already_banned: 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200',
+    skipped_below_threshold: 'bg-gray-100 dark:bg-gray-700/40 text-gray-600 dark:text-gray-400',
+    failed: 'bg-red-200 dark:bg-red-900/60 text-red-900 dark:text-red-100',
+  };
+  return (
+    <tr>
+      <td className="px-3 py-1 font-mono text-[10px] text-gray-600 dark:text-gray-400 whitespace-nowrap">
+        {new Date(r.triggeredAt).toISOString().replace('T', ' ').slice(0, 19)}
+      </td>
+      <td className="px-3 py-1 font-mono">{r.sourceIp}</td>
+      <td className="px-3 py-1 text-gray-700 dark:text-gray-300">{r.hostname ?? '—'}</td>
+      <td className="px-3 py-1 font-mono text-gray-700 dark:text-gray-300">{r.ruleIds.slice(0, 3).join(', ')}{r.ruleIds.length > 3 ? ` +${r.ruleIds.length - 3}` : ''}</td>
+      <td className="px-3 py-1">{r.eventCount}</td>
+      <td className="px-3 py-1">
+        <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] uppercase ${outcomeTone[r.outcome]}`}>
+          {r.outcome.replace('skipped_', '')}
+        </span>
+        {r.outcome === 'banned' && r.banDuration && (
+          <span className="ml-1 text-[10px] text-gray-500">{r.banDuration}</span>
+        )}
+      </td>
+      <td className="px-3 py-1 text-gray-500 dark:text-gray-400 text-[10px] truncate max-w-[200px]">{r.outcomeDetail ?? ''}</td>
+    </tr>
   );
 }
