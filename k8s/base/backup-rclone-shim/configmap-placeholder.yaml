@@ -107,7 +107,7 @@ data:
       # on the ConfigMap content. The two refs below would otherwise
       # be eaten (substituted to "" because they're not in the
       # platform-config envFrom). The $$ escape tells Flux to leave
-      # them as literal ${...} for the runtime shell.
+      # them as literal dollar-brace-NAME for the runtime shell.
       # Memory rule [feedback_flux_postbuild_escape] documents this
       # trap; ci-flux-escape-check.sh enforces.
       BUCKETS_OK="$${BUCKETS_OK}$${LINE} "
