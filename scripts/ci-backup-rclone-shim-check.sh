@@ -153,4 +153,57 @@ if ! echo "$ROUTES_CODE" | grep -qE "buildK8sClients\(\)\.[a-z]+"; then
 fi
 pass "Invariant 8: buildK8sClients factory is lazy"
 
-echo "[ci-backup-rclone-shim] All 8 invariants pass."
+# ─── 9. Postgres ObjectStore reconciler exists + wired ────────────
+POSTGRES_OBJECTSTORE="$ROOT/backend/src/modules/backup-rclone-shim/postgres-objectstore.ts"
+POSTGRES_SCHEDULER="$ROOT/backend/src/modules/backup-rclone-shim/postgres-objectstore-scheduler.ts"
+APP_TS="$ROOT/backend/src/app.ts"
+DATABASE_YAML="$ROOT/k8s/base/database.yaml"
+CNPG_KUSTOMIZATION="$ROOT/k8s/base/cnpg-system/kustomization.yaml"
+
+if [[ ! -f "$POSTGRES_OBJECTSTORE" ]]; then
+  fail "Invariant 9: postgres-objectstore reconciler missing"
+fi
+if [[ ! -f "$POSTGRES_SCHEDULER" ]]; then
+  fail "Invariant 9: postgres-objectstore scheduler missing"
+fi
+if ! grep -q "startPostgresObjectStoreReconciler" "$APP_TS"; then
+  fail "Invariant 9: postgres-objectstore scheduler not wired into app.ts"
+fi
+pass "Invariant 9: postgres-objectstore reconciler wired"
+
+# ─── 10. CNPG Cluster CR references barman-cloud plugin ───────────
+if ! grep -q "name: barman-cloud.cloudnative-pg.io" "$DATABASE_YAML"; then
+  fail "Invariant 10: CNPG Cluster system-db must reference barman-cloud plugin"
+fi
+if ! grep -q "objectStoreName: system-postgres-objectstore" "$DATABASE_YAML"; then
+  fail "Invariant 10: CNPG Cluster system-db must point at the system-postgres-objectstore CR"
+fi
+pass "Invariant 10: CNPG Cluster references barman-cloud plugin"
+
+# ─── 11. plugin-barman-cloud manifest is registered with Flux ─────
+if [[ ! -f "$CNPG_KUSTOMIZATION" ]]; then
+  fail "Invariant 11: k8s/base/cnpg-system/kustomization.yaml missing"
+fi
+if ! grep -q "plugin-barman-cloud" "$CNPG_KUSTOMIZATION"; then
+  fail "Invariant 11: cnpg-system kustomization missing plugin-barman-cloud entry"
+fi
+if ! grep -q "cnpg-system/" "$ROOT/k8s/base/kustomization.yaml"; then
+  fail "Invariant 11: base kustomization.yaml missing cnpg-system/ resource"
+fi
+pass "Invariant 11: plugin-barman-cloud applied via Flux"
+
+# ─── 12. database.yaml does NOT statically set isWALArchiver ──────
+# The reconciler owns this field — static `isWALArchiver: true` in
+# the manifest would cause pg_wal accumulation when SYSTEM is
+# unassigned (review HIGH #1). The reconciler patches it on/off based
+# on the SYSTEM target binding.
+if grep -E "^\s*isWALArchiver:\s*true" "$DATABASE_YAML" >/dev/null 2>&1; then
+  fail "Invariant 12: database.yaml must NOT set isWALArchiver: true statically — the reconciler owns this field (see postgres-objectstore.ts patchClusterWalArchiver). Remove the static line; it will be patched on at runtime when SYSTEM is bound."
+fi
+# The reconciler MUST call patchClusterWalArchiver.
+if ! grep -q "patchClusterWalArchiver" "$POSTGRES_OBJECTSTORE"; then
+  fail "Invariant 12: postgres-objectstore.ts must call patchClusterWalArchiver to toggle WAL archiving"
+fi
+pass "Invariant 12: isWALArchiver is reconciler-owned (no static true)"
+
+echo "[ci-backup-rclone-shim] All 12 invariants pass."

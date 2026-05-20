@@ -1,0 +1,53 @@
+# cnpg-system — CNPG plugin-barman-cloud deployment (R-X6).
+#
+# The plugin gives CNPG clusters a Backup/Recovery path through
+# barman-cloud which speaks S3 to the local-node backup-rclone-shim
+# DaemonSet. The shim translates S3 → operator-selected upstream
+# (S3 / SFTP / CIFS / NFS) per the SYSTEM-class target binding.
+#
+# Manifest is vendored verbatim from upstream v0.12.0:
+#   https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.12.0/manifest.yaml
+#
+# Upgrade procedure:
+#   1. Fetch the new release's manifest.yaml
+#   2. Replace `plugin-barman-cloud-v0.12.0.yaml` (keep the version
+#      suffix so git diff shows the bump)
+#   3. Verify the ObjectStore CRD schema didn't break our reconciler
+#      (backend/src/modules/backup-rclone-shim/postgres-objectstore.ts)
+#   4. Roll out and run scripts/integration-postgres-backup.sh
+#
+# The plugin Deployment lives in `cnpg-system`, alongside the CNPG
+# operator helm-installed by bootstrap.sh. ObjectStore CRs themselves
+# go in the CNPG Cluster's namespace (`platform` for system-db).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - plugin-barman-cloud-v0.12.0.yaml
+
+# SECURITY NOTE (review HIGH #2, R-X6):
+#
+# The vendored upstream manifest grants the `plugin-barman-cloud`
+# ServiceAccount a ClusterRole with cluster-wide
+# `secrets: [create, delete, get, list, watch]` plus
+# `roles + rolebindings: [create, get, list, patch, update, watch]`.
+# A compromised plugin pod could therefore enumerate every Secret in
+# the cluster (including platform-db-credentials, BACKUP_TARGET_KEY,
+# every Tier-1 bundle Secret) and escalate via role manipulation.
+#
+# This is upstream's default RBAC. We accept it as a known risk in
+# v0.12.0 because:
+#   - The plugin Deployment runs only one workload (the barman-cloud
+#     plugin server). The image is pinned by digest in the vendored
+#     manifest; tampering requires either a new release pull-through
+#     or a manual cluster mutation.
+#   - cert-manager already grants comparable cluster-wide Secret
+#     write access (for ACME credentials + cert issuance).
+#   - The plugin's only external trust is the operator-supplied
+#     ObjectStore creds Secret, which is HKDF-derived from
+#     BACKUP_TARGET_KEY and reconciled by platform-api on every tick.
+#
+# Future tightening: a strategic-merge patch could swap the
+# ClusterRole for a namespaced Role bound to `platform` only (where
+# the ObjectStore + Secret live). Filed as a follow-up.
+

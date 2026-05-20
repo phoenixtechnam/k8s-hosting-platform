@@ -922,6 +922,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn({ err }, 'mail-target-scheduler: failed to start (non-blocking)');
         }
 
+        // R-X6: postgres ObjectStore + ScheduledBackup reconciler.
+        // Materialises the CNPG plugin-barman-cloud wiring whenever
+        // the SYSTEM-class shim target binding changes. 5-min tick.
+        // Non-blocking on failure.
+        try {
+          const { startPostgresObjectStoreReconciler } = await import(
+            './modules/backup-rclone-shim/postgres-objectstore-scheduler.js'
+          );
+          const pgOsHandle = startPostgresObjectStoreReconciler(
+            app.db,
+            { core: k8sForImapsync.core, custom: k8sForImapsync.custom },
+            app.log,
+          );
+          app.addHook('onClose', () => pgOsHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'postgres-objectstore: scheduler start failed (non-blocking)',
+          );
+        }
+
         // R-X4-followup: backup-rclone-shim config reconciler.
         // Reads platform/backup-target-key Secret + backup_target_assignments
         // rows for the three shim classes ('system','tenant','mail'),
