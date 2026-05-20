@@ -688,7 +688,39 @@ export async function scheduleDelayedTermination(
 
   const t = setTimeout(() => {
     graceTimers.delete(sessionId);
-    void terminateSession(ctx, sessionId, reason, request).catch(() => undefined);
+    // Cross-replica safety check: a reconnect on ANOTHER replica
+    // would have atomically cleared terminate_after via
+    // refreshWsToken's or consumeWsToken's UPDATE statement. Our
+    // local timer doesn't know about that — re-check the DB before
+    // killing the session. If terminate_after is NULL or in the
+    // future, the session has been reclaimed: abort the kill.
+    //
+    // Without this guard, a multi-replica HA cluster would lose the
+    // user's session ~60s after page reload whenever the reconnect
+    // landed on a different replica than the original (production-
+    // observed regression, staging audit 2026-05-20 13:54).
+    void (async () => {
+      try {
+        const row = await sessionStore.findById(ctx.db, sessionId);
+        if (!row) {
+          // Session already gone — nothing to do.
+          return;
+        }
+        if (row.terminateAfter === null || row.terminateAfter.getTime() > Date.now()) {
+          request.log.info(
+            { sessionId, reason },
+            'grace timer fired but DB shows reconnect cleared terminate_after — aborting kill',
+          );
+          return;
+        }
+        await terminateSession(ctx, sessionId, reason, request);
+      } catch (err) {
+        request.log.warn(
+          { sessionId, err: err instanceof Error ? err.message : err },
+          'grace-timer terminate failed',
+        );
+      }
+    })();
   }, graceMs);
   // Don't keep the Node event loop alive just for these timers.
   t.unref?.();

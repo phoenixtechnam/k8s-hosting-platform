@@ -199,4 +199,16 @@ if ! echo "$STORE_CODE" | grep -A20 'export async function consumeWsToken' | gre
   fail "session-store.ts consumeWsToken must clear terminate_after atomically with the token consume (closes WS-reattach vs scheduler-reap TOCTOU)."
 fi
 
-echo "[ci-node-terminal-check] OK — all 17 security + reliability invariants intact."
+# 18. Cross-replica grace-timer safety. The in-memory setTimeout in
+# scheduleDelayedTermination MUST re-check the DB row's terminate_after
+# before calling terminateSession. Without this, a reconnect that
+# lands on a different replica leaves the original replica's stale
+# in-memory timer running — when it fires (60s later) it kills the
+# session the user is actively connected to on the other replica.
+# (Production-observed regression on staging 2026-05-20.)
+if ! echo "$SERVICE_CODE" | grep -A35 'export async function scheduleDelayedTermination' \
+   | grep -Eq 'findById|terminateAfter[[:space:]]*===[[:space:]]*null|terminateAfter[[:space:]]*\.getTime'; then
+  fail "service.ts scheduleDelayedTermination's setTimeout MUST re-check terminate_after via findById before calling terminateSession (cross-replica safety)."
+fi
+
+echo "[ci-node-terminal-check] OK — all 18 security + reliability invariants intact."

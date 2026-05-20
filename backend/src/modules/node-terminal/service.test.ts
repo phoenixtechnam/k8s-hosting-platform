@@ -587,3 +587,88 @@ describe('attachExec — grace-period reload survival', () => {
     expect(sessionStore.deleteSession).toHaveBeenCalled();
   });
 });
+
+// ─── Cross-replica grace-timer safety ─────────────────────────────────
+//
+// Multi-replica HA bug observed on staging 2026-05-20: reconnect
+// landed on replica B but replica A's in-memory grace timer kept
+// running. When it fired 60s later, it terminated the user's active
+// session. Fix: grace timer must re-check terminate_after in the DB
+// before killing the session.
+
+import { scheduleDelayedTermination } from './service.js';
+
+describe('scheduleDelayedTermination — cross-replica safety', () => {
+  beforeEach(() => {
+    _resetForTests();
+    vi.mocked(sessionStore.findById).mockClear();
+    vi.mocked(sessionStore.setTerminateAfter).mockClear();
+    vi.mocked(sessionStore.deleteSession).mockClear();
+  });
+
+  it('grace timer ABORTS the kill if DB shows terminate_after was cleared (reconnect on another replica)', async () => {
+    vi.useFakeTimers();
+    // DB returns a row with terminate_after=null (reconnect cleared it
+    // on another replica via consumeWsToken's atomic update).
+    vi.mocked(sessionStore.findById).mockResolvedValue({
+      id: 'sess-1', nodeName: 'staging-1', podName: 'pod-1', podNamespace: 'platform',
+      userId: 'user-1', userEmail: 'u@test', clientIp: '10.0.0.1', ownerReplica: 'rep-b',
+      createdAt: new Date(), expiresAt: new Date(Date.now() + 3_600_000), lastActivityAt: new Date(),
+      terminateAfter: null, // <-- cleared by another replica's reconnect
+    });
+    await scheduleDelayedTermination(
+      makeCtx(),
+      'sess-1',
+      'client_close',
+      fakeRequest,
+      100, // short grace for the test
+    );
+    // Advance past the grace window
+    await vi.advanceTimersByTimeAsync(150);
+    // Drain microtasks
+    vi.useRealTimers();
+    await new Promise((r) => setTimeout(r, 50));
+    // findById SHOULD have been called (the safety check ran)
+    expect(sessionStore.findById).toHaveBeenCalledWith(expect.anything(), 'sess-1');
+    // deleteSession MUST NOT have been called — the kill was aborted
+    expect(sessionStore.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it('grace timer PROCEEDS with kill when terminate_after is still set (no reconnect happened)', async () => {
+    vi.useFakeTimers();
+    vi.mocked(sessionStore.findById).mockResolvedValue({
+      id: 'sess-1', nodeName: 'staging-1', podName: 'pod-1', podNamespace: 'platform',
+      userId: 'user-1', userEmail: 'u@test', clientIp: '10.0.0.1', ownerReplica: 'rep-a',
+      createdAt: new Date(), expiresAt: new Date(Date.now() + 3_600_000), lastActivityAt: new Date(),
+      terminateAfter: new Date(Date.now() - 1_000), // <-- still pending, past deadline
+    });
+    vi.mocked(sessionStore.deleteSession).mockResolvedValue(true);
+    await scheduleDelayedTermination(
+      makeCtx(),
+      'sess-1',
+      'client_close',
+      fakeRequest,
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(150);
+    vi.useRealTimers();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(sessionStore.deleteSession).toHaveBeenCalled();
+  });
+
+  it('grace timer ABORTS when DB has no row (session already terminated by another path)', async () => {
+    vi.useFakeTimers();
+    vi.mocked(sessionStore.findById).mockResolvedValue(null);
+    await scheduleDelayedTermination(
+      makeCtx(),
+      'sess-1',
+      'client_close',
+      fakeRequest,
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(150);
+    vi.useRealTimers();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(sessionStore.deleteSession).not.toHaveBeenCalled();
+  });
+});
