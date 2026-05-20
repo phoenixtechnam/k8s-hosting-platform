@@ -289,11 +289,48 @@ export async function attachExec(
   expectedUserId: string,
   socket: TerminalSocket,
   request: FastifyRequest,
+  /** ?replica=<pod-hostname> from the wsUrl — used to detect when
+   *  HA stickiness routed the WS upgrade to a different replica than
+   *  the one that created the session. */
+  expectedReplica?: string,
 ): Promise<void> {
   const session = getSession(sessionId);
   if (!session) {
-    sendFrame(socket, { type: 'error', code: 'SESSION_NOT_FOUND', message: 'Unknown session' });
-    socket.close(4404, 'No session');
+    // The wsUrl carries `?replica=<pod>`; if it differs from this
+    // pod's hostname, it's a sticky-session routing miss (HA mode
+    // with multiple platform-api replicas + missing affinity). Make
+    // the diagnostic visible to the operator AND the audit log so
+    // they don't have to grep across replicas to figure it out.
+    const localReplica = ctx.replicaHost;
+    const replicaMismatch = !!expectedReplica && expectedReplica !== localReplica;
+    const message = replicaMismatch
+      ? `Session lives on platform-api replica '${expectedReplica}' but this WebSocket landed on '${localReplica}'. HA stickiness is misconfigured — see docs/02-operations/NODE_TERMINAL.md. Use Reconnect to spawn a fresh session.`
+      : `Session ${sessionId} not found on '${localReplica}' (may have expired, been terminated, or platform-api rolled).`;
+    request.log.warn({
+      sessionId,
+      localReplica,
+      expectedReplica: expectedReplica ?? null,
+      replicaMismatch,
+    }, 'node-terminal WS upgrade for unknown session');
+    sendFrame(socket, {
+      type: 'error',
+      code: replicaMismatch ? 'REPLICA_MISMATCH' : 'SESSION_NOT_FOUND',
+      message,
+    });
+    await recordNodeTerminalAudit(ctx.db, {
+      actorId: expectedUserId,
+      nodeName: '',
+      sessionId,
+      action: 'node_terminal.session.ws.rejected',
+      httpStatus: 404,
+      request,
+      changes: {
+        reason: replicaMismatch ? 'REPLICA_MISMATCH' : 'SESSION_NOT_FOUND',
+        localReplica,
+        expectedReplica: expectedReplica ?? null,
+      },
+    });
+    socket.close(4404, replicaMismatch ? 'Replica mismatch' : 'No session');
     return;
   }
   if (session.userId !== expectedUserId) {
