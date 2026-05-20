@@ -202,13 +202,42 @@ func main() {
 	// (warming up) until both loops have reconciled at least once.
 	startHealthServer(ctx, hs)
 
-	// F1+F6 Stage A — CrowdSec L4 blocklist reconciler. Spawned in the
+	// F1+F6 Stage B — CrowdSec L4 blocklist reconciler. Spawned in the
 	// same WaitGroup as the peer + tenant loops so a clean shutdown
 	// drains all three. Defaults to "disabled" mode; in that case the
-	// goroutine returns immediately. Operator opt-in is via the
-	// CROWDSEC_L4_MODE env (currently only "dryrun" is honoured — Stage
-	// A constructor downgrades "enforce" to "dryrun" defensively).
+	// goroutine blocks on ctx.Done().
+	//
+	// When mode != disabled, wire the LAPI HTTP client + the exclusion
+	// builder that reads from the SAME informer listers the peer
+	// reconciler uses (no extra apiserver load). Stage A's constructor
+	// downgrades enforce→dryrun, so the applier path is reached but
+	// the realApplier's applyCrowdsecBlocklist is itself a logging stub
+	// in Stage B (real nft writes land in Stage B.5).
 	crCsec := newCrowdsecReconciler()
+	if crCsec.mode != crowdsecL4ModeDisabled {
+		bouncerKey := os.Getenv("BOUNCER_KEY")
+		lapiBaseURL := os.Getenv("CROWDSEC_LAPI_URL")
+		lapi, lerr := newLAPIClient(lapiBaseURL, bouncerKey)
+		if lerr != nil {
+			slog.Error("crowdsec-l4-reconciler: LAPI client init failed — staying dormant",
+				"err", lerr)
+			// Don't fail the pod — peer + tenant reconcilers must still run.
+			// Force mode back to disabled so the dormant goroutine exits cleanly.
+			crCsec.mode = crowdsecL4ModeDisabled
+		} else {
+			crCsec.fetchDecisions = func(fctx context.Context) (crowdsecBlocklist, error) {
+				return lapi.fetchStream(fctx, true)
+			}
+			svcCIDR := os.Getenv(envKubernetesServiceCIDR)
+			crCsec.computeExclusions = func(_ context.Context) (exclusionSet, error) {
+				return buildExclusionSet(nodeLister, ctrLister, cppLister, svcCIDR)
+			}
+			crCsec.applier = r.applier // share the realApplier the peer loop uses
+			slog.Info("crowdsec-l4-reconciler: wired with LAPI + exclusions",
+				"lapi_url_override", lapiBaseURL != "",
+				"service_cidr_set", svcCIDR != "")
+		}
+	}
 
 	// Run the loops as separate goroutines with recover() at the
 	// boundary so a panic in one loop doesn't crash the pod (and

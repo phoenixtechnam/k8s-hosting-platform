@@ -117,6 +117,14 @@ func (f *fakeApplier) applyTenantPorts(s tenantPortSets) error {
 	return nil
 }
 
+// applyCrowdsecBlocklist — Stage B applier interface entry. fakeApplier
+// doesn't track these calls because the reconciler tests don't exercise
+// the crowdsec path. crowdsec_reconcile_test.go uses its own fake when
+// it needs to assert on apply calls.
+func (f *fakeApplier) applyCrowdsecBlocklist(_ crowdsecBlocklist) error {
+	return nil
+}
+
 func (f *fakeApplier) observePeerFingerprint() (string, error) {
 	if f.observeErr != nil {
 		return "", f.observeErr
