@@ -45,8 +45,18 @@ import {
   crowdsecAddStaticBanRequestSchema,
   crowdsecAutobanPatchConfigRequestSchema,
   crowdsecListDecisionsQuerySchema,
+  createWafRuleExclusionRequestSchema,
+  updateWafRuleExclusionRequestSchema,
 } from '@k8s-hosting/api-contracts';
 import { listRecentRuns, loadConfig as loadAutobanConfig, SETTING_KEYS as AUTOBAN_SETTING_KEYS } from '../crowdsec-autoban/scheduler.js';
+import {
+  createExclusion as createWafExclusion,
+  deleteExclusion as deleteWafExclusion,
+  listExclusions as listWafExclusions,
+  updateExclusion as updateWafExclusion,
+  WafRuleExclusionError,
+} from '../waf-rule-exclusions/service.js';
+import { reconcileWafExclusions } from '../waf-rule-exclusions/reconciler.js';
 import { sql } from 'drizzle-orm';
 
 interface AuthedRequest {
@@ -420,6 +430,126 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         }
         const final = await loadAutobanConfig(deps.db);
         return success(final);
+      },
+    );
+
+    // ─── F4 — WAF rule exclusion management ───────────────────────────
+    //
+    // Operator-managed CRS rule exclusions, scoped to X-Forwarded-Host
+    // regex. Each mutation triggers an inline reconcile so the modsec-crs
+    // Deployment rolls within seconds. A 5-min scheduler (started in
+    // app.ts) handles drift recovery.
+    const triggerWafExclusionReconcile = async (): Promise<void> => {
+      try {
+        const k8s = createK8sClients(kubeconfigPath);
+        await reconcileWafExclusions(deps.db, { core: k8s.core, apps: k8s.apps }, app.log);
+      } catch (err) {
+        app.log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          'waf-rule-exclusions: inline reconcile failed (scheduler will retry)',
+        );
+      }
+    };
+
+    app.get(
+      '/admin/security/waf-rule-exclusions',
+      { preHandler: requireRole('super_admin') },
+      async (req: FastifyRequest) => {
+        const includeDisabled = (req.query as { includeDisabled?: string }).includeDisabled === 'true';
+        const exclusions = await listWafExclusions(deps.db, { includeDisabled });
+        return success({ exclusions });
+      },
+    );
+
+    app.post(
+      '/admin/security/waf-rule-exclusions',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = createWafRuleExclusionRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        try {
+          const created = await createWafExclusion(deps.db, parsed.data, actor);
+          app.log.warn({ actor, exclusion: created }, 'waf-rule-exclusion: created');
+          await triggerWafExclusionReconcile();
+          return success(created);
+        } catch (err) {
+          if (err instanceof WafRuleExclusionError) {
+            const status = err.code === 'NOT_FOUND' ? 404
+              : err.code === 'DUPLICATE' ? 409
+              : err.code === 'OVER_CAPACITY' ? 409
+              : 400;
+            return reply.status(status).send({ error: err.code, message: err.message });
+          }
+          throw err;
+        }
+      },
+    );
+
+    app.patch(
+      '/admin/security/waf-rule-exclusions/:id',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const { id } = req.params as { id: string };
+        if (!/^[a-f0-9-]{36}$/.test(id)) {
+          return reply.status(400).send({
+            error: 'INVALID_ID',
+            message: 'id must be a UUID',
+          });
+        }
+        const parsed = updateWafRuleExclusionRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        try {
+          const updated = await updateWafExclusion(deps.db, id, parsed.data);
+          app.log.warn({ actor, id, patch: parsed.data }, 'waf-rule-exclusion: updated');
+          await triggerWafExclusionReconcile();
+          return success(updated);
+        } catch (err) {
+          if (err instanceof WafRuleExclusionError) {
+            const status = err.code === 'NOT_FOUND' ? 404
+              : err.code === 'DUPLICATE' ? 409
+              : 400;
+            return reply.status(status).send({ error: err.code, message: err.message });
+          }
+          throw err;
+        }
+      },
+    );
+
+    app.delete(
+      '/admin/security/waf-rule-exclusions/:id',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const { id } = req.params as { id: string };
+        if (!/^[a-f0-9-]{36}$/.test(id)) {
+          return reply.status(400).send({
+            error: 'INVALID_ID',
+            message: 'id must be a UUID',
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        try {
+          await deleteWafExclusion(deps.db, id);
+          app.log.warn({ actor, id }, 'waf-rule-exclusion: deleted');
+          await triggerWafExclusionReconcile();
+          return success({ message: 'deleted', id });
+        } catch (err) {
+          if (err instanceof WafRuleExclusionError && err.code === 'NOT_FOUND') {
+            return reply.status(404).send({ error: err.code, message: err.message });
+          }
+          throw err;
+        }
       },
     );
 

@@ -24,3 +24,8 @@ resources:
   # comments for the rationale + scope (only admin.*/client.*/api.*
   # hostnames; tenant routes keep full CRS coverage).
   - exclusion-rules-configmap.yaml
+  # F4 — DB-rendered (dynamic) exclusions. Empty seed; backend
+  # reconciler at modules/waf-rule-exclusions/reconciler.ts patches
+  # content + bumps the modsec-crs Deployment annotation on every
+  # operator action. See file for details.
+  - exclusion-rules-dynamic-configmap.yaml

@@ -654,6 +654,179 @@ else
   warn "could not find static ban id for cleanup"
 fi
 
+# ─── Phase H — F4: WAF rule exclusion management ─────────────────────
+#
+# Verifies DB-backed surgical CRS exclusions. End-to-end coverage:
+#   1. POST creates a row
+#   2. GET lists it
+#   3. Backend reconciler patches modsec-crs-exclusions-dynamic ConfigMap
+#   4. modsec-crs Deployment template annotation is bumped (would roll pods)
+#   5. PATCH toggles disabled
+#   6. DELETE removes the row
+#   7. Reconciler restores the empty-body ConfigMap content
+#
+# We do NOT wait for the actual pod rollout to complete here — that
+# would slow the harness by ~30s and is covered by the modsec readiness
+# probe + tcpSocket check naturally. The annotation bump is the
+# authoritative signal that the rolling restart was triggered.
+
+phase "Phase H — F4 WAF rule exclusions"
+
+F4_HOST_REGEX='^waf-h-harness\.example\.invalid$'
+F4_RULE_ID='930120'
+
+cleanup_f4() {
+  # Best-effort delete via API. If the test failed mid-create, no row
+  # exists and the loop is a no-op.
+  for id in $(api_internal GET "/admin/security/waf-rule-exclusions?includeDisabled=true" 2>/dev/null | python3 -c "
+import sys,json
+try:
+    data = json.load(sys.stdin)['data']['exclusions']
+    for x in data:
+        if x['hostnameRegex']=='$F4_HOST_REGEX':
+            print(x['id'])
+except Exception:
+    pass
+" 2>/dev/null); do
+    api_internal DELETE "/admin/security/waf-rule-exclusions/$id" >/dev/null 2>&1 || true
+  done
+}
+trap 'cleanup; cleanup_test_ban_symbolic; cleanup_f2; cleanup_f4' EXIT INT TERM
+cleanup_f4
+
+# H1: GET on empty state returns 200 + empty array
+h_list_empty=$(api_internal GET /admin/security/waf-rule-exclusions)
+if echo "$h_list_empty" | grep -q '"exclusions"'; then
+  ok "F4: GET /waf-rule-exclusions reachable"
+else
+  fail "F4: initial GET failed: $(echo "$h_list_empty" | head -c 200)"
+fi
+
+# H2: POST creates a new exclusion
+h_create=$(api_internal POST /admin/security/waf-rule-exclusions \
+  "{\"ruleId\":\"$F4_RULE_ID\",\"hostnameRegex\":\"$F4_HOST_REGEX\",\"scope\":\"args_names_only\",\"reason\":\"harness F4 test\"}")
+h_id=$(echo "$h_create" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || true)
+if [[ -n "$h_id" && "$h_id" =~ ^[a-f0-9-]{36}$ ]]; then
+  ok "F4: exclusion created (id=$h_id)"
+else
+  fail "F4: create failed or returned no id: $(echo "$h_create" | head -c 300)"
+fi
+
+# H3: GET lists the new exclusion
+h_list_after=$(api_internal GET /admin/security/waf-rule-exclusions)
+if echo "$h_list_after" | grep -q "$F4_HOST_REGEX"; then
+  ok "F4: exclusion appears in GET list"
+else
+  fail "F4: exclusion NOT visible: $(echo "$h_list_after" | head -c 300)"
+fi
+
+# H4: ConfigMap was patched with the rendered .conf body
+# (best-effort — Flux may re-apply the static seed; check both data and
+# annotation. The annotation is the authoritative signal because the
+# reconciler always bumps it on a content change.)
+sleep 2
+h_cm_data=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
+if echo "$h_cm_data" | grep -qE "ctl:ruleRemoveTargetById=$F4_RULE_ID;ARGS_NAMES"; then
+  ok "F4: ConfigMap contains rendered SecRule for rule $F4_RULE_ID"
+else
+  fail "F4: ConfigMap content missing the rendered exclusion: $(echo "$h_cm_data" | head -c 400)"
+fi
+
+# H5: modsec-crs Deployment was annotated with a hash
+h_annotation=$(kubectl_run "get deployment -n traefik modsec-crs -o jsonpath='{.spec.template.metadata.annotations.platform\\.phoenix-host\\.net/waf-exclusion-hash}'" 2>&1)
+if [[ -n "$h_annotation" && "$h_annotation" =~ ^[a-f0-9]{64}$ ]]; then
+  ok "F4: modsec-crs Deployment annotated with hash ($h_annotation)"
+else
+  fail "F4: modsec-crs annotation missing or not sha256: $(echo "$h_annotation" | head -c 200)"
+fi
+
+# H6: PATCH toggles disabled=true
+if [[ -n "${h_id:-}" ]]; then
+  h_patch=$(api_internal PATCH "/admin/security/waf-rule-exclusions/$h_id" '{"disabled":true}')
+  if echo "$h_patch" | grep -q '"disabled":true'; then
+    ok "F4: PATCH disabled=true succeeded"
+  else
+    fail "F4: PATCH failed: $(echo "$h_patch" | head -c 300)"
+  fi
+fi
+
+# H7: GET with includeDisabled=true should show the disabled row
+h_with_disabled=$(api_internal GET "/admin/security/waf-rule-exclusions?includeDisabled=true")
+if echo "$h_with_disabled" | grep -q "$F4_HOST_REGEX"; then
+  ok "F4: disabled row visible with includeDisabled=true"
+else
+  fail "F4: disabled row NOT visible with includeDisabled=true"
+fi
+
+# H8: Duplicate enabled row → 409 DUPLICATE
+h_dupe=$(api_internal POST /admin/security/waf-rule-exclusions \
+  "{\"ruleId\":\"$F4_RULE_ID\",\"hostnameRegex\":\"$F4_HOST_REGEX\",\"scope\":\"args_names_only\",\"reason\":\"dup test\"}" 2>&1)
+# Disabled row exists so this should succeed (not duplicate vs. disabled). Re-enable original first.
+# Actually with disabled=true the original isn't enabled → new create is allowed. Let me test the
+# duplicate path properly: re-enable original, then try to create another enabled.
+if [[ -n "${h_id:-}" ]]; then
+  api_internal PATCH "/admin/security/waf-rule-exclusions/$h_id" '{"disabled":false}' >/dev/null
+fi
+# Now another POST should 409
+dupe_rc=$(kubectl_run "run waf-cs-h-dupe-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"$F4_RULE_ID\",\"hostnameRegex\":\"$F4_HOST_REGEX\",\"scope\":\"args_names_only\",\"reason\":\"dup test\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+if [[ "$dupe_rc" == "409" ]]; then
+  ok "F4: duplicate enabled row rejected (409)"
+else
+  fail "F4: duplicate got HTTP $dupe_rc (expected 409)"
+fi
+
+# H9: Invalid regex (unbalanced paren) → 400
+inv_rc=$(kubectl_run "run waf-cs-h-invalid-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"930120\",\"hostnameRegex\":\"^bad(regex\",\"scope\":\"args_names_only\",\"reason\":\"invalid regex\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+if [[ "$inv_rc" == "400" ]]; then
+  ok "F4: invalid regex rejected (400)"
+else
+  fail "F4: invalid regex got HTTP $inv_rc (expected 400)"
+fi
+
+# H10: Quote-injection blocked at validator
+qi_rc=$(kubectl_run "run waf-cs-h-inj-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"930120\",\"hostnameRegex\":\"^evil\\\".*\",\"scope\":\"args_names_only\",\"reason\":\"injection\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+if [[ "$qi_rc" == "400" ]]; then
+  ok "F4: quote-injection regex rejected (400)"
+else
+  fail "F4: quote-injection got HTTP $qi_rc (expected 400)"
+fi
+
+# H10b: Trailing-backslash (CRITICAL — would CrashLoopBackOff modsec-crs)
+# Caught by Zod's .refine(regexParseable) since `new RegExp('foo\\')` throws.
+tb_rc=$(kubectl_run "run waf-cs-h-tb-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"930120\",\"hostnameRegex\":\"api\\\\.example\\\\.com\\\\\",\"scope\":\"args_names_only\",\"reason\":\"trailing backslash test\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+if [[ "$tb_rc" == "400" ]]; then
+  ok "F4: trailing-backslash regex rejected (400)"
+else
+  fail "F4: trailing-backslash got HTTP $tb_rc (expected 400)"
+fi
+
+# H11: DELETE removes the row
+if [[ -n "${h_id:-}" ]]; then
+  h_del=$(api_internal DELETE "/admin/security/waf-rule-exclusions/$h_id")
+  if echo "$h_del" | grep -q '"deleted"'; then
+    ok "F4: exclusion deleted"
+  else
+    fail "F4: delete failed: $(echo "$h_del" | head -c 200)"
+  fi
+fi
+
+# H12: After delete, GET returns empty (or no harness row)
+h_list_final=$(api_internal GET /admin/security/waf-rule-exclusions)
+if echo "$h_list_final" | grep -q "$F4_HOST_REGEX"; then
+  fail "F4: deleted row still appears in GET list"
+else
+  ok "F4: post-delete GET no longer shows harness row"
+fi
+
+# H13: ConfigMap content reverts to empty-body banner
+sleep 2
+h_cm_final=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
+if echo "$h_cm_final" | grep -q "No DB-rendered exclusions are currently enabled"; then
+  ok "F4: ConfigMap reverted to empty-body after delete"
+else
+  fail "F4: ConfigMap still contains exclusion content: $(echo "$h_cm_final" | head -c 300)"
+fi
+
 # ─── Phase 5 — Coverage finishing checks ──────────────────────────────
 
 phase "Phase 5 — Coverage finishing checks"

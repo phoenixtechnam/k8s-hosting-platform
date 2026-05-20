@@ -53,12 +53,19 @@ import {
   Ban,
   Trash2,
   Plus,
+  ShieldOff,
 } from 'lucide-react';
 import {
   useSecurityHardeningSnapshot,
   useRefreshSecurityHardening,
 } from '@/hooks/use-security-hardening';
 import { useRefreshWafScraper, useWafEvents } from '@/hooks/use-waf-events';
+import {
+  useCreateWafRuleExclusion,
+  useDeleteWafRuleExclusion,
+  useUpdateWafRuleExclusion,
+  useWafRuleExclusions,
+} from '@/hooks/use-waf-rule-exclusions';
 import {
   useAddCrowdsecAllowlistEntry,
   useAddCrowdsecBan,
@@ -85,9 +92,12 @@ import type {
   CrowdsecDecisionScope,
   CrowdsecListDecisionsQuery,
   CrowdsecStatus,
+  WafRuleExclusion,
+  WafRuleExclusionScope,
 } from '@k8s-hosting/api-contracts';
+import { buildHostnameRegexFromEventHost } from '@k8s-hosting/api-contracts';
 
-type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events' | 'waf' | 'bans';
+type TabId = 'overview' | 'ssh' | 'mesh' | 'firewall' | 'hardening' | 'k8s' | 'auth' | 'netpol' | 'events' | 'waf' | 'bans' | 'exclusions';
 
 const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -101,6 +111,7 @@ const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string }> = [
   { id: 'events', label: 'Security Events' },
   { id: 'waf', label: 'WAF Events' },
   { id: 'bans', label: 'Banned IPs' },
+  { id: 'exclusions', label: 'WAF Exclusions' },
 ];
 
 export default function SecurityHardeningSettings() {
@@ -208,6 +219,9 @@ export default function SecurityHardeningSettings() {
       {/* Banned IPs tab is also unconditional — uses CrowdSec LAPI, not the
           security-hardening snapshot. */}
       {activeTab === 'bans' && <BannedIpsTab />}
+      {/* WAF Exclusions tab is also unconditional — uses its own DB-backed
+          endpoint so it should be reachable even when the snapshot is slow. */}
+      {activeTab === 'exclusions' && <WafExclusionsTab />}
     </div>
   );
 }
@@ -1091,6 +1105,12 @@ function WafEventsTab() {
   // Lifted to tab-level so the BanIpModal can render once and survive
   // any WafEventRow re-mounting from the 30s refetch.
   const [banModalPrefill, setBanModalPrefill] = useState<{ value: string; reason: string } | null>(null);
+  // F4 — "Whitelist this rule for this host" prefill, same lifting reason.
+  const [whitelistPrefill, setWhitelistPrefill] = useState<{
+    ruleId: string;
+    hostnameRegex: string;
+    reason: string;
+  } | null>(null);
 
   // Debounce text inputs so a keystroke doesn't fan out into one request per
   // character — the backend would re-run the same expensive cluster-wide
@@ -1289,6 +1309,11 @@ function WafEventsTab() {
                     key={ev.id}
                     ev={ev}
                     onBan={(ip) => setBanModalPrefill({ value: ip, reason: `WAF: rule ${ev.ruleId} on ${ev.hostname} (${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'})` })}
+                    onWhitelist={() => setWhitelistPrefill({
+                      ruleId: ev.ruleId,
+                      hostnameRegex: buildHostnameRegexFromEventHost(ev.hostname || ''),
+                      reason: `False-positive on ${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'}`,
+                    })}
                   />
                 ))}
                 {payload.events.length === 0 && (
@@ -1317,6 +1342,14 @@ function WafEventsTab() {
           key={`${banModalPrefill.value}|${banModalPrefill.reason}`}
           prefill={banModalPrefill}
           onClose={() => setBanModalPrefill(null)}
+        />
+      )}
+
+      {whitelistPrefill && (
+        <WhitelistRuleModal
+          key={`${whitelistPrefill.ruleId}|${whitelistPrefill.hostnameRegex}`}
+          prefill={whitelistPrefill}
+          onClose={() => setWhitelistPrefill(null)}
         />
       )}
     </section>
@@ -1513,7 +1546,11 @@ function WafStatsPanel({ stats }: { stats: WafEventsResponse['stats'] }) {
   );
 }
 
-function WafEventRow({ ev, onBan }: { ev: WafEvent; onBan: (ip: string) => void }) {
+function WafEventRow({ ev, onBan, onWhitelist }: {
+  ev: WafEvent;
+  onBan: (ip: string) => void;
+  onWhitelist: () => void;
+}) {
   const sevTone =
     ev.severity === 'critical'
       ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200'
@@ -1522,6 +1559,9 @@ function WafEventRow({ ev, onBan }: { ev: WafEvent; onBan: (ip: string) => void 
         : 'bg-gray-100 text-gray-700 dark:bg-gray-700/40 dark:text-gray-300';
   // Don't offer a Ban button for the parser's "no IP extractable" placeholder.
   const banAvailable = Boolean(ev.sourceIp && ev.sourceIp !== '0.0.0.0');
+  // Don't offer whitelist when hostname is empty — operator should
+  // craft a hostname regex manually from the Exclusions tab in that case.
+  const whitelistAvailable = Boolean(ev.hostname);
   return (
     <tr>
       <td className="px-4 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 whitespace-nowrap">
@@ -1545,17 +1585,30 @@ function WafEventRow({ ev, onBan }: { ev: WafEvent; onBan: (ip: string) => void 
       </td>
       <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">{ev.message}</td>
       <td className="px-4 py-2">
-        {banAvailable && (
-          <button
-            type="button"
-            onClick={() => onBan(ev.sourceIp as string)}
-            className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-2 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
-            data-testid={`waf-ban-${ev.id}`}
-            title={`Ban ${ev.sourceIp} via CrowdSec`}
-          >
-            <Ban size={11} /> Ban IP
-          </button>
-        )}
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center">
+          {banAvailable && (
+            <button
+              type="button"
+              onClick={() => onBan(ev.sourceIp as string)}
+              className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-2 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
+              data-testid={`waf-ban-${ev.id}`}
+              title={`Ban ${ev.sourceIp} via CrowdSec`}
+            >
+              <Ban size={11} /> Ban IP
+            </button>
+          )}
+          {whitelistAvailable && (
+            <button
+              type="button"
+              onClick={onWhitelist}
+              className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
+              data-testid={`waf-whitelist-${ev.id}`}
+              title={`Whitelist rule ${ev.ruleId} for ${ev.hostname}`}
+            >
+              <ShieldOff size={11} /> Whitelist
+            </button>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -2228,5 +2281,266 @@ function StaticBanModal({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── F4 — WAF rule exclusion tab + Whitelist modal ───────────────────────
+
+interface WhitelistPrefill {
+  readonly ruleId: string;
+  readonly hostnameRegex: string;
+  readonly reason: string;
+}
+
+function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; onClose: () => void }) {
+  const [ruleId, setRuleId] = useState(prefill.ruleId);
+  const [hostnameRegex, setHostnameRegex] = useState(prefill.hostnameRegex);
+  const [scope, setScope] = useState<WafRuleExclusionScope>('args_names_only');
+  const [reason, setReason] = useState(prefill.reason);
+  const [err, setErr] = useState<string | null>(null);
+  const mut = useCreateWafRuleExclusion();
+
+  // Mirror the backend's .refine(regexParseable) so the Submit button
+  // doesn't pretend to be enabled for input the backend will reject —
+  // a 400 round-trip would otherwise feel like a silent save-fail even
+  // though the error banner does eventually surface it.
+  const isParseableRegex = (value: string): boolean => {
+    try {
+      new RegExp(value);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const hostnameRegexTrimmed = hostnameRegex.trim();
+  const valid =
+    /^[0-9]+$/.test(ruleId.trim())
+    && hostnameRegexTrimmed.length > 0
+    && !hostnameRegexTrimmed.includes('"')
+    && !hostnameRegexTrimmed.endsWith('\\')
+    && isParseableRegex(hostnameRegexTrimmed)
+    && reason.trim().length > 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-800 p-5 shadow-xl">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Whitelist WAF rule for host</h3>
+        <p className="text-xs text-gray-600 dark:text-gray-400 mb-4">
+          Adds a CRS exclusion that scopes <code>{scope === 'full_disable' ? 'ctl:ruleRemoveById' : 'ctl:ruleRemoveTargetById … ARGS_NAMES'}</code> to
+          requests whose <code>X-Forwarded-Host</code> matches the regex below. Takes
+          effect within ~10s of save (modsec-crs pods roll). Real attacks on
+          ARG values and headers still fire when <em>args_names_only</em> is used.
+        </p>
+        <div className="space-y-3 text-sm">
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-700 dark:text-gray-200">Rule ID</span>
+            <input
+              value={ruleId}
+              onChange={(e) => setRuleId(e.target.value)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 text-sm font-mono"
+              data-testid="whitelist-modal-rule-id"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-700 dark:text-gray-200">Host regex (matches X-Forwarded-Host)</span>
+            <input
+              value={hostnameRegex}
+              onChange={(e) => setHostnameRegex(e.target.value)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 text-sm font-mono"
+              data-testid="whitelist-modal-host-regex"
+            />
+            <span className="text-[10px] text-gray-500">Anchor with ^…$ to avoid over-broad matches. No double-quotes.</span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-700 dark:text-gray-200">Scope</span>
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value as WafRuleExclusionScope)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 text-sm"
+              data-testid="whitelist-modal-scope"
+            >
+              <option value="args_names_only">args_names_only — keep ARG values + headers scanned (recommended)</option>
+              <option value="full_disable">full_disable — disable the rule for matching hosts</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-700 dark:text-gray-200">Reason (audit trail)</span>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={2}
+              className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 text-sm"
+              data-testid="whitelist-modal-reason"
+            />
+          </label>
+        </div>
+        {err && (
+          <div className="mt-3 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-3 py-2 text-xs text-red-700 dark:text-red-200">
+            {err}
+          </div>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setErr(null);
+              mut.mutate(
+                {
+                  ruleId: ruleId.trim(),
+                  hostnameRegex: hostnameRegex.trim(),
+                  scope,
+                  reason: reason.trim(),
+                },
+                {
+                  onSuccess: () => onClose(),
+                  onError: (e) => setErr(e instanceof Error ? e.message : String(e)),
+                },
+              );
+            }}
+            disabled={!valid || mut.isPending}
+            className="rounded-md px-3 py-1.5 text-sm border border-emerald-300 bg-emerald-600 dark:bg-emerald-700 text-white hover:bg-emerald-700 dark:hover:bg-emerald-600 disabled:opacity-50"
+            data-testid="whitelist-modal-submit"
+          >
+            {mut.isPending ? 'Saving…' : 'Add exclusion'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WafExclusionsTab() {
+  const [includeDisabled, setIncludeDisabled] = useState(false);
+  const { data, isLoading, isError, error, refetch, isFetching } = useWafRuleExclusions({ includeDisabled });
+  const exclusions: ReadonlyArray<WafRuleExclusion> = data?.data?.exclusions ?? [];
+  const update = useUpdateWafRuleExclusion();
+  const del = useDeleteWafRuleExclusion();
+
+  return (
+    <section className="space-y-4" data-testid="waf-exclusions-tab">
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
+        DB-backed CRS rule exclusions. Operators add entries from the
+        <strong> WAF Events tab</strong> (Whitelist button on each event row).
+        The backend renders the enabled rows into the
+        <code className="text-xs mx-1">modsec-crs-exclusions-dynamic</code>
+        ConfigMap and rolls the <code className="text-xs">modsec-crs</code>
+        Deployment. Companion to the static, repo-versioned exclusions in
+        <code className="text-xs mx-1">k8s/base/modsecurity-crs/exclusion-rules-configmap.yaml</code>.
+      </div>
+
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
+          <input
+            type="checkbox"
+            checked={includeDisabled}
+            onChange={(e) => setIncludeDisabled(e.target.checked)}
+            data-testid="exclusions-include-disabled"
+          />
+          Include disabled
+        </label>
+        <button
+          type="button"
+          onClick={() => { void refetch(); }}
+          disabled={isFetching}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          data-testid="exclusions-refresh"
+        >
+          <RefreshCw size={12} className={isFetching ? 'animate-spin' : ''} /> Reload
+        </button>
+      </div>
+
+      {isLoading && <SkeletonLoader />}
+      {isError && (
+        <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-4 text-sm text-red-700 dark:text-red-300">
+          Failed to load exclusions: {error instanceof Error ? error.message : String(error)}
+        </div>
+      )}
+
+      {!isLoading && !isError && (
+        <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
+            <thead className="bg-gray-50 dark:bg-gray-900 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              <tr>
+                <th className="px-4 py-2 text-left">Rule</th>
+                <th className="px-4 py-2 text-left">Host regex (X-Forwarded-Host)</th>
+                <th className="px-4 py-2 text-left">Scope</th>
+                <th className="px-4 py-2 text-left">Reason</th>
+                <th className="px-4 py-2 text-left">By / when</th>
+                <th className="px-4 py-2 text-left">Status</th>
+                <th className="px-4 py-2 text-left">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+              {exclusions.map((x) => (
+                <tr key={x.id} data-testid={`exclusion-row-${x.id}`}>
+                  <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{x.ruleId}</td>
+                  <td className="px-4 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 break-all">{x.hostnameRegex}</td>
+                  <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">
+                    {x.scope === 'full_disable' ? (
+                      <span className="rounded bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200 px-2 py-0.5 text-[10px] uppercase">full disable</span>
+                    ) : (
+                      <span className="rounded bg-gray-100 dark:bg-gray-700/40 text-gray-700 dark:text-gray-200 px-2 py-0.5 text-[10px] uppercase">args_names</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200 max-w-[280px]">{x.reason}</td>
+                  <td className="px-4 py-2 text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                    {x.createdBy}<br />
+                    {new Date(x.createdAt).toISOString().replace('T', ' ').slice(0, 16)}
+                  </td>
+                  <td className="px-4 py-2 text-xs">
+                    {x.disabled ? (
+                      <span className="rounded bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-0.5 text-[10px]">disabled</span>
+                    ) : (
+                      <span className="rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-200 px-2 py-0.5 text-[10px]">active</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center">
+                      <button
+                        type="button"
+                        onClick={() => update.mutate({ id: x.id, patch: { disabled: !x.disabled } })}
+                        disabled={update.isPending}
+                        className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-0.5 text-[11px] font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+                        data-testid={`exclusion-toggle-${x.id}`}
+                      >
+                        {x.disabled ? 'Enable' : 'Disable'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Delete exclusion for rule ${x.ruleId} on ${x.hostnameRegex}?`)) {
+                            del.mutate(x.id);
+                          }
+                        }}
+                        disabled={del.isPending}
+                        className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-2 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
+                        data-testid={`exclusion-delete-${x.id}`}
+                      >
+                        <Trash2 size={11} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {exclusions.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500">
+                    No exclusions configured. Use the <strong>Whitelist</strong> button on
+                    rows in the <em>WAF Events</em> tab to add surgical exclusions.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }

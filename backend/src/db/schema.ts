@@ -1124,6 +1124,25 @@ export const wafLogs = pgTable('waf_logs', {
   index('waf_logs_rule_id_created_idx').on(table.ruleId, table.createdAt),
 ]);
 
+// F4 — DB-backed WAF rule exclusions. Companion to the static
+// k8s/base/modsecurity-crs/exclusion-rules-configmap.yaml; backend
+// reconciler renders enabled rows into modsec-crs-exclusions-dynamic
+// ConfigMap + bumps Deployment annotation to roll modsec-crs.
+export const wafRuleExclusions = pgTable('waf_rule_exclusions', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  ruleId: varchar('rule_id', { length: 16 }).notNull(),
+  hostnameRegex: varchar('hostname_regex', { length: 255 }).notNull(),
+  scope: varchar('scope', { length: 32 }).notNull(),
+  reason: text('reason').notNull(),
+  createdBy: varchar('created_by', { length: 255 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  disabled: boolean('disabled').notNull().default(false),
+}, (table) => [
+  index('waf_rule_exclusions_disabled_idx').on(table.disabled),
+  index('waf_rule_exclusions_rule_id_idx').on(table.ruleId),
+]);
+
 // F3 — CrowdSec auto-ban audit table. One row per evaluator decision
 // (banned OR skipped-with-reason). UI surfaces the most-recent 50 in
 // the "Auto-Ban runs" panel of the Banned-IPs tab.

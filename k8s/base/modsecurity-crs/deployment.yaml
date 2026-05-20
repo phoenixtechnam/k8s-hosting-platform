@@ -143,6 +143,16 @@ spec:
               mountPath: /etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
               subPath: REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
               readOnly: true
+            # F4 — DB-rendered exclusions. Reconciler at
+            # backend/src/modules/waf-rule-exclusions/reconciler.ts
+            # patches the ConfigMap data + bumps a hash annotation on
+            # this Deployment so pods roll and pick up the new rules.
+            # Mounted with subPath alongside the static 900 file so
+            # both layers are in the CRS auto-load directory.
+            - name: exclusion-rules-dynamic
+              mountPath: /etc/modsecurity.d/owasp-crs/rules/REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf
+              subPath: REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf
+              readOnly: true
       volumes:
         - name: exclusion-rules
           configMap:
@@ -150,6 +160,12 @@ spec:
             items:
               - key: REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
                 path: REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+        - name: exclusion-rules-dynamic
+          configMap:
+            name: modsec-crs-exclusions-dynamic
+            items:
+              - key: REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf
+                path: REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf
       affinity:
         # Spread the 2 replicas across nodes so a single-node failure
         # doesn't take both WAF instances down.

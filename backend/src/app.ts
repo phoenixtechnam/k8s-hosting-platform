@@ -1112,6 +1112,29 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'crowdsec-autoban scheduler not started');
       }
 
+      // F4 — WAF rule exclusion reconciler. Renders the enabled
+      // waf_rule_exclusions rows into the modsec-crs-exclusions-dynamic
+      // ConfigMap + bumps a hash annotation on the modsec-crs Deployment
+      // so it rolls. 5-min drift recovery; mutations also trigger inline
+      // reconcile from the route handlers.
+      try {
+        const { startWafExclusionReconciler } = await import(
+          './modules/waf-rule-exclusions/scheduler.js'
+        );
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const wafExclK8s = createK8sClients(
+          (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
+        );
+        const wafExclHandle = startWafExclusionReconciler(
+          app.db,
+          { core: wafExclK8s.core, apps: wafExclK8s.apps },
+          app.log,
+        );
+        app.addHook('onClose', () => wafExclHandle.stop());
+      } catch (err) {
+        app.log.warn({ err }, 'waf-rule-exclusions scheduler not started');
+      }
+
       // Daily prune of expired refresh tokens (Phase 3 split-token auth).
       // Keeps a 7-day forensic window after expiry; older rows are
       // hard-deleted to keep the table small. Failure is non-fatal.
