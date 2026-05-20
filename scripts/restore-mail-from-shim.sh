@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # restore-mail-from-shim.sh — R-X11 restore tooling for MAIL.stalwart-rocksdb.
 #
-# Runs `restic restore` from the shim's `s3://mail-raw/mail-snapshots/`
+# Runs `restic restore` from the shim's `s3://mail/mail-snapshots/` (R-X16:
 # bucket into the live Stalwart RocksDB PVC.
 #
 # DESTRUCTIVE: the restore overwrites the running mail server's

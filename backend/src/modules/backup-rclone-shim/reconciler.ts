@@ -314,7 +314,6 @@ async function materializeAndWriteStatus(
       clients.core,
       log,
       rendered.sshKeyMaterializations.map((s) => ({
-        className: s.className,
         pemContent: s.pemContent,
       })),
     );
@@ -602,15 +601,19 @@ async function materializeCredentialsSecret(
 // ---------------------------------------------------------------------------
 
 interface SshKeyEntry {
-  readonly className: BackupClass;
   readonly pemContent: string;
 }
 
 /**
- * Materialise per-class SSH PEM keys into the Secret. The renderer's
- * `rclone.conf` references `/etc/rclone/ssh-keys/<class>.pem`, so the
- * data-key MUST be `<class>.pem` for the projected mount to land at
- * the expected path.
+ * Materialise the upstream SSH PEM key into the Secret. The renderer's
+ * `rclone.conf` references `/etc/rclone/ssh-keys/upstream.pem`, so the
+ * Secret data-key MUST be `upstream.pem` for the projected mount to
+ * land at the expected path.
+ *
+ * R-X16 (unified architecture) means at most ONE key — there's a
+ * single upstream target, not one per class. The array shape is
+ * retained so future multi-key configs can extend without an API
+ * break.
  *
  * When `entries` is empty we still ensure the Secret exists with
  * `data: {}` (rather than deleting it) so the DaemonSet's volume
@@ -625,8 +628,9 @@ async function materializeSshKeysSecret(
   const dataB64: Record<string, string> = {};
   for (const e of entries) {
     if (!e.pemContent.trim()) continue;
-    const key = `${e.className}.pem`;
-    dataB64[key] = Buffer.from(e.pemContent, 'utf8').toString('base64');
+    dataB64['upstream.pem'] = Buffer.from(e.pemContent, 'utf8').toString(
+      'base64',
+    );
   }
 
   let exists = false;

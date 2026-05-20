@@ -6,11 +6,14 @@
  *   - leak unencrypted data to the upstream (missing crypt wrapper)
  *   - prevent the shim from booting (malformed rclone.conf)
  *
- * Tests cover:
- *   - Single-class + multi-class assignments
+ * R-X16 architecture: single [upstream] + single [encrypted] crypt
+ * remote, no `combine` layer, no `-raw` variants. All classes share
+ * one upstream target. Tests cover:
+ *   - Empty assignments
+ *   - Single + multi-class with shared target
  *   - All four backend types (S3, SFTP, CIFS, NFS)
- *   - Bucket-name ordering (deterministic)
- *   - Posix-mount accumulation
+ *   - The same-target invariant (multi-target → throw)
+ *   - Posix-mount + SSH-key materialisation
  *   - Input-hash stability (insensitive to obscure-IV randomness)
  */
 
@@ -95,23 +98,33 @@ describe('renderShimConfig — empty assignments', () => {
 describe('renderShimConfig — single S3 class', () => {
   const out = renderShimConfig(FIXED_KEY, [assign('system', s3Target)]);
 
-  it('exposes system + system-raw buckets', () => {
-    expect(out.bucketsTxt.split('\n').filter(Boolean)).toEqual([
-      'system:',
-      'system-raw:',
-    ]);
+  it('emits the class name (no `:`, no `-raw`) to buckets.txt', () => {
+    expect(out.bucketsTxt.split('\n').filter(Boolean)).toEqual(['system']);
     expect(out.assignedClasses).toEqual(['system']);
   });
 
-  it('renders an S3 upstream + crypt-wrapper + raw-alias', () => {
-    expect(out.rcloneConf).toContain('[system-upstream]');
+  it('renders ONE [upstream] + ONE [encrypted] (no combine, no -raw)', () => {
+    expect(out.rcloneConf).toContain('[upstream]');
+    expect(out.rcloneConf).toContain('[encrypted]');
+    // Legacy per-class sections must be gone.
+    expect(out.rcloneConf).not.toContain('[system-upstream]');
+    expect(out.rcloneConf).not.toContain('[system-raw]');
+    expect(out.rcloneConf).not.toContain('[system]');
+    // Combine layer is retired.
+    expect(out.rcloneConf).not.toContain('[buckets]');
+    expect(out.rcloneConf).not.toContain('type = combine');
+  });
+
+  it('renders S3-specific fields on [upstream]', () => {
     expect(out.rcloneConf).toContain('type = s3');
     expect(out.rcloneConf).toContain('endpoint = https://fsn1.your-objectstorage.com');
-    expect(out.rcloneConf).toContain('[system]');
-    expect(out.rcloneConf).toContain('type = crypt');
-    expect(out.rcloneConf).toContain('remote = system-upstream:');
-    expect(out.rcloneConf).toContain('[system-raw]');
-    expect(out.rcloneConf).toContain('type = alias');
+  });
+
+  it('renders [encrypted] as a crypt remote anchored to upstream:bucket/prefix/', () => {
+    expect(out.rcloneConf).toMatch(/\[encrypted\][\s\S]*type = crypt/);
+    // Bucket+prefix anchor — without this, upstream PUT goes to wrong bucket.
+    expect(out.rcloneConf).toContain('remote = upstream:k8s-staging/');
+    expect(out.rcloneConf).toContain('filename_encryption = off');
   });
 
   it('renders the S3 secret_access_key as PLAINTEXT (rclone S3 backend requires plaintext)', () => {
@@ -119,10 +132,7 @@ describe('renderShimConfig — single S3 class', () => {
     // the value as-is and uses it for SigV4 signing. Earlier versions of
     // this renderer wrongly called rcloneObscure() here, which made
     // every shim-routed S3 call fail with SignatureDoesNotMatch from
-    // upstream. The plaintext is fine because the rendered conf only
-    // lives inside a Kubernetes Secret (encrypted at rest by kube-apiserver)
-    // and is mounted into the shim pod via a projected volume. See
-    // https://rclone.org/s3/#standard-options for the field semantics.
+    // upstream. See https://rclone.org/s3/#standard-options.
     expect(out.rcloneConf).toContain('secret_access_key = secretpass');
   });
 
@@ -134,12 +144,18 @@ describe('renderShimConfig — single S3 class', () => {
   it('no posix mounts for S3', () => {
     expect(out.posixMounts).toEqual([]);
   });
+
+  it('honours s3Prefix in the encrypted-remote anchor', () => {
+    const t: BackupTargetConfig = { ...s3Target, s3Prefix: 'rt-test' };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', t)]);
+    expect(r.rcloneConf).toContain('remote = upstream:k8s-staging/rt-test/');
+  });
 });
 
 describe('renderShimConfig — SFTP', () => {
   const out = renderShimConfig(FIXED_KEY, [assign('system', sftpTarget)]);
 
-  it('renders SFTP-specific fields', () => {
+  it('renders SFTP-specific fields on [upstream]', () => {
     expect(out.rcloneConf).toContain('type = sftp');
     expect(out.rcloneConf).toContain('host = u335448.your-storagebox.de');
     expect(out.rcloneConf).toContain('port = 23');
@@ -158,7 +174,7 @@ describe('renderShimConfig — SFTP', () => {
     ).toThrow(/requires either ssh_key or ssh_password/);
   });
 
-  it('references a Secret-backed key_file when SSH key is provided', () => {
+  it('references a single Secret-backed key_file at /etc/rclone/ssh-keys/upstream.pem when SSH key is provided', () => {
     const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nABC\n-----END OPENSSH PRIVATE KEY-----';
     const withKey: BackupTargetConfig = {
       ...sftpTarget,
@@ -166,106 +182,142 @@ describe('renderShimConfig — SFTP', () => {
       sshKey: pem,
     };
     const r = renderShimConfig(FIXED_KEY, [assign('system', withKey)]);
-    // rclone.conf points at the Secret-projected path; the raw PEM
-    // is NOT inlined into the ConfigMap-backed rclone.conf.
-    expect(r.rcloneConf).toContain('key_file = /etc/rclone/ssh-keys/system.pem');
+    expect(r.rcloneConf).toContain('key_file = /etc/rclone/ssh-keys/upstream.pem');
     expect(r.rcloneConf).not.toContain('-----BEGIN OPENSSH');
-    // The PEM is surfaced for the service layer to materialise into
-    // a Secret volume mount.
-    expect(r.sshKeyMaterializations).toEqual([
-      { className: 'system', pemContent: pem },
-    ]);
+    expect(r.sshKeyMaterializations).toEqual([{ pemContent: pem }]);
   });
 
   it('empty sshKeyMaterializations when SFTP target uses password auth', () => {
-    const r = renderShimConfig(FIXED_KEY, [assign('system', sftpTarget)]);
-    expect(r.sshKeyMaterializations).toEqual([]);
+    expect(out.sshKeyMaterializations).toEqual([]);
+  });
+
+  it('encodes sshPath into the [encrypted] crypt remote (sftp backend has no `path =` option)', () => {
+    // Regression: SFTP targets with a non-empty sshPath used to be
+    // silently dropped — all writes landed at the remote-user's
+    // $HOME, not the configured subdirectory.
+    const withPath: BackupTargetConfig = { ...sftpTarget, sshPath: 'backup/subdir' };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', withPath)]);
+    expect(r.rcloneConf).toContain('remote = upstream:backup/subdir/');
+  });
+
+  it('strips leading/trailing slashes on sshPath', () => {
+    const withPath: BackupTargetConfig = { ...sftpTarget, sshPath: '/backup/' };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', withPath)]);
+    expect(r.rcloneConf).toContain('remote = upstream:backup/');
+    // No double-slash artefact at the join point.
+    expect(r.rcloneConf).not.toContain('remote = upstream:/');
+  });
+
+  it('omits the anchor segment when sshPath is null (writes to $HOME)', () => {
+    const noPath: BackupTargetConfig = { ...sftpTarget, sshPath: null };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', noPath)]);
+    expect(r.rcloneConf).toContain('remote = upstream:\n');
   });
 });
 
 describe('renderShimConfig — CIFS', () => {
   const out = renderShimConfig(FIXED_KEY, [assign('mail', cifsTarget)]);
 
-  it('emits a posix mount entry for CIFS', () => {
+  it('emits a single posix mount entry for CIFS', () => {
     expect(out.posixMounts).toHaveLength(1);
-    expect(out.posixMounts[0].className).toBe('mail');
     expect(out.posixMounts[0].storageType).toBe('cifs');
-    expect(out.posixMounts[0].mountPath).toBe('/mnt/backup-mail-cifs');
+    // R-X16: shared upstream → one fixed mountpoint per shim pod.
+    expect(out.posixMounts[0].mountPath).toBe('/mnt/backup-cifs');
   });
 
   it('renders an alias rclone backend pointing at the mount + cifs_path', () => {
-    expect(out.rcloneConf).toContain('[mail-upstream]');
+    expect(out.rcloneConf).toContain('[upstream]');
     expect(out.rcloneConf).toContain('type = alias');
-    expect(out.rcloneConf).toContain('remote = /mnt/backup-mail-cifs/backup');
+    expect(out.rcloneConf).toContain('remote = /mnt/backup-cifs/backup');
   });
 });
 
 describe('renderShimConfig — NFS', () => {
   const out = renderShimConfig(FIXED_KEY, [assign('tenant', nfsTarget)]);
 
-  it('emits a posix mount entry for NFS', () => {
+  it('emits a single posix mount entry for NFS', () => {
     expect(out.posixMounts).toHaveLength(1);
     expect(out.posixMounts[0].storageType).toBe('nfs');
-    expect(out.posixMounts[0].mountPath).toBe('/mnt/backup-tenant-nfs');
+    expect(out.posixMounts[0].mountPath).toBe('/mnt/backup-nfs');
     expect(out.posixMounts[0].target.nfsExport).toBe('/exports/backup');
   });
 
   it('points the alias remote at the mount path with no sub-path by default', () => {
-    expect(out.rcloneConf).toContain('remote = /mnt/backup-tenant-nfs');
+    expect(out.rcloneConf).toContain('remote = /mnt/backup-nfs');
     // No subpath appended when nfsPath is null/undefined.
-    expect(out.rcloneConf).not.toContain('remote = /mnt/backup-tenant-nfs/');
+    expect(out.rcloneConf).not.toContain('remote = /mnt/backup-nfs/');
   });
 
   it('appends nfsPath when provided', () => {
     const withPath: BackupTargetConfig = { ...nfsTarget, nfsPath: 'subdir/here' };
     const r = renderShimConfig(FIXED_KEY, [assign('tenant', withPath)]);
-    expect(r.rcloneConf).toContain('remote = /mnt/backup-tenant-nfs/subdir/here');
+    expect(r.rcloneConf).toContain('remote = /mnt/backup-nfs/subdir/here');
   });
 
   it('normalises nfsPath with a leading slash', () => {
     const withPath: BackupTargetConfig = { ...nfsTarget, nfsPath: '/subdir' };
     const r = renderShimConfig(FIXED_KEY, [assign('tenant', withPath)]);
-    expect(r.rcloneConf).toContain('remote = /mnt/backup-tenant-nfs/subdir');
+    expect(r.rcloneConf).toContain('remote = /mnt/backup-nfs/subdir');
   });
 });
 
-describe('renderShimConfig — multi-class', () => {
+describe('renderShimConfig — multi-class with shared target', () => {
   const out = renderShimConfig(FIXED_KEY, [
-    assign('mail', cifsTarget),
+    assign('mail', s3Target),
     assign('system', s3Target),
-    assign('tenant', sftpTarget),
+    assign('tenant', s3Target),
   ]);
 
-  it('returns 6 buckets (2 per class)', () => {
-    const lines = out.bucketsTxt.split('\n').filter(Boolean);
-    expect(lines).toHaveLength(6);
-  });
-
-  it('orders sections deterministically (alphabetical by class)', () => {
-    const lines = out.bucketsTxt.split('\n').filter(Boolean);
-    expect(lines).toEqual([
-      'mail:',
-      'mail-raw:',
-      'system:',
-      'system-raw:',
-      'tenant:',
-      'tenant-raw:',
+  it('emits one bare class name per assignment (no `:`, no `-raw`)', () => {
+    expect(out.bucketsTxt.split('\n').filter(Boolean)).toEqual([
+      'mail',
+      'system',
+      'tenant',
     ]);
-    // The rclone.conf should follow the same alphabetical order.
-    const mailIdx = out.rcloneConf.indexOf('[mail-upstream]');
-    const sysIdx = out.rcloneConf.indexOf('[system-upstream]');
-    const tenIdx = out.rcloneConf.indexOf('[tenant-upstream]');
-    expect(mailIdx).toBeLessThan(sysIdx);
-    expect(sysIdx).toBeLessThan(tenIdx);
   });
 
-  it('returns assignedClasses in the same alphabetical order', () => {
+  it('renders only ONE [upstream] + ONE [encrypted] section (shared)', () => {
+    const upstreamCount = (out.rcloneConf.match(/^\[upstream\]$/gm) ?? []).length;
+    const encryptedCount = (out.rcloneConf.match(/^\[encrypted\]$/gm) ?? []).length;
+    expect(upstreamCount).toBe(1);
+    expect(encryptedCount).toBe(1);
+  });
+
+  it('returns assignedClasses in alphabetical order', () => {
     expect(out.assignedClasses).toEqual(['mail', 'system', 'tenant']);
   });
 
-  it('collects only the posix-backed classes in posixMounts', () => {
-    expect(out.posixMounts).toHaveLength(1); // only the CIFS mail target
-    expect(out.posixMounts[0].className).toBe('mail');
+  it('collects exactly one posix mount when the shared target is CIFS', () => {
+    const r = renderShimConfig(FIXED_KEY, [
+      assign('system', cifsTarget),
+      assign('mail', cifsTarget),
+    ]);
+    expect(r.posixMounts).toHaveLength(1);
+  });
+});
+
+describe('renderShimConfig — multi-target rejection', () => {
+  it('throws when two classes are bound to different upstream targets', () => {
+    expect(() =>
+      renderShimConfig(FIXED_KEY, [
+        assign('system', s3Target),
+        assign('mail', sftpTarget),
+      ]),
+    ).toThrow(/must share one upstream target/);
+  });
+
+  it('error message names BOTH targets so the operator can see which to fix', () => {
+    try {
+      renderShimConfig(FIXED_KEY, [
+        assign('system', s3Target),
+        assign('mail', sftpTarget),
+      ]);
+      throw new Error('should have thrown');
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toContain(s3Target.name);
+      expect(msg).toContain(sftpTarget.name);
+    }
   });
 });
 
@@ -288,15 +340,15 @@ describe('computeInputHash', () => {
       .not.toBe(computeInputHash(FIXED_KEY, [assign('system', mutated)]));
   });
 
-  it('is insensitive to assignment order', () => {
+  it('is insensitive to assignment order (same target shared across classes)', () => {
     const ordered = [
       assign('system', s3Target),
-      assign('tenant', sftpTarget),
-      assign('mail', cifsTarget),
+      assign('tenant', s3Target),
+      assign('mail', s3Target),
     ];
     const reordered = [
-      assign('mail', cifsTarget),
-      assign('tenant', sftpTarget),
+      assign('mail', s3Target),
+      assign('tenant', s3Target),
       assign('system', s3Target),
     ];
     expect(computeInputHash(FIXED_KEY, ordered))

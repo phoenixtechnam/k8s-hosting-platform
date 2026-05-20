@@ -48,10 +48,14 @@ describe('buildMailResticShimEnv', () => {
     expect(buildMailResticShimEnv(k)).toEqual(buildMailResticShimEnv(k));
   });
 
-  it('routes through the raw bucket (no rclone-crypt — restic encrypts)', () => {
+  it('routes through the mail bucket (R-X16 unified architecture)', () => {
     const env = buildMailResticShimEnv(Buffer.alloc(32, 1));
-    expect(env.RESTIC_REPOSITORY).toContain('mail-raw');
-    expect(env.RESTIC_REPOSITORY).not.toMatch(/mail-snapshots[^/]/);
+    // mail-raw was retired with the combine layer. The mail class
+    // now goes through the same rclone-crypt remote as system/tenant;
+    // restic double-encrypts (its own AES-CTR + rclone crypt) and
+    // that's fine — AES-NI makes the second pass ~free.
+    expect(env.RESTIC_REPOSITORY).toMatch(/\/mail\/mail-snapshots$/);
+    expect(env.RESTIC_REPOSITORY).not.toContain('mail-raw');
   });
 
   it('points at the shim ClusterIP, not raw upstream', () => {

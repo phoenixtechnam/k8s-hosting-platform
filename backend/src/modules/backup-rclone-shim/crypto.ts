@@ -190,6 +190,55 @@ export function deriveCryptRawHex(
 }
 
 /**
+ * Derive a SHARED crypt passphrase + salt for the unified shim
+ * architecture (R-X16: single [encrypted] crypt remote, no combine).
+ *
+ * This is the SINGLE crypt key used by the rendered `[encrypted]`
+ * section. Per-class keys (deriveCryptCredentials) are retained in
+ * code for migration tooling that needs to read older per-class
+ * encrypted blobs, but new renders use only this shared key.
+ *
+ * Trade-off: one shared key vs. three per-class keys. Acceptable
+ * because all classes already share the same BACKUP_TARGET_KEY
+ * Secret AND share the same upstream credentials (one row in
+ * backup_configurations per target). The per-class HKDF derivation
+ * was protecting against accidental cross-class config drift in the
+ * renderer, not adversarial isolation.
+ *
+ * Domain-separation label `shared` (NOT one of system/tenant/mail)
+ * ensures the shared key is cryptographically distinct from any
+ * legacy per-class key — operators can't accidentally read old
+ * per-class blobs through the new shared remote.
+ */
+export function deriveSharedCryptCredentials(rawKey: Buffer): CryptCredentials {
+  const passwordRaw = Buffer.from(
+    hkdfSync(
+      'sha256',
+      rawKey,
+      HKDF_SALT,
+      `${HKDF_LABELS.cryptPassword}/shared`,
+      32,
+    ),
+  );
+  const saltRaw = Buffer.from(
+    hkdfSync(
+      'sha256',
+      rawKey,
+      HKDF_SALT,
+      `${HKDF_LABELS.cryptSalt}/shared`,
+      32,
+    ),
+  );
+  return {
+    obscuredPassword: rcloneObscure(passwordRaw.toString('hex')),
+    obscuredSalt: rcloneObscure(saltRaw.toString('hex')),
+  };
+}
+
+/**
+ * @deprecated Retained for migration tooling that reads legacy per-class
+ * encrypted blobs. New renders use {@link deriveSharedCryptCredentials}.
+ *
  * Derive the per-class crypt passphrase + salt. `className` is one of
  * 'system' / 'tenant' / 'mail' (lowercase canonical) and is included
  * in the HKDF `info` field so each class gets independent values.

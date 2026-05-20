@@ -231,10 +231,11 @@ describe('reconcileBackupRcloneShim — STATE_OK first run', () => {
       fingerprint: '630dcd2966c43366',
       generatedAt: '',
     });
+    // R-X16: all classes must share one upstream target.
     mockedAssign.mockResolvedValue({
       assignments: [
-        { className: 'system', target: baseS3Target({ id: 's1', name: 'system-prim' }) },
-        { className: 'tenant', target: baseS3Target({ id: 't1', name: 'tenant-prim' }) },
+        { className: 'system', target: baseS3Target({ id: 's1', name: 'shared-target' }) },
+        { className: 'tenant', target: baseS3Target({ id: 's1', name: 'shared-target' }) },
       ],
       shadowed: [],
       disabledAssignments: [],
@@ -249,22 +250,26 @@ describe('reconcileBackupRcloneShim — STATE_OK first run', () => {
     expect(result.skipped).toBe(false);
     expect(result.assignedClasses).toEqual(['system', 'tenant']);
 
-    // ConfigMap has buckets for both classes (encrypted + raw aliases).
+    // R-X16: buckets.txt lists bare class names — no `:` suffix, no `-raw`.
     const buckets = env.cmStore['backup-rclone-shim-config'].data['buckets.txt'];
-    expect(buckets).toContain('system:');
-    expect(buckets).toContain('system-raw:');
-    expect(buckets).toContain('tenant:');
-    expect(buckets).toContain('tenant-raw:');
+    const bucketLines = buckets.split('\n').filter(Boolean);
+    expect(bucketLines).toEqual(['system', 'tenant']);
+    // Legacy `:` and `-raw` forms must be gone.
+    expect(buckets).not.toContain(':');
+    expect(buckets).not.toContain('-raw');
     // ConfigMap does NOT carry rclone.conf (moved to Secret).
     expect(env.cmStore['backup-rclone-shim-config'].data['rclone.conf']).toBeUndefined();
 
-    // Credentials Secret carries the rendered rclone.conf with
-    // upstream credentials (the whole point of the move-to-Secret).
+    // Credentials Secret carries the rendered rclone.conf with the
+    // single shared [upstream] + [encrypted] sections.
     const credData = env.secretStore['backup-rclone-shim-credentials'].data;
     expect(credData['rclone.conf']).toBeDefined();
     const decoded = Buffer.from(credData['rclone.conf'], 'base64').toString('utf8');
-    expect(decoded).toContain('[system-upstream]');
-    expect(decoded).toContain('[tenant-upstream]');
+    expect(decoded).toContain('[upstream]');
+    expect(decoded).toContain('[encrypted]');
+    expect(decoded).not.toContain('[system-upstream]');
+    expect(decoded).not.toContain('[tenant-upstream]');
+    expect(decoded).not.toContain('[buckets]'); // no combine layer
 
     // SSH-keys Secret created (empty for S3-only targets but the Secret
     // still exists so the DaemonSet's projected volume can mount it).
@@ -314,7 +319,7 @@ describe('reconcileBackupRcloneShim — idempotent skip', () => {
 });
 
 describe('reconcileBackupRcloneShim — SSH-key materialisation', () => {
-  it('writes per-class PEM data keys to the Secret', async () => {
+  it('writes the upstream SSH PEM to the Secret (single key after R-X16)', async () => {
     vi.clearAllMocks();
     mockedKey.mockResolvedValue({ rawKey: fixedRawKey(), fingerprint: '630dcd2966c43366', generatedAt: '' });
     mockedAssign.mockResolvedValue({
@@ -342,9 +347,9 @@ describe('reconcileBackupRcloneShim — SSH-key materialisation', () => {
     await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
 
     const secretData = env.secretStore['backup-rclone-shim-ssh-keys'].data;
-    expect(secretData['tenant.pem']).toBeDefined();
+    expect(secretData['upstream.pem']).toBeDefined();
     // Stored base64 — decode back and assert it matches.
-    const decoded = Buffer.from(secretData['tenant.pem'], 'base64').toString('utf8');
+    const decoded = Buffer.from(secretData['upstream.pem'], 'base64').toString('utf8');
     expect(decoded).toContain('BEGIN PRIVATE KEY');
   });
 
@@ -375,7 +380,7 @@ describe('reconcileBackupRcloneShim — SSH-key materialisation', () => {
     });
     const env = mkClients();
     await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
-    expect(env.secretStore['backup-rclone-shim-ssh-keys'].data['tenant.pem']).toBeDefined();
+    expect(env.secretStore['backup-rclone-shim-ssh-keys'].data['upstream.pem']).toBeDefined();
 
     // Second pass: tenant flipped to S3 — SSH key no longer needed.
     mockedAssign.mockResolvedValue({
@@ -387,7 +392,7 @@ describe('reconcileBackupRcloneShim — SSH-key materialisation', () => {
       orphanedAssignments: [],
     });
     await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
-    expect(env.secretStore['backup-rclone-shim-ssh-keys'].data['tenant.pem']).toBeUndefined();
+    expect(env.secretStore['backup-rclone-shim-ssh-keys'].data['upstream.pem']).toBeUndefined();
   });
 });
 

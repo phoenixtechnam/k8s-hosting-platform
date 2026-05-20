@@ -48,20 +48,27 @@ Compatibility matrix used by the class-target validator:
 
 | Subsystem | Mechanism | Shim bucket | Target capability |
 |---|---|---|---|
-| `SYSTEM.postgres` | `plugin-barman-cloud` (CNPG plugin v0.12.0) | `s3://system` (rclone crypt) | **any backend via shim** |
-| `SYSTEM.etcd` | `etcd-snap-via-shim` CronJob (`k3s etcd-snapshot save` + rclone S3 client) | `s3://system` (rclone crypt) | **any backend via shim** |
-| `SYSTEM.secrets-bundle` | rclone push (age-encrypted file) | `s3://system-raw` (passthrough — already age-encrypted) | any |
-| `SYSTEM.bulwark` | restic (`RESTIC_PASSWORD = BACKUP_TARGET_KEY`) | `s3://system-raw` (passthrough — restic encrypts itself) | any |
-| `SYSTEM.crowdsec` | restic | `s3://system-raw` | any |
-| `SYSTEM.monitoring` | restic (optional) | `s3://system-raw` | any |
-| `TENANT.tenant-bundle` | rclone composite | `s3://tenant` (rclone crypt) | any |
-| `MAIL.stalwart-rocksdb` | restic (path A) | `s3://mail-raw` | any |
+| `SYSTEM.postgres` | `plugin-barman-cloud` (CNPG plugin v0.12.0) | `s3://system` | **any backend via shim** |
+| `SYSTEM.etcd` | `etcd-snap-via-shim` CronJob (`k3s etcd-snapshot save` + rclone S3 client) | `s3://system` | **any backend via shim** |
+| `SYSTEM.secrets-bundle` | rclone push (age-encrypted file) | `s3://system` | any |
+| `SYSTEM.bulwark` | restic (`RESTIC_PASSWORD = BACKUP_TARGET_KEY`) | `s3://system` | any |
+| `SYSTEM.crowdsec` | restic | `s3://system` | any |
+| `SYSTEM.monitoring` | restic (optional) | `s3://system` | any |
+| `TENANT.tenant-bundle` | rclone composite | `s3://tenant` | any |
+| `MAIL.stalwart-rocksdb` | restic (path A) | `s3://mail` | any |
 | `MAIL.stalwart-rocksdb` | Longhorn native backup (path B, deferred R11) | n/a (Longhorn writes direct) | S3 + NFS |
 
-**Encryption rules**:
-- Callers without their own encryption use `<class>` bucket (rclone crypt wraps upstream).
-- Callers with their own native encryption (restic, age-encrypted secrets-bundle) use `<class>-raw` bucket (passthrough — avoids double-encryption).
-- One platform-wide `BACKUP_TARGET_KEY` (see §13b) drives ALL encryption — single secret to back up offline.
+**Encryption rules (R-X16)**:
+- All shim writes flow through ONE crypt remote (HKDF-derived from
+  `BACKUP_TARGET_KEY`). The legacy `<class>-raw` passthrough variants
+  were retired because they required a `[buckets]` combine layer that
+  broke rclone's LIST traversal (surfaced 2026-05-20 — broke
+  `barman-cloud-backup-show` and every restic enumeration).
+- Self-encrypting callers (restic, age-encrypted secrets-bundle)
+  double-encrypt through the shim's crypt. Cost is negligible on
+  AES-NI capable CPUs (~1 GB/s/core for AES-CTR).
+- One platform-wide `BACKUP_TARGET_KEY` (see §13b) drives ALL
+  encryption — single secret to back up offline.
 
 Every SYSTEM subsystem accepts every target type. No degradation badges. UI per class card:
 
@@ -297,24 +304,25 @@ New `make etcd-snapshot-list` CLI for operators.
 
 **Topology**: a `DaemonSet` in `platform` namespace (one pod per node), fronted by a `Service` with `internalTrafficPolicy: Local` so every client's S3 request routes to its own node's shim pod (zero cross-node data hops).
 
-**Configuration**: a single ConfigMap (`backup-rclone-shim-config`) renders one rclone config section per assigned class (× two: encrypted bucket + raw bucket alias). Re-rendered by platform-api when:
+**Configuration (R-X16)**: a Secret (`backup-rclone-shim-credentials`) renders ONE `[upstream]` section + ONE `[encrypted]` crypt section. The launcher runs `rclone serve s3 encrypted:` — top-level directories inside the served tree become buckets when callers first write to them (`system`, `tenant`, `mail`). Re-rendered by platform-api when:
 - Operator adds/removes a `backup_target` row
 - Operator changes a class → target assignment
 - `BACKUP_TARGET_KEY` is rotated
 - Posix-backed target's mount config changes (Pod-spec changes too — triggers DaemonSet roll)
 
-Bucket layout (when all three classes have targets assigned):
+**Constraint**: all assignments MUST share one upstream target. Operators wanting different storage tiers per class deploy separate shim DaemonSets per tier (deferred — TBD).
+
+Bucket layout (R-X16 unified):
 
 | Bucket | Backing |
 |---|---|
-| `s3://system` | rclone `crypt` (key = BACKUP_TARGET_KEY) → SYSTEM upstream |
-| `s3://system-raw` | passthrough → SYSTEM upstream |
-| `s3://tenant` | rclone `crypt` → TENANT upstream |
-| `s3://tenant-raw` | passthrough → TENANT upstream |
-| `s3://mail` | rclone `crypt` → MAIL upstream |
-| `s3://mail-raw` | passthrough → MAIL upstream |
+| `s3://system` | rclone `crypt` → shared upstream / `system/` subdir |
+| `s3://tenant` | rclone `crypt` → shared upstream / `tenant/` subdir |
+| `s3://mail` | rclone `crypt` → shared upstream / `mail/` subdir |
 
-An unassigned class has NO buckets — clients fail with S3 `NoSuchBucket` (the documented "no target configured" signal).
+The previous `<class>-raw` passthrough variants were retired because they required a `[buckets]` combine layer whose LIST traversal broke `barman-cloud-backup-show` and restic enumeration (surfaced during staging E2E 2026-05-20). Self-encrypting callers (restic, age) now double-encrypt through the shared crypt remote at negligible cost.
+
+When no classes are assigned the shim sleeps and `rclone serve s3` is not running — every client hits a connection-refused (documented "no target configured" signal).
 
 **Performance tuning**: `--vfs-cache-mode off`, `--no-checksum`, `--s3-chunk-size 16M`, `--s3-upload-concurrency 4`, crypt cipher XChaCha20-Poly1305 (hardware-fast on x86 + arm64).
 

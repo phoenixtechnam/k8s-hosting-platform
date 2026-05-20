@@ -48,8 +48,9 @@ data:
   # buckets.txt is validated line-by-line against a strict allowlist
   # before being passed to rclone. A malicious ConfigMap edit (by a
   # `platform`-namespace admin or a buggy reconciler) writing shell
-  # metacharacters cannot inject extra arguments — each bucket token
-  # must match ^[a-z][a-z0-9-]*:$ (e.g. "system:", "mail-raw:").
+  # metacharacters cannot inject extra arguments — each line must be
+  # exactly one of: `system`, `tenant`, `mail` (R-X16 class names,
+  # bare — no `:` suffix, no `-raw` variants).
   launcher.sh: |
     #!/bin/sh
     set -eu
@@ -79,29 +80,25 @@ data:
       while :; do sleep 30; done
     fi
 
-    # Parse buckets.txt line-by-line. Each line must be a single bucket
-    # token matching the allowlist regex. Lines failing validation are
-    # rejected and the shim refuses to start, surfacing the corruption.
+    # Parse buckets.txt line-by-line. R-X16 unified architecture: each
+    # line is now a bare CLASS NAME (no `:` suffix, no `-raw` variants).
+    # The launcher uses the list purely as a sanity-check that the
+    # reconciler completed and at least one class is bound. The actual
+    # served remote is the fixed `encrypted:` single crypt remote.
+    #
+    # Class-name allowlist: lowercase letters only (system, tenant, mail).
     # This defends against:
     #   - shell-meta injection (`; rm -rf /`, $(curl ...), backticks)
     #   - argument injection (`--config /tmp/evil`, extra flags)
     #   - IFS / whitespace pathology
-    BUCKETS_OK=""
+    CLASSES_OK=""
     LINE=""
     while IFS= read -r LINE || [ -n "$LINE" ]; do
       LINE=$(printf '%s' "$LINE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
       [ -z "$LINE" ] && continue
       case "$LINE" in
-        [a-z]*:) ;;
-        *) log "FATAL: buckets.txt contains invalid line: '$LINE'"; exit 2 ;;
-      esac
-      case "$LINE" in
-        # POSIX glob char-class: put `-` LAST so it's literal, not a
-        # range delimiter. The old form `[!a-z0-9-:]` was parsed by
-        # busybox sh (rclone:1.66 base) as range 0..9..-..:, rejecting
-        # legitimate bucket names like `mail-raw:` — discovered via
-        # staging E2E 2026-05-20.
-        *[!a-z0-9:-]*) log "FATAL: buckets.txt contains forbidden char in: '$LINE'"; exit 2 ;;
+        system|tenant|mail) ;;
+        *) log "FATAL: buckets.txt contains invalid class: '$LINE'"; exit 2 ;;
       esac
       # Flux postBuild substituteFrom uses envsubst-style expansion
       # on the ConfigMap content. The two refs below would otherwise
@@ -110,24 +107,24 @@ data:
       # them as literal dollar-brace-NAME for the runtime shell.
       # Memory rule [feedback_flux_postbuild_escape] documents this
       # trap; ci-flux-escape-check.sh enforces.
-      BUCKETS_OK="$${BUCKETS_OK}$${LINE} "
+      CLASSES_OK="$${CLASSES_OK}$${LINE} "
     done < "$BUCKETS_FILE"
 
-    if [ -z "$BUCKETS_OK" ]; then
-      log "$BUCKETS_FILE present but yielded zero valid bucket tokens — sleeping."
+    if [ -z "$CLASSES_OK" ]; then
+      log "$BUCKETS_FILE present but yielded zero valid classes — sleeping."
       while :; do sleep 30; done
     fi
 
-    # `rclone serve s3` accepts ONE remote:path and serves the
-    # top-level DIRECTORIES under it as buckets. The renderer
-    # emits a `[buckets]` combine backend that unions every
-    # assigned class's crypt + raw remote into one tree, with each
-    # class becoming a top-level directory (= bucket). The
-    # buckets.txt validation step above is now a SAFETY CHECK
-    # ensuring the renderer emitted at least one assignment; the
-    # actual remote we launch against is the fixed `buckets:`
-    # combine remote.
-    log "launching rclone serve s3 buckets: (combine of $${BUCKETS_OK})"
+    # `rclone serve s3` accepts ONE remote:path and serves the top-level
+    # DIRECTORIES under it as buckets. The renderer emits ONE upstream
+    # remote (the operator-configured S3/SFTP/CIFS/NFS target) wrapped
+    # by ONE crypt remote (`encrypted:`). When a caller writes to
+    # `s3://system/...` through the served endpoint, rclone serve s3
+    # creates `system/` as a top-level dir inside the crypt remote on
+    # first write — no static bucket list needed. This replaces the
+    # R-X10 `[buckets]` combine backend (which broke rclone's LIST
+    # traversal — see staging E2E 2026-05-20).
+    log "launching rclone serve s3 encrypted: (classes: $${CLASSES_OK})"
 
     # Performance flags carried from BACKUP_ARCHITECTURE_RFC §13a.
     # --vfs-cache-mode writes (NOT off): rclone serve s3 stores in-flight
@@ -144,4 +141,4 @@ data:
       --no-checksum \
       --s3-chunk-size 16M \
       --s3-upload-concurrency 4 \
-      buckets:
+      encrypted:

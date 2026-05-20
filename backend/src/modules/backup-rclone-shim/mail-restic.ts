@@ -5,7 +5,7 @@
  * owns the `mail/stalwart-snapshot-restic-repo` Secret and writes
  * shim-targeting restic env vars:
  *
- *      RESTIC_REPOSITORY = s3:http://shim:9000/mail-raw/mail-snapshots
+ *      RESTIC_REPOSITORY = s3:http://shim:9000/mail/mail-snapshots
  *      RESTIC_PASSWORD   = base64(BACKUP_TARGET_KEY)              [HKDF-aligned]
  *      AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY = HKDF-derived from BACKUP_TARGET_KEY
  *
@@ -21,10 +21,12 @@
  *     picks up cleanly. CI guard 14 enforces operator awareness
  *     via docs.
  *
- * The shim's `s3://mail-raw` bucket is a passthrough alias (no
- * rclone-crypt wrapping) — restic already encrypts its repo. Using
- * the `-raw` variant avoids the double-encryption + storage-overhead
- * RFC §13a-i identifies.
+ * R-X16 retired the `-raw` passthrough variant: the shim now exposes
+ * a SINGLE rclone-crypt remote (no `combine` layer — that backend
+ * broke LIST traversal, breaking barman-cloud-backup-show and restic
+ * enumeration). The mail bucket goes through the same crypt as the
+ * system bucket; restic double-encrypts with negligible cost on
+ * AES-NI capable CPUs.
  */
 
 import { eq, inArray } from 'drizzle-orm';
@@ -60,9 +62,18 @@ export const MAIL_NAMESPACE = 'mail';
  *  `mail` row is absent. See module header. */
 export const MAIL_RESTIC_SECRET_NAME = 'stalwart-snapshot-restic-repo';
 
-/** Shim raw bucket — no rclone-crypt wrapping (restic encrypts).
- *  See RFC §13a-i for the encrypted-vs-raw bucket rationale. */
-export const MAIL_SHIM_BUCKET = 'mail-raw';
+/** Shim bucket for the mail class.
+ *
+ *  R-X16 dropped the `-raw` passthrough variant (was `mail-raw`).
+ *  The unified shim wraps everything in a single rclone crypt remote
+ *  to eliminate the rclone-serve-s3-LIST-through-combine bug that
+ *  broke barman-cloud-backup-show and restic enumeration. Restic
+ *  now writes through TWO encryption layers (its own AES-CTR +
+ *  rclone crypt). The double-encrypt cost is negligible on modern
+ *  CPUs (AES-NI = ~1 GB/s/core for AES-CTR). Operators who object
+ *  can disable rclone crypt by rotating to a key whose HKDF derives
+ *  the well-known "passthrough" passphrase — TBD if anyone needs it. */
+export const MAIL_SHIM_BUCKET = 'mail';
 export const MAIL_SHIM_PREFIX = 'mail-snapshots';
 
 export const SHIM_S3_ENDPOINT_URL = `http://backup-rclone-shim.${SHIM_NAMESPACE}.svc.cluster.local:9000`;

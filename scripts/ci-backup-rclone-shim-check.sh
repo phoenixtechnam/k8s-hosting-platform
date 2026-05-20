@@ -245,9 +245,15 @@ fi
 if ! grep -q "startMailResticShimReconciler" "$APP_TS"; then
   fail "Invariant 14: mail-restic-shim scheduler not wired into app.ts"
 fi
-# Must use the raw bucket (restic encrypts; -raw avoids double crypt).
-if ! grep -q "mail-raw" "$MAIL_RESTIC"; then
-  fail "Invariant 14: mail-restic must route through the mail-raw passthrough bucket (not mail-crypt)"
+# R-X16: the `-raw` variant was dropped (it required a combine layer
+# that broke rclone's LIST traversal). mail-restic now routes through
+# the shared `mail` bucket. Restic double-encrypts harmlessly on top
+# of the shim's crypt remote.
+if ! grep -q "MAIL_SHIM_BUCKET = 'mail'" "$MAIL_RESTIC"; then
+  fail "Invariant 14: mail-restic must target the 'mail' bucket (no -raw variant after R-X16)"
+fi
+if grep -q "MAIL_SHIM_BUCKET = 'mail-raw'" "$MAIL_RESTIC"; then
+  fail "Invariant 14: mail-restic still references the retired mail-raw bucket"
 fi
 # Coexistence with legacy mail-target-sync must be explicit.
 if ! grep -q "STATE_LEGACY_TAKING_OVER" "$MAIL_RESTIC"; then
