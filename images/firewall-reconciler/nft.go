@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/google/nftables"
 )
@@ -238,28 +239,148 @@ func (r *realApplier) applyTenantPorts(s tenantPortSets) error {
 	return nil
 }
 
-// applyCrowdsecBlocklist — STUB for Stage B. Logs what would be applied
-// + returns nil. Stage B.5 lands the real netlink writes:
+// applyCrowdsecBlocklist writes the v4 + v6 crowdsec_blocklist sets
+// via one batched netlink transaction. Two-phase commit matching
+// applyPeerSets:
+//   Phase 1: ensure each set exists (idempotent); commit if any was
+//            created so subsequent element writes can resolve the
+//            Set ID.
+//   Phase 2: flush + add per-element pairs with per-element Timeout
+//            sourced from LAPI's `duration` field, commit.
 //
-//   - GetSetByName on crowdsec_blocklist_v4 / v6
-//   - For each prefix: SetElement with Timeout = per-element TTL from LAPI
-//   - flush+add cycle via the same conn.SetAddElements / SetDeleteElements
-//     pattern peer/tenant sets use, but with timeout per element
+// bootstrap.sh declares the sets with `flags interval,timeout`. We
+// rebuild that shape here in case the operator wiped the set (or
+// ensureCrowdsecSet had to recreate it on a fresh kernel boot) — the
+// set struct's HasTimeout=true + Interval=true ensures the kernel
+// accepts our per-element timeouts.
 //
-// The crowdsec_blocklist_v4/v6 sets are declared by bootstrap.sh with
-// `flags interval,timeout` so the kernel TTL machinery is already
-// armed; we just need to write elements with explicit per-row timeouts.
-//
-// Why stub now: keeping Stage B focused on the data path (LAPI fetch +
-// exclusion compute + cap + self-protect) means the dangerous nft-write
-// path doesn't co-mingle with the safer arithmetic. Stage B.5 is its
-// own focused review.
+// On empty input, we still flush the sets to zero — equivalent to
+// "all bans cleared". This is how Stage C's operator toggle propagates
+// a disable (apply([]) → flush → kernel drops nothing).
 func (r *realApplier) applyCrowdsecBlocklist(s crowdsecBlocklist) error {
-	slog.Info("crowdsec-l4: nft apply STUB (Stage B has no kernel writes)",
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	conn, table, err := r.openAndPreflight()
+	if err != nil {
+		return err
+	}
+	defer conn.CloseLasting() //nolint:errcheck // close error not actionable
+
+	createdAny := false
+	created := func(c bool) { createdAny = createdAny || c }
+	if _, c, err := r.ensureCrowdsecSet(conn, table, setCrowdsecV4, false); err != nil {
+		return err
+	} else {
+		created(c)
+	}
+	if _, c, err := r.ensureCrowdsecSet(conn, table, setCrowdsecV6, true); err != nil {
+		return err
+	} else {
+		created(c)
+	}
+	if createdAny {
+		if err := conn.Flush(); err != nil {
+			return fmt.Errorf("commit crowdsec set creations: %w", err)
+		}
+	}
+
+	v4Set, err := conn.GetSetByName(table, setCrowdsecV4)
+	if err != nil {
+		return fmt.Errorf("post-create lookup %s: %w", setCrowdsecV4, err)
+	}
+	v6Set, err := conn.GetSetByName(table, setCrowdsecV6)
+	if err != nil {
+		return fmt.Errorf("post-create lookup %s: %w", setCrowdsecV6, err)
+	}
+
+	r.flushAndAddElements(conn, v4Set, crowdsecPrefixesToElements(s.V4, s.TTLv4, false))
+	r.flushAndAddElements(conn, v6Set, crowdsecPrefixesToElements(s.V6, s.TTLv6, true))
+
+	if err := conn.Flush(); err != nil {
+		return fmt.Errorf("commit crowdsec member updates: %w", err)
+	}
+	slog.Info("crowdsec-l4: nft applied",
 		"v4_count", len(s.V4),
 		"v6_count", len(s.V6),
 	)
 	return nil
+}
+
+// ensureCrowdsecSet returns the *Set handle for `name`, creating it
+// if absent. The crowdsec_blocklist sets are interval-flagged
+// (CIDR-aware lookups) AND timeout-flagged (per-element TTL). Both
+// flags MUST be set at create time — the kernel rejects element
+// writes with a Timeout if the set wasn't declared with HasTimeout=true.
+func (r *realApplier) ensureCrowdsecSet(conn *nftables.Conn, table *nftables.Table, name string, isV6 bool) (*nftables.Set, bool, error) {
+	if existing, err := conn.GetSetByName(table, name); err == nil && existing != nil {
+		return existing, false, nil
+	}
+	keyType := nftables.TypeIPAddr
+	if isV6 {
+		keyType = nftables.TypeIP6Addr
+	}
+	set := &nftables.Set{
+		Table:      table,
+		Name:       name,
+		KeyType:    keyType,
+		Interval:   true,
+		HasTimeout: true,
+	}
+	if err := conn.AddSet(set, nil); err != nil {
+		return nil, false, fmt.Errorf("add set %s: %w", name, err)
+	}
+	return set, true, nil
+}
+
+// crowdsecPrefixesToElements converts netip.Prefix entries (with
+// index-aligned TTL slice) to nftables interval-set elements with
+// per-element Timeout.
+//
+// Encoding mirrors cidrsToElements: [network_address, network_address +
+// 2^host_bits) with the closing element marked IntervalEnd. The
+// Timeout from the LAPI duration is attached to the OPENING element —
+// the kernel propagates it to the interval as a whole.
+//
+// Length mismatches between prefixes/ttls (shouldn't happen — caller
+// guarantees alignment) are tolerated by using a zero default. A
+// zero Timeout means "no expiry" which is NOT what we want for LAPI
+// data, but it's better than skipping the element entirely (the
+// reconciler will re-render the next tick and pick up fresh TTLs).
+func crowdsecPrefixesToElements(prefixes []netip.Prefix, ttls []time.Duration, isV6 bool) []nftables.SetElement {
+	out := make([]nftables.SetElement, 0, len(prefixes)*2)
+	for i, p := range prefixes {
+		if p.Addr().Is4() == isV6 {
+			continue
+		}
+		p = p.Masked()
+		startBytes := addrBytes(p.Addr(), isV6)
+		endBytes, ok := nextNetwork(p.Addr(), p.Bits(), isV6)
+		if !ok {
+			continue
+		}
+		var ttl time.Duration
+		if i < len(ttls) {
+			ttl = ttls[i]
+		}
+		// Defense: bound TTLs to a sane range. Negative would be invalid
+		// for the kernel; we silently skip rather than throw. Cap at
+		// 7 days — anything longer is almost certainly a misconfig
+		// or attacker-controlled poisoned scenario from upstream
+		// CrowdSec data; the reconciler re-applies every 30s anyway so
+		// "real" bans persist via re-application, not kernel TTL.
+		if ttl <= 0 {
+			continue
+		}
+		if ttl > 7*24*time.Hour {
+			ttl = 7 * 24 * time.Hour
+		}
+		out = append(out,
+			nftables.SetElement{Key: startBytes, Timeout: ttl},
+			nftables.SetElement{Key: endBytes, IntervalEnd: true},
+		)
+	}
+	return out
 }
 
 // observePeerFingerprint reads the current kernel state of the four

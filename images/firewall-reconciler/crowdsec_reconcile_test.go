@@ -407,3 +407,72 @@ func itoa(n int) string {
 	}
 	return string(digits)
 }
+
+func TestCrowdsecPrefixesToElements_AttachesTimeout(t *testing.T) {
+	prefixes := []netip.Prefix{mustPrefix(t, "10.0.0.0/24")}
+	ttls := []time.Duration{2 * time.Hour}
+	elems := crowdsecPrefixesToElements(prefixes, ttls, false)
+	if len(elems) != 2 {
+		t.Fatalf("expected 2 elements (start+end), got %d", len(elems))
+	}
+	if elems[0].Timeout != 2*time.Hour {
+		t.Errorf("start element Timeout = %v, want 2h", elems[0].Timeout)
+	}
+	if !elems[1].IntervalEnd {
+		t.Error("second element should be IntervalEnd")
+	}
+}
+
+func TestCrowdsecPrefixesToElements_SkipsZeroOrNegativeTTL(t *testing.T) {
+	prefixes := []netip.Prefix{
+		mustPrefix(t, "10.0.0.0/24"),
+		mustPrefix(t, "11.0.0.0/24"),
+		mustPrefix(t, "12.0.0.0/24"),
+	}
+	ttls := []time.Duration{
+		time.Hour,
+		0,             // zero — skip
+		-1 * time.Second, // negative — skip
+	}
+	elems := crowdsecPrefixesToElements(prefixes, ttls, false)
+	if len(elems) != 2 { // only the first prefix survives → 2 elements (start+end)
+		t.Errorf("expected 2 elements (one prefix), got %d", len(elems))
+	}
+}
+
+func TestCrowdsecPrefixesToElements_CapsLongTTL(t *testing.T) {
+	prefixes := []netip.Prefix{mustPrefix(t, "10.0.0.0/24")}
+	ttls := []time.Duration{30 * 24 * time.Hour} // 30 days — should cap to 7d
+	elems := crowdsecPrefixesToElements(prefixes, ttls, false)
+	if len(elems) != 2 {
+		t.Fatalf("expected 2 elements, got %d", len(elems))
+	}
+	if elems[0].Timeout != 7*24*time.Hour {
+		t.Errorf("expected 30d TTL capped to 7d, got %v", elems[0].Timeout)
+	}
+}
+
+func TestCrowdsecPrefixesToElements_FamilyFiltered(t *testing.T) {
+	// Passing a v4 prefix with isV6=true should be filtered out, and
+	// vice versa. Mirrors the existing ipsToElements / cidrsToElements
+	// family guard.
+	v4 := []netip.Prefix{mustPrefix(t, "10.0.0.0/24")}
+	v6 := []netip.Prefix{mustPrefix(t, "2001:db8::/64")}
+	ttls := []time.Duration{time.Hour}
+
+	v4InV6 := crowdsecPrefixesToElements(v4, ttls, true)
+	if len(v4InV6) != 0 {
+		t.Errorf("v4 prefix in v6 call should be filtered, got %d elements", len(v4InV6))
+	}
+	v6InV4 := crowdsecPrefixesToElements(v6, ttls, false)
+	if len(v6InV4) != 0 {
+		t.Errorf("v6 prefix in v4 call should be filtered, got %d elements", len(v6InV4))
+	}
+}
+
+func TestCrowdsecPrefixesToElements_EmptyInput(t *testing.T) {
+	elems := crowdsecPrefixesToElements(nil, nil, false)
+	if len(elems) != 0 {
+		t.Errorf("empty input should yield 0 elements, got %d", len(elems))
+	}
+}
