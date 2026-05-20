@@ -126,7 +126,7 @@ function fakeClients() {
               plugins: [
                 {
                   name: 'barman-cloud.cloudnative-pg.io',
-                  parameters: { objectStoreName: 'system-postgres-objectstore' },
+                  parameters: { barmanObjectName: 'system-postgres-objectstore' },
                 },
               ],
             },
@@ -251,7 +251,7 @@ describe('reconcilePostgresObjectStore — happy path', () => {
     expect((body.spec as Record<string, unknown>).method).toBe('plugin');
     expect((body.spec as Record<string, unknown>).pluginConfiguration).toMatchObject({
       name: BARMAN_PLUGIN_NAME,
-      parameters: { objectStoreName: POSTGRES_OBJECT_STORE_NAME },
+      parameters: { barmanObjectName: POSTGRES_OBJECT_STORE_NAME },
     });
     expect((body.spec as Record<string, unknown>).cluster).toMatchObject({
       name: POSTGRES_CLUSTER_NAME,
@@ -310,7 +310,7 @@ describe('reconcilePostgresObjectStore — no SYSTEM target', () => {
               {
                 name: 'barman-cloud.cloudnative-pg.io',
                 isWALArchiver: true,
-                parameters: { objectStoreName: 'system-postgres-objectstore' },
+                parameters: { barmanObjectName: 'system-postgres-objectstore' },
               },
             ],
           },
@@ -341,7 +341,7 @@ describe('reconcilePostgresObjectStore — no SYSTEM target', () => {
               {
                 name: 'barman-cloud.cloudnative-pg.io',
                 isWALArchiver: false,
-                parameters: { objectStoreName: 'system-postgres-objectstore' },
+                parameters: { barmanObjectName: 'system-postgres-objectstore' },
               },
             ],
           },

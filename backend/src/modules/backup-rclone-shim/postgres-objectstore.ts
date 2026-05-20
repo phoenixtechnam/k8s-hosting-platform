@@ -67,7 +67,7 @@ export const POSTGRES_NAMESPACE = 'platform';
 /** Cluster CR name. Mirrors k8s/base/database.yaml. */
 export const POSTGRES_CLUSTER_NAME = 'system-db';
 
-/** ObjectStore CR name — referenced by Cluster.spec.plugins[].parameters.objectStoreName.
+/** ObjectStore CR name — referenced by Cluster.spec.plugins[].parameters.barmanObjectName.
  *  Lives in the same namespace as the Cluster (CNPG plugin convention). */
 export const POSTGRES_OBJECT_STORE_NAME = 'system-postgres-objectstore';
 
@@ -528,7 +528,7 @@ function buildScheduledBackupSpec(opts: ScheduledBackupOpts): Record<string, unk
     pluginConfiguration: {
       name: BARMAN_PLUGIN_NAME,
       parameters: {
-        objectStoreName: POSTGRES_OBJECT_STORE_NAME,
+        barmanObjectName: POSTGRES_OBJECT_STORE_NAME,
       },
     },
     // When the operator unassigns the SYSTEM target, suspend the
