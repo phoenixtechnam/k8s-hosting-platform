@@ -1296,7 +1296,12 @@ install_packages_apt() {
     gettext-base \
     dnsutils \
     age \
+    tmux \
     >/dev/null 2>&1
+  # tmux: required by the admin node-terminal feature (ADR-041) for
+  # cross-reconnect shell continuity. Without it, each page reload
+  # spawns a fresh PTY and bash history / running commands are lost.
+  # Tiny package (~600KB), in every Debian/Ubuntu base repo.
 }
 
 install_packages_dnf() {
@@ -1338,7 +1343,10 @@ install_packages_dnf() {
     wireguard-tools \
     gettext \
     bind-utils \
+    tmux \
     >/dev/null 2>&1
+  # tmux: required by the admin node-terminal feature (ADR-041) for
+  # cross-reconnect shell continuity. In RHEL-9-family base repos.
   if [[ "$OS_VARIANT" != "amzn2023" ]]; then
     # On RHEL/Rocky/Alma/CentOS-Stream, EPEL provides age; install it
     # via dnf so we get distro-managed updates. amzn2023 takes the

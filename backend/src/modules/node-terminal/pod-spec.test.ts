@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildTerminalPodSpec,
+  buildNsenterArgv,
   NSENTER_BASH_ARGV,
   TERMINAL_POD_LABEL,
   TERMINAL_POD_NAMESPACE,
@@ -125,26 +126,91 @@ describe('buildTerminalPodSpec', () => {
   });
 });
 
-describe('NSENTER_BASH_ARGV', () => {
+describe('NSENTER_BASH_ARGV (deprecated; kept for fallback callers)', () => {
   it('enters all 5 host namespaces (m,u,i,n,p) — required for full root shell', () => {
     expect(NSENTER_BASH_ARGV.slice(0, 8)).toEqual(['/usr/bin/nsenter', '-t', '1', '-m', '-u', '-i', '-n', '-p']);
   });
 
   it('falls back from bash to sh so alpine-based hosts work', () => {
     const argv = NSENTER_BASH_ARGV;
-    // -- separator + shell + script that tries bash then falls back
     expect(argv).toContain('--');
     const idx = argv.indexOf('--');
     expect(argv[idx + 1]).toBe('/bin/sh');
     expect(argv[idx + 2]).toBe('-c');
-    // Must check for bash existence BEFORE exec (else missing-bash
-    // exits 127 and the fallback never fires).
     expect(argv[idx + 3]).toMatch(/\[ -x \/bin\/bash \].*exec \/bin\/bash.*exec \/bin\/sh/);
   });
+});
 
-  it('exports TERM=xterm-256color so TUI programs render correctly', () => {
-    const argv = NSENTER_BASH_ARGV;
-    const idx = argv.indexOf('--');
-    expect(argv[idx + 3]).toMatch(/TERM=xterm-256color/);
+describe('buildNsenterArgv (per-session, tmux-in-Pod)', () => {
+  const VALID = '11111111-2222-3333-4444-555555555555';
+
+  it('runs /bin/sh inside the Pod (not nsenter directly) so it can find tmux', () => {
+    const argv = buildNsenterArgv(VALID);
+    // The outer command runs inside the Pod's alpine container; that's
+    // where tmux is bundled. tmux's pane process is the nsenter command.
+    expect(argv[0]).toBe('/bin/sh');
+    expect(argv[1]).toBe('-c');
+  });
+
+  it('uses tmux new-session -A to attach-or-create the per-session tmux', () => {
+    const argv = buildNsenterArgv(VALID);
+    const cmd = argv[argv.length - 1] as string;
+    // -A = "attach if exists, else create" — load-bearing for reconnects
+    // landing in the SAME tmux pane = SAME nsenter'd host shell.
+    expect(cmd).toMatch(/tmux new-session -A -s 'nt-11111111-2222-3333-4444-555555555555'/);
+  });
+
+  it("tmux pane invokes nsenter into PID 1's host namespaces (m,u,i,n,p)", () => {
+    const argv = buildNsenterArgv(VALID);
+    const cmd = argv[argv.length - 1] as string;
+    // Same 5-namespace enter as the legacy direct path.
+    expect(cmd).toMatch(/nsenter -t 1 -m -u -i -n -p --/);
+  });
+
+  it('inside the host shell, sets HISTFILE scoped to this sessionId', () => {
+    const argv = buildNsenterArgv(VALID);
+    const cmd = argv[argv.length - 1] as string;
+    expect(cmd).toMatch(/HISTFILE=\/tmp\/\.bash_history-11111111-2222-3333-4444-555555555555/);
+  });
+
+  it('prefers bash and flushes history on every prompt', () => {
+    const argv = buildNsenterArgv(VALID);
+    const cmd = argv[argv.length - 1] as string;
+    // The inner shell command is single-quoted INSIDE the outer
+    // sh -c, so its own single quotes are escaped as '\''. Match
+    // the semantic content (PROMPT_COMMAND + history -a) without
+    // pinning the exact escape sequence.
+    expect(cmd).toMatch(/PROMPT_COMMAND=.*history -a/);
+    expect(cmd).toMatch(/exec \/bin\/bash -l/);
+  });
+
+  it('exports TERM=xterm-256color for the host shell', () => {
+    const argv = buildNsenterArgv(VALID);
+    const cmd = argv[argv.length - 1] as string;
+    expect(cmd).toMatch(/TERM=xterm-256color/);
+  });
+
+  it('falls back to direct nsenter when tmux missing from the Pod image', () => {
+    const argv = buildNsenterArgv(VALID);
+    const cmd = argv[argv.length - 1] as string;
+    expect(cmd).toMatch(/if command -v tmux/);
+    // Both branches MUST end with an nsenter invocation. The tmux
+    // branch nsenter is inside `tmux new-session ... nsenter ...`;
+    // the fallback nsenter is at top level after `fi;`. Count
+    // occurrences: two distinct nsenter calls.
+    const nsenterCount = (cmd.match(/\/usr\/bin\/nsenter/g) ?? []).length;
+    expect(nsenterCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('rejects sessionId values containing shell metacharacters', () => {
+    expect(() => buildNsenterArgv("'; rm -rf /; '")).toThrow(/invalid sessionId/);
+    expect(() => buildNsenterArgv('../../etc/passwd')).toThrow(/invalid sessionId/);
+    expect(() => buildNsenterArgv('$(id)')).toThrow(/invalid sessionId/);
+  });
+
+  it('embeds the full UUID in the tmux session name (no prefix collision)', () => {
+    const argv = buildNsenterArgv(VALID);
+    const cmd = argv[argv.length - 1] as string;
+    expect(cmd).toContain(VALID);
   });
 });

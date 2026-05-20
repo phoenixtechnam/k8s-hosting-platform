@@ -135,7 +135,10 @@ function makeDb(opts: {
 }
 
 function fakeRow(over: Partial<NodeTerminalSessionRow> = {}): NodeTerminalSessionRow {
-  const now = new Date('2026-05-20T10:00:00Z');
+  // Use Date.now() not a hardcoded string — findById filters by expiry
+  // against the wall clock, so a fixture with a past expiresAt would
+  // make the test break by passage of time (it did, May 2026).
+  const now = new Date();
   return {
     id: 'sess-1',
     nodeName: 'staging-1',
@@ -512,7 +515,7 @@ describe('findReadyForTermination', () => {
   });
 
   it('rowToSession surfaces terminate_after when present', async () => {
-    const fireAt = new Date('2026-05-20T11:00:00Z');
+    const fireAt = new Date(Date.now() + 30_000);
     const row = fakeRow({ terminateAfter: fireAt });
     const { db } = makeDb({ selectResult: [row] });
     const got = await findById(db, 'sess-1');

@@ -63,6 +63,11 @@
 #     H4. New WS connects, host filesystem state preserved across reload
 #     H5. Explicit terminate frame → immediate cleanup (no grace)
 #
+#   J — Shell continuity (tmux + bash history persists across reconnect)
+#     J1. Create session, type a marker command, ungraceful close
+#     J2. POST /ws-token mints fresh URL
+#     J3. New WS runs `history` — marker from pre-reload session shows up
+#
 #   I — Idle timeout (opt-in via --idle, takes 16 minutes)
 #
 # Usage:
@@ -822,6 +827,77 @@ if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
   # H7. Cleanup
   curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$H_SESSION_ID" >/dev/null 2>&1 || true
   curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$H_SESSION_ID2" >/dev/null 2>&1 || true
+fi
+
+# ── Phase J: Shell continuity across reconnect (tmux + history) ──────
+#
+# The pod-spec.ts buildNsenterArgv wraps the host shell in tmux so the
+# SAME pane process survives WS disconnect/reconnect. That means:
+#   • Bash history shows commands typed in earlier sessions
+#   • A long-running command (`tail -f`) survives reload
+#   • The shell's cwd and env survive
+#
+# This is the user-visible payoff of the whole feature. Without it the
+# system "reconnects" but every reload is a fresh PTY — operators
+# would call that broken (and one did, 2026-05-20).
+if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
+  phase "J. Shell continuity (tmux + history persistence)"
+
+  J_CREATE="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
+  J_SESSION_ID="$(echo "$J_CREATE" | jq -r '.data.sessionId')"
+  J_WS_URL="$(echo "$J_CREATE" | jq -r '.data.websocketUrl')"
+  if [[ -n "$J_SESSION_ID" ]]; then
+    pass "J1 created session ($J_SESSION_ID)"
+  else
+    fail "J1 create failed: $J_CREATE"
+  fi
+
+  J_MARKER="JMARK_$(date +%s)_$$"
+  # First session: type a uniquely-marked echo, then ungraceful close.
+  ws_drive "$J_WS_URL" "
+    ws.on('message', (raw) => {
+      const f = JSON.parse(raw.toString());
+      if (f.type === 'connected') {
+        // Give bash a beat to load .bashrc + apply PROMPT_COMMAND
+        setTimeout(() => ws.send(JSON.stringify({ type:'stdin', data:'echo ${J_MARKER}\\n' })), 1200);
+        // Reload-mimic close — no terminate frame.
+        setTimeout(() => ws.close(1001, 'reload'), 3000);
+      }
+    });
+  " >/dev/null 2>&1 || true
+  sleep 1
+
+  # Reconnect via /ws-token (what the frontend's restoreFromStorage does).
+  J_RECON="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$J_SESSION_ID/ws-token" "" "{}")"
+  J_NEW_WS_URL="$(echo "$J_RECON" | jq -r '.data.websocketUrl // empty')"
+  if [[ -z "$J_NEW_WS_URL" ]]; then
+    fail "J2 reconnect /ws-token failed: $J_RECON"
+  else
+    pass "J2 reconnect minted fresh URL"
+  fi
+
+  # Second session: ask bash for its history; the marker MUST appear.
+  if [[ -n "$J_NEW_WS_URL" ]]; then
+    J_OUT="$(ws_drive "$J_NEW_WS_URL" "
+      let buf = '';
+      ws.on('message', (raw) => {
+        const f = JSON.parse(raw.toString());
+        if (f.type === 'connected') {
+          setTimeout(() => ws.send(JSON.stringify({ type:'stdin', data:'history\\n' })), 1500);
+          setTimeout(() => { console.log('BUF '+JSON.stringify(buf)); ws.close(); }, 4000);
+        }
+        if (f.type === 'stdout') buf += f.data;
+      });
+    " 2>&1 || true)"
+
+    if echo "$J_OUT" | grep -q "$J_MARKER"; then
+      pass "J3 bash history shows the pre-reload command ($J_MARKER) — true shell continuity"
+    else
+      fail "J3 bash history missing pre-reload command — fresh PTY, not the same tmux pane"
+    fi
+  fi
+
+  curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$J_SESSION_ID" >/dev/null 2>&1 || true
 fi
 
 # ── Phase I (optional): idle timeout — slow, opt-in via --idle ─────────

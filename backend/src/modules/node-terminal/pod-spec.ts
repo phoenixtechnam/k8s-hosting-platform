@@ -161,25 +161,102 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): k8s.V1Po
  * The `exec` keeps the shell as PID 1 inside the nsenter pid-ns so
  * exit propagates cleanly.
  */
+/**
+ * Build the argv vector platform-api passes to `kubectl exec` for a
+ * given sessionId. Per-session because we use the sessionId as the
+ * tmux session name — same sessionId across reconnects = SAME shell
+ * process with history + scrollback + any in-flight commands intact.
+ *
+ * Lifecycle:
+ *   • First exec for a sessionId → tmux creates session 'nt-<uuid>'
+ *     and spawns bash inside it.
+ *   • Subsequent exec (reload, Reconnect button, network blip) →
+ *     tmux attaches to the existing session. Shell state preserved.
+ *   • Pod deletion → tmux server dies with the Pod → session gone.
+ *
+ * Falls back to plain bash with `history -a; history -n` on every
+ * prompt when tmux isn't installed on the host (rare on Tier-1
+ * distros; covers Alpine k3s images where tmux is not default).
+ * That fallback only preserves bash HISTORY across reconnects, not
+ * scrollback or running processes.
+ */
+export function buildNsenterArgv(sessionId: string): readonly string[] {
+  // The sessionId is interpolated into a sh -c command, so we MUST
+  // reject anything that could escape the single-quoted tmux name and
+  // run arbitrary shell. UUIDs from the route layer are safe; this
+  // belt-and-braces check stops a future caller from passing
+  // unsanitised input. Allowed: alphanumerics, dash, underscore.
+  // Tmux itself permits more (e.g. `.`) but we don't need them.
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(sessionId)) {
+    throw new Error(`buildNsenterArgv: invalid sessionId shape: ${sessionId}`);
+  }
+  const tmuxName = `nt-${sessionId}`;
+  // Architecture: tmux runs INSIDE the Pod's alpine container
+  // (where it's bundled). Each tmux pane spawns the actual host
+  // shell via nsenter. Tmux preserves the pane's process across
+  // detach/reattach cycles — so reconnecting hits the SAME nsenter'd
+  // shell with history, scrollback, and any running commands intact.
+  //
+  // Why tmux-in-Pod (not on host): tmux on the host would require
+  // tmux + dynamic libs installed there. Production hosts get this
+  // via bootstrap.sh (apt/dnf install tmux), but DinD/stripped k3s
+  // images don't have a package manager. Putting tmux INSIDE the
+  // alpine Pod (which we control) sidesteps the host-dep issue
+  // entirely — every cluster gets continuity for free.
+  //
+  // The pane's shell is the nsenter command. When the user types
+  // commands, they hit the HOST's PID 1 namespaces — same root
+  // shell behaviour as before, just managed by tmux.
+  //
+  // Fallback: if tmux ever goes missing from the Pod image (build
+  // regression), fall back to plain nsenter+bash. No continuity in
+  // that path; CI guard catches the omission.
+  const nsenterShellCmd =
+    // Inside the host's namespaces — prefer bash for history, fall
+    // back to sh. PROMPT_COMMAND keeps an on-disk history file in
+    // sync per session so even if tmux somehow loses the pane, the
+    // history file survives.
+    'export TERM=xterm-256color; '
+    + `export HISTFILE=/tmp/.bash_history-${sessionId}; `
+    + 'if [ -x /bin/bash ]; then '
+    +   "export PROMPT_COMMAND='history -a'; "
+    +   'exec /bin/bash -l; '
+    + 'fi; '
+    + 'exec /bin/sh -l';
+
+  const tmuxLauncher =
+    'if command -v tmux >/dev/null 2>&1; then '
+    +   `exec tmux new-session -A -s '${tmuxName}' `
+    +     `/usr/bin/nsenter -t 1 -m -u -i -n -p -- /bin/sh -c '${nsenterShellCmd.replace(/'/g, `'\\''`)}'; `
+    + 'fi; '
+    // tmux missing in the Pod image (shouldn't happen — CI guard
+    // catches it). Fall back to direct nsenter; no continuity.
+    + `exec /usr/bin/nsenter -t 1 -m -u -i -n -p -- /bin/sh -c '${nsenterShellCmd.replace(/'/g, `'\\''`)}'`;
+
+  return [
+    // Run as /bin/sh INSIDE the Pod (alpine) so we can locate tmux
+    // and orchestrate the tmux+nsenter pipeline. The host shell
+    // proper still runs in PID 1's namespaces via tmux's pane process.
+    '/bin/sh',
+    '-c',
+    tmuxLauncher,
+  ];
+}
+
+/**
+ * Backwards-compatibility alias for code that doesn't yet pass a
+ * sessionId. Tests + spike scripts use this. Production attachExec
+ * always uses buildNsenterArgv with the real sessionId so tmux
+ * persistence kicks in.
+ *
+ * @deprecated Use buildNsenterArgv(sessionId) for per-session tmux.
+ */
 export const NSENTER_BASH_ARGV: readonly string[] = [
   '/usr/bin/nsenter',
   '-t', '1',
-  '-m', // mount namespace
-  '-u', // UTS namespace
-  '-i', // IPC namespace
-  '-n', // network namespace
-  '-p', // PID namespace
+  '-m', '-u', '-i', '-n', '-p',
   '--',
   '/bin/sh',
   '-c',
-  // Try bash, fall back to sh. `exec` replaces the shell entirely
-  // when the target exists; the `command -v` check avoids the
-  // "exec: not found → exit 127" failure mode that swallows the
-  // fallback when /bin/bash is missing (k3s, busybox, embedded).
-  //
-  // TERM=xterm-256color so xterm.js renders full-screen TUI programs
-  // (top, htop, vim, less, …) with colour + correct line-drawing
-  // escape sequences. Without an explicit TERM, kubectl-exec defaults
-  // to "dumb" and the host shell strips ANSI sequences from output.
   'export TERM=xterm-256color; { [ -x /bin/bash ] && exec /bin/bash -l; } ; exec /bin/sh -l',
 ];

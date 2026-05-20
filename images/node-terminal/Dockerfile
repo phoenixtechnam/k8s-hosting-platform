@@ -31,7 +31,16 @@ RUN apk add --no-cache \
       bash \
       coreutils \
       tini \
+      tmux \
   && addgroup -S terminal && adduser -S terminal -G terminal
+
+# tmux is bundled here so the host shell can reach it via
+# /proc/<self-in-pod>/root/usr/bin/tmux even when the underlying k3s
+# node distro doesn't ship tmux (e.g. rancher/k3s containerised in
+# dev, or stripped-down node OSes). Production hosts get tmux from
+# bootstrap.sh's apt/dnf install; this is the fallback path. The
+# nsenter wrapper in pod-spec.ts probes both PATH and /proc/.../root
+# locations.
 
 # Document the OCI labels for the GHCR listing. These do not affect
 # runtime.

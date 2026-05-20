@@ -7,7 +7,7 @@ import { getNode } from '../nodes/service.js';
 import { getStepUpStatus } from '../auth/step-up-service.js';
 import {
   buildTerminalPodSpec,
-  NSENTER_BASH_ARGV,
+  buildNsenterArgv,
   TERMINAL_POD_LABEL,
   TERMINAL_POD_NAMESPACE,
 } from './pod-spec.js';
@@ -593,9 +593,12 @@ export async function attachExec(
       TERMINAL_POD_NAMESPACE,
       session.podName,
       'shell',
-      // The argv vector — nsenter into PID 1 namespaces + bash -l.
+      // The argv vector — nsenter into PID 1 namespaces, then tmux
+      // attach-or-create for this sessionId so reconnects land in
+      // the SAME shell (history + scrollback + in-flight commands
+      // preserved). Falls back to plain bash on tmux-less hosts.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      NSENTER_BASH_ARGV as any,
+      buildNsenterArgv(sessionId) as any,
       stdout,
       stderr,
       stdin,
