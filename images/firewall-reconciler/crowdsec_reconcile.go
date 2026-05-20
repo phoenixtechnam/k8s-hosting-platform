@@ -311,23 +311,34 @@ func shouldSelfProtectTrip(proposed crowdsecBlocklist, ex exclusionSet) bool {
 	return intersectionRatio > selfProtectIntersectionThreshold
 }
 
-// crowdsecReconciler runs the dormant Stage A loop. Each tick:
-//  1. Fetches decisions from LAPI (Stage B — currently empty stub).
+// crowdsecReconciler runs the L4 blocklist loop. Each tick:
+//  1. Fetches decisions from LAPI (Stage B+ — wired via newCrowdsecReconciler).
 //  2. Computes exclusion set from informer caches.
-//  3. Applies exclusions → cap → self-protect.
-//  4. LOGS what would land in nft. NEVER writes.
+//  3. Self-protect check on PRE-exclusion blocklist (alarm raised
+//     even if exclusions catch the bad data).
+//  4. Applies exclusions → cap.
+//  5. If mode == "enforce" → applier.applyCrowdsecBlocklist. Else log only.
+//
+// Stage A constructor downgrades enforce→dryrun, so step 5 is
+// unreachable until Stage C lands the operator toggle + drops the
+// downgrade.
 type crowdsecReconciler struct {
 	mode string // "disabled" | "dryrun" | "enforce"
 
-	// fetchDecisions returns the current blocklist from LAPI. Stage B
-	// implements this with an HTTP client; Stage A keeps it nil and
-	// the goroutine logs "fetch stub" each tick.
+	// fetchDecisions returns the current blocklist from LAPI. Stage B+
+	// wires this to a real HTTP client; nil = log "no fetch wired".
 	fetchDecisions func(ctx context.Context) (crowdsecBlocklist, error)
 
 	// computeExclusions reads the informer caches + env to assemble
 	// the union of pod/service/node/trusted/cpp/self IPs that must
-	// never be banned. Stage B implements this; Stage A keeps it nil.
+	// never be banned. Stage B+ wires this to buildExclusionSet;
+	// nil = empty exclusion set (DANGEROUS, only safe for unit tests).
 	computeExclusions func(ctx context.Context) (exclusionSet, error)
+
+	// applier — kernel-write interface. Stage B uses a stub that
+	// logs only; Stage B.5 lands real netlink writes. Production uses
+	// the shared realApplier instance (same one used by peer/tenant).
+	applier applier
 
 	// tripCount counts SELF-PROTECT trips since the last quiescent
 	// transition. NOT reset by healthy ticks — a flickering LAPI stream
@@ -449,11 +460,22 @@ func (cr *crowdsecReconciler) tick(ctx context.Context) {
 	// 3. Enforce cap (after exclusions to keep the most-relevant entries).
 	capped, droppedV4Cap, droppedV6Cap := enforceCap(filtered)
 
-	// Stage A: log + return. Stage B switches on cr.mode here:
-	//   dryrun  → log only
-	//   enforce → call applier.applyCrowdsecBlocklist(capped)
-	slog.Info("crowdsec-l4-reconciler: tick computed (no nft write — Stage A)",
+	// Apply: dryrun logs only; enforce calls the applier (kernel write).
+	// Stage A's newCrowdsecReconciler downgrades enforce→dryrun so this
+	// branch is dormant until Stage C lands the operator toggle. The
+	// log line carries enough context that operators can compare what
+	// "would-be-applied" looks like vs the live trusted_ranges set.
+	applied := false
+	if cr.mode == crowdsecL4ModeEnforce && cr.applier != nil {
+		if err := cr.applier.applyCrowdsecBlocklist(capped); err != nil {
+			slog.Warn("crowdsec-l4-reconciler: applyCrowdsecBlocklist failed", "err", err)
+			return
+		}
+		applied = true
+	}
+	slog.Info("crowdsec-l4-reconciler: tick complete",
 		"mode", cr.mode,
+		"applied", applied,
 		"v4_in", len(bl.V4),
 		"v6_in", len(bl.V6),
 		"dropped_by_exclusion", droppedByExclusion,

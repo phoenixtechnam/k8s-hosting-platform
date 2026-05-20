@@ -24,6 +24,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/netip"
 	"sort"
@@ -91,13 +92,14 @@ type applier interface {
 	applyTenantPorts(s tenantPortSets) error
 	observePeerFingerprint() (string, error)
 	observeTenantPortsFingerprint() (string, error)
-	// F1 — CrowdSec L4 blocklist methods land in a follow-up commit
-	// alongside the new crowdsec_reconcile.go third goroutine. The set
-	// CONSTANTS above are declared now so bootstrap.sh's nft set
-	// declarations (which reference these names) are coherent in the
-	// same commit. The applier methods are intentionally absent from
-	// the interface until the goroutine implementation lands — adding
-	// them without implementations would break the realApplier compile.
+	// F1+F6 Stage B — CrowdSec L4 blocklist apply method. Stub-only
+	// in this commit (logs what would be applied + returns nil).
+	// Stage B.5 fills in the real netlink writes — flush+add with
+	// per-element timeouts mapped from LAPI durations.
+	// Stage A's constructor still downgrades enforce→dryrun so this
+	// path is unreachable until Stage C lands the operator toggle +
+	// removes the downgrade.
+	applyCrowdsecBlocklist(s crowdsecBlocklist) error
 }
 
 // realApplier holds an open lasting netlink connection. Reused across
@@ -233,6 +235,30 @@ func (r *realApplier) applyTenantPorts(s tenantPortSets) error {
 	if err := conn.Flush(); err != nil {
 		return fmt.Errorf("commit tenant member updates: %w", err)
 	}
+	return nil
+}
+
+// applyCrowdsecBlocklist — STUB for Stage B. Logs what would be applied
+// + returns nil. Stage B.5 lands the real netlink writes:
+//
+//   - GetSetByName on crowdsec_blocklist_v4 / v6
+//   - For each prefix: SetElement with Timeout = per-element TTL from LAPI
+//   - flush+add cycle via the same conn.SetAddElements / SetDeleteElements
+//     pattern peer/tenant sets use, but with timeout per element
+//
+// The crowdsec_blocklist_v4/v6 sets are declared by bootstrap.sh with
+// `flags interval,timeout` so the kernel TTL machinery is already
+// armed; we just need to write elements with explicit per-row timeouts.
+//
+// Why stub now: keeping Stage B focused on the data path (LAPI fetch +
+// exclusion compute + cap + self-protect) means the dangerous nft-write
+// path doesn't co-mingle with the safer arithmetic. Stage B.5 is its
+// own focused review.
+func (r *realApplier) applyCrowdsecBlocklist(s crowdsecBlocklist) error {
+	slog.Info("crowdsec-l4: nft apply STUB (Stage B has no kernel writes)",
+		"v4_count", len(s.V4),
+		"v6_count", len(s.V6),
+	)
 	return nil
 }
 
