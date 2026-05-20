@@ -423,10 +423,15 @@ function buildObjectStoreSpec(): Record<string, unknown> {
           key: 'secret_key',
         },
       },
-      // zstd compression — barman-cloud default for new objectstores
-      // since cnpg-i 0.10. Same compression for WAL + data.
-      wal: { compression: 'zstd', maxParallel: 8 },
-      data: { compression: 'zstd' },
+      // gzip compression — plugin-barman-cloud v0.12.0's ObjectStore
+      // CRD only accepts 'bzip2' | 'gzip' | 'snappy' on
+      // spec.configuration.{data,wal}.compression. The original R-X6
+      // RFC named zstd but the upstream CRD has NOT shipped zstd
+      // support yet (validation error: "Unsupported value: zstd").
+      // gzip is the best balance of compatibility + ratio in v0.12.0.
+      // Surfaced during staging E2E round-trip test 2026-05-20.
+      wal: { compression: 'gzip', maxParallel: 8 },
+      data: { compression: 'gzip' },
     },
     // 30-day rolling retention (RFC §12).
     retentionPolicy: DEFAULT_RETENTION_POLICY,
