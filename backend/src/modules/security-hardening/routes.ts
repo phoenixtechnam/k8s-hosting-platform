@@ -304,18 +304,32 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
       },
     );
 
-    // Manual stale-bouncer prune. Same backend call as the 24h scheduler;
-    // operators trigger this from the Banned IPs tab when they want to
-    // see the bouncer list de-noised immediately after a rollout. The
-    // 24h threshold protects live bouncers (updateIntervalSeconds=60s).
+    // Manual stale-bouncer prune. The 24h scheduler is conservative;
+    // operator-triggered prune uses a MUCH shorter default (5 min)
+    // because the operator explicitly opted-in and "stale" is defined
+    // as ">5min since last_pull" in the UI status panel
+    // (PULL_FRESHNESS_MS). Caller can override via ?olderThanSeconds=N
+    // with the same lower bound (60s) the backend helper enforces.
     app.post(
       '/admin/security/crowdsec/bouncers/prune',
       { preHandler: requireRole('super_admin') },
       async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
         const actor = userOf(req as AuthedRequest);
-        app.log.warn({ actor }, 'crowdsec: manual bouncer prune triggered');
+        const rawQ = (req.query as { olderThanSeconds?: string }).olderThanSeconds;
+        let olderThanSeconds = 300; // 5min — matches the UI "online" threshold
+        if (rawQ !== undefined) {
+          const parsed = Number(rawQ);
+          if (!Number.isInteger(parsed) || parsed < 60 || parsed > 30 * 24 * 60 * 60) {
+            return reply.status(400).send({
+              error: 'INVALID_OLDER_THAN',
+              message: 'olderThanSeconds must be an integer between 60 and 2592000 (30 days)',
+            });
+          }
+          olderThanSeconds = parsed;
+        }
+        app.log.warn({ actor, olderThanSeconds }, 'crowdsec: manual bouncer prune triggered');
         try {
-          const result = await pruneStaleBouncers(kubeconfigPath);
+          const result = await pruneStaleBouncers(kubeconfigPath, olderThanSeconds);
           return success(result);
         } catch (err) {
           return reply.status(502).send({
