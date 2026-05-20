@@ -343,9 +343,21 @@ spec:
               cpu: 100m
               memory: 128Mi
             limits:
-              # 1500m / 2Gi — sized for the perf-tuned restic capture
-              # pipeline. ADR-036's "1 GiB" decision pre-dated the
-              # f0e73ca5 perf commit that set `s3.connections=10` +
+              # 750m CPU / 2Gi memory.
+              #
+              # CPU: dropped 1500m → 750m on 2026-05-20. The 1500m was
+              # an unmeasured safety pad; real steady-state usage stays
+              # well under 300m (Node.js / Fastify is I/O bound), with
+              # observed bursts under 600m during restic capture. 750m
+              # gives ~25% headroom over observed peak. The previous
+              # 1500m × 2 replicas = 3000m permanently reserved against
+              # the platform-quota's 16000m limits.cpu, which made
+              # surge-during-rollout exceed quota and required manual
+              # quota bumps for every deploy.
+              #
+              # Memory: 2 GiB stays — sized for the perf-tuned restic
+              # capture pipeline. ADR-036's "1 GiB" decision pre-dated
+              # the f0e73ca5 perf commit that set `s3.connections=10` +
               # `--pack-size 64`: in that combination restic can hold
               # up to 10 × 64 MiB = 640 MiB of in-flight S3 packs PLUS
               # its own working set (~200 MiB) PLUS ambient platform-api
@@ -354,7 +366,7 @@ spec:
               # 11:11:19Z (vdn67) under exactly that load profile.
               # 2 GiB leaves ~1 GiB of headroom while still well under
               # any Hetzner node's RAM (smallest tier has 8 GiB total).
-              cpu: 1500m
+              cpu: 750m
               memory: 2Gi
           livenessProbe:
             httpGet:
