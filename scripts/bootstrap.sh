@@ -3500,6 +3500,84 @@ generate_crowdsec_bouncer_key() {
   log "CrowdSec bouncer key Secret applied to crowdsec + traefik namespaces."
 }
 
+# Platform-api uses its own pre-registered bouncer key so the admin
+# UI's periodic decision-listing calls show up as a SINGLE bouncer
+# entry ("platform-api") in `cscli bouncers list` instead of one per
+# (pod IP, pod restart) tuple under the shared Traefik key. Without
+# this, every platform-api pod restart leaves a stale `traefik@<ip>`
+# entry behind (CrowdSec auto-creates an entry per unique source IP
+# when a key isn't pre-mapped to a name).
+#
+# Idempotent: re-runs reuse the existing Secret + skip the cscli
+# bouncers add when the bouncer name is already registered.
+#
+# Ordering: MUST run after the crowdsec namespace exists AND after
+# the CrowdSec pod is Ready (we exec into it to call cscli). Called
+# from install_phase3 after install_crowdsec_via_flux finishes, or
+# operators can re-run `bash scripts/bootstrap.sh --resume-from-phase3`
+# on existing clusters to backfill the Secret + registration.
+generate_platform_api_bouncer_key() {
+  local secret_name="platform-api-bouncer-key"
+  local bouncer_name="platform-api"
+  if ! kctl get ns crowdsec >/dev/null 2>&1; then
+    log "crowdsec namespace missing — skipping platform-api bouncer key (will retry on next bootstrap run)."
+    return 0
+  fi
+
+  # Lock to prevent concurrent bootstrap runs from racing on the
+  # Secret-vs-cscli registration (race could leave the Secret holding
+  # one key while CrowdSec's DB holds another — silent 403 from the
+  # 5-min cached LAPI calls). flock /tmp/<file> is local to the
+  # bootstrap host; concurrent bootstraps on the SAME node will
+  # serialize cleanly. Concurrent bootstraps across DIFFERENT operator
+  # workstations is an out-of-scope coordination problem (operators
+  # should coordinate; this is bootstrap, not regular ops).
+  exec 9>/tmp/.bootstrap-platform-api-bouncer.lock
+  if ! flock -w 30 9; then
+    log "WARN: could not acquire flock on platform-api bouncer key — skipping (concurrent bootstrap?)"
+    return 0
+  fi
+
+  local key_value
+  if kctl get secret -n crowdsec "${secret_name}" >/dev/null 2>&1; then
+    log "Platform-api bouncer key Secret already exists, reusing."
+    key_value=$(kctl get secret -n crowdsec "${secret_name}" -o jsonpath='{.data.bouncer-key}' | base64 -d)
+  else
+    log "Generating new platform-api bouncer key..."
+    key_value=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40)
+    kctl create secret generic "${secret_name}" \
+      --namespace crowdsec \
+      --from-literal=bouncer-key="${key_value}" \
+      --dry-run=client -o yaml | kctl apply -f -
+  fi
+
+  # Pre-register the bouncer in CrowdSec so the key maps to the name
+  # "platform-api" instead of auto-creating per-source-IP entries.
+  # Skip if CrowdSec pod isn't ready yet — operator can re-run.
+  if ! kctl wait --for=condition=ready pod -n crowdsec -l app.kubernetes.io/name=crowdsec --timeout=10s >/dev/null 2>&1; then
+    log "CrowdSec pod not ready — skipping cscli bouncers add (re-run bootstrap to backfill)."
+    return 0
+  fi
+
+  # Atomic delete-then-add. We can't trust `cscli bouncers list -o json`
+  # parsing during a CrowdSec restart (empty/partial stdout) and we
+  # can't trust `cscli bouncers add` to be idempotent (it errors on
+  # name conflict, AND its --key flag was observed to silently ignore
+  # the provided value when run via `kubectl exec` — switched to the
+  # short `-k` form which works reliably).
+  #
+  # The delete-then-add pattern guarantees the Secret's key value
+  # ALWAYS matches the registered key. The `delete` 2>/dev/null
+  # swallows "bouncer not found" on first run. The `add -k` writes
+  # OUR key (not a randomly-generated one).
+  kctl exec -n crowdsec deploy/crowdsec -- cscli bouncers delete "${bouncer_name}" >/dev/null 2>&1 || true
+  if kctl exec -n crowdsec deploy/crowdsec -- cscli bouncers add "${bouncer_name}" -k "${key_value}" >/dev/null 2>&1; then
+    log "Platform-api bouncer pre-registered in CrowdSec as '${bouncer_name}'."
+  else
+    log "WARN: cscli bouncers add ${bouncer_name} failed. Platform-api will fall back to the shared Traefik key (legacy auto-registration behavior)."
+  fi
+}
+
 install_cert_manager() {
   if kctl get deployment -n cert-manager cert-manager &>/dev/null 2>&1; then
     log "cert-manager already installed, skipping."
@@ -6841,6 +6919,13 @@ main() {
     # admin can authenticate to the cli). Idempotent — re-runs only update
     # credentials/roles to converge after rotation.
     provision_stalwart_master_user
+    # Platform-api's separate bouncer key + pre-registered "platform-api"
+    # bouncer name. Runs LATE in phase 3 because it needs the CrowdSec
+    # Deployment to be ready (cscli exec). Idempotent — re-runs reuse
+    # the existing Secret and skip the cscli bouncers add when the
+    # bouncer is already pre-registered.
+    generate_platform_api_bouncer_key
+
     # Tier-1 secrets bundle for offline retrieval. Runs after
     # generate_platform_secrets + generate_operator_recipient + bootstrap_stalwart_v016
     # so all bundled material (including stalwart-admin-creds) exists.
