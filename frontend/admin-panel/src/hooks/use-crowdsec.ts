@@ -18,6 +18,10 @@ import type {
   CrowdsecAddBanRequest,
   CrowdsecAddBanResponse,
   CrowdsecAddStaticBanRequest,
+  CrowdsecAutobanCalibrationResponse,
+  CrowdsecAutobanConfig,
+  CrowdsecAutobanListRunsResponse,
+  CrowdsecAutobanPatchConfigRequest,
   CrowdsecConsoleEnrollRequest,
   CrowdsecConsoleMetaPatch,
   CrowdsecConsoleStatus,
@@ -188,5 +192,58 @@ export function usePatchCrowdsecConsoleMeta() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: CONSOLE_KEY });
     },
+  });
+}
+
+// ─── F3 — Auto-ban config + runs + calibration ───────────────────────
+
+const AUTOBAN_CONFIG_KEY = ['crowdsec', 'autoban', 'config'] as const;
+const AUTOBAN_RUNS_KEY = ['crowdsec', 'autoban', 'runs'] as const;
+
+export function useCrowdsecAutobanConfig() {
+  return useQuery<Envelope<CrowdsecAutobanConfig>>({
+    queryKey: AUTOBAN_CONFIG_KEY,
+    queryFn: () => apiFetch('/api/v1/admin/security/crowdsec/autoban/config'),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function usePatchCrowdsecAutobanConfig() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<CrowdsecAutobanConfig>, Error, CrowdsecAutobanPatchConfigRequest>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/security/crowdsec/autoban/config', {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: AUTOBAN_CONFIG_KEY });
+    },
+  });
+}
+
+export function useCrowdsecAutobanRuns(limit = 50) {
+  return useQuery<Envelope<CrowdsecAutobanListRunsResponse>>({
+    queryKey: [...AUTOBAN_RUNS_KEY, limit],
+    queryFn: () => apiFetch(`/api/v1/admin/security/crowdsec/autoban/runs?limit=${limit}`),
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCalibrateAutoban() {
+  // POST so the body can carry an override config; query param `hours`
+  // (1..168) controls how far back to replay.
+  return useMutation<
+    Envelope<CrowdsecAutobanCalibrationResponse>,
+    Error,
+    { hours: number; override?: Partial<CrowdsecAutobanConfig> }
+  >({
+    mutationFn: ({ hours, override }) =>
+      apiFetch(`/api/v1/admin/security/crowdsec/autoban/calibrate?hours=${hours}`, {
+        method: 'POST',
+        body: override ? JSON.stringify(override) : undefined,
+      }),
   });
 }
