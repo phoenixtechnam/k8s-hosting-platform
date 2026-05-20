@@ -211,4 +211,17 @@ if ! echo "$SERVICE_CODE" | grep -A35 'export async function scheduleDelayedTerm
   fail "service.ts scheduleDelayedTermination's setTimeout MUST re-check terminate_after via findById before calling terminateSession (cross-replica safety)."
 fi
 
-echo "[ci-node-terminal-check] OK — all 18 security + reliability invariants intact."
+# 19. Per-session host-filesystem cleanup. The Pod's preStop lifecycle
+# hook MUST `rm -f` both the HISTFILE and tmux config that the inner
+# shell creates on the host. Without this, /root and /tmp accumulate
+# one tiny file per session forever (operator-reported leak on
+# staging 2026-05-20). The hook nsenters into PID 1's mount namespace
+# so it can see the host's filesystem (the files don't exist inside
+# the Pod's container fs).
+if ! echo "$POD_SPEC_CODE" | grep -Eq "preStop:" \
+   || ! echo "$POD_SPEC_CODE" | grep -Eq "rm -f.*bash_history-" \
+   || ! echo "$POD_SPEC_CODE" | grep -Eq "rm -f.*\.nt-tmux-"; then
+  fail "pod-spec.ts must declare a preStop lifecycle hook that rm -fs /root/.bash_history-<id> AND /tmp/.nt-tmux-<id>.conf — required to prevent per-session host-fs leaks."
+fi
+
+echo "[ci-node-terminal-check] OK — all 19 security + reliability invariants intact."

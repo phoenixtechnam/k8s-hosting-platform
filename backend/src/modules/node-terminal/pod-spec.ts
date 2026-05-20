@@ -62,6 +62,14 @@ export interface BuildTerminalPodSpecInput {
  */
 export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): k8s.V1Pod {
   const image = input.image ?? DEFAULT_TERMINAL_IMAGE;
+  // sessionId is interpolated into the preStop hook's shell command
+  // (`rm -f '/root/.bash_history-<id>' '/tmp/.nt-tmux-<id>.conf'`).
+  // Defence-in-depth — the route layer's Zod schema already enforces
+  // UUID shape, but a future caller that bypasses it would otherwise
+  // inject shell here. Same regex as buildNsenterArgv.
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(input.sessionId)) {
+    throw new Error(`buildTerminalPodSpec: invalid sessionId shape: ${input.sessionId}`);
+  }
   // Security finding H3: avoid pod-name collisions in the 8-char
   // UUID prefix space (~4B combinations) by using the FULL UUID.
   // Total length: 14 ("node-terminal-") + 36 = 50 chars, well under
@@ -126,6 +134,47 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): k8s.V1Po
           // separately. terminationGracePeriodSeconds: 5 keeps shutdown
           // tight if the session ends.
           command: ['/bin/sh', '-c', 'sleep 3600'],
+          // preStop runs BEFORE k8s SIGTERMs the container, so it has
+          // access to nsenter and can reach the host filesystem. We
+          // clean up the per-session artifacts that live on the HOST
+          // (not in the Pod's container fs) and would otherwise leak
+          // forever:
+          //   • /root/.bash_history-<uuid>  — operator-typed commands
+          //     (mode 0600; not a leak risk between operators because
+          //     the UUID is unguessable, but it accumulates and may
+          //     contain accidentally-typed secrets)
+          //   • /tmp/.nt-tmux-<uuid>.conf   — tmux config written at
+          //     session start; useless after the session ends
+          //
+          // Bounded by terminationGracePeriodSeconds (5s) so a hung
+          // hook can't delay Pod deletion meaningfully. `rm -f` never
+          // returns non-zero on missing files, so the hook is
+          // idempotent across the no-tmux fallback path too (where
+          // the .conf file is never created).
+          //
+          // Runs on EVERY Pod deletion path: explicit terminate,
+          // grace-period expiry, idle sweep, deadline sweep, orphan
+          // sweep, manual `kubectl delete`. Kubernetes guarantees it
+          // even when platform-api is down — the kubelet on the node
+          // runs preStop hooks locally.
+          lifecycle: {
+            preStop: {
+              exec: {
+                command: [
+                  '/usr/bin/nsenter',
+                  '-t', '1',
+                  '-m', // mount namespace — needed to see host /root + /tmp
+                  '--',
+                  '/bin/sh',
+                  '-c',
+                  // Single-quoted filenames safe because input.sessionId
+                  // is a UUID (validated by route-layer Zod + by
+                  // buildNsenterArgv's regex when the shell launches).
+                  `rm -f '/root/.bash_history-${input.sessionId}' '/tmp/.nt-tmux-${input.sessionId}.conf'`,
+                ],
+              },
+            },
+          },
           securityContext: {
             // The whole reason the feature works. CAP_SYS_ADMIN
             // (granted via privileged: true) is required for nsenter

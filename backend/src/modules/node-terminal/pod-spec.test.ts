@@ -124,6 +124,35 @@ describe('buildTerminalPodSpec', () => {
     const pod = buildTerminalPodSpec({ nodeName: VALID_NODE, sessionId: VALID_SESSION });
     expect(pod.spec?.containers?.[0].command).toEqual(['/bin/sh', '-c', 'sleep 3600']);
   });
+
+  it('attaches a preStop lifecycle hook that nsenters into host PID 1 and removes per-session artifacts', () => {
+    const pod = buildTerminalPodSpec({ nodeName: VALID_NODE, sessionId: VALID_SESSION });
+    const lifecycle = pod.spec?.containers?.[0].lifecycle;
+    expect(lifecycle?.preStop?.exec?.command).toBeDefined();
+    const cmd = lifecycle!.preStop!.exec!.command!;
+    // Must nsenter into the HOST's mount namespace — files live on
+    // the host, not in the Pod's container fs.
+    expect(cmd[0]).toBe('/usr/bin/nsenter');
+    expect(cmd.slice(1, 5)).toEqual(['-t', '1', '-m', '--']);
+    // The shell command must reference BOTH artifact paths, each
+    // single-quoted so an attacker who somehow got a metacharacter
+    // through the sessionId validation still can't shell-inject.
+    const shellCmd = cmd[cmd.length - 1] as string;
+    expect(shellCmd).toContain(`'/root/.bash_history-${VALID_SESSION}'`);
+    expect(shellCmd).toContain(`'/tmp/.nt-tmux-${VALID_SESSION}.conf'`);
+    // rm -f → idempotent across the no-tmux fallback path (where
+    // .conf is never created).
+    expect(shellCmd).toMatch(/^rm -f /);
+  });
+
+  it('rejects sessionId values containing shell metacharacters (defence-in-depth)', () => {
+    expect(() => buildTerminalPodSpec({ nodeName: VALID_NODE, sessionId: "'; rm -rf /; '" }))
+      .toThrow(/invalid sessionId/);
+    expect(() => buildTerminalPodSpec({ nodeName: VALID_NODE, sessionId: '$(id)' }))
+      .toThrow(/invalid sessionId/);
+    expect(() => buildTerminalPodSpec({ nodeName: VALID_NODE, sessionId: '../../etc/passwd' }))
+      .toThrow(/invalid sessionId/);
+  });
 });
 
 describe('NSENTER_BASH_ARGV (deprecated; kept for fallback callers)', () => {

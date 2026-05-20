@@ -68,6 +68,12 @@
 #     J2. POST /ws-token mints fresh URL
 #     J3. New WS runs `history` — marker from pre-reload session shows up
 #
+#   K — Host-filesystem cleanup on Pod teardown
+#     K1. Create + drive a session (HISTFILE + tmux.conf land on host)
+#     K2. Verify both files exist on the host BEFORE delete
+#     K3. After DELETE: HISTFILE must be removed by the preStop hook
+#     K4. After DELETE: tmux.conf must be removed by the preStop hook
+#
 #   I — Idle timeout (opt-in via --idle, takes 16 minutes)
 #
 # Usage:
@@ -936,6 +942,98 @@ if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
 
   curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$J_SESSION_ID" >/dev/null 2>&1 || true
   fi  # end of "host has tmux or bash" branch
+fi
+
+# ── Phase K: Host-filesystem cleanup on Pod teardown ─────────────────
+#
+# The privileged Pod's preStop lifecycle hook MUST remove the per-
+# session artifacts that live on the HOST (via nsenter -m). Without
+# this, /root/.bash_history-<uuid> and /tmp/.nt-tmux-<uuid>.conf
+# accumulate forever — staging worker had ~30 leaked files at the
+# time this assertion was added (2026-05-20).
+#
+#   K1. Create + drive session (so the inner shell writes both files
+#       on the host).
+#   K2. Verify both files exist on the host (sanity — the inner shell
+#       actually ran).
+#   K3. DELETE the session → Pod teardown → preStop runs.
+#   K4. Verify BOTH files are gone within 10s of the DELETE.
+if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
+  phase "K. Host-fs cleanup on Pod teardown"
+
+  K_CREATE="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
+  K_SID="$(echo "$K_CREATE" | jq -r '.data.sessionId')"
+  K_WS_URL="$(echo "$K_CREATE" | jq -r '.data.websocketUrl')"
+  K_POD_NAME="$(echo "$K_CREATE" | jq -r '.data.podName')"
+  if [[ -n "$K_SID" ]]; then
+    pass "K1 created session ($K_SID)"
+  else
+    fail "K1 create failed: $K_CREATE"
+  fi
+
+  # Drive the WS briefly so the inner shell runs `umask 0077; export
+  # HISTFILE=...` AND tmux writes its config. The HISTFILE itself is
+  # only created when bash exits or `history -a` runs — type one
+  # command so PROMPT_COMMAND flushes immediately.
+  if [[ -n "$K_WS_URL" ]]; then
+    ws_drive "$K_WS_URL" "
+      ws.on('message', (raw) => {
+        const f = JSON.parse(raw.toString());
+        if (f.type === 'connected') {
+          setTimeout(() => ws.send(JSON.stringify({ type:'stdin', data:'echo K_PROBE\\n' })), 1200);
+          setTimeout(() => ws.close(1001, 'reload'), 3000); // ungraceful
+        }
+      });
+    " >/dev/null 2>&1 || true
+    sleep 1
+  fi
+
+  # Sanity-check the files exist on the host
+  KUBECTL_CMD_K="${KUBECTL:-kubectl}"
+  EXEC_PROBE="$KUBECTL_CMD_K --namespace=$NAMESPACE exec $K_POD_NAME -- nsenter -t 1 -m --"
+  if $EXEC_PROBE ls "/root/.bash_history-$K_SID" >/dev/null 2>&1; then
+    pass "K2a HISTFILE exists on host before teardown"
+  else
+    warn "K2a HISTFILE absent — bash may not have flushed PROMPT_COMMAND yet"
+  fi
+  if $EXEC_PROBE ls "/tmp/.nt-tmux-$K_SID.conf" >/dev/null 2>&1; then
+    pass "K2b tmux config exists on host before teardown"
+  else
+    warn "K2b tmux config absent — host may not have tmux (skip)"
+  fi
+
+  # Snapshot a worker-reachable Pod we can use as a probe AFTER the
+  # session Pod is deleted. We need ANY Pod on the same node that can
+  # still nsenter to host /root and /tmp. The simplest: create a fresh
+  # node-terminal session on the same node — it has the same nsenter
+  # privileges and runs on the same host filesystem. We delete it
+  # immediately after the probe to keep things tidy.
+  curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$K_SID" >/dev/null 2>&1
+  sleep 8 # preStop + Pod deletion + propagation
+
+  K_PROBE_CREATE="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
+  K_PROBE_POD="$(echo "$K_PROBE_CREATE" | jq -r '.data.podName')"
+  K_PROBE_SID="$(echo "$K_PROBE_CREATE" | jq -r '.data.sessionId')"
+  # Wait for the probe Pod to be Running so kubectl exec works.
+  for _ in 1 2 3 4 5; do
+    if $KUBECTL_CMD_K --namespace="$NAMESPACE" get pod "$K_PROBE_POD" -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; then
+      break
+    fi
+    sleep 2
+  done
+
+  if $KUBECTL_CMD_K --namespace="$NAMESPACE" exec "$K_PROBE_POD" -- nsenter -t 1 -m -- ls "/root/.bash_history-$K_SID" 2>/dev/null; then
+    fail "K3 HISTFILE for $K_SID still exists on host after teardown — preStop hook didn't fire"
+  else
+    pass "K3 HISTFILE removed by preStop hook"
+  fi
+  if $KUBECTL_CMD_K --namespace="$NAMESPACE" exec "$K_PROBE_POD" -- nsenter -t 1 -m -- ls "/tmp/.nt-tmux-$K_SID.conf" 2>/dev/null; then
+    fail "K4 tmux config for $K_SID still exists on host after teardown — preStop hook didn't fire"
+  else
+    pass "K4 tmux config removed by preStop hook"
+  fi
+
+  curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$K_PROBE_SID" >/dev/null 2>&1 || true
 fi
 
 # ── Phase I (optional): idle timeout — slow, opt-in via --idle ─────────
