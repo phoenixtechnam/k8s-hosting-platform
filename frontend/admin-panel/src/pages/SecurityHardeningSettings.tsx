@@ -1891,6 +1891,38 @@ function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
             : <span className="text-amber-600 dark:text-amber-400">disabled</span>}
           {!status.capiAuthenticated && <span className="text-amber-600 dark:text-amber-400"> (CAPI auth failed)</span>}
         </div>
+        {/* Decision counts — surfaced when cscli was reachable on the
+            most-recent status fetch. Community blocklist count + total
+            give operators an at-a-glance sense of how many IPs are
+            actively dropping. Operators can review individual entries
+            in the "Active decisions" table below (use the Search field
+            to find specific IPs; CAPI-origin entries dominate when
+            community blocklist is enabled, so the search box is the
+            practical review tool for a 6M-entry list). */}
+        {status.decisionCounts ? (
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            <span className="font-mono text-gray-700 dark:text-gray-300">
+              {status.decisionCounts.communityBlocklist.toLocaleString()}
+            </span>{' '}community IPs ·{' '}
+            <span className="font-mono text-gray-700 dark:text-gray-300">
+              {status.decisionCounts.total.toLocaleString()}
+            </span>{' '}total decisions
+            {Object.keys(status.decisionCounts.byOrigin).length > 1 && (
+              <span className="ml-1 text-[10px] opacity-60" title={
+                Object.entries(status.decisionCounts.byOrigin)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([o, n]) => `${o}: ${n.toLocaleString()}`)
+                  .join('\n')
+              }>
+                (hover for origin breakdown)
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 italic">
+            decision counts unavailable (cscli unreachable)
+          </div>
+        )}
       </div>
 
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">

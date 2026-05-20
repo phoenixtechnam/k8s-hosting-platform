@@ -230,6 +230,24 @@ export const crowdsecAddStaticBanRequestSchema = z.object({
 });
 export type CrowdsecAddStaticBanRequest = z.infer<typeof crowdsecAddStaticBanRequestSchema>;
 
+/**
+ * Aggregate decision counts broken down by origin (CAPI = community
+ * blocklist, cscli = operator-added manual bans, lists/* = console
+ * blocklists, crowdsecurity/* = local scenario triggers). null when
+ * cscli was unavailable on the most-recent check — UI renders as
+ * "(count unavailable)" rather than misleading zeros.
+ *
+ * Source: `cscli metrics show decisions -o json` — returns aggregate
+ * counts, scales to a 6M-entry community blocklist without OOM.
+ */
+export const crowdsecDecisionCountsSchema = z.object({
+  total: z.number().int().min(0),
+  byOrigin: z.record(z.string(), z.number().int().min(0)),
+  /** Convenience field — equals byOrigin.CAPI or 0. */
+  communityBlocklist: z.number().int().min(0),
+});
+export type CrowdsecDecisionCounts = z.infer<typeof crowdsecDecisionCountsSchema>;
+
 export const crowdsecStatusSchema = z.object({
   /** True if the LAPI /health endpoint responded OK on the most-recent check. */
   lapiHealthy: z.boolean(),
@@ -244,6 +262,8 @@ export const crowdsecStatusSchema = z.object({
   /** Count of loaded scenarios (rules that can trigger automatic bans). */
   scenariosLoaded: z.number().int().min(0),
   coverage: crowdsecCoverageSchema,
+  /** Aggregate decision counts. null when cscli was unavailable. */
+  decisionCounts: crowdsecDecisionCountsSchema.nullable(),
 });
 export type CrowdsecStatus = z.infer<typeof crowdsecStatusSchema>;
 

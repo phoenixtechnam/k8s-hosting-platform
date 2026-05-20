@@ -112,6 +112,32 @@ spec:
             capabilities:
               drop: [ALL]
             readOnlyRootFilesystem: false
+          lifecycle:
+            postStart:
+              # `cscli capi status` requires /etc/crowdsec/hub/.index.json
+              # which is downloaded by `cscli hub update`. The config
+              # volume is emptyDir (pod-restart-ephemeral), so without
+              # this hook every fresh pod reports CAPI as failed even
+              # though credentials are valid + community blocklist is
+              # enabled. Bug observed 2026-05-20 — the platform-api
+              # status panel showed "Community blocklist: disabled
+              # (CAPI auth failed)" until an operator manually ran
+              # `cscli hub update`.
+              #
+              # Retry in-shell because LAPI may not be Ready when the
+              # postStart hook fires; the 3-attempt loop covers the
+              # typical 1-5s startup window. Failure is non-fatal —
+              # the container still starts (LAPI itself doesn't need
+              # the hub index).
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    for i in 1 2 3; do
+                      cscli hub update && break
+                      sleep 2
+                    done
           volumeMounts:
             - name: data
               mountPath: /var/lib/crowdsec/data

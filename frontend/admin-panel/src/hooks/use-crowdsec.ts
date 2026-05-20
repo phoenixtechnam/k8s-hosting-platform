@@ -278,13 +278,17 @@ export function usePatchCrowdsecL4Mode() {
   });
 }
 
-// ─── Stale-bouncer prune (manual button mirrors 24h scheduler) ────────
-
-export function usePruneCrowdsecBouncers() {
+// ─── Stale-bouncer prune (manual button vs 24h scheduler) ────────────
+//
+// The button uses a 5-min default — matches the "online" definition in
+// the status panel so "stale = the ones shown as stale" actually
+// matches what gets pruned. The 24h scheduler stays conservative;
+// this is opt-in cleanup.
+export function usePruneCrowdsecBouncers(olderThanSeconds: number = 300) {
   const qc = useQueryClient();
   return useMutation<Envelope<{ message: string; pruned: number; olderThanSeconds: number }>, Error, void>({
     mutationFn: () =>
-      apiFetch('/api/v1/admin/security/crowdsec/bouncers/prune', { method: 'POST' }),
+      apiFetch(`/api/v1/admin/security/crowdsec/bouncers/prune?olderThanSeconds=${olderThanSeconds}`, { method: 'POST' }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: STATUS_KEY });
     },

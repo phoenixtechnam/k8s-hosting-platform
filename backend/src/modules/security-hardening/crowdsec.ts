@@ -460,6 +460,52 @@ async function fetchCapiStatus(kc: k8s.KubeConfig, podName: string): Promise<{ a
   }
 }
 
+/**
+ * Aggregate decision counts broken down by origin. Used to surface
+ * "Community blocklist: N IPs" in the status panel.
+ *
+ * Uses `cscli metrics show decisions -o json` because the output is
+ * AGGREGATE COUNTS (not the full decision list) — scales cleanly to
+ * a 6M-entry community blocklist without OOM-ing cscliExec's stdout
+ * buffer. Format:
+ *   { "decisions": { "<reason>": { "<origin>": { "<action>": N }}}}
+ *
+ * Returns null on parse failure so callers can render "unknown"
+ * rather than incorrect zeros.
+ */
+async function fetchDecisionCounts(kc: k8s.KubeConfig, podName: string): Promise<{
+  total: number;
+  byOrigin: Record<string, number>;
+  communityBlocklist: number;
+} | null> {
+  try {
+    const { stdout } = await cscliExec(kc, podName, ['metrics', 'show', 'decisions', '-o', 'json']);
+    const parsed = JSON.parse(stdout) as { decisions?: Record<string, Record<string, Record<string, number>>> };
+    const tree = parsed.decisions ?? {};
+    let total = 0;
+    const byOrigin: Record<string, number> = {};
+    for (const reason of Object.values(tree)) {
+      for (const [origin, actions] of Object.entries(reason)) {
+        for (const count of Object.values(actions)) {
+          const n = Number(count);
+          if (!Number.isFinite(n)) continue;
+          total += n;
+          byOrigin[origin] = (byOrigin[origin] ?? 0) + n;
+        }
+      }
+    }
+    return {
+      total,
+      byOrigin,
+      // CAPI = Central API = the community blocklist (CrowdSec terminology).
+      // Operators see this as "Community blocklist" in the UI.
+      communityBlocklist: byOrigin.CAPI ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function fetchScenariosCount(kc: k8s.KubeConfig, podName: string): Promise<number> {
   try {
     const { stdout } = await cscliExec(kc, podName, ['scenarios', 'list', '-o', 'json']);
@@ -519,11 +565,12 @@ export async function getStatus(kubeconfigPath: string | undefined): Promise<Cro
   let podName: string | null = null;
   try { podName = await findCrowdsecPodName(kc); } catch { /* leave null */ }
 
-  const [coverage, capi, machinesBouncers, scenariosLoaded] = await Promise.all([
+  const [coverage, capi, machinesBouncers, scenariosLoaded, decisionCounts] = await Promise.all([
     fetchCoverage(kc),
     podName ? fetchCapiStatus(kc, podName) : Promise.resolve({ authenticated: false, pullEnabled: false }),
     podName ? fetchMachinesAndBouncers(kc, podName) : Promise.resolve({ machines: [], bouncers: [] }),
     podName ? fetchScenariosCount(kc, podName) : Promise.resolve(0),
+    podName ? fetchDecisionCounts(kc, podName) : Promise.resolve(null),
   ]);
 
   return {
@@ -535,6 +582,7 @@ export async function getStatus(kubeconfigPath: string | undefined): Promise<Cro
     bouncers: machinesBouncers.bouncers,
     scenariosLoaded,
     coverage,
+    decisionCounts,
   };
 }
 
