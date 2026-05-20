@@ -1115,6 +1115,26 @@ export const wafLogs = pgTable('waf_logs', {
   index('waf_logs_rule_id_created_idx').on(table.ruleId, table.createdAt),
 ]);
 
+// F3 — CrowdSec auto-ban audit table. One row per evaluator decision
+// (banned OR skipped-with-reason). UI surfaces the most-recent 50 in
+// the "Auto-Ban runs" panel of the Banned-IPs tab.
+export const crowdsecAutobanRuns = pgTable('crowdsec_autoban_runs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  triggeredAt: timestamp('triggered_at', { withTimezone: true }).notNull().defaultNow(),
+  sourceIp: varchar('source_ip', { length: 45 }).notNull(),
+  hostname: varchar('hostname', { length: 255 }),
+  ruleIds: jsonb('rule_ids').$type<string[]>().notNull(),
+  eventCount: integer('event_count').notNull(),
+  windowSeconds: integer('window_seconds').notNull(),
+  banDuration: varchar('ban_duration', { length: 16 }).notNull(),
+  banId: bigint('ban_id', { mode: 'number' }),
+  outcome: varchar('outcome', { length: 32 }).notNull(),
+  outcomeDetail: text('outcome_detail'),
+}, (table) => [
+  index('crowdsec_autoban_runs_triggered_at_idx').on(table.triggeredAt),
+  index('crowdsec_autoban_runs_source_ip_idx').on(table.sourceIp),
+]);
+
 // ─── SSH Keys ───
 
 export const sshKeys = pgTable('ssh_keys', {

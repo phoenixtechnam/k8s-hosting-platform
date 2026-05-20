@@ -101,3 +101,4 @@ export * from './secrets-bundle.js';
 export * from './dr-drill.js';
 export * from './waf-events.js';
 export * from './crowdsec.js';
+export * from './crowdsec-autoban.js';
