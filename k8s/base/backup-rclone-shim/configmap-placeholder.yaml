@@ -96,7 +96,12 @@ data:
         *) log "FATAL: buckets.txt contains invalid line: '$LINE'"; exit 2 ;;
       esac
       case "$LINE" in
-        *[!a-z0-9-:]*) log "FATAL: buckets.txt contains forbidden char in: '$LINE'"; exit 2 ;;
+        # POSIX glob char-class: put `-` LAST so it's literal, not a
+        # range delimiter. The old form `[!a-z0-9-:]` was parsed by
+        # busybox sh (rclone:1.66 base) as range 0..9..-..:, rejecting
+        # legitimate bucket names like `mail-raw:` — discovered via
+        # staging E2E 2026-05-20.
+        *[!a-z0-9:-]*) log "FATAL: buckets.txt contains forbidden char in: '$LINE'"; exit 2 ;;
       esac
       BUCKETS_OK="${BUCKETS_OK}${LINE} "
     done < "$BUCKETS_FILE"
