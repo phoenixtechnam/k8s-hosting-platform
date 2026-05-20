@@ -776,6 +776,10 @@ export const backupConfigurations = pgTable('backup_configurations', {
   lastSpeedtestLatencyMs: integer('last_speedtest_latency_ms'),
   lastSpeedtestPayloadBytes: bigint('last_speedtest_payload_bytes', { mode: 'number' }),
   lastSpeedtestError: text('last_speedtest_error'),
+  // R-X5 (migration 0017): per-target drain timeout for the universal
+  // backup-rclone-shim. Bounded 30..1800 s by a CHECK constraint at
+  // the DB layer; default 300 s (5 min) per RFC §13a.
+  drainTimeoutSeconds: integer('drain_timeout_seconds').notNull().default(300),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });

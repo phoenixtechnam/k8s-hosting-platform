@@ -125,6 +125,12 @@ PARALLEL=(
   # target platform-api and step-up freshness — pass --bump-freshness
   # via env or pre-bump via INTEGRATION_TOKEN. ~90s.
   "node-terminal:integration-node-terminal.sh"
+  # R-X5: universal backup-rclone-shim drain orchestration. Exercises
+  # list / status / assign / drain-now plus 4 negative paths. Uses a
+  # disposable backup_configurations row pointing at dev minio (or a
+  # pre-existing S3 target on staging); CREATEs and DELETEs cleanly.
+  # ~30s when the shim has no inflight tasks.
+  "backup-rclone-shim:integration-backup-rclone-shim.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).

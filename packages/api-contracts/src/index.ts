@@ -104,3 +104,4 @@ export * from './crowdsec.js';
 export * from './crowdsec-autoban.js';
 export * from './crowdsec-console.js';
 export * from './waf-rule-exclusions.js';
+export * from './backup-rclone-shim.js';

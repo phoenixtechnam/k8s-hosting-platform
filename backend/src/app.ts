@@ -86,6 +86,7 @@ import { buildSecurityHardeningRoutes } from './modules/security-hardening/route
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { snapshotClassesRoutes } from './modules/snapshot-classes/routes.js';
+import { backupRcloneShimRoutes } from './modules/backup-rclone-shim/routes.js';
 import { backupSchedulesRoutes } from './modules/backup-schedules/routes.js';
 import { backupsOverviewRoutes } from './modules/backups-overview/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -432,6 +433,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
   await app.register(storageLifecycleRoutes, { prefix: '/api/v1' });
   await app.register(snapshotClassesRoutes, { prefix: '/api/v1' });
+  // R-X5: backup-rclone-shim admin surface (super_admin gate).
+  // Lazy k8s client build so unit tests / CI without a kubeconfig
+  // don't crash at route registration; production loads from the
+  // platform-api pod's in-cluster config on every PUT/POST/GET.
+  {
+    const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+    const kubePath =
+      ((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined)
+        ?? process.env.KUBECONFIG;
+    await app.register(backupRcloneShimRoutes, {
+      prefix: '/api/v1',
+      buildK8sClients: () => {
+        const clients = createK8sClients(kubePath);
+        return { core: clients.core, apps: clients.apps };
+      },
+      encryptionKey:
+        ((app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined)
+          ?? process.env.PLATFORM_ENCRYPTION_KEY
+          ?? '0'.repeat(64),
+    });
+  }
   await app.register(backupSchedulesRoutes, { prefix: '/api/v1' });
   await app.register(backupsOverviewRoutes, { prefix: '/api/v1' });
   await app.register(oidcRoutes, { prefix: '/api/v1' });

@@ -246,3 +246,15 @@ jobs:
       - uses: actions/checkout@v4
       - run: ./scripts/ci-mail-arch-regressions.sh
 
+  # R-X5: universal backup-rclone-shim invariants. 8 checks: super_admin
+  # gate, SHIM_CLASSES locked, STATE_ERROR self-heal, consumer-kind
+  # coverage, migration 0016 CHECK constraint, registry-membership of
+  # every shim-consumer kind, drain_timeout_seconds CHECK, lazy
+  # buildK8sClients factory.
+  backup-rclone-shim:
+    name: Backup-rclone-shim invariants (R-X1..R-X5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/ci-backup-rclone-shim-check.sh
+

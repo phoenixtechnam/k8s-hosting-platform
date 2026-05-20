@@ -101,6 +101,13 @@ export const TASK_KIND_REGISTRY = [
   // surfaces in the task-center chip with progress modal showing the
   // 4-step pipeline (upload → download → cleanup → record).
   'backup.speedtest',
+  // R-X5: drain orchestration around the universal backup-rclone-shim.
+  // Operator-initiated target switches surface as long-running tasks
+  // with a multi-phase progress modal (drain → DB write → reconcile →
+  // verify-ready). `backup.shim.drain` is the escape-hatch "drain only"
+  // variant invoked from the Backup Architecture admin page.
+  'backup.shim.target-switch',
+  'backup.shim.drain',
 ] as const;
 export type TaskKind = (typeof TASK_KIND_REGISTRY)[number];
 
