@@ -24,7 +24,16 @@ ALTER TABLE backup_configurations
 -- Enforce that NFS targets have a server + export. Using NOT VALID so
 -- existing non-NFS rows aren't re-checked (none have these columns
 -- populated anyway).
+--
+-- The COLUMN name is "storageType" (camelCase, quoted — Drizzle generated
+-- the schema with the camelCase identifier). `storage_type` unquoted is
+-- the ENUM TYPE name, not the column. Earlier drafts referenced the
+-- type — that fails with `column "storage_type" does not exist` and
+-- crashes the migration runner on every pod start. Fixed 2026-05-20.
+ALTER TABLE backup_configurations
+  DROP CONSTRAINT IF EXISTS backup_configurations_nfs_required;
+
 ALTER TABLE backup_configurations
   ADD CONSTRAINT backup_configurations_nfs_required CHECK (
-    storage_type <> 'nfs' OR (nfs_server IS NOT NULL AND nfs_export IS NOT NULL)
+    "storageType" <> 'nfs' OR (nfs_server IS NOT NULL AND nfs_export IS NOT NULL)
   ) NOT VALID;
