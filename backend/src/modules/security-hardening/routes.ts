@@ -66,7 +66,14 @@ import {
 import {
   crowdsecConsoleEnrollRequestSchema,
   crowdsecConsoleMetaPatchSchema,
+  crowdsecL4PatchModeRequestSchema,
 } from '@k8s-hosting/api-contracts';
+import {
+  getL4Status,
+  getOperatorIp,
+  OperatorIpNotTrustedError,
+  setL4Mode,
+} from './crowdsec-l4.js';
 import { sql } from 'drizzle-orm';
 
 const CONSOLE_VISIBLE_KEY = 'security.crowdsec.console_visible';
@@ -744,6 +751,74 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         } catch (err) {
           return reply.status(500).send({
             error: 'AUTOBAN_CALIBRATION_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    // ─── F1+F6 Stage C — CrowdSec L4 enforcement toggle ───────────────
+    //
+    // Reads / patches the firewall-reconciler DaemonSet's
+    // CROWDSEC_L4_MODE env. Three modes: disabled, dryrun, enforce.
+    // PATCH-time operator-allowlist guard refuses enforce mode if the
+    // operator's source IP isn't in any ClusterTrustedRange or cluster
+    // peer (Node InternalIP / CPP). disabled + dryrun always allowed
+    // (no kernel writes happen in those modes).
+    app.get(
+      '/admin/security/crowdsec/l4-enforcement',
+      { preHandler: requireRole('super_admin') },
+      async (req: FastifyRequest, reply: FastifyReply) => {
+        try {
+          const operatorIp = getOperatorIp(req);
+          const status = await getL4Status(kubeconfigPath, operatorIp);
+          return success(status);
+        } catch (err) {
+          return reply.status(500).send({
+            error: 'L4_STATUS_LOAD_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.patch(
+      '/admin/security/crowdsec/l4-enforcement',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecL4PatchModeRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        const operatorIp = getOperatorIp(req);
+        // Audit-log every PATCH attempt — including refused ones —
+        // for forensic review later. The operator IP is recorded so
+        // an OPERATOR_IP_NOT_TRUSTED rejection has a clear paper trail.
+        app.log.warn({
+          actor, operatorIp, modeRequested: parsed.data.mode,
+        }, 'crowdsec-l4: PATCH attempted');
+        try {
+          const status = await setL4Mode(kubeconfigPath, operatorIp, parsed.data.mode);
+          app.log.warn({
+            actor, operatorIp, mode: status.mode,
+          }, 'crowdsec-l4: PATCH succeeded');
+          return success(status);
+        } catch (err) {
+          if (err instanceof OperatorIpNotTrustedError) {
+            app.log.warn({
+              actor, operatorIp: err.operatorIp,
+            }, 'crowdsec-l4: PATCH refused — operator IP not trusted');
+            return reply.status(403).send({
+              error: 'OPERATOR_IP_NOT_TRUSTED',
+              message: err.message,
+            });
+          }
+          return reply.status(500).send({
+            error: 'L4_PATCH_FAILED',
             message: err instanceof Error ? err.message : String(err),
           });
         }

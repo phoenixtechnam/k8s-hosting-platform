@@ -76,12 +76,14 @@ import {
   useCrowdsecAutobanRuns,
   useCrowdsecConsoleStatus,
   useCrowdsecDecisions,
+  useCrowdsecL4Status,
   useCrowdsecStatus,
   useDeleteCrowdsecDecision,
   useDisenrollCrowdsecConsole,
   useEnrollCrowdsecConsole,
   usePatchCrowdsecAutobanConfig,
   usePatchCrowdsecConsoleMeta,
+  usePatchCrowdsecL4Mode,
   useRemoveCrowdsecAllowlistEntry,
 } from '@/hooks/use-crowdsec';
 import type {
@@ -104,6 +106,7 @@ import type {
   CrowdsecAutobanConfig,
   CrowdsecAutobanOutcome,
   CrowdsecAutobanRun,
+  CrowdsecL4Mode,
   WafRuleExclusion,
   WafRuleExclusionScope,
 } from '@k8s-hosting/api-contracts';
@@ -1700,6 +1703,9 @@ function BannedIpsTab() {
       {/* F3 UI — Auto-ban config + recent runs + calibration dry-run */}
       <CrowdsecAutobanCard />
 
+      {/* F1+F6 — L4 enforcement toggle (highest-risk, operator IP guard) */}
+      <CrowdsecL4Card />
+
       {/* Controls */}
       <div className="flex flex-wrap items-end justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
         <div className="flex flex-wrap items-end gap-3">
@@ -3068,5 +3074,160 @@ function AutobanRunRow({ r }: { r: CrowdsecAutobanRun }) {
       </td>
       <td className="px-3 py-1 text-gray-500 dark:text-gray-400 text-[10px] truncate max-w-[200px]">{r.outcomeDetail ?? ''}</td>
     </tr>
+  );
+}
+
+// ─── F1+F6 — CrowdSec L4 enforcement card ────────────────────────────
+
+function CrowdsecL4Card() {
+  const status = useCrowdsecL4Status();
+  const patch = usePatchCrowdsecL4Mode();
+  const [err, setErr] = useState<string | null>(null);
+  const s = status.data?.data;
+
+  const onChangeMode = (newMode: CrowdsecL4Mode) => {
+    if (!s) return;
+    if (newMode === s.mode) return;
+    if (newMode === 'enforce' && !s.operatorIpTrusted) {
+      setErr(`Refusing to flip to enforce — your detected IP (${s.operatorIp ?? 'unknown'}) is not in any ClusterTrustedRange or cluster peer set. Add a ClusterTrustedRange covering your source IP before enabling enforce.`);
+      return;
+    }
+    if (newMode === 'enforce') {
+      const confirmMsg = `Enabling L4 enforce will write banned IPs into the host firewall on every node.\n\nYour IP: ${s.operatorIp} (TRUSTED — exclusion guard active)\n\nProceed?`;
+      if (!window.confirm(confirmMsg)) return;
+    }
+    setErr(null);
+    patch.mutate(
+      { mode: newMode },
+      {
+        onError: (e) => setErr(e instanceof Error ? e.message : String(e)),
+      },
+    );
+  };
+
+  if (status.isLoading || !s) {
+    return (
+      <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50/30 dark:bg-red-900/10 p-4">
+        <SkeletonLoader />
+      </div>
+    );
+  }
+
+  const trustsKnown = s.trustedRangeCount + s.clusterPeerCount;
+
+  return (
+    <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50/30 dark:bg-red-900/10 p-4 space-y-3" data-testid="crowdsec-l4-card">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1">
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+            L4 (Host Firewall) Enforcement
+            <span className="ml-2 text-[10px] uppercase rounded px-1.5 py-0.5 bg-red-200/60 dark:bg-red-800/40 text-red-800 dark:text-red-200">opt-in · highest risk</span>
+          </h4>
+          <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+            Pushes CrowdSec decisions into the host nftables firewall as
+            interval+timeout set elements. Banned IPs are dropped at L4
+            <strong> before reaching Traefik</strong> — stops attack
+            traffic at the kernel boundary. <em>This is the
+            highest-risk feature in the platform</em>: a misconfigured
+            scenario or poisoned community list can drop legitimate
+            traffic, including operator SSH.
+          </p>
+        </div>
+        <ModeBadge mode={s.mode} />
+      </div>
+
+      {/* Status panel */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <L4Stat label="Pods rolled" value={`${s.appliedPods} / ${s.totalPods}`} tone="info" />
+        <L4Stat label="Trusted ranges" value={String(s.trustedRangeCount)} tone={s.trustedRangeCount > 0 ? 'ok' : 'warn'} />
+        <L4Stat label="Cluster peers" value={String(s.clusterPeerCount)} tone={s.clusterPeerCount > 0 ? 'ok' : 'warn'} />
+        <L4Stat
+          label="Your IP"
+          value={s.operatorIp ?? 'unknown'}
+          tone={s.operatorIpTrusted ? 'ok' : 'warn'}
+        />
+      </div>
+
+      {/* Mode toggle */}
+      <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 space-y-2">
+        <div className="text-xs font-semibold text-gray-800 dark:text-gray-200">Mode</div>
+        <div className="flex flex-wrap gap-2">
+          {(['disabled', 'dryrun', 'enforce'] as const).map((m) => {
+            const active = s.mode === m;
+            const dangerous = m === 'enforce';
+            const wouldLockOut = dangerous && !s.operatorIpTrusted;
+            return (
+              <button
+                key={m}
+                type="button"
+                onClick={() => onChangeMode(m)}
+                disabled={patch.isPending || wouldLockOut || active}
+                title={wouldLockOut ? `Would lock you out — your IP ${s.operatorIp ?? '(unknown)'} isn't trusted` : ''}
+                className={[
+                  'rounded-md px-3 py-1.5 text-xs font-medium border',
+                  active
+                    ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 cursor-default'
+                    : dangerous
+                    ? wouldLockOut
+                      ? 'border-red-300 bg-red-100 dark:bg-red-900/30 dark:border-red-700 text-red-600 dark:text-red-300 opacity-50 cursor-not-allowed'
+                      : 'border-red-300 bg-red-600 dark:bg-red-700 text-white hover:bg-red-700 dark:hover:bg-red-600'
+                    : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700',
+                ].join(' ')}
+                data-testid={`l4-mode-${m}`}
+              >
+                {m}
+              </button>
+            );
+          })}
+        </div>
+        <div className="text-[11px] text-gray-500 dark:text-gray-400 space-y-1">
+          <div><strong>disabled:</strong> reconciler dormant, zero kernel writes (default).</div>
+          <div><strong>dryrun:</strong> reads LAPI + computes exclusions + logs what would apply. No kernel writes.</div>
+          <div><strong>enforce:</strong> writes nft sets. <span className="text-red-700 dark:text-red-300 font-medium">Refused if your IP is not in trusted_ranges or cluster_peers.</span></div>
+        </div>
+      </div>
+
+      {/* Lockout warning */}
+      {!s.operatorIpTrusted && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          <strong>Lockout protection active:</strong> Your detected IP
+          <code className="mx-1">{s.operatorIp ?? '(unknown)'}</code> is
+          NOT in any trust source. Flipping to enforce is disabled until
+          you add a <code>ClusterTrustedRange</code> covering your source
+          IP. {trustsKnown === 0 && (
+            <span>The cluster currently has <strong>zero</strong> trust sources — any operator would be locked out.</span>
+          )}
+        </div>
+      )}
+
+      {err && (
+        <div className="rounded-md border border-red-300 bg-red-100 dark:bg-red-900/40 dark:border-red-700 px-3 py-2 text-xs text-red-800 dark:text-red-200">
+          {err}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModeBadge({ mode }: { mode: CrowdsecL4Mode }) {
+  const tone =
+    mode === 'enforce' ? 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200'
+    : mode === 'dryrun' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200'
+    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300';
+  return (
+    <span className={`rounded px-2 py-0.5 text-[10px] uppercase ${tone}`}>{mode}</span>
+  );
+}
+
+function L4Stat({ label, value, tone }: { label: string; value: string; tone: 'ok' | 'warn' | 'info' }) {
+  const accent =
+    tone === 'ok' ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-900/10'
+    : tone === 'warn' ? 'border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-900/10'
+    : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800';
+  return (
+    <div className={`rounded border p-2 ${accent}`}>
+      <div className="text-[10px] uppercase text-gray-500 dark:text-gray-400">{label}</div>
+      <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{value}</div>
+    </div>
   );
 }

@@ -26,6 +26,9 @@ import type {
   CrowdsecConsoleMetaPatch,
   CrowdsecConsoleStatus,
   CrowdsecDeleteByIdResponse,
+  CrowdsecL4Mode,
+  CrowdsecL4PatchModeRequest,
+  CrowdsecL4Status,
   CrowdsecListAllowlistResponse,
   CrowdsecListDecisionsQuery,
   CrowdsecListDecisionsResponse,
@@ -245,5 +248,32 @@ export function useCalibrateAutoban() {
         method: 'POST',
         body: override ? JSON.stringify(override) : undefined,
       }),
+  });
+}
+
+// ─── F1+F6 Stage C — L4 enforcement toggle hooks ────────────────────
+
+const L4_KEY = ['crowdsec', 'l4'] as const;
+
+export function useCrowdsecL4Status() {
+  return useQuery<Envelope<CrowdsecL4Status>>({
+    queryKey: L4_KEY,
+    queryFn: () => apiFetch('/api/v1/admin/security/crowdsec/l4-enforcement'),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function usePatchCrowdsecL4Mode() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<CrowdsecL4Status>, Error, CrowdsecL4PatchModeRequest>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/security/crowdsec/l4-enforcement', {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: L4_KEY });
+    },
   });
 }

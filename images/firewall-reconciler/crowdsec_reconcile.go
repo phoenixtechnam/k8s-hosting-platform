@@ -80,8 +80,19 @@ const (
 	//   "dryrun"             — compute + log every tick, NEVER write nft.
 	//                          Use this on staging to verify exclusion
 	//                          arithmetic + cap behaviour on real data.
-	//   "enforce"            — compute + log + write nft (Stage B).
+	//   "enforce"            — compute + log + write nft.
 	envCrowdsecL4Mode = "CROWDSEC_L4_MODE"
+
+	// envCrowdsecL4GuardPassed — defense-in-depth secondary env var
+	// that MUST be "true" for enforce mode to engage. Set by the
+	// backend PATCH /admin/security/crowdsec/l4-enforcement route
+	// AFTER the operator-IP-trust check passes. Direct DS edits
+	// (kubectl edit ds firewall-reconciler) that set only
+	// CROWDSEC_L4_MODE=enforce without this flag will be downgraded
+	// to dryrun + emit a loud warning — the operator must
+	// explicitly acknowledge they understand the lockout risk by
+	// setting BOTH env vars.
+	envCrowdsecL4GuardPassed = "CROWDSEC_L4_GUARD_PASSED"
 
 	crowdsecL4ModeDisabled = "disabled"
 	crowdsecL4ModeDryRun   = "dryrun"
@@ -506,13 +517,15 @@ func newCrowdsecReconciler() *crowdsecReconciler {
 		)
 		mode = crowdsecL4ModeDisabled
 	}
-	// Stage A: enforce mode also gets forced to dryrun because the
-	// nft write path isn't implemented yet. The Stage A binary refuses
-	// to honour "enforce" regardless of operator intent — defense in
-	// depth against a premature flip.
-	if mode == crowdsecL4ModeEnforce {
-		slog.Warn("crowdsec-l4-reconciler: CROWDSEC_L4_MODE=enforce requested but Stage A only supports dryrun — downgrading",
-			"effective_mode", crowdsecL4ModeDryRun)
+	// enforce ALSO requires the secondary guard env. The backend's
+	// PATCH route sets both vars together AFTER verifying the
+	// operator's source IP is trusted. A direct DS edit setting only
+	// CROWDSEC_L4_MODE=enforce gets downgraded here with a loud warn —
+	// the operator must explicitly add CROWDSEC_L4_GUARD_PASSED=true
+	// to acknowledge the lockout risk on their own terms.
+	if mode == crowdsecL4ModeEnforce && os.Getenv(envCrowdsecL4GuardPassed) != "true" {
+		slog.Warn("crowdsec-l4-reconciler: CROWDSEC_L4_MODE=enforce requested but CROWDSEC_L4_GUARD_PASSED!=true — downgrading to dryrun",
+			"hint", "use the admin panel /settings/security-hardening Banned IPs tab to enable enforce (the backend sets both env vars together after verifying your IP is trusted)")
 		mode = crowdsecL4ModeDryRun
 	}
 	return &crowdsecReconciler{mode: mode}

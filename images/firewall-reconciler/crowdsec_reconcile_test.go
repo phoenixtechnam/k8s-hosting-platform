@@ -232,13 +232,28 @@ func TestNewCrowdsecReconciler_UnknownModeFallsBackToDisabled(t *testing.T) {
 	}
 }
 
-func TestNewCrowdsecReconciler_EnforceDowngradedInStageA(t *testing.T) {
-	// Stage A defense in depth: even when operator sets "enforce", we
-	// downgrade to "dryrun" because the nft-write path isn't built yet.
+func TestNewCrowdsecReconciler_EnforceWithoutGuardDowngraded(t *testing.T) {
+	// Stage C defense in depth: enforce mode without the backend-set
+	// CROWDSEC_L4_GUARD_PASSED=true env var downgrades to dryrun.
+	// This catches direct kubectl-edit attempts that set only
+	// CROWDSEC_L4_MODE=enforce — the operator must explicitly opt-in
+	// to the guard-bypass by setting BOTH env vars.
 	t.Setenv(envCrowdsecL4Mode, crowdsecL4ModeEnforce)
+	t.Setenv(envCrowdsecL4GuardPassed, "")
 	r := newCrowdsecReconciler()
 	if r.mode != crowdsecL4ModeDryRun {
-		t.Errorf("enforce mode should downgrade to dryrun in Stage A; got %q", r.mode)
+		t.Errorf("enforce without guard should downgrade to dryrun; got %q", r.mode)
+	}
+}
+
+func TestNewCrowdsecReconciler_EnforceWithGuardPasses(t *testing.T) {
+	// Backend PATCH route sets BOTH env vars together after the
+	// operator-IP-trust check passes. Real-life happy path.
+	t.Setenv(envCrowdsecL4Mode, crowdsecL4ModeEnforce)
+	t.Setenv(envCrowdsecL4GuardPassed, "true")
+	r := newCrowdsecReconciler()
+	if r.mode != crowdsecL4ModeEnforce {
+		t.Errorf("enforce + guard should yield enforce; got %q", r.mode)
 	}
 }
 
