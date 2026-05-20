@@ -242,18 +242,32 @@ func TestNewCrowdsecReconciler_EnforceDowngradedInStageA(t *testing.T) {
 	}
 }
 
-func TestRun_DisabledReturnsImmediately(t *testing.T) {
+func TestRun_DisabledBlocksUntilCtxCancel(t *testing.T) {
+	// Dormant mode logs once then blocks on ctx.Done() — the
+	// runWithRecover wrapper in main.go restarts a goroutine that
+	// returns "cleanly", so an immediate return would log "dormant"
+	// every ~2s in production (observed on staging at first ship).
 	r := &crowdsecReconciler{mode: crowdsecL4ModeDisabled}
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		r.run(context.Background())
+		r.run(ctx)
 		close(done)
 	}()
+	// Wait a bit to ensure the goroutine has entered <-ctx.Done() and
+	// is NOT returning early.
 	select {
 	case <-done:
-		// Expected — disabled mode returns within microseconds.
+		t.Fatal("dormant run returned before ctx cancel — would log-spam under runWithRecover")
+	case <-time.After(50 * time.Millisecond):
+		// Expected — still blocked.
+	}
+	cancel()
+	select {
+	case <-done:
+		// Expected — ctx cancel unblocks the goroutine.
 	case <-time.After(100 * time.Millisecond):
-		t.Error("disabled run did not return quickly")
+		t.Error("dormant run did not unblock on ctx cancel")
 	}
 }
 

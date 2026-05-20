@@ -343,6 +343,10 @@ async function materializeShimCredsSecret(
 
   if (!exists) {
     try {
+      // backup-coverage: excluded:cluster-infrastructure
+      // CNPG shim S3-creds Secret in the `postgres` namespace —
+      // deterministically derived from BACKUP_TARGET_KEY at boot.
+      // Not tenant data; recreated on restore.
       await core.createNamespacedSecret({
         namespace: POSTGRES_NAMESPACE,
         body: {

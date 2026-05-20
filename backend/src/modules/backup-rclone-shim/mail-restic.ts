@@ -245,6 +245,11 @@ async function applyMailResticSecret(
     type: 'Opaque',
     data: dataB64,
   };
+  // backup-coverage: excluded:cluster-infrastructure
+  // mail-restic Secret lives in the `mail` namespace and holds the
+  // restic repo password the shim derives at boot. Not tenant data —
+  // recreated deterministically from BACKUP_TARGET_KEY on cluster
+  // restore, so no tenant-bundle component captures it.
   try {
     await core.replaceNamespacedSecret({
       namespace: MAIL_NAMESPACE,
@@ -255,6 +260,7 @@ async function applyMailResticSecret(
     const code = (err as { statusCode?: number; code?: number })?.statusCode
       ?? (err as { code?: number })?.code;
     if (code !== 404) throw err;
+    // backup-coverage: excluded:cluster-infrastructure
     await core.createNamespacedSecret({
       namespace: MAIL_NAMESPACE,
       body: body as unknown as object,

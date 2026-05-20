@@ -347,11 +347,14 @@ type crowdsecReconciler struct {
 }
 
 // run is the goroutine entry. Exits cleanly when ctx is canceled.
-// Safe to spawn even when mode is "disabled" — the function returns
-// immediately and the goroutine exits.
+// Safe to spawn even when mode is "disabled" — the function blocks
+// on ctx.Done() so the runWithRecover wrapper's restart loop doesn't
+// keep re-invoking it (which would spam "dormant" logs every backoff
+// cycle).
 func (cr *crowdsecReconciler) run(ctx context.Context) {
 	if cr.mode == crowdsecL4ModeDisabled {
 		slog.Info("crowdsec-l4-reconciler: dormant (CROWDSEC_L4_MODE=disabled)")
+		<-ctx.Done()
 		return
 	}
 	slog.Info("crowdsec-l4-reconciler: starting",
