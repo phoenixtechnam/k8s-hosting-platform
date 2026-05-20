@@ -22,7 +22,7 @@
 
 import type { SnapshotStore } from './snapshot-store.js';
 
-const RCLONE_IMAGE = 'rclone/rclone:1.66';
+const RCLONE_IMAGE = 'rclone/rclone:1.74.1';
 
 /**
  * Job pod envelope for the streaming snapshot Job. The caller (snapshot.ts)

@@ -27,7 +27,7 @@
 #   - Works on amd64 + arm64 (multi-arch GitHub Actions build)
 #
 # RCLONE VERSION:
-#   1.68.2 — pinned. SHA256 verified against the official release
+#   1.74.1 — pinned. SHA256 verified against the official release
 #   manifest. Bump requires re-running scripts/rclone-shim-eval/ to
 #   confirm performance + stability profile is unchanged.
 
@@ -37,14 +37,14 @@
 FROM --platform=$BUILDPLATFORM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc AS rclone-fetch
 
 ARG TARGETARCH
-ARG RCLONE_RELEASE=1.68.2
+ARG RCLONE_RELEASE=1.74.1
 
-# Real checksums from https://downloads.rclone.org/v1.68.2/SHA256SUMS
+# Real checksums from https://downloads.rclone.org/v1.74.1/SHA256SUMS
 # DO NOT EDIT without re-pinning to the actual SHA from the upstream
 # SHA256SUMS file. ENFORCED at build time; an unexpected binary aborts
 # the build.
-ARG RCLONE_SHA256_AMD64=0e6fa18051e67fc600d803a2dcb10ddedb092247fc6eee61be97f64ec080a13c
-ARG RCLONE_SHA256_ARM64=c6e9d4cf9c88b279f6ad80cd5675daebc068e404890fa7e191412c1bc7a4ac5f
+ARG RCLONE_SHA256_AMD64=67df3059a6233b6e32e604bcd637654bb294ff86291b65ede77123e94818d911
+ARG RCLONE_SHA256_ARM64=c816ed0e568de4dd1bba1a4d0cd47523d3dd54337dd5fde73f1b068857ecf877
 
 RUN apk add --no-cache curl unzip ca-certificates
 
@@ -137,4 +137,4 @@ LABEL org.opencontainers.image.source="https://github.com/phoenixtechnam/k8s-hos
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="Phoenix Tech"
 LABEL platform.phoenix-host.net/role="backup-rclone-shim"
-LABEL platform.phoenix-host.net/rclone-version="1.68.2"
+LABEL platform.phoenix-host.net/rclone-version="1.74.1"

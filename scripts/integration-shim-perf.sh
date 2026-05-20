@@ -141,7 +141,7 @@ fi
 
 log "Spawning perf Pod $JOB_NAME (this can take 1-3 minutes)..."
 kubectl -n platform run "$JOB_NAME" \
-  --restart=Never --image=rclone/rclone:1.66 \
+  --restart=Never --image=rclone/rclone:1.74.1 \
   --env="RCLONE_S3_ACCESS_KEY_ID=$ACCESS_KEY" \
   --env="RCLONE_S3_SECRET_ACCESS_KEY=$SECRET_KEY" \
   --command -- sh -c "$PERF_SCRIPT" >/dev/null
