@@ -439,9 +439,9 @@ if [[ $NEG_ONLY -eq 0 && -n "${SESSION_ID:-}" ]]; then
   KUBECTL_CMD="${KUBECTL:-kubectl}"
   EMAIL="${ADMIN_EMAIL_OVERRIDE:-admin@k8s-platform.test}"
   # Inline-test that the kubectl bridge actually reaches our database.
-  if $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
-    SAVED_AT="$($KUBECTL_CMD --namespace=$NAMESPACE exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "SELECT to_char(last_step_up_at,'YYYY-MM-DD HH24:MI:SS.US') FROM users WHERE email='$EMAIL'" 2>/dev/null | head -1)"
-    $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "UPDATE users SET last_step_up_at=NULL WHERE email='$EMAIL'" >/dev/null 2>&1
+  if $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
+    SAVED_AT="$($KUBECTL_CMD --namespace=$NAMESPACE exec system-db-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c "SELECT to_char(last_step_up_at,'YYYY-MM-DD HH24:MI:SS.US') FROM users WHERE email='$EMAIL'" 2>/dev/null | head -1)"
+    $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c "UPDATE users SET last_step_up_at=NULL WHERE email='$EMAIL'" >/dev/null 2>&1
     D7_BODY="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
     D7_CODE="$(echo "$D7_BODY" | jq -r '.error.code // "none"')"
     D7_METHODS="$(echo "$D7_BODY" | jq -r '.error.details.methods | join(",") // ""' 2>/dev/null)"
@@ -453,7 +453,7 @@ if [[ $NEG_ONLY -eq 0 && -n "${SESSION_ID:-}" ]]; then
     # Restore so subsequent assertions pass and a future re-run of
     # the harness doesn't immediately demand a step-up.
     if [[ -n "$SAVED_AT" ]]; then
-      $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "UPDATE users SET last_step_up_at='$SAVED_AT' WHERE email='$EMAIL'" >/dev/null 2>&1
+      $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c "UPDATE users SET last_step_up_at='$SAVED_AT' WHERE email='$EMAIL'" >/dev/null 2>&1
     fi
   else
     warn "D7 skipped — set KUBECTL='docker exec <dind-container> kubectl' (DinD) or ensure kubectl is on PATH"
@@ -531,9 +531,9 @@ if [[ $NEG_ONLY -eq 0 && -n "${SESSION_ID:-}" ]]; then
   # F2. Read the DB row's ownerReplica from the listing endpoint
   KUBECTL_CMD_F="${KUBECTL:-kubectl}"
   if [[ -n "$F_SESSION_ID" ]] \
-     && $KUBECTL_CMD_F --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
+     && $KUBECTL_CMD_F --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
     OWNER_BEFORE="$($KUBECTL_CMD_F --namespace="$NAMESPACE" exec system-db-1 -c postgres -- \
-      psql -d hosting_platform -t -A -c "SELECT owner_replica FROM node_terminal_sessions WHERE id='$F_SESSION_ID'" 2>/dev/null | head -1)"
+      psql -U postgres -d hosting_platform -t -A -c "SELECT owner_replica FROM node_terminal_sessions WHERE id='$F_SESSION_ID'" 2>/dev/null | head -1)"
     if [[ -n "$OWNER_BEFORE" ]]; then
       pass "F2 DB row persisted with ownerReplica='$OWNER_BEFORE'"
     else
@@ -557,7 +557,7 @@ if [[ $NEG_ONLY -eq 0 && -n "${SESSION_ID:-}" ]]; then
     # F4. ownerReplica was updated when attachExec ran (proves
     #     updateOwnerReplica is in the hot path).
     OWNER_AFTER="$($KUBECTL_CMD_F --namespace="$NAMESPACE" exec system-db-1 -c postgres -- \
-      psql -d hosting_platform -t -A -c "SELECT owner_replica FROM node_terminal_sessions WHERE id='$F_SESSION_ID'" 2>/dev/null | head -1)"
+      psql -U postgres -d hosting_platform -t -A -c "SELECT owner_replica FROM node_terminal_sessions WHERE id='$F_SESSION_ID'" 2>/dev/null | head -1)"
     if [[ -n "$OWNER_AFTER" ]]; then
       pass "F4 ownerReplica readable after attach (was '$OWNER_BEFORE', now '$OWNER_AFTER')"
     else
@@ -707,7 +707,7 @@ if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
 
   KUBECTL_CMD_H="${KUBECTL:-kubectl}"
   H_HAS_DB=0
-  if $KUBECTL_CMD_H --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -d hosting_platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
+  if $KUBECTL_CMD_H --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
     H_HAS_DB=1
   else
     warn "H skipped DB checks — set KUBECTL='docker exec <dind-container> kubectl' (DinD)"
@@ -751,7 +751,7 @@ if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
   # H3. DB row must have terminate_after set
   if [[ "$H_HAS_DB" == "1" ]]; then
     H_TA="$($KUBECTL_CMD_H --namespace="$NAMESPACE" exec system-db-1 -c postgres -- \
-      psql -d hosting_platform -t -A -c "SELECT terminate_after FROM node_terminal_sessions WHERE id='$H_SESSION_ID'" 2>/dev/null | head -1)"
+      psql -U postgres -d hosting_platform -t -A -c "SELECT terminate_after FROM node_terminal_sessions WHERE id='$H_SESSION_ID'" 2>/dev/null | head -1)"
     if [[ -n "$H_TA" && "$H_TA" != "(null)" ]]; then
       pass "H3 terminate_after populated in DB ($H_TA)"
     else
@@ -769,7 +769,7 @@ if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
   fi
   if [[ "$H_HAS_DB" == "1" ]]; then
     H_TA2="$($KUBECTL_CMD_H --namespace="$NAMESPACE" exec system-db-1 -c postgres -- \
-      psql -d hosting_platform -t -A -c "SELECT terminate_after FROM node_terminal_sessions WHERE id='$H_SESSION_ID'" 2>/dev/null | head -1)"
+      psql -U postgres -d hosting_platform -t -A -c "SELECT terminate_after FROM node_terminal_sessions WHERE id='$H_SESSION_ID'" 2>/dev/null | head -1)"
     if [[ -z "$H_TA2" || "$H_TA2" == "(null)" ]]; then
       pass "H4a refreshWsToken atomically cleared terminate_after"
     else
@@ -816,7 +816,7 @@ if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
   sleep 2
   if [[ "$H_HAS_DB" == "1" ]]; then
     H_EXISTS="$($KUBECTL_CMD_H --namespace="$NAMESPACE" exec system-db-1 -c postgres -- \
-      psql -d hosting_platform -t -A -c "SELECT id FROM node_terminal_sessions WHERE id='$H_SESSION_ID2'" 2>/dev/null | head -1)"
+      psql -U postgres -d hosting_platform -t -A -c "SELECT id FROM node_terminal_sessions WHERE id='$H_SESSION_ID2'" 2>/dev/null | head -1)"
     if [[ -z "$H_EXISTS" ]]; then
       pass "H6 explicit terminate frame → DB row deleted immediately (no grace)"
     else
