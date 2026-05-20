@@ -117,6 +117,18 @@ export function NodeTerminalModal({ sessionId, nodeName }: NodeTerminalModalProp
               <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-100">{titleCase(nodeName)}</code>
               {' '}root shell — every command is audited.
             </span>
+            {/* Operator hint — tmux's mouse=on captures the wheel for
+                native scrollback (load-bearing UX, see pod-spec.ts),
+                which means click+drag is forwarded to tmux instead of
+                xterm's selection. Shift+drag is xterm's built-in
+                bypass; Ctrl+Shift+C/V are the standard terminal
+                copy/paste shortcuts. */}
+            <span
+              className="hidden md:inline text-xs text-zinc-500 font-normal"
+              title="Hold Shift while clicking to select text (bypasses tmux mouse mode). Ctrl+Shift+C copies the selection; Ctrl+Shift+V pastes from clipboard."
+            >
+              · Shift+drag selects · Ctrl+Shift+C/V copy/paste
+            </span>
           </div>
           <div className="flex items-center gap-1.5">
             <StatusPill status={status} nodeName={nodeName} />

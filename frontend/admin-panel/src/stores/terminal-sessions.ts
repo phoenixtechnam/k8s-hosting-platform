@@ -369,17 +369,123 @@ export const useTerminalSessions = create<TerminalSessionsState>((rawSet, get) =
       cursorBlink: true,
       scrollback: 5000,
       convertEol: true,
+      // right-click = "select word" inside xterm. The container's
+      // contextmenu listener (added below) prevents the browser's
+      // native context menu from racing tmux's right-click handling.
+      rightClickSelectsWord: false,
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
 
+    // Ctrl+Shift+C / Ctrl+Shift+V — standard terminal copy/paste
+    // shortcuts that bypass tmux's mouse mode.
+    //
+    //   • If xterm has a selection (made via Shift+drag — see below),
+    //     Ctrl+Shift+C copies it to clipboard and SWALLOWS the event
+    //     (returning false stops xterm from forwarding the Ctrl-C to
+    //     the shell, which would SIGINT a running command).
+    //   • Ctrl+Shift+V reads the clipboard and pastes via the WS
+    //     stdin channel.
+    //   • Without a selection, Ctrl+Shift+C falls through to whatever
+    //     the shell does (typically nothing, since Ctrl+Shift+C in
+    //     bash isn't bound).
+    //
+    // Shift+click/drag is xterm.js's built-in escape hatch from
+    // application mouse mode (tmux mouse=on): when Shift is held,
+    // xterm performs native selection instead of forwarding the
+    // mouse event to tmux. No custom code needed for that.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      const isCopy = e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c');
+      const isPaste = e.ctrlKey && e.shiftKey && (e.key === 'V' || e.key === 'v');
+      if (isCopy) {
+        const sel = term.getSelection();
+        if (sel) {
+          // navigator.clipboard.writeText may fail in non-secure
+          // contexts or if the document doesn't have focus — swallow
+          // the rejection silently and let the user retry.
+          navigator.clipboard?.writeText(sel).catch(() => undefined);
+          // Tell xterm NOT to forward this Ctrl+C to the shell.
+          return false;
+        }
+        // No selection — let Ctrl+Shift+C through (shell-defined).
+        return true;
+      }
+      if (isPaste) {
+        const refs = sessionRefs.get(sessionId);
+        navigator.clipboard?.readText().then((text) => {
+          if (text && refs?.ws.readyState === WebSocket.OPEN) {
+            refs.ws.send(JSON.stringify({ type: 'stdin', data: text }));
+          }
+        }).catch(() => undefined);
+        return false;
+      }
+      return true;
+    });
+
     const hostEl = document.createElement('div');
     hostEl.style.width = '100%';
     hostEl.style.height = '100%';
+    hostEl.style.position = 'relative'; // anchor for the custom scrollbar overlay
     hostEl.setAttribute('data-session-id', sessionId);
+    // Suppress the browser's native context menu so tmux's right-click
+    // menu isn't immediately covered by it. The right-click event
+    // still reaches xterm/tmux through the mouse-mode encoding;
+    // we only prevent the browser's default response.
+    hostEl.addEventListener('contextmenu', (e) => e.preventDefault());
     getGraveyard().appendChild(hostEl);
     term.open(hostEl);
+
+    // Custom scrollbar overlay — xterm.js renders no scrollbar of its
+    // own (it's a terminal emulator, not a textarea). Add a thin
+    // 6px indicator on the right edge that mirrors term.buffer.active
+    // .viewportY / .baseY so operators have a visual cue when there's
+    // scrollback above the visible area.
+    const scrollbar = document.createElement('div');
+    scrollbar.style.cssText = [
+      'position:absolute',
+      'top:0',
+      'right:0',
+      'width:6px',
+      'height:100%',
+      'background:transparent',
+      'pointer-events:none',
+      'z-index:5',
+    ].join(';');
+    const thumb = document.createElement('div');
+    thumb.style.cssText = [
+      'position:absolute',
+      'right:1px',
+      'width:4px',
+      'background:rgba(180,180,180,0.45)',
+      'border-radius:2px',
+      'opacity:0',
+      'transition:opacity 200ms',
+    ].join(';');
+    scrollbar.appendChild(thumb);
+    hostEl.appendChild(scrollbar);
+
+    const updateScrollbar = (): void => {
+      const buf = term.buffer.active;
+      const totalLines = buf.length;
+      const visibleLines = term.rows;
+      if (totalLines <= visibleLines) {
+        thumb.style.opacity = '0';
+        return;
+      }
+      const thumbH = Math.max(20, (visibleLines / totalLines) * hostEl.clientHeight);
+      const maxScroll = totalLines - visibleLines;
+      const top = (buf.viewportY / Math.max(1, maxScroll)) * (hostEl.clientHeight - thumbH);
+      thumb.style.height = `${thumbH}px`;
+      thumb.style.top = `${top}px`;
+      thumb.style.opacity = '1';
+    };
+    term.onScroll(() => updateScrollbar());
+    term.onLineFeed(() => updateScrollbar());
+    // Initial render after attach
+    requestAnimationFrame(updateScrollbar);
+
     return { term, fitAddon, hostEl };
   }
 
