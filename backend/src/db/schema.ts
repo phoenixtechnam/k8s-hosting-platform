@@ -2656,7 +2656,7 @@ export const nodeTerminalSessions = pgTable('node_terminal_sessions', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).notNull().defaultNow(),
   // Scheduled-termination clock for grace-period reload survival
-  // (migration 0017). NULL = session healthy. Set on WS close to
+  // (migration 0018). NULL = session healthy. Set on WS close to
   // `now() + GRACE_MS`. Cleared by refreshWsToken (reconnect) or
   // bypassed by an explicit terminate frame from the client.
   // The scheduler reaps rows where terminate_after < now().

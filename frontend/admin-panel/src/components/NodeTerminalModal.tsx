@@ -45,6 +45,15 @@ export function NodeTerminalModal({ sessionId, nodeName }: NodeTerminalModalProp
   );
 
   // ── Attach xterm host on mount; detach on unmount.
+  //
+  // Depends on `status` too, NOT only sessionId. Reason: on a page
+  // reload, restoreFromStorage seeds sessions in 'connecting' status
+  // BEFORE the POST /ws-token + buildTerminal completes. At first mount
+  // sessionRefs has no entry yet, so attach() early-returns (no host
+  // element to move). Once the WS opens and bindWsLifecycle flips
+  // status to 'connected', sessionRefs IS populated — this effect
+  // re-runs and now attach() succeeds. Without this dep, the modal
+  // would render an empty xterm pane until the next navigation.
   useEffect(() => {
     if (!containerRef.current) return;
     attach(sessionId, containerRef.current);
@@ -56,10 +65,10 @@ export function NodeTerminalModal({ sessionId, nodeName }: NodeTerminalModalProp
       ro.disconnect();
       detach(sessionId);
     };
-    // Deps intentionally only on sessionId — the store actions are
-    // stable singletons (zustand) and including them would just churn
-    // attach/detach every render.
-  }, [sessionId]);
+    // status included intentionally — see comment above. attach/detach/fit
+    // are stable zustand actions; including them would not change behaviour
+    // but ESLint can't verify zustand stability so we omit them.
+  }, [sessionId, status]);
 
   // ── Re-fit when isMaximized toggles. The ResizeObserver eventually
   // catches it, but we kick fit on the next rAF for a snappy switch.
