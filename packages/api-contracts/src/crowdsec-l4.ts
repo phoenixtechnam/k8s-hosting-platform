@@ -43,10 +43,13 @@ export const crowdsecL4StatusSchema = z.object({
   /** Pods whose env reads as the live `mode` value. Equals totalPods
    * when rollout is complete; lower while rolling. */
   appliedPods: z.number().int().nonnegative(),
-  /** Operator's detected source IP (from X-Real-IP). Surfaced so
-   * the UI can show "you are coming from N.N.N.N, which is/isn't
-   * trusted — flipping to enforce would/wouldn't lock you out". */
+  /** Operator's detected source IP. Surfaced so the UI can show
+   * "you are coming from N.N.N.N, which is/isn't trusted". */
   operatorIp: z.string().nullable(),
+  /** Which header carried the detected IP. Surfaced so operators can
+   * debug Traefik-forwarding misconfig when the detected value looks
+   * like an in-cluster pod IP. */
+  operatorIpSource: z.enum(['x-real-ip', 'x-forwarded-for', 'req-ip', 'none']),
   /** True if `operatorIp` is in trusted_ranges OR cluster_peers.
    * UI uses this to disable the enforce button when false. */
   operatorIpTrusted: z.boolean(),

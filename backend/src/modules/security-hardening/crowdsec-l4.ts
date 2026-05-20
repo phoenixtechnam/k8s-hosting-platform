@@ -46,26 +46,76 @@ export class OperatorIpNotTrustedError extends Error {
 }
 
 /**
- * Extract the operator's IP from a Fastify request. Traefik sets
- * `X-Real-IP` on the admin ingress to the upstream client IP; the
- * platform-api also runs behind that ingress. We prefer X-Real-IP
- * over `req.ip` because the latter would be the in-cluster pod IP
- * (Traefik DS) when the request comes through the ingress.
+ * Operator IP detection sources, in detection priority order.
+ * Surfaced via getOperatorIpWithSource so the UI can show WHICH
+ * header carried the IP — critical when the detected value looks
+ * wrong (e.g. an in-cluster pod IP, which means upstream Traefik
+ * isn't forwarding the real client IP correctly).
+ */
+export type OperatorIpSource =
+  | 'x-real-ip'           // Traefik's `X-Real-IP` — preferred when set
+  | 'x-forwarded-for'     // leftmost entry in XFF chain
+  | 'req-ip'              // Fastify's req.ip (trustProxy-aware)
+  | 'none';               // no detectable IP
+
+/**
+ * Extract the operator's source IP from a Fastify request.
  *
- * If neither header nor fallback yields a parseable IP, returns null.
- * The PATCH route treats null as "guard fail" — refuse to engage.
+ * Priority (each step falls back to the next on absent/invalid):
+ *   1. `X-Real-IP` — Traefik sets this to the immediate socket peer
+ *      it saw. Unspoofable because Traefik overwrites whatever the
+ *      client sent.
+ *   2. `X-Forwarded-For` leftmost — the documented "real client IP"
+ *      pattern. Spoofable if an attacker can reach platform-api
+ *      directly (NetworkPolicy restricts ingress to Traefik DS pods,
+ *      so this is acceptable for our setup).
+ *   3. `req.ip` — Fastify's trustProxy-aware peer IP. Often returns
+ *      the immediate-proxy pod IP when XFF isn't fully populated
+ *      (e.g., a Traefik middleware that doesn't propagate XFF).
+ *
+ * Returns null if NO source yields a parseable IP — caller's PATCH
+ * route treats null as "guard fail" (refuse to engage enforce).
  */
 export const getOperatorIp = (req: {
   readonly headers?: Record<string, string | string[] | undefined>;
   readonly ip?: string;
 }): string | null => {
+  return getOperatorIpWithSource(req).ip;
+};
+
+export const getOperatorIpWithSource = (req: {
+  readonly headers?: Record<string, string | string[] | undefined>;
+  readonly ip?: string;
+}): { ip: string | null; source: OperatorIpSource } => {
+  // 1. X-Real-IP — unspoofable, Traefik-set.
   const xri = req.headers?.['x-real-ip'];
-  const candidate = (typeof xri === 'string' ? xri : Array.isArray(xri) ? xri[0] : undefined)
-    ?? req.ip;
-  if (!candidate) return null;
-  const trimmed = candidate.trim();
-  if (!trimmed) return null;
-  return isIP(trimmed) ? trimmed : null;
+  const xriCandidate = typeof xri === 'string' ? xri : Array.isArray(xri) ? xri[0] : undefined;
+  if (xriCandidate) {
+    const trimmed = xriCandidate.trim();
+    if (trimmed && isIP(trimmed)) return { ip: trimmed, source: 'x-real-ip' };
+  }
+
+  // 2. X-Forwarded-For leftmost — standard "real client" pattern.
+  // XFF may be a single header with comma-separated IPs, or multiple
+  // header instances (Fastify wraps in array). In both cases the
+  // LEFTMOST is the original client; everything to the right is a
+  // proxy that handled the request.
+  const xff = req.headers?.['x-forwarded-for'];
+  const xffRaw = typeof xff === 'string' ? xff : Array.isArray(xff) ? xff[0] : undefined;
+  if (xffRaw) {
+    const leftmost = xffRaw.split(',')[0]?.trim();
+    if (leftmost && isIP(leftmost)) return { ip: leftmost, source: 'x-forwarded-for' };
+  }
+
+  // 3. req.ip — Fastify's socket-peer-or-XFF resolution. Often
+  // returns the immediate proxy (Traefik DS pod IP) in our setup
+  // because XFF isn't fully populated by every middleware layer.
+  if (req.ip) {
+    const trimmed = req.ip.trim();
+    if (trimmed && isIP(trimmed)) return { ip: trimmed, source: 'req-ip' };
+  }
+
+  return { ip: null, source: 'none' };
 };
 
 export interface TrustSources {
@@ -204,6 +254,7 @@ export const isOperatorIpTrusted = (ip: string | null, sources: TrustSources): b
 export const getL4Status = async (
   kubeconfigPath: string | undefined,
   operatorIp: string | null,
+  operatorIpSource: OperatorIpSource = 'none',
 ): Promise<CrowdsecL4Status> => {
   const kc = new k8s.KubeConfig();
   if (kubeconfigPath) {
@@ -265,6 +316,7 @@ export const getL4Status = async (
     totalPods,
     appliedPods,
     operatorIp,
+    operatorIpSource,
     operatorIpTrusted,
     trustedRangeCount: sources.trustedRangesV4.length + sources.trustedRangesV6.length,
     clusterPeerCount: sources.clusterPeersV4.length + sources.clusterPeersV6.length,
@@ -281,6 +333,7 @@ export const setL4Mode = async (
   kubeconfigPath: string | undefined,
   operatorIp: string | null,
   newMode: CrowdsecL4Mode,
+  operatorIpSource: OperatorIpSource = 'none',
 ): Promise<CrowdsecL4Status> => {
   if (newMode === 'enforce') {
     const sources = await resolveTrustSources(kubeconfigPath);
@@ -356,7 +409,7 @@ export const setL4Mode = async (
 
   // Return the fresh status (mode will read as newMode once the patch
   // commits; applied count will lag while pods roll).
-  return getL4Status(kubeconfigPath, operatorIp);
+  return getL4Status(kubeconfigPath, operatorIp, operatorIpSource);
 };
 
 // ─── CIDR helpers (CIDR-aware membership) ────────────────────────────

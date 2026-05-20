@@ -71,7 +71,7 @@ import {
 } from '@k8s-hosting/api-contracts';
 import {
   getL4Status,
-  getOperatorIp,
+  getOperatorIpWithSource,
   OperatorIpNotTrustedError,
   setL4Mode,
 } from './crowdsec-l4.js';
@@ -807,8 +807,8 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
       { preHandler: requireRole('super_admin') },
       async (req: FastifyRequest, reply: FastifyReply) => {
         try {
-          const operatorIp = getOperatorIp(req);
-          const status = await getL4Status(kubeconfigPath, operatorIp);
+          const { ip: operatorIp, source: operatorIpSource } = getOperatorIpWithSource(req);
+          const status = await getL4Status(kubeconfigPath, operatorIp, operatorIpSource);
           return success(status);
         } catch (err) {
           return reply.status(500).send({
@@ -831,15 +831,16 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
           });
         }
         const actor = userOf(req as AuthedRequest);
-        const operatorIp = getOperatorIp(req);
+        const { ip: operatorIp, source: operatorIpSource } = getOperatorIpWithSource(req);
         // Audit-log every PATCH attempt — including refused ones —
-        // for forensic review later. The operator IP is recorded so
-        // an OPERATOR_IP_NOT_TRUSTED rejection has a clear paper trail.
+        // for forensic review later. The operator IP + source header
+        // are both recorded so an OPERATOR_IP_NOT_TRUSTED rejection
+        // has a clear paper trail (incl. which header was trusted).
         app.log.warn({
-          actor, operatorIp, modeRequested: parsed.data.mode,
+          actor, operatorIp, operatorIpSource, modeRequested: parsed.data.mode,
         }, 'crowdsec-l4: PATCH attempted');
         try {
-          const status = await setL4Mode(kubeconfigPath, operatorIp, parsed.data.mode);
+          const status = await setL4Mode(kubeconfigPath, operatorIp, parsed.data.mode, operatorIpSource);
           app.log.warn({
             actor, operatorIp, mode: status.mode,
           }, 'crowdsec-l4: PATCH succeeded');

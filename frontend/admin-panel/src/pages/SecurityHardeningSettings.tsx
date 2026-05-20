@@ -3230,13 +3230,35 @@ function CrowdsecL4Card() {
 
       {/* Lockout warning */}
       {!s.operatorIpTrusted && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-          <strong>Lockout protection active:</strong> Your detected IP
-          <code className="mx-1">{s.operatorIp ?? '(unknown)'}</code> is
-          NOT in any trust source. Flipping to enforce is disabled until
-          you add a <code>ClusterTrustedRange</code> covering your source
-          IP. {trustsKnown === 0 && (
-            <span>The cluster currently has <strong>zero</strong> trust sources — any operator would be locked out.</span>
+        <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-3 py-2 text-xs text-amber-800 dark:text-amber-200 space-y-2">
+          <div>
+            <strong>Lockout protection active:</strong> Your detected IP
+            <code className="mx-1">{s.operatorIp ?? '(unknown)'}</code>
+            <span className="opacity-70">(via <code>{s.operatorIpSource}</code>)</span>
+            {' '}is NOT in any trust source. Flipping to enforce is
+            disabled until you add a <code>ClusterTrustedRange</code>
+            covering your source IP. {trustsKnown === 0 && (
+              <span>The cluster currently has <strong>zero</strong> trust sources — any operator would be locked out.</span>
+            )}
+          </div>
+          {/* The req-ip+pod-CIDR pattern is the Traefik-not-forwarding
+              failure mode. Direct the operator to the underlying header
+              config rather than to ClusterTrustedRange, because adding
+              the pod IP as trusted would let ANY internal pod bypass. */}
+          {s.operatorIpSource === 'req-ip' && s.operatorIp != null && /^10\.42\./.test(s.operatorIp) && (
+            <div className="rounded border border-amber-400 bg-amber-100 dark:bg-amber-900/40 px-2 py-1.5 text-[11px]">
+              <strong>Looks like an in-cluster pod IP.</strong> Your real
+              source IP isn't being forwarded by Traefik —
+              <code className="mx-1">X-Real-IP</code> and
+              <code className="mx-1">X-Forwarded-For</code> are both
+              missing on this request. Check the Traefik IngressRoute /
+              middleware for the admin host: the
+              {' '}<code>plugin.forwardedHeadersStrategy</code> or a
+              <code className="mx-1">X-Forwarded-For</code> middleware
+              must populate the chain. Do NOT add{' '}
+              <code>10.42.0.0/16</code> as a <code>ClusterTrustedRange</code>
+              {' '}— that would let any pod bypass the gate.
+            </div>
           )}
         </div>
       )}
