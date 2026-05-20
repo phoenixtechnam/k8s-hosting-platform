@@ -28,14 +28,17 @@ metadata:
     app.kubernetes.io/component: backup
   annotations:
     platform.phoenix-host.net/managed-by: backup-rclone-shim/config-renderer
+    # Flux must use merge-patch (not full SSA) on this ConfigMap so
+    # `data.buckets.txt` isn't reset to "" each tick when the
+    # reconciler has populated it with real bucket names. Without
+    # this annotation, every Flux reconcile wipes the runtime state.
+    # Discovered via E2E on staging 2026-05-20.
+    kustomize.toolkit.fluxcd.io/ssa: merge
 data:
-  # Empty until the reconciler renders real bucket names. Format is
-  # one bucket-spec per line, e.g.
-  #   system:
-  #   system-raw:
-  #   tenant:
-  #   tenant-raw:
-  buckets.txt: ""
+  # buckets.txt is INTENTIONALLY ABSENT here so Flux doesn't claim
+  # ownership of the field. The reconciler creates + maintains it.
+  # When the reconciler hasn't run yet, launcher.sh sleeps because
+  # BUCKETS_FILE doesn't exist (the launcher tolerates that).
 
   # The shim's entrypoint. Reads buckets.txt; if empty, sleep
   # indefinitely (the pod stays Ready=false from the readiness probe,
