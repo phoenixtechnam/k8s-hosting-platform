@@ -12,6 +12,20 @@ vi.mock('../auth/step-up-service.js', () => ({
 vi.mock('./audit.js', () => ({
   recordNodeTerminalAudit: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock('./session-store.js', () => ({
+  insertSession: vi.fn().mockResolvedValue(undefined),
+  findById: vi.fn().mockResolvedValue(null),
+  consumeWsToken: vi.fn().mockResolvedValue(null),
+  refreshWsToken: vi.fn().mockResolvedValue(null),
+  updateOwnerReplica: vi.fn().mockResolvedValue(undefined),
+  updateActivity: vi.fn().mockResolvedValue(undefined),
+  deleteSession: vi.fn().mockResolvedValue(true),
+  findIdle: vi.fn().mockResolvedValue([]),
+  findExpired: vi.fn().mockResolvedValue([]),
+  listForNode: vi.fn().mockResolvedValue([]),
+  listAll: vi.fn().mockResolvedValue([]),
+  hashWsToken: vi.fn((t: string) => Buffer.from(t)),
+}));
 
 import { createSession, type ServiceCtx, type RequestActor } from './service.js';
 import { _resetForTests } from './session-registry.js';

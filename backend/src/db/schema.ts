@@ -2597,6 +2597,41 @@ export const userPasskeys = pgTable('user_passkeys', {
 export type UserPasskey = typeof userPasskeys.$inferSelect;
 export type NewUserPasskey = typeof userPasskeys.$inferInsert;
 
+// ─── Admin node-terminal sessions (ADR-041 evolved spec) ────────────
+//
+// Per-session row. Survives platform-api replica restarts, lets any
+// replica re-attach to a still-running privileged Pod via fresh
+// `exec.exec()`. Replaces the previous per-replica in-memory Map
+// (which silently broke under HA — see docs/02-operations/
+// NODE_TERMINAL.md "HA replica mismatch" section).
+export const nodeTerminalSessions = pgTable('node_terminal_sessions', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  nodeName: text('node_name').notNull(),
+  podName: text('pod_name').notNull(),
+  podNamespace: text('pod_namespace').notNull().default('platform'),
+  userId: varchar('user_id', { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  userEmail: varchar('user_email', { length: 255 }).notNull(),
+  clientIp: varchar('client_ip', { length: 45 }).notNull(),
+  // SHA-256 of the 32-byte random wsToken — never plaintext at rest.
+  // NULL once consumed (atomic UPDATE … SET ws_token_hash=NULL).
+  // Refreshed by the reconnect endpoint with a fresh token + hash.
+  wsTokenHash: bytea('ws_token_hash'),
+  wsTokenIssuedAt: timestamp('ws_token_issued_at', { withTimezone: true }),
+  ownerReplica: text('owner_replica').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('node_terminal_sessions_user_idx').on(table.userId, table.expiresAt),
+  index('node_terminal_sessions_expires_idx').on(table.expiresAt),
+  index('node_terminal_sessions_activity_idx').on(table.lastActivityAt),
+]);
+
+export type NodeTerminalSessionRow = typeof nodeTerminalSessions.$inferSelect;
+export type NewNodeTerminalSession = typeof nodeTerminalSessions.$inferInsert;
+
 /**
  * Ephemeral WebAuthn challenge store. Single-use, 5-min TTL.
  * Pruned by a nightly cron. Reading on /verify also marks consumed.

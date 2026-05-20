@@ -11,7 +11,7 @@ import {
   NODE_TERMINAL_IDLE_MS,
   type ServiceCtx,
 } from './service.js';
-import { listSessions, listSessionsForNode } from './session-registry.js';
+import * as sessionStore from './session-store.js';
 import { eq } from 'drizzle-orm';
 import { users } from '../../db/schema.js';
 
@@ -221,7 +221,9 @@ export async function nodeTerminalRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { nodeName } = request.params;
     validateNodeName(nodeName);
-    const sessions = listSessionsForNode(nodeName);
+    // DB-backed list — works cluster-wide, not just for sessions
+    // owned by this replica.
+    const sessions = await sessionStore.listForNode(app.db, nodeName);
     return {
       data: sessions.map((s) => ({
         sessionId: s.id,
@@ -229,6 +231,7 @@ export async function nodeTerminalRoutes(app: FastifyInstance): Promise<void> {
         podName: s.podName,
         userId: s.userId,
         userEmail: s.userEmail,
+        ownerReplica: s.ownerReplica,
         createdAt: s.createdAt.toISOString(),
         expiresAt: s.expiresAt.toISOString(),
         lastActivityAt: s.lastActivityAt.toISOString(),
@@ -245,7 +248,7 @@ export async function nodeTerminalRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async () => {
-    const sessions = listSessions();
+    const sessions = await sessionStore.listAll(app.db);
     return {
       data: sessions.map((s) => ({
         sessionId: s.id,
@@ -253,6 +256,7 @@ export async function nodeTerminalRoutes(app: FastifyInstance): Promise<void> {
         podName: s.podName,
         userId: s.userId,
         userEmail: s.userEmail,
+        ownerReplica: s.ownerReplica,
         createdAt: s.createdAt.toISOString(),
         expiresAt: s.expiresAt.toISOString(),
         lastActivityAt: s.lastActivityAt.toISOString(),

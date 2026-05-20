@@ -23,6 +23,7 @@ import {
   type TerminalSocket,
 } from './session-registry.js';
 import { recordNodeTerminalAudit } from './audit.js';
+import * as sessionStore from './session-store.js';
 import type { FastifyRequest } from 'fastify';
 
 // Operator decision: in-memory + sticky-session URL, no concurrent cap.
@@ -257,6 +258,48 @@ export async function createSession(
   };
   register(session);
 
+  // 6b) Persist to DB so any platform-api replica can attach later
+  //     (HA stickiness fix per ADR-041 evolved spec). Raw token never
+  //     hits the DB — only a SHA-256 hash for constant-time compare.
+  try {
+    await sessionStore.insertSession(ctx.db, {
+      id: sessionId,
+      nodeName: opts.nodeName,
+      podName,
+      userId: actor.userId,
+      userEmail: actor.userEmail,
+      clientIp: actor.ip,
+      wsToken,
+      ownerReplica: ctx.replicaHost,
+      expiresAt,
+    });
+  } catch (err) {
+    // DB insert failed — roll back the Pod + in-memory entry so we
+    // don't leave an orphan that no one can ever attach to.
+    remove(sessionId);
+    await ctx.k8sCoreApi
+      .deleteNamespacedPod({ namespace: TERMINAL_POD_NAMESPACE, name: podName, gracePeriodSeconds: 5 })
+      .catch(() => undefined);
+    await recordNodeTerminalAudit(ctx.db, {
+      actorId: actor.userId,
+      nodeName: opts.nodeName,
+      sessionId,
+      action: 'node_terminal.session.create.failed',
+      httpStatus: 500,
+      request,
+      changes: {
+        reason: 'DB_INSERT_FAILED',
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    throw new ApiError(
+      'NODE_TERMINAL_DB_FAILED',
+      'Failed to persist the terminal session row. The privileged Pod has been cleaned up.',
+      500,
+      { sessionId, podName },
+    );
+  }
+
   // 7) Build the sticky-session websocketUrl. The replica anchor is
   //    just hostname; the load-balancer needs an upstream hash header
   //    or equivalent to honour stickiness. Documented in the runbook.
@@ -294,28 +337,26 @@ export async function attachExec(
    *  the one that created the session. */
   expectedReplica?: string,
 ): Promise<void> {
-  const session = getSession(sessionId);
-  if (!session) {
-    // The wsUrl carries `?replica=<pod>`; if it differs from this
-    // pod's hostname, it's a sticky-session routing miss (HA mode
-    // with multiple platform-api replicas + missing affinity). Make
-    // the diagnostic visible to the operator AND the audit log so
-    // they don't have to grep across replicas to figure it out.
-    const localReplica = ctx.replicaHost;
-    const replicaMismatch = !!expectedReplica && expectedReplica !== localReplica;
-    const message = replicaMismatch
-      ? `Session lives on platform-api replica '${expectedReplica}' but this WebSocket landed on '${localReplica}'. HA stickiness is misconfigured — see docs/02-operations/NODE_TERMINAL.md. Use Reconnect to spawn a fresh session.`
-      : `Session ${sessionId} not found on '${localReplica}' (may have expired, been terminated, or platform-api rolled).`;
-    request.log.warn({
-      sessionId,
-      localReplica,
-      expectedReplica: expectedReplica ?? null,
-      replicaMismatch,
-    }, 'node-terminal WS upgrade for unknown session');
+  // ── DB-authoritative session lookup (ADR-041 evolved spec) ────────
+  // Replaces the previous per-replica in-memory lookup that broke
+  // under HA. Any platform-api replica can now serve any session.
+  //
+  // Flow:
+  //   1. Try DB lookup by sessionId. Not found → SESSION_NOT_FOUND
+  //      (expired/terminated/never-existed). Found → carry on.
+  //   2. Verify the row's userId matches the JWT-authenticated user.
+  //   3. Atomically validate + burn the wsToken (single-use, 60s TTL,
+  //      hash-compared in SQL).
+  //   4. Claim ownership: update `owner_replica = ctx.replicaHost`.
+  //   5. The in-memory `session-registry` Map becomes the local fast
+  //      path for the live WS+stream handles only — DB is authority.
+  let dbSession = await sessionStore.findById(ctx.db, sessionId);
+  if (!dbSession) {
+    request.log.warn({ sessionId, localReplica: ctx.replicaHost }, 'node-terminal WS upgrade for unknown session');
     sendFrame(socket, {
       type: 'error',
-      code: replicaMismatch ? 'REPLICA_MISMATCH' : 'SESSION_NOT_FOUND',
-      message,
+      code: 'SESSION_NOT_FOUND',
+      message: `Session ${sessionId} not found (may have expired, been terminated, or never existed).`,
     });
     await recordNodeTerminalAudit(ctx.db, {
       actorId: expectedUserId,
@@ -324,21 +365,17 @@ export async function attachExec(
       action: 'node_terminal.session.ws.rejected',
       httpStatus: 404,
       request,
-      changes: {
-        reason: replicaMismatch ? 'REPLICA_MISMATCH' : 'SESSION_NOT_FOUND',
-        localReplica,
-        expectedReplica: expectedReplica ?? null,
-      },
+      changes: { reason: 'SESSION_NOT_FOUND', localReplica: ctx.replicaHost },
     });
-    socket.close(4404, replicaMismatch ? 'Replica mismatch' : 'No session');
+    socket.close(4404, 'No session');
     return;
   }
-  if (session.userId !== expectedUserId) {
+  if (dbSession.userId !== expectedUserId) {
     sendFrame(socket, { type: 'error', code: 'OWNER_MISMATCH', message: 'Session belongs to a different user' });
     socket.close(4403, 'Forbidden');
     await recordNodeTerminalAudit(ctx.db, {
       actorId: expectedUserId,
-      nodeName: session.nodeName,
+      nodeName: dbSession.nodeName,
       sessionId,
       action: 'node_terminal.session.ws.rejected',
       httpStatus: 403,
@@ -347,12 +384,16 @@ export async function attachExec(
     });
     return;
   }
-  if (!consumeWsTokenForSession(session, presentedToken)) {
+  // Atomic consume: returns the row only if the token matched AND
+  // was still unconsumed AND was within the TTL window. The same
+  // SQL also nulls the hash so replay is impossible.
+  const consumed = await sessionStore.consumeWsToken(ctx.db, sessionId, presentedToken);
+  if (!consumed) {
     sendFrame(socket, { type: 'error', code: 'TOKEN_INVALID', message: 'Invalid or already-used session token' });
     socket.close(4401, 'Unauthorized');
     await recordNodeTerminalAudit(ctx.db, {
       actorId: expectedUserId,
-      nodeName: session.nodeName,
+      nodeName: dbSession.nodeName,
       sessionId,
       action: 'node_terminal.session.ws.rejected',
       httpStatus: 401,
@@ -361,8 +402,43 @@ export async function attachExec(
     });
     return;
   }
+  // Mark this replica as the new owner — diagnostic only, but visible
+  // in `audit_logs.changes` and in the runbook's session listing.
+  const replicaTransfer = dbSession.ownerReplica !== ctx.replicaHost;
+  await sessionStore.updateOwnerReplica(ctx.db, sessionId, ctx.replicaHost);
+  // Refresh local snapshot to reflect the consumed-token state.
+  dbSession = consumed;
+
+  // Hydrate in-memory entry if this is a cross-replica re-attach.
+  // The session may not exist in this replica's local registry; we
+  // synthesise one so attachWs/markActivity/finalize all work.
+  if (!getSession(sessionId)) {
+    register({
+      id: dbSession.id,
+      nodeName: dbSession.nodeName,
+      podName: dbSession.podName,
+      userId: dbSession.userId,
+      userEmail: dbSession.userEmail,
+      ip: dbSession.clientIp,
+      createdAt: dbSession.createdAt,
+      expiresAt: dbSession.expiresAt,
+      wsToken: null, // already consumed
+      wsTokenIssuedAt: dbSession.createdAt,
+      ws: null,
+      lastActivityAt: dbSession.lastActivityAt,
+    });
+  }
+  // Alias to keep the existing handler code working unchanged below.
+  const session = getSession(sessionId)!;
 
   attachWs(sessionId, socket);
+  if (replicaTransfer) {
+    request.log.info({
+      sessionId,
+      newOwner: ctx.replicaHost,
+      previousOwner: dbSession.ownerReplica,
+    }, 'node-terminal session ownership transferred to this replica');
+  }
   await recordNodeTerminalAudit(ctx.db, {
     actorId: expectedUserId,
     nodeName: session.nodeName,
@@ -546,33 +622,50 @@ export async function terminateSession(
   request: FastifyRequest,
   requestingUserId?: string,
 ): Promise<void> {
-  const session = remove(sessionId);
-  if (!session) return;
-  try { session.ws?.close(1000, reason); } catch { /* already closed */ }
-  try {
-    await ctx.k8sCoreApi.deleteNamespacedPod({
-      namespace: TERMINAL_POD_NAMESPACE,
-      name: session.podName,
-      gracePeriodSeconds: 5,
-    });
-  } catch {
-    // 404 is fine — Pod might have been GC'd by activeDeadline or
-    // ownerRef cascade. Anything else we log via audit changes.
+  // Look up the DB row FIRST so we have authoritative metadata even
+  // when this replica didn't create the session (cross-replica close).
+  const dbSession = await sessionStore.findById(ctx.db, sessionId);
+  // Local in-memory may be set (this replica owned it) or not (this
+  // replica only proxied the close request). Either way, evict.
+  const memSession = remove(sessionId);
+  if (!dbSession && !memSession) return;
+  if (memSession) {
+    try { memSession.ws?.close(1000, reason); } catch { /* already closed */ }
   }
-  const actorId = requestingUserId ?? session.userId;
+  const podName = dbSession?.podName ?? memSession?.podName;
+  const nodeName = dbSession?.nodeName ?? memSession?.nodeName ?? '';
+  const ownerUserId = dbSession?.userId ?? memSession?.userId ?? '';
+  const ownerEmail = dbSession?.userEmail ?? memSession?.userEmail ?? '';
+  const createdAt = dbSession?.createdAt ?? memSession?.createdAt ?? new Date();
+  if (podName) {
+    try {
+      await ctx.k8sCoreApi.deleteNamespacedPod({
+        namespace: TERMINAL_POD_NAMESPACE,
+        name: podName,
+        gracePeriodSeconds: 5,
+      });
+    } catch {
+      // 404 is fine — Pod might have been GC'd by activeDeadline or
+      // ownerRef cascade. Anything else we log via audit changes.
+    }
+  }
+  // Always remove the DB row last — once it's gone, any racing WS
+  // upgrade will get SESSION_NOT_FOUND instead of a dangling row.
+  await sessionStore.deleteSession(ctx.db, sessionId).catch(() => undefined);
+  const actorId = requestingUserId ?? ownerUserId;
   await recordNodeTerminalAudit(ctx.db, {
     actorId,
-    nodeName: session.nodeName,
+    nodeName,
     sessionId,
     action: 'node_terminal.session.closed',
     request,
     changes: {
       reason,
-      durationMs: Date.now() - session.createdAt.getTime(),
-      podName: session.podName,
-      sessionOwnerId: session.userId,
-      sessionOwnerEmail: session.userEmail,
-      ...(requestingUserId && requestingUserId !== session.userId ? { forcedByDifferentUser: true } : {}),
+      durationMs: Date.now() - createdAt.getTime(),
+      podName,
+      sessionOwnerId: ownerUserId,
+      sessionOwnerEmail: ownerEmail,
+      ...(requestingUserId && requestingUserId !== ownerUserId ? { forcedByDifferentUser: true } : {}),
     },
   });
 }
@@ -639,10 +732,14 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Reap any privileged terminal Pods labelled by us that don't
- * correspond to an in-memory registry entry AND were created more
- * than `staleSafetyMs` ago. Defends against: (a) platform-api crashed
- * after Pod create but before registry insert, (b) some other code
- * path created a Pod with our label by accident.
+ * correspond to a DB session row AND were created more than
+ * `staleSafetyMs` ago. Defends against: (a) platform-api crashed
+ * after Pod create but before DB insert, (b) some other code path
+ * created a Pod with our label by accident, (c) DB row was already
+ * deleted (e.g. orphaned by a partial terminate).
+ *
+ * The check is DB-backed now (was per-replica in-memory) so any
+ * replica's sweeper can correctly identify orphans cluster-wide.
  */
 export async function sweepOrphanPods(
   ctx: ServiceCtx,
@@ -665,8 +762,9 @@ export async function sweepOrphanPods(
       : 0;
     if (!name || !sessionId) continue;
     if (now - createdAt < staleSafetyMs) continue;
-    // Tracked in registry? Trust the registry.
-    if (getSession(sessionId)) continue;
+    // Tracked in DB? Leave it alone (any replica can re-attach).
+    const dbRow = await sessionStore.findById(ctx.db, sessionId).catch(() => null);
+    if (dbRow) continue;
     await ctx.k8sCoreApi
       .deleteNamespacedPod({
         namespace: TERMINAL_POD_NAMESPACE,
