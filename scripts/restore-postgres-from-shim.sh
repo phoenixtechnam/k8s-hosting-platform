@@ -143,7 +143,7 @@ $RECOVERY_SPEC
       plugin:
         name: barman-cloud.cloudnative-pg.io
         parameters:
-          objectStoreName: system-postgres-objectstore
+          barmanObjectName: system-postgres-objectstore
 EOF
 )
 

@@ -175,8 +175,8 @@ pass "Invariant 9: postgres-objectstore reconciler wired"
 if ! grep -q "name: barman-cloud.cloudnative-pg.io" "$DATABASE_YAML"; then
   fail "Invariant 10: CNPG Cluster system-db must reference barman-cloud plugin"
 fi
-if ! grep -q "objectStoreName: system-postgres-objectstore" "$DATABASE_YAML"; then
-  fail "Invariant 10: CNPG Cluster system-db must point at the system-postgres-objectstore CR"
+if ! grep -q "barmanObjectName: system-postgres-objectstore" "$DATABASE_YAML"; then
+  fail "Invariant 10: CNPG Cluster system-db must point at the system-postgres-objectstore CR (plugin-barman-cloud v0.12.0 parameter is barmanObjectName, not objectStoreName)"
 fi
 pass "Invariant 10: CNPG Cluster references barman-cloud plugin"
 
