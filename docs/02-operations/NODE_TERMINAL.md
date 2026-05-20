@@ -142,9 +142,64 @@ kubectl -n platform delete pod \
 | "STEP_UP_UNAVAILABLE" 409                            | Your account is OIDC-only. Enroll a passkey to gain step-up.   |
 | "PLATFORM_HOST_UNALLOWED" 500                        | `platform-public-hosts` ConfigMap doesn't list your admin host.|
 | "NODE_NOT_READY" 409                                 | The target node's Ready condition isn't True.                  |
-| WS opens but closes with code 4404                   | Session landed on the wrong replica (HA stickiness broken).    |
+| WS opens but closes with code 4404 (REPLICA_MISMATCH) | HA-3 stickiness broken — see "HA replica mismatch" below.     |
+| WS opens but closes with code 4404 (SESSION_NOT_FOUND)| Session expired, terminated, or platform-api rolled mid-session.|
 | Pod takes >30s to come up                            | Image pull on a cold node. Re-open after ~10s — IfNotPresent.  |
 | `cat /proc/1/comm` returns `sleep`                   | Pod not entering host namespaces. CI guard would catch this.   |
+
+## HA replica mismatch (`REPLICA_MISMATCH` 4404)
+
+When platform-api is scaled beyond a single replica, the in-memory
+session registry on replica-X is unreachable from replica-Y. The WS
+upgrade must land on the same replica that handled the POST. The
+fix relies on two layers of stickiness baked into the base manifests:
+
+| Layer                                          | Pins                              |
+|------------------------------------------------|-----------------------------------|
+| Traefik IngressRoute `services[].sticky.cookie`| browser → one admin-panel pod     |
+| `Service.sessionAffinity: ClientIP` (3h TTL)   | admin-panel pod → one platform-api|
+
+If you see `[error] Session lives on platform-api replica 'X' but
+this WebSocket landed on 'Y'`, one or both layers isn't in effect.
+Verify with:
+
+```bash
+# 1. Confirm Service sessionAffinity is applied.
+kubectl -n platform get svc platform-api -o jsonpath='{.spec.sessionAffinity}'
+# Expect: ClientIP
+
+# 2. Confirm Traefik panel sticky cookie is in the IngressRoute.
+kubectl -n platform get ingressroute platform-ingress -o yaml \
+  | grep -A5 'services:' | grep -A4 'sticky:'
+# Expect: cookie name, secure, httpOnly fields
+
+# 3. List the platform-api pods — if there are multiple, both should
+#    be reachable from any admin-panel pod's perspective, but only
+#    one should serve any given user/session.
+kubectl -n platform get pods -l app=platform-api -o wide
+```
+
+If `sessionAffinity` is empty, the manifest hasn't been reconciled
+yet — wait for Flux or force the apply:
+
+```bash
+kubectl -n platform patch svc platform-api -p \
+  '{"spec":{"sessionAffinity":"ClientIP","sessionAffinityConfig":{"clientIP":{"timeoutSeconds":10800}}}}'
+```
+
+If the IngressRoute is missing `sticky.cookie`, the
+`backend/src/modules/system-settings/ingress-reconciler.ts` writes
+that block on every platform-api startup — roll the deployment to
+trigger it:
+
+```bash
+kubectl -n platform rollout restart deployment/platform-api
+```
+
+**Short-term mitigation**: scale platform-api to 1 replica until
+both layers are confirmed working. Clicking Reconnect on the dock
+pill (or just clicking the Terminal button again) spawns a fresh
+session that lands on the current replica.
 
 ## Verification
 

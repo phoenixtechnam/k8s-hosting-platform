@@ -324,8 +324,10 @@ export async function nodeTerminalRoutes(app: FastifyInstance): Promise<void> {
       }
       const ctx = makeServiceCtx(app);
       // attachExec validates the session token + sets up the streams.
+      // Pass through ?replica= so attachExec can compare against
+      // ctx.replicaHost and surface routing mismatches in HA mode.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      void attachExec(ctx, sessionId, presentedToken, user.sub, socket as any, request).catch((err) => {
+      void attachExec(ctx, sessionId, presentedToken, user.sub, socket as any, request, q.replica).catch((err) => {
         request.log.error({ err, sessionId }, 'node-terminal attachExec crashed');
         try { socket.close(4500, 'Internal error'); } catch { /* already closed */ }
       });
