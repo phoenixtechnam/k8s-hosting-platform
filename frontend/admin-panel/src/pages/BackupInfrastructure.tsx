@@ -12,20 +12,22 @@
  */
 
 import { useSearchParams, Link } from 'react-router-dom';
-import { Database, GitBranch } from 'lucide-react';
+import { Database, GitBranch, Network } from 'lucide-react';
 import clsx from 'clsx';
 import BackupSettings from './BackupSettings';
 import SnapshotClassAssignments from './SnapshotClassAssignments';
+import BackupRcloneShimSettings from './BackupRcloneShimSettings';
 
-type Tab = 'targets' | 'classes';
+type Tab = 'targets' | 'classes' | 'shim';
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Database; description: string }> = [
   { id: 'targets', label: 'Backup Targets', icon: Database, description: 'Define S3 / SSH / CIFS storage destinations' },
   { id: 'classes', label: 'Backup Classes', icon: GitBranch, description: 'Route each backup class (tenant snapshot, tenant bundle, system, mail) to a target' },
+  { id: 'shim', label: 'Rclone Shim', icon: Network, description: 'R-X: universal backup mediator — bind 3-class SYSTEM/TENANT/MAIL to a target; status, drain, in-flight tracking' },
 ];
 
 function isTab(v: string | null): v is Tab {
-  return v === 'targets' || v === 'classes';
+  return v === 'targets' || v === 'classes' || v === 'shim';
 }
 
 export default function BackupInfrastructure() {
@@ -77,6 +79,7 @@ export default function BackupInfrastructure() {
       <div>
         {tab === 'targets' && <BackupSettings />}
         {tab === 'classes' && <SnapshotClassAssignments />}
+        {tab === 'shim' && <BackupRcloneShimSettings />}
       </div>
 
       <div className="text-xs text-gray-400 dark:text-gray-500">
