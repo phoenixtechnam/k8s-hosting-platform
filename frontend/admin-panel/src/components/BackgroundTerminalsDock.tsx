@@ -48,10 +48,19 @@ export function BackgroundTerminalsDock() {
               <span className="font-mono">{titleCase(sess.nodeName)}</span>
               <span className="ml-1.5 text-zinc-400">Shell</span>
             </span>
-            <span className="relative ml-1 flex h-2 w-2" aria-hidden="true">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-            </span>
+            {/* Status dot: green pulsing when live, red static when
+                the WS has dropped. Operator sees at a glance which
+                background sessions need a Reconnect once restored. */}
+            {sess.status === 'disconnected' ? (
+              <span className="relative ml-1 flex h-2 w-2" aria-hidden="true">
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
+              </span>
+            ) : (
+              <span className="relative ml-1 flex h-2 w-2" aria-hidden="true">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+              </span>
+            )}
           </button>
           <button
             type="button"
