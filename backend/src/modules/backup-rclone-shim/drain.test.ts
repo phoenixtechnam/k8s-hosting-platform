@@ -33,19 +33,33 @@ import type { Database } from '../../db/index.js';
 // Test helpers
 // ---------------------------------------------------------------------------
 
-interface FakeDbRow {
+/** Row shape returned by the Drizzle query builder after grouping. */
+interface FakeQueryRow {
   kind: string;
-  count: string;
+  n: number;
 }
 
-function fakeDb(returns: FakeDbRow[][]): Database {
+/**
+ * Drizzle's `db.select().from().where().groupBy().orderBy().limit()`
+ * chain is mocked here with a per-call result array. Every chained
+ * method returns the same thenable so the caller can `await` the
+ * final node.
+ */
+function fakeDb(returns: FakeQueryRow[][]): Database {
   let call = 0;
+  const next = (): Promise<FakeQueryRow[]> => {
+    const out = returns[Math.min(call, returns.length - 1)] ?? [];
+    call += 1;
+    return Promise.resolve(out);
+  };
+  const chain: Record<string, unknown> = {};
+  for (const method of ['from', 'where', 'groupBy', 'orderBy', 'limit', 'innerJoin', 'leftJoin']) {
+    chain[method] = vi.fn(() => chain);
+  }
+  chain.then = (resolve: (rows: FakeQueryRow[]) => unknown) => next().then(resolve);
   return {
-    execute: vi.fn(async () => {
-      const out = returns[Math.min(call, returns.length - 1)] ?? [];
-      call += 1;
-      return { rows: out } as never;
-    }),
+    select: vi.fn(() => chain),
+    execute: vi.fn(async () => ({ rows: returns[0] ?? [] }) as never),
   } as unknown as Database;
 }
 
@@ -123,8 +137,8 @@ describe('resolveDrainKinds', () => {
 describe('snapshotInflightShimConsumers', () => {
   it('returns total + per-kind samples', async () => {
     const db = fakeDb([[
-      { kind: 'backup.run', count: '3' },
-      { kind: 'storage.snapshot', count: '1' },
+      { kind: 'backup.run', n: 3 },
+      { kind: 'storage.snapshot', n: 1 },
     ]]);
     const snap = await snapshotInflightShimConsumers(db);
     expect(snap.total).toBe(4);
@@ -142,7 +156,7 @@ describe('snapshotInflightShimConsumers', () => {
   });
 
   it('passes the class filter through to the kind list (system filter)', async () => {
-    const db = fakeDb([[{ kind: 'backup.run', count: '1' }]]);
+    const db = fakeDb([[{ kind: 'backup.run', n: 1 }]]);
     const snap = await snapshotInflightShimConsumers(db, ['system']);
     expect(snap.total).toBe(1);
   });
@@ -161,7 +175,7 @@ describe('snapshotInflightShimConsumers', () => {
   });
 
   it('reports the per-kind count as a parsed integer (not a string)', async () => {
-    const db = fakeDb([[{ kind: 'mail.archive', count: '7' }]]);
+    const db = fakeDb([[{ kind: 'mail.archive', n: 7 }]]);
     const snap = await snapshotInflightShimConsumers(db, ['mail']);
     expect(snap.samples[0].count).toBe(7);
     expect(typeof snap.samples[0].count).toBe('number');
@@ -201,7 +215,7 @@ describe('waitForBackupDrain', () => {
   it('phase=drain_skipped when timeoutMs===0 (force=true path)', async () => {
     // Initial snapshot still runs (so we can report what we WOULD have
     // drained) but no waiting happens.
-    const db = fakeDb([[{ kind: 'mail.archive', count: '2' }]]);
+    const db = fakeDb([[{ kind: 'mail.archive', n: 2 }]]);
     const r = await waitForBackupDrain(db, silentLog(), { timeoutMs: 0 });
     expect(r.phase).toBe('drain_skipped');
     expect(r.drained).toBe(false);
@@ -212,8 +226,8 @@ describe('waitForBackupDrain', () => {
 
   it('drains successfully when inflight goes to 0 on second tick', async () => {
     const db = fakeDb([
-      [{ kind: 'backup.run', count: '1' }], // initial
-      [{ kind: 'backup.run', count: '1' }], // first poll: still 1
+      [{ kind: 'backup.run', n: 1 }], // initial
+      [{ kind: 'backup.run', n: 1 }], // first poll: still 1
       [], // second poll: 0
     ]);
     const clock = makeInjectedClock();
@@ -234,9 +248,9 @@ describe('waitForBackupDrain', () => {
     // 4 ticks at 5s each = 20s; cap at 10s so we time out on the 3rd
     // sleep. snapshot pattern: initial + repeated.
     const db = fakeDb([
-      [{ kind: 'backup.bundle', count: '3' }], // initial
-      [{ kind: 'backup.bundle', count: '3' }], // poll 1
-      [{ kind: 'backup.bundle', count: '2' }], // poll 2 (timeout)
+      [{ kind: 'backup.bundle', n: 3 }], // initial
+      [{ kind: 'backup.bundle', n: 3 }], // poll 1
+      [{ kind: 'backup.bundle', n: 2 }], // poll 2 (timeout)
     ]);
     const clock = makeInjectedClock();
     const r = await waitForBackupDrain(db, silentLog(), {
@@ -253,21 +267,19 @@ describe('waitForBackupDrain', () => {
   });
 
   it('class filter passed through to snapshotInflightShimConsumers', async () => {
-    const execSpy = vi.fn(async () => ({ rows: [] }) as never);
-    const db = { execute: execSpy } as unknown as Database;
+    const db = fakeDb([[]]);
     const clock = makeInjectedClock();
-    await waitForBackupDrain(db, silentLog(), {
+    const r = await waitForBackupDrain(db, silentLog(), {
       timeoutMs: 5_000,
       classes: ['mail'],
       now: clock.now,
       sleep: clock.sleep,
     });
-    expect(execSpy).toHaveBeenCalled();
-    // The mail-only filter produces a shorter kind list. We can't
-    // easily peek into Drizzle's compiled SQL here without spinning
-    // up a real Postgres, so just confirm the call ran without error
-    // — the resolveDrainKinds unit tests above already exercise the
-    // filter logic.
+    // Empty result → drain_immediate. The mail-only filter produces a
+    // shorter kind list inside resolveDrainKinds, which is unit-tested
+    // above; here we just confirm the call path runs end-to-end with a
+    // class filter set.
+    expect(r.phase).toBe('drain_immediate');
   });
 
   it('clamps negative timeoutMs to 0', async () => {
@@ -282,7 +294,7 @@ describe('waitForBackupDrain', () => {
     // Verified indirectly: a 12s timeout sleeps in 5s chunks, so the
     // sleeper is called twice with 5000.
     const db = fakeDb([
-      [{ kind: 'storage.snapshot', count: '1' }],
+      [{ kind: 'storage.snapshot', n: 1 }],
       [], // drain on first poll
     ]);
     let lastSleepMs = 0;

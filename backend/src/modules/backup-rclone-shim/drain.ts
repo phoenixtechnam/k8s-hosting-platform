@@ -24,10 +24,11 @@
  * side effects.
  */
 
-import { sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import type { Database } from '../../db/index.js';
+import { tasks as tasksTable } from '../../db/schema.js';
 import type { BackupShimClass, DrainPhase } from '@k8s-hosting/api-contracts';
 
 // ---------------------------------------------------------------------------
@@ -188,24 +189,28 @@ export async function snapshotInflightShimConsumers(
   if (kinds.length === 0) {
     return { total: 0, samples: [] };
   }
-  // `kind = ANY($1)` parameterised — drizzle injects the array via $1
-  // so we don't string-concat user input.
-  const result = await db.execute<{ kind: string; count: string }>(sql`
-    SELECT kind, COUNT(*)::text AS count
-      FROM tasks
-     WHERE kind = ANY(${kinds as readonly string[] as string[]})
-       AND status IN ('queued','running')
-       AND cleared_at IS NULL
-     GROUP BY kind
-     ORDER BY count DESC
-     LIMIT ${INFLIGHT_SAMPLE_KIND_CAP}
-  `);
-  const rows: Array<{ kind: string; count: string }> =
-    (result.rows as Array<{ kind: string; count: string }>) ??
-    (result as unknown as Array<{ kind: string; count: string }>);
+  // Use Drizzle's typed query builder. `inArray` compiles to a
+  // bound IN ($1, $2, …) clause that node-pg parametrises correctly
+  // — no string-concatenation of caller-controlled values, and no
+  // PG `record→text[]` cast surprise (the array literal we tried
+  // first failed with `cannot cast type record to text[]`).
+  const kindsArray: string[] = [...kinds];
+  const rows = await db
+    .select({ kind: tasksTable.kind, n: count() })
+    .from(tasksTable)
+    .where(
+      and(
+        inArray(tasksTable.kind, kindsArray),
+        inArray(tasksTable.status, ['queued', 'running']),
+        isNull(tasksTable.clearedAt),
+      ),
+    )
+    .groupBy(tasksTable.kind)
+    .orderBy(desc(count()))
+    .limit(INFLIGHT_SAMPLE_KIND_CAP);
   const samples: InflightSample[] = rows.map((r) => ({
     kind: r.kind,
-    count: Number.parseInt(r.count, 10),
+    count: Number(r.n),
   }));
   const total = samples.reduce((acc, s) => acc + s.count, 0);
   return { total, samples };

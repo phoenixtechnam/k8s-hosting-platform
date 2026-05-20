@@ -18,7 +18,7 @@ import {
   deriveCryptRawHex,
   deriveResticPassword,
   rcloneObscure,
-} from './crypto';
+} from './crypto.js';
 
 // A fixed test key — exactly 32 bytes, base64-encoded.
 // Used in every test so reviewers can verify outputs by hand.

@@ -35,7 +35,7 @@ APPLY="$MOD_DIR/apply-assignment.ts"
 CONTRACTS="$ROOT/packages/api-contracts/src/backup-rclone-shim.ts"
 TASK_CENTER="$ROOT/packages/api-contracts/src/task-center.ts"
 MIG_0016="$ROOT/backend/src/db/migrations/0016_backup_rclone_shim_classes.sql"
-MIG_0017="$ROOT/backend/src/db/migrations/0017_backup_drain_timeout.sql"
+MIG_0018="$ROOT/backend/src/db/migrations/0018_backup_drain_timeout.sql"
 
 fail() {
   echo "[ci-backup-rclone-shim] FAIL: $1" >&2
@@ -46,7 +46,7 @@ pass() {
 }
 
 for f in "$SERVICE" "$RECONCILER" "$DRAIN" "$ROUTES" "$APPLY" "$CONTRACTS" \
-         "$TASK_CENTER" "$MIG_0016" "$MIG_0017"; do
+         "$TASK_CENTER" "$MIG_0016" "$MIG_0018"; do
   if [[ ! -f "$f" ]]; then
     fail "Cannot find $f"
   fi
@@ -142,8 +142,8 @@ done <<< "$KINDS"
 pass "Invariant 6: every shim-consumer kind exists in TASK_KIND_REGISTRY"
 
 # ─── 7. drain_timeout_seconds CHECK constraint ─────────────────────
-if ! grep -qE "drain_timeout_seconds.*BETWEEN\s+30\s+AND\s+1800" "$MIG_0017"; then
-  fail "Invariant 7: migration 0017 must CHECK drain_timeout_seconds BETWEEN 30 AND 1800"
+if ! grep -qE "drain_timeout_seconds.*BETWEEN\s+30\s+AND\s+1800" "$MIG_0018"; then
+  fail "Invariant 7: migration 0018 must CHECK drain_timeout_seconds BETWEEN 30 AND 1800"
 fi
 pass "Invariant 7: drain_timeout_seconds CHECK constraint present"
 
