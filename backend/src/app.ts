@@ -900,6 +900,33 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn({ err }, 'mail-target-scheduler: failed to start (non-blocking)');
         }
 
+        // R-X4-followup: backup-rclone-shim config reconciler.
+        // Reads platform/backup-target-key Secret + backup_target_assignments
+        // rows for the three shim classes ('system','tenant','mail'),
+        // renders rclone.conf + buckets.txt, materialises ConfigMap +
+        // SSH-keys Secret + DaemonSet annotation. 5-min tick; idempotent
+        // (inputHash comparison short-circuits on unchanged inputs).
+        // Non-blocking on failure.
+        try {
+          const { startBackupRcloneShimReconciler } = await import(
+            './modules/backup-rclone-shim/scheduler.js'
+          );
+          const shimHandle = startBackupRcloneShimReconciler(
+            app.db,
+            { core: k8sForImapsync.core, apps: k8sForImapsync.apps },
+            (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+              ?? process.env.PLATFORM_ENCRYPTION_KEY
+              ?? '0'.repeat(64),
+            app.log,
+          );
+          app.addHook('onClose', () => shimHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'backup-rclone-shim: scheduler start failed (non-blocking)',
+          );
+        }
+
         // M1: node-role taxonomy. Upserts cluster_nodes from k8s every
         // 60s. Shares the same k8s tenant instance as mail reconcilers
         // to avoid re-reading the kubeconfig. Stops cleanly on app

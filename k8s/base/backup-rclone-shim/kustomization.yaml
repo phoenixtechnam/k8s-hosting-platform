@@ -17,6 +17,12 @@ kind: Kustomization
 resources:
   - serviceaccount.yaml
   - configmap-placeholder.yaml
+  # R-X4-followup: rclone.conf moved out of the ConfigMap into a Secret
+  # so cluster principals with `get configmap` in `platform` cannot
+  # recover upstream provider credentials. SSH PEM keys land in a
+  # peer Secret.
+  - secret-placeholder.yaml
+  - ssh-keys-secret-placeholder.yaml
   - daemonset.yaml
   - service.yaml
   - networkpolicy.yaml

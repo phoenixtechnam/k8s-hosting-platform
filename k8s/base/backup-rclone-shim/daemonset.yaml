@@ -87,7 +87,7 @@ spec:
           # The image's ENTRYPOINT is tini; we exec the launcher
           # script that wraps `rclone serve s3` with the bucket args
           # read from the ConfigMap. See configmap-placeholder.yaml.
-          command: ["/sbin/tini", "--", "/bin/sh", "/etc/rclone/launcher.sh"]
+          command: ["/sbin/tini", "--", "/bin/sh", "/etc/rclone-static/launcher.sh"]
 
           ports:
             - name: s3
@@ -142,8 +142,19 @@ spec:
               drop: [ALL]
 
           volumeMounts:
-            - name: rclone-config
-              mountPath: /etc/rclone
+            # R-X4-followup: three separate mounts so the rendered
+            # rclone.conf (credentials) lives in a Secret, not the
+            # ConfigMap. launcher.sh reads
+            #   CONFIG=/etc/rclone-credentials/rclone.conf
+            #   BUCKETS_FILE=/etc/rclone-static/buckets.txt
+            - name: rclone-static
+              mountPath: /etc/rclone-static
+              readOnly: true
+            - name: rclone-credentials
+              mountPath: /etc/rclone-credentials
+              readOnly: true
+            - name: rclone-ssh-keys
+              mountPath: /etc/rclone/ssh-keys
               readOnly: true
             - name: scratch
               mountPath: /tmp
@@ -194,17 +205,31 @@ spec:
       terminationGracePeriodSeconds: 30
 
       volumes:
-        - name: rclone-config
+        # ConfigMap with launcher.sh + buckets.txt. Bucket names + the
+        # entry-point script are NOT secret; ConfigMap is appropriate.
+        # 0o0400 (decimal 256) — owner-only read.
+        - name: rclone-static
           configMap:
             name: backup-rclone-shim-config
-            # 0o0400 (decimal 256) — owner-only read. rclone.conf will
-            # contain HKDF-derived S3 credentials and per-class crypt
-            # passwords once R-X4 populates the ConfigMap. We use the
-            # decimal form for cross-YAML-version safety; `0400` would
-            # be parsed as octal by some libraries and decimal by
-            # others. 256 = 0o0400. The launcher is invoked via
-            # `/bin/sh /etc/rclone/launcher.sh` (passing the file as
-            # an argument to sh), which doesn't require the exec bit.
+            defaultMode: 256
+
+        # Secret with the rendered rclone.conf — contains the rclone-
+        # obscured upstream credentials + per-class crypt passwords.
+        # Secret (not ConfigMap) per R-X4-followup security finding:
+        # rclone-obscure is reversible by anyone with the rclone binary,
+        # so the rendered conf is effectively a credential bundle and
+        # belongs in a Secret with EncryptionConfiguration-at-rest.
+        - name: rclone-credentials
+          secret:
+            secretName: backup-rclone-shim-credentials
+            defaultMode: 256
+
+        # Per-class SFTP PEM keys. Each `<class>.pem` data entry maps
+        # to a file at /etc/rclone/ssh-keys/<class>.pem (matching the
+        # `key_file = ...` lines emitted by the renderer).
+        - name: rclone-ssh-keys
+          secret:
+            secretName: backup-rclone-shim-ssh-keys
             defaultMode: 256
 
         # tmpfs (memory-backed) for HOME / rclone temp / etc. Limits
