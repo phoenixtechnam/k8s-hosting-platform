@@ -40,6 +40,8 @@ export interface SessionSummary {
   readonly createdAt: number;
   /** UI state: true = parked in the background dock; false = currently shown in the modal. */
   readonly minimized: boolean;
+  /** WS lifecycle phase. `connecting` = WS opening, `connected` = open, `disconnected` = closed (any reason). The modal title bar + dock pill subscribe to this for the status indicator + Reconnect button visibility. */
+  readonly status: 'connecting' | 'connected' | 'disconnected';
 }
 
 // ─── Internal refs (kept OUT of zustand state to avoid serialization
@@ -215,6 +217,13 @@ interface TerminalSessionsState {
   restore: (sessionId: string) => void;
   /** Terminate a session: WS close, xterm dispose, DELETE on server. */
   terminate: (sessionId: string) => void;
+  /** Reconnect a disconnected session: mint a fresh wsToken via the
+   *  server's POST /sessions/:id/ws-token endpoint, then open a new
+   *  WebSocket against the SAME sessionId + Pod (which is still alive).
+   *  Scrollback survives — the xterm Terminal instance is preserved.
+   *  Shell state (cwd, env) is fresh because k8s gives each exec its
+   *  own PTY (P0 spike). */
+  reconnect: (sessionId: string) => Promise<void>;
   /** Attach a session's xterm host element into the modal body element. */
   attach: (sessionId: string, container: HTMLElement) => void;
   /** Move a session's xterm host element back to the graveyard. */
@@ -255,47 +264,18 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
     const wsUrl = created.websocketUrl.includes('?')
       ? `${created.websocketUrl}&jwt=${encodeURIComponent(authToken())}`
       : `${created.websocketUrl}?jwt=${encodeURIComponent(authToken())}`;
+    // Open the WS + install the refs atomically. bindWsLifecycle is
+    // re-used by reconnect() to swap in a fresh ws on the same xterm.
     const ws = new WebSocket(wsUrl);
-
-    ws.onmessage = (event) => {
-      try {
-        const frame = JSON.parse(event.data as string) as Record<string, unknown>;
-        const type = frame.type as string | undefined;
-        if ((type === 'stdout' || type === 'stderr') && typeof frame.data === 'string') {
-          term.write(frame.data);
-        } else if (type === 'connected') {
-          // first frame — clear the placeholder
-          term.clear();
-        } else if (type === 'error') {
-          term.write(`\r\n\x1b[31m[error] ${(frame.message as string) ?? 'unknown'}\x1b[0m\r\n`);
-        } else if (type === 'exit') {
-          term.write(`\r\n\x1b[33m[session ended: ${(frame.reason as string) ?? 'closed'}]\x1b[0m\r\n`);
-        }
-      } catch { /* malformed frame */ }
-    };
-    ws.onerror = () => term.write('\r\n\x1b[31m[WebSocket error]\x1b[0m\r\n');
-    ws.onclose = () => term.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n');
-
-    term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'stdin', data }));
-      }
-    });
-
-    // Connection keepalive comes from the server's WS-protocol-level
-    // ping every 30s + the browser's automatic pong response — no
-    // application-level ping needed. Sending app-level pings would
-    // also bump server-side `lastActivityAt`, defeating the 15-min
-    // idle-timeout that's supposed to clean up parked minimized
-    // sessions.
-
     sessionRefs.set(created.sessionId, { term, fitAddon, ws, hostEl });
+    bindWsLifecycle(term, ws, created.sessionId, set);
 
     const summary: SessionSummary = {
       id: created.sessionId,
       nodeName: created.nodeName,
       createdAt: Date.now(),
       minimized: false,
+      status: 'connecting',
     };
     // Atomic state transition: drop the loading overlay AND open the
     // modal in a single set() so React doesn't render the in-between
@@ -306,6 +286,61 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
       openingFor: null,
     }));
     return created.sessionId;
+  }
+
+  /** Wire WS event handlers to xterm + status. Used by both the
+   *  initial provisioning AND the reconnect action so they share
+   *  exactly one onmessage/onclose/onerror implementation.
+   *
+   *  Side effect: writes `refs.ws` for the sessionId into the module-
+   *  level sessionRefs map BEFORE returning, so any code reading
+   *  refs.ws can rely on it being current. */
+  function bindWsLifecycle(
+    term: Terminal,
+    ws: WebSocket,
+    sessionId: string,
+    setStore: typeof set,
+  ): void {
+    ws.onopen = () => {
+      setStore((s) => ({
+        sessions: s.sessions.map((sess) => sess.id === sessionId ? { ...sess, status: 'connected' } : sess),
+      }));
+    };
+    ws.onmessage = (event) => {
+      try {
+        const frame = JSON.parse(event.data as string) as Record<string, unknown>;
+        const type = frame.type as string | undefined;
+        if ((type === 'stdout' || type === 'stderr') && typeof frame.data === 'string') {
+          term.write(frame.data);
+        } else if (type === 'connected') {
+          // first frame after a fresh exec — clear the placeholder
+          term.clear();
+        } else if (type === 'error') {
+          term.write(`\r\n\x1b[31m[error] ${(frame.message as string) ?? 'unknown'}\x1b[0m\r\n`);
+        } else if (type === 'exit') {
+          term.write(`\r\n\x1b[33m[session ended: ${(frame.reason as string) ?? 'closed'}]\x1b[0m\r\n`);
+        }
+      } catch { /* malformed frame */ }
+    };
+    ws.onerror = () => term.write('\r\n\x1b[31m[WebSocket error]\x1b[0m\r\n');
+    ws.onclose = () => {
+      term.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n');
+      setStore((s) => ({
+        sessions: s.sessions.map((sess) => sess.id === sessionId ? { ...sess, status: 'disconnected' } : sess),
+      }));
+    };
+    term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'stdin', data }));
+      }
+    });
+    // Update refs.ws so any later code (reconnect, term.onData) talks
+    // to the latest ws. term/fitAddon/hostEl are written by
+    // provisionSession before this helper is called.
+    const existing = sessionRefs.get(sessionId);
+    if (existing) {
+      sessionRefs.set(sessionId, { ...existing, ws });
+    }
   }
 
   return {
@@ -418,6 +453,66 @@ export const useTerminalSessions = create<TerminalSessionsState>((set, get) => {
         sessions: s.sessions.filter((sess) => sess.id !== sessionId),
         activeId: s.activeId === sessionId ? null : s.activeId,
       }));
+    },
+
+    reconnect: async (sessionId: string) => {
+      const refs = sessionRefs.get(sessionId);
+      const session = get().sessions.find((s) => s.id === sessionId);
+      if (!refs || !session) return;
+      // Flip to connecting immediately for UI feedback.
+      set((s) => ({
+        sessions: s.sessions.map((sess) => sess.id === sessionId ? { ...sess, status: 'connecting' } : sess),
+      }));
+      try {
+        // Mint a fresh wsToken from the server. May 403 STEP_UP_REQUIRED
+        // if freshness has expired since the original session opened.
+        const r = await fetch(
+          `${getApiBase()}/api/v1/admin/nodes/${encodeURIComponent(session.nodeName)}/terminal/sessions/${encodeURIComponent(sessionId)}/ws-token`,
+          { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: '{}' },
+        );
+        if (r.status === 403) {
+          const body = await r.json().catch(() => ({})) as {
+            error?: { code?: string; details?: { methods?: StepUpMethod[] } };
+          };
+          if (body.error?.code === 'STEP_UP_REQUIRED') {
+            set({ pendingStepUp: { methods: body.error.details?.methods ?? [], nodeName: session.nodeName } });
+            // Caller (the dialog) will run verifyStepUpPassword/Passkey
+            // then call reconnect() again. Status stays "connecting".
+            return;
+          }
+        }
+        if (r.status === 404) {
+          // Server already cleared the row — the session is truly gone.
+          // Fall back to spawning a fresh one on the same node.
+          set((s) => ({
+            sessions: s.sessions.filter((sess) => sess.id !== sessionId),
+            activeId: s.activeId === sessionId ? null : s.activeId,
+          }));
+          sessionRefs.delete(sessionId);
+          await get().openFresh(session.nodeName);
+          return;
+        }
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({})) as { error?: { message?: string } };
+          throw new Error(body.error?.message ?? `Reconnect failed (HTTP ${r.status})`);
+        }
+        const json = await r.json() as { data: { websocketUrl: string } };
+        const wsUrl = json.data.websocketUrl.includes('?')
+          ? `${json.data.websocketUrl}&jwt=${encodeURIComponent(authToken())}`
+          : `${json.data.websocketUrl}?jwt=${encodeURIComponent(authToken())}`;
+        // Close the stale ws (if not already closed) so its onclose
+        // doesn't fire AFTER we've swapped in the fresh one and
+        // flip status back to disconnected.
+        try { refs.ws.close(1000, 'reconnect'); } catch { /* gone */ }
+        const ws = new WebSocket(wsUrl);
+        refs.term.writeln('\r\n\x1b[36m[reconnecting — shell state may be fresh; scrollback preserved]\x1b[0m');
+        bindWsLifecycle(refs.term, ws, sessionId, set);
+      } catch (e) {
+        set((s) => ({
+          sessions: s.sessions.map((sess) => sess.id === sessionId ? { ...sess, status: 'disconnected' } : sess),
+          openError: (e as Error).message,
+        }));
+      }
     },
 
     attach: (sessionId: string, container: HTMLElement) => {

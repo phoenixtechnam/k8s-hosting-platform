@@ -36,6 +36,13 @@ export function NodeTerminalModal({ sessionId, nodeName }: NodeTerminalModalProp
   const fit = useTerminalSessions((s) => s.fit);
   const minimize = useTerminalSessions((s) => s.minimize);
   const terminate = useTerminalSessions((s) => s.terminate);
+  const reconnect = useTerminalSessions((s) => s.reconnect);
+  // Subscribe to this specific session's WS status (connecting /
+  // connected / disconnected). Drives the title-bar status pill +
+  // Reconnect button visibility.
+  const status = useTerminalSessions(
+    (s) => s.sessions.find((sess) => sess.id === sessionId)?.status ?? 'connecting',
+  );
 
   // ── Attach xterm host on mount; detach on unmount.
   useEffect(() => {
@@ -103,6 +110,20 @@ export function NodeTerminalModal({ sessionId, nodeName }: NodeTerminalModalProp
             </span>
           </div>
           <div className="flex items-center gap-1.5">
+            <StatusPill status={status} nodeName={nodeName} />
+            {status === 'disconnected' && (
+              <button
+                type="button"
+                onClick={() => void reconnect(sessionId)}
+                className="inline-flex items-center gap-1.5 rounded-md bg-emerald-700 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                aria-label="Reconnect to the same session"
+                title="Reconnect — re-attach to this session (Pod still alive)"
+                data-testid={`node-terminal-reconnect-${nodeName}`}
+              >
+                <RotateCw size={12} aria-hidden="true" />
+                Reconnect
+              </button>
+            )}
             <button
               type="button"
               onClick={handleMinimize}
@@ -286,6 +307,52 @@ export function NodeTerminalStepUpDialog({
         </button>
       </div>
     </div>
+  );
+}
+
+// ─── Title-bar status pill ────────────────────────────────────────────
+
+interface StatusPillProps {
+  readonly status: 'connecting' | 'connected' | 'disconnected';
+  readonly nodeName: string;
+}
+
+function StatusPill({ status, nodeName }: StatusPillProps) {
+  const isConnected = status === 'connected';
+  const isConnecting = status === 'connecting';
+  const isDisconnected = status === 'disconnected';
+
+  return (
+    <span
+      className={
+        'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium '
+        + (isConnected ? 'bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-700/50 '
+          : isConnecting ? 'bg-amber-900/40 text-amber-200 ring-1 ring-amber-700/50 '
+          : 'bg-red-900/40 text-red-200 ring-1 ring-red-700/50 ')
+      }
+      data-testid={`node-terminal-status-${nodeName}`}
+      data-status={status}
+      aria-live="polite"
+    >
+      {isConnected && (
+        <>
+          <span className="h-2 w-2 rounded-full bg-emerald-400" aria-hidden="true" />
+          <span>connected</span>
+        </>
+      )}
+      {isConnecting && (
+        <>
+          <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+          <span>connecting…</span>
+        </>
+      )}
+      {isDisconnected && (
+        <>
+          <span className="h-2 w-2 rounded-full bg-red-400" aria-hidden="true" />
+          <span>disconnected</span>
+        </>
+      )}
+    </span>
   );
 }
 

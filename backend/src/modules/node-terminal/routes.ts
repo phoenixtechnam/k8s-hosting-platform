@@ -1,7 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import os from 'node:os';
 import * as k8s from '@kubernetes/client-node';
+import { randomBytes } from 'node:crypto';
 import { ApiError, invalidToken } from '../../shared/errors.js';
+import { recordNodeTerminalAudit } from './audit.js';
 import { authenticate, requirePanel, requireRole, type JwtPayload } from '../../middleware/auth.js';
 import { createKubeConfig } from '../container-console/service.js';
 import {
@@ -263,6 +265,121 @@ export async function nodeTerminalRoutes(app: FastifyInstance): Promise<void> {
       })),
     };
   });
+
+  // POST /api/v1/admin/nodes/:nodeName/terminal/sessions/:sessionId/ws-token
+  //
+  // Mint a fresh single-use wsToken for an existing session (the
+  // original was consumed on first WS upgrade). Used by the Reconnect
+  // button in the modal title bar after a transient WS drop. Same
+  // sessionId → same Pod → fresh exec stream (verified by P0 spike).
+  //
+  // Gates (same as create + a freshness check):
+  //   - authenticate + requirePanel('admin') + requireRole('super_admin')
+  //   - step-up freshness still within the 30-min window
+  //   - DB row exists and is owned by the calling user
+  app.post<{ Params: SessionWithIdParams }>(
+    '/admin/nodes/:nodeName/terminal/sessions/:sessionId/ws-token',
+    {
+      onRequest: adminGate,
+      config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
+      schema: {
+        tags: ['Node Terminal'],
+        summary: 'Mint a fresh wsToken for an existing session (reconnect)',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request, reply) => {
+      const { nodeName, sessionId } = request.params;
+      validateNodeName(nodeName);
+      const user = request.user as JwtPayload;
+
+      // Step-up freshness — mirror createSession. Importing here to
+      // avoid circulars.
+      const { getStepUpStatus } = await import('../auth/step-up-service.js');
+      const status = await getStepUpStatus(app.db, user.sub);
+      if (status.required) {
+        if (status.methods.length === 0) {
+          throw new ApiError(
+            'STEP_UP_UNAVAILABLE',
+            'Your account has no step-up method enrolled. Enroll a credential before reconnecting.',
+            409,
+            { reason: 'NO_STEP_UP_METHOD_AVAILABLE' },
+          );
+        }
+        throw new ApiError(
+          'STEP_UP_REQUIRED',
+          'A fresh credential check is required to reconnect.',
+          403,
+          {
+            methods: status.methods,
+            lastCredentialCheckAt: status.lastCredentialCheckAt?.toISOString() ?? null,
+            maxAgeSeconds: Math.floor(status.maxAgeMs / 1000),
+          },
+          'POST /api/v1/me/step-up/{password|passkey/verify} with your active credential, then retry.',
+        );
+      }
+
+      // Owner check — load row, verify userId matches.
+      const dbRow = await sessionStore.findById(app.db, sessionId);
+      if (!dbRow) {
+        throw new ApiError(
+          'SESSION_NOT_FOUND',
+          'Session has expired or no longer exists. Open a fresh terminal instead.',
+          404,
+          { sessionId },
+        );
+      }
+      if (dbRow.userId !== user.sub) {
+        throw new ApiError(
+          'OWNER_MISMATCH',
+          'You can only reconnect to your own sessions.',
+          403,
+          { sessionId },
+        );
+      }
+      if (dbRow.nodeName !== nodeName) {
+        throw new ApiError(
+          'NODE_MISMATCH',
+          `Session belongs to node '${dbRow.nodeName}', not '${nodeName}'.`,
+          400,
+        );
+      }
+
+      // Mint fresh single-use token.
+      const newToken = randomBytes(32).toString('base64url');
+      await sessionStore.refreshWsToken(app.db, sessionId, newToken);
+
+      const url = new URL(
+        `/api/v1/admin/nodes/${encodeURIComponent(nodeName)}/terminal/sessions/${sessionId}/ws`,
+        publicWssOrigin(request, app),
+      );
+      url.searchParams.set('token', newToken);
+      url.searchParams.set('replica', (app.config as Record<string, unknown>).PLATFORM_API_REPLICA_HOST as string ?? os.hostname());
+      const websocketUrl = url.toString();
+
+      await recordNodeTerminalAudit(app.db, {
+        actorId: user.sub,
+        nodeName,
+        sessionId,
+        action: 'node_terminal.session.create.success',
+        request,
+        changes: {
+          reason: 'ws_token_refresh',
+          podName: dbRow.podName,
+        },
+      });
+
+      return reply.send({
+        data: {
+          sessionId,
+          nodeName,
+          podName: dbRow.podName,
+          websocketUrl,
+          expiresAt: dbRow.expiresAt.toISOString(),
+        },
+      });
+    },
+  );
 
   // DELETE /api/v1/admin/nodes/:nodeName/terminal/sessions/:sessionId
   app.delete<{ Params: SessionWithIdParams }>('/admin/nodes/:nodeName/terminal/sessions/:sessionId', {
