@@ -103,7 +103,13 @@ data:
         # staging E2E 2026-05-20.
         *[!a-z0-9:-]*) log "FATAL: buckets.txt contains forbidden char in: '$LINE'"; exit 2 ;;
       esac
-      BUCKETS_OK="${BUCKETS_OK}${LINE} "
+      # Flux postBuild substituteFrom uses envsubst-style expansion
+      # on the ConfigMap content. `${BUCKETS_OK}` and `${LINE}` would
+      # otherwise be eaten (substituted to "" because they're not in
+      # the platform-config envFrom). Escape as `$${...}` so the
+      # rendered shell sees `${...}` literally. See
+      # [feedback_flux_postbuild_escape] + ci-flux-escape-check.sh.
+      BUCKETS_OK="$${BUCKETS_OK}$${LINE} "
     done < "$BUCKETS_FILE"
 
     if [ -z "$BUCKETS_OK" ]; then
@@ -111,7 +117,7 @@ data:
       while :; do sleep 30; done
     fi
 
-    log "launching rclone serve s3 with buckets: ${BUCKETS_OK}"
+    log "launching rclone serve s3 with buckets: $${BUCKETS_OK}"
 
     # Performance flags carried from BACKUP_ARCHITECTURE_RFC §13a.
     # shellcheck disable=SC2086
