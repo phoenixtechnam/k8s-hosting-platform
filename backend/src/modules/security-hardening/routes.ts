@@ -33,6 +33,7 @@ import {
   deleteDecisionById,
   getStatus as getCrowdsecStatus,
   listDecisions,
+  pruneStaleBouncers,
 } from './crowdsec.js';
 import {
   addAllowlistEntry,
@@ -297,6 +298,28 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         } catch (err) {
           return reply.status(502).send({
             error: 'CROWDSEC_STATUS_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    // Manual stale-bouncer prune. Same backend call as the 24h scheduler;
+    // operators trigger this from the Banned IPs tab when they want to
+    // see the bouncer list de-noised immediately after a rollout. The
+    // 24h threshold protects live bouncers (updateIntervalSeconds=60s).
+    app.post(
+      '/admin/security/crowdsec/bouncers/prune',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor }, 'crowdsec: manual bouncer prune triggered');
+        try {
+          const result = await pruneStaleBouncers(kubeconfigPath);
+          return success(result);
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_BOUNCER_PRUNE_FAILED',
             message: err instanceof Error ? err.message : String(err),
           });
         }

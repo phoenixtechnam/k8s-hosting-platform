@@ -246,3 +246,20 @@ export const crowdsecStatusSchema = z.object({
   coverage: crowdsecCoverageSchema,
 });
 export type CrowdsecStatus = z.infer<typeof crowdsecStatusSchema>;
+
+/**
+ * Manual stale-bouncer prune response. The platform also runs an
+ * auto-prune scheduler every 24h that calls the same backend path —
+ * the manual route just lets the operator trigger it on demand.
+ *
+ * `olderThanSeconds` defaults to 24h on the backend; the API doesn't
+ * accept overrides (defence: a low override could prune live bouncers
+ * mid-pull). To change the threshold, edit the constant in
+ * backend/src/modules/security-hardening/crowdsec.ts.
+ */
+export const crowdsecPruneBouncersResponseSchema = z.object({
+  message: z.string(),
+  pruned: z.number().int().min(0),
+  olderThanSeconds: z.number().int().positive(),
+});
+export type CrowdsecPruneBouncersResponse = z.infer<typeof crowdsecPruneBouncersResponseSchema>;

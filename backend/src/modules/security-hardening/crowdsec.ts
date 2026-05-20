@@ -277,6 +277,55 @@ export async function deleteDecisionById(
   return { message: combined.slice(0, 500), deleted };
 }
 
+/**
+ * Prune bouncers whose last_pull is older than `olderThanSeconds`.
+ *
+ * Why this exists: the maxlerebourg Traefik bouncer plugin doesn't
+ * send a stable name. CrowdSec auto-creates a new bouncer entry
+ * `traefik@<pod-ip>` for each unique source IP. Every Traefik pod
+ * restart leaves the old entry behind in CrowdSec's SQLite forever —
+ * by design, CrowdSec doesn't auto-prune. Without periodic cleanup
+ * `cscli bouncers list` accumulates dozens of zombies and the
+ * Banned-IPs status panel shows a confusing "8 online / 31 total".
+ *
+ * This wraps `cscli bouncers prune -d <olderThanSeconds>s --force`.
+ * Returns the parsed pruned-count + the raw cscli output.
+ *
+ * `--force` is required for unattended use (cscli normally prompts
+ * for y/n confirmation). The duration MUST be > the bouncer's
+ * `updateIntervalSeconds` (60s in our config); we default to 24h
+ * which is well above the noise floor.
+ */
+export async function pruneStaleBouncers(
+  kubeconfigPath: string | undefined,
+  olderThanSeconds: number = 24 * 60 * 60,
+): Promise<{ message: string; pruned: number; olderThanSeconds: number }> {
+  if (!Number.isInteger(olderThanSeconds) || olderThanSeconds < 60) {
+    // Defence: never prune anything more recent than 60s. The
+    // updateIntervalSeconds for the bouncer plugin is 60s; pruning
+    // anything younger would catch live bouncers that just happened
+    // to be between pulls.
+    throw new Error('olderThanSeconds must be ≥ 60');
+  }
+  const kc = createKubeConfig(kubeconfigPath);
+  const podName = await findCrowdsecPodName(kc);
+  const duration = `${olderThanSeconds}s`;
+  const { stdout, stderr } = await cscliExec(kc, podName, ['bouncers', 'prune', '-d', duration, '--force']);
+  const combined = (stdout + stderr).trim();
+  // cscli output examples (varies by version):
+  //   "23 bouncers pruned successfully" (v1.6+)
+  //   "Deleted 23 bouncers"             (v1.5)
+  //   "No bouncers to prune."           (no-op)
+  let pruned = 0;
+  const match = combined.match(/(\d+)\s+bouncers?\s+(?:pruned|deleted)/i);
+  if (match) {
+    pruned = Number(match[1]);
+  } else if (/no bouncers to prune/i.test(combined)) {
+    pruned = 0;
+  }
+  return { message: combined.slice(0, 500), pruned, olderThanSeconds };
+}
+
 // ─── Status / coverage ─────────────────────────────────────────────────
 
 // cscli emits snake_case (last_pull, last_push, ip_address) for bouncers

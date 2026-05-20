@@ -84,6 +84,7 @@ import {
   usePatchCrowdsecAutobanConfig,
   usePatchCrowdsecConsoleMeta,
   usePatchCrowdsecL4Mode,
+  usePruneCrowdsecBouncers,
   useRemoveCrowdsecAllowlistEntry,
 } from '@/hooks/use-crowdsec';
 import type {
@@ -1910,8 +1911,11 @@ function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
       </div>
 
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-        <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
-          <Activity size={14} /> Bouncers ({status.bouncers.length})
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 text-xs uppercase">
+            <Activity size={14} /> Bouncers ({status.bouncers.length})
+          </div>
+          <CrowdsecBouncerPruneButton staleCount={status.bouncers.length - liveBouncers} />
         </div>
         <ul className="mt-2 space-y-1 text-xs" data-testid="crowdsec-bouncers">
           {status.bouncers.length === 0 && <li className="text-amber-600 dark:text-amber-400">No bouncers registered — bans won't be enforced!</li>}
@@ -1924,6 +1928,11 @@ function CrowdsecStatusPanel({ status }: { status: CrowdsecStatus }) {
             </li>
           ))}
         </ul>
+        <div className="mt-2 text-[10px] text-gray-500 dark:text-gray-400 italic">
+          Stale bouncers (no LAPI pull in 24h+) are auto-pruned every 24h.
+          Each Traefik pod rollover leaves an old registration behind because
+          the maxlerebourg plugin doesn't send a stable name.
+        </div>
       </div>
       </div>
     </div>
@@ -3229,5 +3238,34 @@ function L4Stat({ label, value, tone }: { label: string; value: string; tone: 'o
       <div className="text-[10px] uppercase text-gray-500 dark:text-gray-400">{label}</div>
       <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{value}</div>
     </div>
+  );
+}
+
+// ─── Manual stale-bouncer prune button (mirrors 24h scheduler) ──────
+
+function CrowdsecBouncerPruneButton({ staleCount }: { staleCount: number }) {
+  const mut = usePruneCrowdsecBouncers();
+  const [lastPruned, setLastPruned] = useState<number | null>(null);
+
+  if (staleCount <= 0) return null;
+
+  const onClick = () => {
+    mut.mutate(undefined, {
+      onSuccess: (r) => setLastPruned(r.data.pruned),
+    });
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={mut.isPending}
+      title={`${staleCount} bouncer(s) haven't pulled in a while. Auto-prune runs every 24h; click to run now.`}
+      className="inline-flex items-center gap-1 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 text-[10px] font-medium text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
+      data-testid="crowdsec-prune-bouncers"
+    >
+      <Trash2 size={10} />
+      {mut.isPending ? 'Pruning…' : lastPruned !== null ? `Pruned ${lastPruned}` : `Prune ${staleCount} stale`}
+    </button>
   );
 }

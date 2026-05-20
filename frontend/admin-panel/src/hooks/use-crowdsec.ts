@@ -277,3 +277,16 @@ export function usePatchCrowdsecL4Mode() {
     },
   });
 }
+
+// ─── Stale-bouncer prune (manual button mirrors 24h scheduler) ────────
+
+export function usePruneCrowdsecBouncers() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<{ message: string; pruned: number; olderThanSeconds: number }>, Error, void>({
+    mutationFn: () =>
+      apiFetch('/api/v1/admin/security/crowdsec/bouncers/prune', { method: 'POST' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: STATUS_KEY });
+    },
+  });
+}

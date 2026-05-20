@@ -1246,6 +1246,22 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'waf-rule-exclusions scheduler not started');
       }
 
+      // 24h CrowdSec stale-bouncer pruner. The Traefik bouncer plugin
+      // doesn't send a stable name; CrowdSec auto-creates a new entry
+      // per unique source IP, and pod restarts leave zombies behind.
+      // 24h threshold is safely above updateIntervalSeconds=60s so no
+      // live bouncer ever falls in scope.
+      try {
+        const { startCrowdsecBouncerPruneScheduler } = await import(
+          './modules/security-hardening/crowdsec-bouncer-prune-scheduler.js'
+        );
+        const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+        const bouncerPruneHandle = startCrowdsecBouncerPruneScheduler(kubeconfigPath, app.log);
+        app.addHook('onClose', () => bouncerPruneHandle.stop());
+      } catch (err) {
+        app.log.warn({ err }, 'crowdsec-bouncer-prune scheduler not started');
+      }
+
       // Daily prune of expired refresh tokens (Phase 3 split-token auth).
       // Keeps a 7-day forensic window after expiry; older rows are
       // hard-deleted to keep the table small. Failure is non-fatal.
