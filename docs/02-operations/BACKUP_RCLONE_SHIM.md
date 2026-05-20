@@ -1,9 +1,64 @@
 # Backup-rclone-shim operator runbook
 
-> **Status:** R-X1–R-X7 shipped. Restic + rclone-push callers (R-X8/R-X9), UI (R-X10), restore
+> **Status:** R-X1–R-X8 + R-X11 (restore tooling) shipped. rclone-push callers (R-X9), UI (R-X10), restore
 > tooling (R-X11), DR drill (R-X12), legacy archive (R-X13), perf
 > benchmark (R-X14) follow. Operator-visible surfaces below are LIVE
 > from R-X5.
+
+## Restore tooling (R-X11)
+
+Three per-subsystem restore scripts cover the critical SYSTEM + MAIL
+paths. All read from the shim's buckets and use the HKDF-derived
+shim creds — no separate restore credentials to manage.
+
+| Script | Subsystem | Mode |
+|---|---|---|
+| `scripts/restore-postgres-from-shim.sh` | `SYSTEM.postgres` | `--latest` (newest base + WAL replay) / `--pitr <RFC3339>` (point-in-time recovery via WAL replay) |
+| `scripts/restore-etcd-from-shim.sh` | `SYSTEM.etcd` | `--latest` (newest snapshot) / `--name <file>` / `--list` |
+| `scripts/restore-mail-from-shim.sh` | `MAIL.stalwart-rocksdb` | `--latest` (newest restic snapshot) / `--snapshot <id>` / `--list` |
+
+### Workflow safety
+
+**Postgres**: the restore script spawns a NEW Cluster CR
+(`system-db-restore-<ts>`) with its own PVC. The live `system-db`
+is left intact. Operator manually swaps the Service / DNS / app
+connection strings after validating the restored data — no automatic
+cutover (too dangerous for a load-bearing DB).
+
+**etcd**: must run as root on a control-plane node. Stops k3s, runs
+`k3s etcd-snapshot restore`, restarts k3s. Verifies the snapshot's
+sha256 against the `.meta` sidecar before applying. The on-disk
+snapshot is left at `/var/lib/rancher/k3s/server/db/snapshots/restore-from-shim-<ts>.db`
+for re-runs.
+
+**Mail**: destructive — overwrites the running mail server's PVC.
+Scales Stalwart to 0, runs `restic restore`, scales back. Requires
+the operator to type `restore-mail` at the confirmation prompt.
+
+### Cold-cluster sequence (lost-everything DR)
+
+If both the platform-api and the running shim are gone (e.g.
+hardware loss, region failure):
+
+1. `bootstrap.sh` on a fresh cluster — installs k3s, CNPG, the shim
+   DaemonSet, etc. Restore the BACKUP_TARGET_KEY from the Tier-1
+   secrets bundle (`make secrets-restore`).
+2. PUT `/admin/backup-rclone-shim/assignments/system` with the
+   recovered SYSTEM target id. The shim reconciler renders
+   ConfigMap + Secret + DaemonSet annotation; pods roll into place.
+3. Run `restore-etcd-from-shim.sh --latest` on the control-plane
+   node — gives you back the cluster state.
+4. Wait ~5 min for the platform-api scheduler to materialise the
+   ObjectStore CR (R-X6 reconciler).
+5. Run `restore-postgres-from-shim.sh --latest` — creates a fresh
+   `system-db-restore-<ts>` Cluster. Inspect, then rename to
+   `system-db`.
+6. PUT MAIL assignment + run `restore-mail-from-shim.sh --latest`.
+
+End-to-end DR drill (R-X12) ships in a follow-up to validate this
+sequence on a real cluster wipe.
+
+---
 
 ## etcd snapshot upload via the shim (R-X7)
 
