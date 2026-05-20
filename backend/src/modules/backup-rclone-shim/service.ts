@@ -174,28 +174,38 @@ export async function loadBackupTargetKey(
     throw err;
   }
 
-  const keyB64 = secret.data?.['key'];
-  if (!keyB64) {
+  const keyB64Raw = secret.data?.['key'];
+  if (!keyB64Raw) {
     throw new ShimKeyMissingError(
       `Secret ${namespace}/${BACKUP_TARGET_KEY_SECRET_NAME} has no 'key' data field`,
     );
   }
-  // The k8s Secret API base64-encodes data values in transport; the
-  // SDK auto-decodes. So secret.data.key is already plaintext base64
-  // (the way bootstrap.sh stored it).
+  // The k8s Secret API returns `data` values base64-encoded — the
+  // @kubernetes/client-node SDK does NOT auto-decode (contrary to a
+  // prior comment in this file that was wrong). bootstrap.sh stores
+  // the key as `--from-literal=key=<base64-of-raw-32-bytes>`. So:
+  //   SDK returns:  base64(base64-of-raw-32-bytes)
+  //   step 1 below: decode SDK layer → base64-of-raw-32-bytes
+  //   step 2 (decodeBackupTargetKey): decode that → 32 raw bytes
+  const keyB64 = Buffer.from(keyB64Raw, 'base64').toString('utf8');
   const { decodeBackupTargetKey, fingerprintRawKey } = await import('./crypto.js');
   const rawKey = decodeBackupTargetKey(keyB64);
 
   const fingerprint = fingerprintRawKey(rawKey);
 
-  // Cross-check: bootstrap.sh stores the fingerprint as a literal
-  // string. Operators may have rotated the key without restarting the
-  // shim — the SECRET's fingerprint field would still be the OLD one,
-  // or operators may have rewritten the Secret manually with a wrong
-  // fingerprint. Warn (no secret material in the log) so operators
-  // can investigate; the runtime-computed fingerprint is
-  // authoritative for downstream derivations.
-  const storedFingerprint = secret.data?.['fingerprint'];
+  // Same double-decode for the optional metadata fields. Treat empty
+  // / unparseable values as absent rather than crashing — these are
+  // informational only.
+  const decodeSecretField = (key: string): string => {
+    const raw = secret.data?.[key];
+    if (!raw) return '';
+    try {
+      return Buffer.from(raw, 'base64').toString('utf8');
+    } catch {
+      return '';
+    }
+  };
+  const storedFingerprint = decodeSecretField('fingerprint');
   if (storedFingerprint && storedFingerprint !== fingerprint && opts.log) {
     opts.log.warn(
       {
@@ -211,7 +221,7 @@ export async function loadBackupTargetKey(
   return {
     rawKey,
     fingerprint,
-    generatedAt: secret.data?.['generated_at'] ?? '',
+    generatedAt: decodeSecretField('generated_at'),
   };
 }
 

@@ -35,11 +35,19 @@ import {
 // ─── Test helpers ────────────────────────────────────────────────
 
 /** Build a Secret-like return shape (data values already base64-decoded
- *  by the k8s SDK by the time we see them). */
+ *  The @kubernetes/client-node SDK does NOT auto-decode Secret data
+ *  values — they come back base64-encoded from the API. Our test
+ *  fixture must mirror that: each value passed to this helper is
+ *  the LOGICAL value (e.g. base64-of-32-bytes for the key); we
+ *  base64-encode it once here to match what the SDK returns. */
 function buildSecretReply(data: Record<string, string>) {
+  const encoded: Record<string, string> = {};
+  for (const [k, v] of Object.entries(data)) {
+    encoded[k] = Buffer.from(v, 'utf8').toString('base64');
+  }
   return {
     metadata: { name: BACKUP_TARGET_KEY_SECRET_NAME, namespace: SHIM_NAMESPACE },
-    data,
+    data: encoded,
   };
 }
 
