@@ -94,7 +94,7 @@ export const ingressTargetTypeEnum = pgEnum('ingress_target_type', [
   'private_worker',
 ]);
 export const notificationTypeEnum = pgEnum('notification_type', ['info', 'warning', 'error', 'success']);
-export const storageTypeEnum = pgEnum('storage_type', ['ssh', 's3', 'cifs']);
+export const storageTypeEnum = pgEnum('storage_type', ['ssh', 's3', 'cifs', 'nfs']);
 export const backupTypeEnum = pgEnum('backup_type', ['auto', 'manual', 'scheduled']);
 export const backupStatusEnum = pgEnum('backup_status', ['pending', 'in_progress', 'completed', 'failed']);
 export const metricTypeEnum = pgEnum('metric_type', ['cpu_cores', 'memory_gb', 'storage_gb', 'bandwidth_gb']);
@@ -750,6 +750,15 @@ export const backupConfigurations = pgTable('backup_configurations', {
   cifsPasswordEncrypted: varchar('cifs_password_encrypted', { length: 500 }),
   cifsDomain: varchar('cifs_domain', { length: 255 }),
   cifsPath: varchar('cifs_path', { length: 500 }),
+  // R-X4 (migration 0015): NFS as first-class target type. CHECK
+  // constraint at the DB layer enforces server+export presence when
+  // storage_type='nfs'. The shim DaemonSet kernel-mounts the share
+  // via Pod volumes[].nfs; rclone treats the mount as a `local`
+  // backend (see RFC §13a-ii).
+  nfsServer: varchar('nfs_server', { length: 255 }),
+  nfsExport: varchar('nfs_export', { length: 500 }),
+  nfsVersion: varchar('nfs_version', { length: 16 }).default('4.2'),
+  nfsOptions: varchar('nfs_options', { length: 255 }),
   retentionDays: integer('retention_days').notNull().default(30),
   scheduleExpression: varchar('schedule_expression', { length: 100 }).default('0 2 * * *'),
   enabled: integer('enabled').notNull().default(1),
