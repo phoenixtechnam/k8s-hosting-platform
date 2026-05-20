@@ -1,0 +1,332 @@
+package main
+
+import (
+	"context"
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func mustPrefix(t *testing.T, s string) netip.Prefix {
+	t.Helper()
+	p, err := netip.ParsePrefix(s)
+	if err != nil {
+		t.Fatalf("ParsePrefix(%q): %v", s, err)
+	}
+	return p
+}
+
+func TestPrefixContainsOrEquals(t *testing.T) {
+	tests := []struct {
+		name  string
+		outer string
+		inner string
+		want  bool
+	}{
+		// Same family — IPv4
+		{"equal /32", "1.2.3.4/32", "1.2.3.4/32", true},
+		{"contains /32", "1.2.3.0/24", "1.2.3.4/32", true},
+		{"contains /28", "1.2.3.0/24", "1.2.3.0/28", true},
+		{"outer narrower than inner", "1.2.3.0/28", "1.2.3.0/24", false},
+		{"different /24s", "1.2.3.0/24", "1.2.4.0/24", false},
+		{"non-overlapping /32s", "1.2.3.4/32", "1.2.3.5/32", false},
+		// IPv6
+		{"v6 equal /128", "2001:db8::1/128", "2001:db8::1/128", true},
+		{"v6 contains", "2001:db8::/32", "2001:db8::1/128", true},
+		// Cross-family always false
+		{"cross-family v4 outer v6 inner", "1.2.3.0/24", "2001:db8::1/128", false},
+		{"cross-family v6 outer v4 inner", "2001:db8::/32", "1.2.3.4/32", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := prefixContainsOrEquals(mustPrefix(t, tt.outer), mustPrefix(t, tt.inner))
+			if got != tt.want {
+				t.Errorf("prefixContainsOrEquals(%s, %s) = %v, want %v", tt.outer, tt.inner, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyExclusions_DropsContainedAndEqual(t *testing.T) {
+	bl := crowdsecBlocklist{
+		V4: []netip.Prefix{
+			mustPrefix(t, "1.2.3.4/32"),     // contained by exclusion 1.2.3.0/24 → drop
+			mustPrefix(t, "5.6.7.8/32"),     // not in exclusion → keep
+			mustPrefix(t, "10.0.0.0/16"),    // equal to exclusion → drop
+			mustPrefix(t, "192.168.1.1/32"), // not in any exclusion → keep
+		},
+		TTLv4: []time.Duration{time.Hour, time.Hour, 2 * time.Hour, time.Hour},
+		V6: []netip.Prefix{
+			mustPrefix(t, "2001:db8::1/128"), // contained → drop
+			mustPrefix(t, "fe80::1/128"),     // not in exclusion → keep
+		},
+		TTLv6: []time.Duration{time.Hour, time.Hour},
+	}
+	ex := exclusionSet{
+		V4: []netip.Prefix{
+			mustPrefix(t, "1.2.3.0/24"),
+			mustPrefix(t, "10.0.0.0/16"),
+		},
+		V6: []netip.Prefix{mustPrefix(t, "2001:db8::/32")},
+	}
+
+	filtered, dropped := applyExclusions(bl, ex)
+
+	if dropped != 3 {
+		t.Errorf("dropped = %d, want 3", dropped)
+	}
+	if len(filtered.V4) != 2 {
+		t.Errorf("filtered.V4 len = %d, want 2 (%v)", len(filtered.V4), filtered.V4)
+	}
+	if len(filtered.V6) != 1 {
+		t.Errorf("filtered.V6 len = %d, want 1 (%v)", len(filtered.V6), filtered.V6)
+	}
+	// TTL index-alignment preserved.
+	if len(filtered.TTLv4) != len(filtered.V4) {
+		t.Errorf("TTLv4 mis-aligned: %d vs V4 %d", len(filtered.TTLv4), len(filtered.V4))
+	}
+	if len(filtered.TTLv6) != len(filtered.V6) {
+		t.Errorf("TTLv6 mis-aligned: %d vs V6 %d", len(filtered.TTLv6), len(filtered.V6))
+	}
+}
+
+func TestApplyExclusions_EmptyInputs(t *testing.T) {
+	// Empty exclusions → pass-through, dropped=0.
+	bl := crowdsecBlocklist{V4: []netip.Prefix{mustPrefix(t, "1.2.3.4/32")}}
+	out, dropped := applyExclusions(bl, exclusionSet{})
+	if dropped != 0 || len(out.V4) != 1 {
+		t.Errorf("empty exclusion did not pass through: dropped=%d v4=%d", dropped, len(out.V4))
+	}
+	// Empty blocklist → empty output, dropped=0, no panic.
+	out, dropped = applyExclusions(crowdsecBlocklist{}, exclusionSet{V4: []netip.Prefix{mustPrefix(t, "0.0.0.0/0")}})
+	if dropped != 0 || len(out.V4) != 0 {
+		t.Errorf("empty blocklist not handled cleanly: dropped=%d v4=%d", dropped, len(out.V4))
+	}
+}
+
+func TestEnforceCap_Truncates(t *testing.T) {
+	// Synthesize 500_002 v4 prefixes (just over the cap) by varying the
+	// last octet across /24s. Use /32 entries.
+	bl := crowdsecBlocklist{}
+	for i := 0; i < crowdsecBlocklistMaxElements+2; i++ {
+		a := byte((i >> 16) & 0xff)
+		b := byte((i >> 8) & 0xff)
+		c := byte(i & 0xff)
+		ip := netip.AddrFrom4([4]byte{1, a, b, c})
+		bl.V4 = append(bl.V4, netip.PrefixFrom(ip, 32))
+		bl.TTLv4 = append(bl.TTLv4, time.Hour)
+	}
+	capped, dropV4, dropV6 := enforceCap(bl)
+	if dropV4 != 2 {
+		t.Errorf("dropV4 = %d, want 2", dropV4)
+	}
+	if dropV6 != 0 {
+		t.Errorf("dropV6 = %d, want 0", dropV6)
+	}
+	if len(capped.V4) != crowdsecBlocklistMaxElements {
+		t.Errorf("capped.V4 len = %d, want %d", len(capped.V4), crowdsecBlocklistMaxElements)
+	}
+	if len(capped.TTLv4) != crowdsecBlocklistMaxElements {
+		t.Errorf("capped.TTLv4 len = %d, want %d", len(capped.TTLv4), crowdsecBlocklistMaxElements)
+	}
+}
+
+func TestEnforceCap_BelowCap_NoOp(t *testing.T) {
+	bl := crowdsecBlocklist{
+		V4:    []netip.Prefix{mustPrefix(t, "1.2.3.4/32")},
+		TTLv4: []time.Duration{time.Hour},
+	}
+	capped, dV4, dV6 := enforceCap(bl)
+	if dV4 != 0 || dV6 != 0 {
+		t.Errorf("below-cap dropped: v4=%d v6=%d", dV4, dV6)
+	}
+	if len(capped.V4) != 1 {
+		t.Errorf("below-cap mutated: %v", capped.V4)
+	}
+}
+
+func TestEnforceCap_DeterministicOrdering(t *testing.T) {
+	// Same input in different order → same output (after sort).
+	a := crowdsecBlocklist{V4: []netip.Prefix{mustPrefix(t, "3.0.0.0/8"), mustPrefix(t, "1.0.0.0/8"), mustPrefix(t, "2.0.0.0/8")}}
+	b := crowdsecBlocklist{V4: []netip.Prefix{mustPrefix(t, "1.0.0.0/8"), mustPrefix(t, "2.0.0.0/8"), mustPrefix(t, "3.0.0.0/8")}}
+	ca, _, _ := enforceCap(a)
+	cb, _, _ := enforceCap(b)
+	if len(ca.V4) != len(cb.V4) {
+		t.Fatalf("length mismatch")
+	}
+	for i := range ca.V4 {
+		if ca.V4[i] != cb.V4[i] {
+			t.Errorf("order mismatch at %d: %s vs %s", i, ca.V4[i], cb.V4[i])
+		}
+	}
+}
+
+func TestSelfProtectIntersection_Counts(t *testing.T) {
+	proposed := crowdsecBlocklist{
+		V4: []netip.Prefix{
+			mustPrefix(t, "1.2.3.4/32"), // intersects exclusion 1.2.3.0/24
+			mustPrefix(t, "5.6.7.8/32"), // no overlap
+		},
+		V6: []netip.Prefix{
+			mustPrefix(t, "2001:db8::1/128"), // intersects exclusion 2001:db8::/32
+		},
+	}
+	ex := exclusionSet{
+		V4: []netip.Prefix{mustPrefix(t, "1.2.3.0/24")},
+		V6: []netip.Prefix{mustPrefix(t, "2001:db8::/32")},
+	}
+	v4, v6 := selfProtectIntersection(proposed, ex)
+	if v4 != 1 || v6 != 1 {
+		t.Errorf("intersection v4=%d v6=%d, want 1/1", v4, v6)
+	}
+}
+
+func TestShouldSelfProtectTrip_Threshold(t *testing.T) {
+	// 100 proposed, 6 intersect → 6% > 5% → trip.
+	ex := exclusionSet{V4: []netip.Prefix{mustPrefix(t, "10.0.0.0/8")}}
+	proposed := crowdsecBlocklist{}
+	// 94 non-overlapping (1.0.0.0/8 range — no overlap with 10.0.0.0/8)
+	for i := 1; i <= 94; i++ {
+		proposed.V4 = append(proposed.V4, mustPrefix(t, "1.0.0."+itoa(i)+"/32"))
+	}
+	// 6 overlapping
+	for i := 1; i <= 6; i++ {
+		proposed.V4 = append(proposed.V4, mustPrefix(t, "10.0.0."+itoa(i)+"/32"))
+	}
+	if !shouldSelfProtectTrip(proposed, ex) {
+		t.Errorf("expected trip with 6%% intersection")
+	}
+
+	// 100 proposed, 5 intersect → 5% NOT > 5% → no trip.
+	proposed2 := crowdsecBlocklist{}
+	for i := 1; i <= 95; i++ {
+		proposed2.V4 = append(proposed2.V4, mustPrefix(t, "1.0.0."+itoa(i)+"/32"))
+	}
+	for i := 1; i <= 5; i++ {
+		proposed2.V4 = append(proposed2.V4, mustPrefix(t, "10.0.0."+itoa(i)+"/32"))
+	}
+	if shouldSelfProtectTrip(proposed2, ex) {
+		t.Errorf("expected NO trip with exactly 5%% intersection")
+	}
+}
+
+func TestShouldSelfProtectTrip_EmptyProposed_NoTrip(t *testing.T) {
+	if shouldSelfProtectTrip(crowdsecBlocklist{}, exclusionSet{V4: []netip.Prefix{mustPrefix(t, "0.0.0.0/0")}}) {
+		t.Error("empty proposed should never trip")
+	}
+}
+
+func TestNewCrowdsecReconciler_DefaultsDisabled(t *testing.T) {
+	t.Setenv(envCrowdsecL4Mode, "")
+	r := newCrowdsecReconciler()
+	if r.mode != crowdsecL4ModeDisabled {
+		t.Errorf("default mode = %q, want disabled", r.mode)
+	}
+}
+
+func TestNewCrowdsecReconciler_UnknownModeFallsBackToDisabled(t *testing.T) {
+	t.Setenv(envCrowdsecL4Mode, "wishful-typo")
+	r := newCrowdsecReconciler()
+	if r.mode != crowdsecL4ModeDisabled {
+		t.Errorf("unknown mode = %q, want disabled", r.mode)
+	}
+}
+
+func TestNewCrowdsecReconciler_EnforceDowngradedInStageA(t *testing.T) {
+	// Stage A defense in depth: even when operator sets "enforce", we
+	// downgrade to "dryrun" because the nft-write path isn't built yet.
+	t.Setenv(envCrowdsecL4Mode, crowdsecL4ModeEnforce)
+	r := newCrowdsecReconciler()
+	if r.mode != crowdsecL4ModeDryRun {
+		t.Errorf("enforce mode should downgrade to dryrun in Stage A; got %q", r.mode)
+	}
+}
+
+func TestRun_DisabledReturnsImmediately(t *testing.T) {
+	r := &crowdsecReconciler{mode: crowdsecL4ModeDisabled}
+	done := make(chan struct{})
+	go func() {
+		r.run(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Expected — disabled mode returns within microseconds.
+	case <-time.After(100 * time.Millisecond):
+		t.Error("disabled run did not return quickly")
+	}
+}
+
+func TestTick_NilStubsLogsCleanly(t *testing.T) {
+	// Stage A: both fetch + compute are nil. Tick should not panic and
+	// should log "computed (no nft write)" with all counts at zero.
+	r := &crowdsecReconciler{mode: crowdsecL4ModeDryRun}
+	r.tick(context.Background()) // should not panic
+	if r.tripCount.Load() != 0 {
+		t.Errorf("trip counter bumped on empty input: %d", r.tripCount.Load())
+	}
+}
+
+func TestTick_TripCounterIncrementsAndQuiesces(t *testing.T) {
+	// Trigger a self-protect trip every tick (intersection ratio = 100%).
+	r := &crowdsecReconciler{
+		mode: crowdsecL4ModeDryRun,
+		fetchDecisions: func(_ context.Context) (crowdsecBlocklist, error) {
+			return crowdsecBlocklist{
+				V4: []netip.Prefix{mustPrefix(t, "10.0.0.1/32"), mustPrefix(t, "10.0.0.2/32")},
+			}, nil
+		},
+		computeExclusions: func(_ context.Context) (exclusionSet, error) {
+			return exclusionSet{V4: []netip.Prefix{mustPrefix(t, "10.0.0.0/8")}}, nil
+		},
+	}
+	r.tick(context.Background())
+	if r.tripCount.Load() != 1 {
+		t.Errorf("after 1 trip, count=%d want 1", r.tripCount.Load())
+	}
+	r.tick(context.Background())
+	r.tick(context.Background())
+	if r.tripCount.Load() != selfProtectTripBudget {
+		t.Errorf("after %d trips, count=%d", selfProtectTripBudget, r.tripCount.Load())
+	}
+}
+
+func TestTick_HealthyResetsTrip(t *testing.T) {
+	// 1) Trip once.
+	r := &crowdsecReconciler{
+		mode: crowdsecL4ModeDryRun,
+		fetchDecisions: func(_ context.Context) (crowdsecBlocklist, error) {
+			return crowdsecBlocklist{V4: []netip.Prefix{mustPrefix(t, "10.0.0.1/32")}}, nil
+		},
+		computeExclusions: func(_ context.Context) (exclusionSet, error) {
+			return exclusionSet{V4: []netip.Prefix{mustPrefix(t, "10.0.0.0/8")}}, nil
+		},
+	}
+	r.tick(context.Background())
+	if r.tripCount.Load() != 1 {
+		t.Fatalf("expected trip=1 after first tick, got %d", r.tripCount.Load())
+	}
+	// 2) Replace fetch with healthy data → trip count resets to 0.
+	r.fetchDecisions = func(_ context.Context) (crowdsecBlocklist, error) {
+		return crowdsecBlocklist{V4: []netip.Prefix{mustPrefix(t, "5.6.7.8/32")}}, nil
+	}
+	r.tick(context.Background())
+	if r.tripCount.Load() != 0 {
+		t.Errorf("healthy tick should reset trip counter, got %d", r.tripCount.Load())
+	}
+}
+
+// itoa — small int→string helper to avoid pulling strconv into the
+// test for one-digit values. Test inputs use 1..255 so the byte cast
+// + base-10 format is sufficient.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}

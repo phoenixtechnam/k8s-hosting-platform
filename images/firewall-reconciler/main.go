@@ -202,13 +202,22 @@ func main() {
 	// (warming up) until both loops have reconciled at least once.
 	startHealthServer(ctx, hs)
 
-	// Run the two loops as separate goroutines with recover() at the
+	// F1+F6 Stage A — CrowdSec L4 blocklist reconciler. Spawned in the
+	// same WaitGroup as the peer + tenant loops so a clean shutdown
+	// drains all three. Defaults to "disabled" mode; in that case the
+	// goroutine returns immediately. Operator opt-in is via the
+	// CROWDSEC_L4_MODE env (currently only "dryrun" is honoured — Stage
+	// A constructor downgrades "enforce" to "dryrun" defensively).
+	crCsec := newCrowdsecReconciler()
+
+	// Run the loops as separate goroutines with recover() at the
 	// boundary so a panic in one loop doesn't crash the pod (and
 	// thereby take down the other loop's reconcile cadence).
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go runWithRecover(&wg, ctx, "peer", r.run)
 	go runWithRecover(&wg, ctx, "tenant-ports", tpr.run)
+	go runWithRecover(&wg, ctx, "crowdsec-l4", crCsec.run)
 	wg.Wait()
 }
 
