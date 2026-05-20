@@ -35,7 +35,7 @@ APPLY="$MOD_DIR/apply-assignment.ts"
 CONTRACTS="$ROOT/packages/api-contracts/src/backup-rclone-shim.ts"
 TASK_CENTER="$ROOT/packages/api-contracts/src/task-center.ts"
 MIG_0016="$ROOT/backend/src/db/migrations/0016_backup_rclone_shim_classes.sql"
-MIG_0018="$ROOT/backend/src/db/migrations/0018_backup_drain_timeout.sql"
+MIG_0018="$ROOT/backend/src/db/migrations/0019_backup_drain_timeout.sql"
 
 fail() {
   echo "[ci-backup-rclone-shim] FAIL: $1" >&2
