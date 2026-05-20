@@ -922,6 +922,26 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn({ err }, 'mail-target-scheduler: failed to start (non-blocking)');
         }
 
+        // R-X8: mail-restic via shim reconciler. Owns the mail-restic
+        // Secret when the 3-class `mail` shim binding is set; defers
+        // to legacy mail-target-sync when only `system_mail` is bound.
+        try {
+          const { startMailResticShimReconciler } = await import(
+            './modules/backup-rclone-shim/mail-restic-scheduler.js'
+          );
+          const mailResticHandle = startMailResticShimReconciler(
+            app.db,
+            { core: k8sForImapsync.core },
+            app.log,
+          );
+          app.addHook('onClose', () => mailResticHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'mail-restic-shim: scheduler start failed (non-blocking)',
+          );
+        }
+
         // R-X7: etcd-snap-via-shim CronJob suspend toggle reconciler.
         // Toggles spec.suspend on the static CronJob based on the
         // SYSTEM-class shim target binding. 5-min tick, non-blocking

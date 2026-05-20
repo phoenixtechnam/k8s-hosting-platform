@@ -237,4 +237,22 @@ if grep -qE "name:\s*backup-credentials" "$ETCD_CRONJOB_MANIFEST"; then
 fi
 pass "Invariant 13: etcd-snap-via-shim CronJob via shim"
 
-echo "[ci-backup-rclone-shim] All 13 invariants pass."
+# ─── 14. mail-restic via shim reconciler wired ────────────────────
+MAIL_RESTIC="$ROOT/backend/src/modules/backup-rclone-shim/mail-restic.ts"
+if [[ ! -f "$MAIL_RESTIC" ]]; then
+  fail "Invariant 14: mail-restic via shim reconciler missing"
+fi
+if ! grep -q "startMailResticShimReconciler" "$APP_TS"; then
+  fail "Invariant 14: mail-restic-shim scheduler not wired into app.ts"
+fi
+# Must use the raw bucket (restic encrypts; -raw avoids double crypt).
+if ! grep -q "mail-raw" "$MAIL_RESTIC"; then
+  fail "Invariant 14: mail-restic must route through the mail-raw passthrough bucket (not mail-crypt)"
+fi
+# Coexistence with legacy mail-target-sync must be explicit.
+if ! grep -q "STATE_LEGACY_TAKING_OVER" "$MAIL_RESTIC"; then
+  fail "Invariant 14: mail-restic must surface STATE_LEGACY_TAKING_OVER when system_mail (legacy class) is bound"
+fi
+pass "Invariant 14: mail-restic via shim wired"
+
+echo "[ci-backup-rclone-shim] All 14 invariants pass."
