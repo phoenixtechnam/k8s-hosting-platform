@@ -728,12 +728,18 @@ else
   fail "F4: exclusion NOT visible: $(echo "$h_list_after" | head -c 300)"
 fi
 
-# H4: ConfigMap was patched with the rendered .conf body
-# (best-effort — Flux may re-apply the static seed; check both data and
-# annotation. The annotation is the authoritative signal because the
-# reconciler always bumps it on a content change.)
-sleep 2
-h_cm_data=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
+# H4: ConfigMap was patched with the rendered .conf body. Inline
+# reconcile fires from the route handler after POST returns, but the
+# kubectl patch + apiserver cache propagation can land in ~1-3s.
+# Retry up to ~10s before failing.
+h_cm_data=""
+for _i in 1 2 3 4 5; do
+  sleep 2
+  h_cm_data=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
+  if echo "$h_cm_data" | grep -qE "ctl:ruleRemoveTargetById=$F4_RULE_ID;ARGS_NAMES"; then
+    break
+  fi
+done
 if echo "$h_cm_data" | grep -qE "ctl:ruleRemoveTargetById=$F4_RULE_ID;ARGS_NAMES"; then
   ok "F4: ConfigMap contains rendered SecRule for rule $F4_RULE_ID"
 else
@@ -820,7 +826,15 @@ if [[ -n "${h_id:-}" ]]; then
 fi
 
 # H12: After delete, GET returns empty (or no harness row). Fixed-string match.
-h_list_final=$(api_internal GET /admin/security/waf-rule-exclusions)
+# Retry to absorb any brief read-after-write window across the 3-replica
+# platform-api pool (GET may land on a different pod than the DELETE).
+for _i in 1 2 3 4 5; do
+  h_list_final=$(api_internal GET /admin/security/waf-rule-exclusions)
+  if ! echo "$h_list_final" | grep -qF "$F4_HOST_REGEX"; then
+    break
+  fi
+  sleep 1
+done
 if echo "$h_list_final" | grep -qF "$F4_HOST_REGEX"; then
   fail "F4: deleted row still appears in GET list"
 else

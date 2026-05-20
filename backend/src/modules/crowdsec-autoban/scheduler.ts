@@ -25,9 +25,9 @@
  */
 
 import crypto from 'node:crypto';
-import { and, desc, gt, sql } from 'drizzle-orm';
+import { and, desc, gt, inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { crowdsecAutobanRuns, wafLogs } from '../../db/schema.js';
+import { crowdsecAutobanRuns, platformSettings, wafLogs } from '../../db/schema.js';
 import { addBan } from '../security-hardening/crowdsec.js';
 import { isIpInAllowlist } from '../security-hardening/crowdsec-allowlists.js';
 import { evaluateWafBatch, type WafLogRow } from './evaluator.js';
@@ -72,16 +72,23 @@ const SETTING_KEYS = {
 
 async function loadSettings(db: Db): Promise<Map<string, string>> {
   const keys = [...Object.values(SETTING_KEYS), SETTING_WATERMARK];
-  // platform_settings column names are setting_key/setting_value, not
-  // key/value — the Drizzle schema aliases them but raw SQL must use
-  // the actual DB names. This was the source of the F3 autoban
-  // scheduler log spam: `Failed query: column "key" does not exist`.
-  const rows = await db.execute(sql`
-    SELECT setting_key, setting_value FROM platform_settings WHERE setting_key = ANY(${keys}::text[])
-  `);
+  // Two prior bugs in this query:
+  //   1. Used raw column names `key`/`value` — actual column names are
+  //      `setting_key`/`setting_value` (Drizzle aliases TS→DB).
+  //   2. Used `WHERE key = ANY(${keys}::text[])` — Drizzle expands a
+  //      JS array into a row expression `($1, $2, …)`, NOT a SQL
+  //      array literal. Casting `($1, …)::text[]` is invalid (cannot
+  //      cast row to text[]).
+  // Fixed by switching to the typed Drizzle query builder which uses
+  // platformSettings columns by name AND passes the array via
+  // inArray() — Drizzle binds it as a single text[] parameter.
+  const rows = await db
+    .select({ key: platformSettings.key, value: platformSettings.value })
+    .from(platformSettings)
+    .where(inArray(platformSettings.key, keys));
   const map = new Map<string, string>();
-  for (const r of ((rows as unknown as { rows?: { setting_key: string; setting_value: string }[] }).rows) ?? []) {
-    map.set(r.setting_key, r.setting_value);
+  for (const r of rows) {
+    map.set(r.key, r.value);
   }
   return map;
 }
@@ -331,8 +338,23 @@ export function startCrowdsecAutobanScheduler(deps: SchedulerDeps): NodeJS.Timeo
   deps.log.info({}, 'crowdsec-autoban: scheduler starting');
   const run = () => {
     runOnce(deps).catch((err) => {
+      // Surface the underlying Postgres cause when Drizzle wraps the
+      // query — the bare `err.message` for query errors is just
+      // "Failed query: <sql>\nparams: ..." which hides the actual
+      // failure reason. Walk a couple of cause links to find the
+      // pg error code + message.
+      const causes: string[] = [];
+      let cur: unknown = err;
+      for (let i = 0; i < 3 && cur; i++) {
+        const e = cur as { code?: string; message?: string; cause?: unknown };
+        if (e.code) causes.push(`${e.code}: ${e.message ?? ''}`);
+        cur = e.cause;
+      }
       deps.log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
+        {
+          err: err instanceof Error ? err.message : String(err),
+          causes: causes.length ? causes : undefined,
+        },
         'crowdsec-autoban: tick failed',
       );
     });
