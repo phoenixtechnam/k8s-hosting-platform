@@ -71,9 +71,13 @@ import {
   useAddCrowdsecBan,
   useAddCrowdsecStaticBan,
   useCrowdsecAllowlist,
+  useCrowdsecConsoleStatus,
   useCrowdsecDecisions,
   useCrowdsecStatus,
   useDeleteCrowdsecDecision,
+  useDisenrollCrowdsecConsole,
+  useEnrollCrowdsecConsole,
+  usePatchCrowdsecConsoleMeta,
   useRemoveCrowdsecAllowlistEntry,
 } from '@/hooks/use-crowdsec';
 import type {
@@ -1682,6 +1686,9 @@ function BannedIpsTab() {
       <AllowlistCard />
       <StaticBlocklistCard onOpenAdd={() => setStaticAddOpen(true)} />
 
+      {/* F5 — CrowdSec Console enrollment (opt-in, super_admin only) */}
+      <CrowdsecConsoleCard />
+
       {/* Controls */}
       <div className="flex flex-wrap items-end justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
         <div className="flex flex-wrap items-end gap-3">
@@ -2542,5 +2549,158 @@ function WafExclusionsTab() {
         </div>
       )}
     </section>
+  );
+}
+
+// ─── F5 — CrowdSec Console enrollment card ────────────────────────────
+
+function CrowdsecConsoleCard() {
+  const status = useCrowdsecConsoleStatus();
+  const enroll = useEnrollCrowdsecConsole();
+  const disenroll = useDisenrollCrowdsecConsole();
+  const patchMeta = usePatchCrowdsecConsoleMeta();
+  const [enrollKey, setEnrollKey] = useState('');
+  const [enrollName, setEnrollName] = useState('');
+  const [overwrite, setOverwrite] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const s = status.data?.data;
+  // Hidden entirely when meta-flag is disabled (airgapped operators
+  // can still flip it back from a direct DB write; the toggle UI
+  // appears even when meta-disabled so they can re-enable).
+  if (status.isLoading) return null;
+
+  const keyValid =
+    enrollKey.trim().length >= 16
+    && enrollKey.trim().length <= 128
+    && /^[A-Za-z0-9_-]+$/.test(enrollKey.trim());
+
+  return (
+    <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/30 dark:bg-blue-900/10 p-4 space-y-3" data-testid="crowdsec-console-card">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1">
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+            CrowdSec Console <span className="ml-2 text-[10px] uppercase rounded px-1.5 py-0.5 bg-blue-200/60 dark:bg-blue-800/40 text-blue-800 dark:text-blue-200">opt-in</span>
+          </h4>
+          <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+            Optional enrollment with <code className="text-[11px]">app.crowdsec.net</code> for the
+            cross-cluster dashboard, premium Console blocklists, and alert push notifications.
+            Airgapped operators can hide this surface entirely via the meta toggle below.
+          </p>
+        </div>
+        <div>
+          {s?.enrolled && (
+            <span className="rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 text-[10px] uppercase">enrolled</span>
+          )}
+          {s && !s.enrolled && s.metaEnabled && (
+            <span className="rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-2 py-0.5 text-[10px] uppercase">not enrolled</span>
+          )}
+          {s && !s.metaEnabled && (
+            <span className="rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 px-2 py-0.5 text-[10px] uppercase">meta disabled</span>
+          )}
+        </div>
+      </div>
+
+      {s?.metaEnabled && !s.enrolled && (
+        <div className="space-y-2">
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-gray-700 dark:text-gray-200">Enroll key (from <code>app.crowdsec.net → Add Machine</code>)</span>
+            <input
+              value={enrollKey}
+              onChange={(e) => setEnrollKey(e.target.value)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 font-mono text-[11px]"
+              data-testid="console-enroll-key"
+              placeholder="lh7tjjpa2lmd6ku5osmd5l3dkyahw7n4dq7ovwbmhx8mtfvz"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            <span className="text-gray-700 dark:text-gray-200">Machine name (optional)</span>
+            <input
+              value={enrollName}
+              onChange={(e) => setEnrollName(e.target.value)}
+              className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 text-xs"
+              data-testid="console-enroll-name"
+              placeholder="my-platform-staging"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} data-testid="console-enroll-overwrite" />
+            Overwrite existing enrollment (use only if previously enrolled)
+          </label>
+          {err && <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 px-3 py-2 text-xs text-red-700 dark:text-red-200">{err}</div>}
+          <button
+            type="button"
+            onClick={() => {
+              setErr(null);
+              enroll.mutate(
+                { enrollKey: enrollKey.trim(), name: enrollName.trim() || undefined, overwrite: overwrite || undefined },
+                {
+                  onSuccess: () => { setEnrollKey(''); setEnrollName(''); setOverwrite(false); },
+                  onError: (e) => setErr(e instanceof Error ? e.message : String(e)),
+                },
+              );
+            }}
+            disabled={!keyValid || enroll.isPending}
+            className="rounded-md px-3 py-1.5 text-xs border border-blue-300 bg-blue-600 dark:bg-blue-700 text-white hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
+            data-testid="console-enroll-submit"
+          >
+            {enroll.isPending ? 'Enrolling…' : 'Enroll with CrowdSec Console'}
+          </button>
+        </div>
+      )}
+
+      {s?.enrolled && (
+        <div className="space-y-2 text-xs text-gray-700 dark:text-gray-200">
+          {s.consoleUrl && (
+            <div>
+              Console URL: <a href={s.consoleUrl} target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-300 hover:underline">{s.consoleUrl}</a>
+            </div>
+          )}
+          {s.features.length > 0 && (
+            <div>
+              Features:{' '}
+              {s.features.map((f) => (
+                <span key={f.name} className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] mr-1 ${f.enabled ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}>
+                  {f.name}
+                </span>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm('Disenroll from CrowdSec Console? The platform LAPI stops pushing alerts upstream.')) {
+                disenroll.mutate();
+              }
+            }}
+            disabled={disenroll.isPending}
+            className="rounded-md px-3 py-1.5 text-xs border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
+            data-testid="console-disenroll"
+          >
+            {disenroll.isPending ? 'Disenrolling…' : 'Disenroll'}
+          </button>
+        </div>
+      )}
+
+      <div className="pt-2 border-t border-blue-200 dark:border-blue-800 flex items-center justify-between text-[11px] text-gray-600 dark:text-gray-400">
+        <span>
+          Meta flag (airgapped operators):{' '}
+          <code className="text-[10px]">platform_settings.security.crowdsec.console_visible</code>
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            if (s && window.confirm(`${s.metaEnabled ? 'Hide' : 'Show'} the CrowdSec Console card?`)) {
+              patchMeta.mutate({ visible: !s.metaEnabled });
+            }
+          }}
+          disabled={patchMeta.isPending || !s}
+          className="rounded-md px-2 py-0.5 text-[10px] border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          data-testid="console-meta-toggle"
+        >
+          {s?.metaEnabled ? 'Hide surface' : 'Re-enable surface'}
+        </button>
+      </div>
+    </div>
   );
 }

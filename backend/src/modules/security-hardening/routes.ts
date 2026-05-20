@@ -57,7 +57,33 @@ import {
   WafRuleExclusionError,
 } from '../waf-rule-exclusions/service.js';
 import { reconcileWafExclusions } from '../waf-rule-exclusions/reconciler.js';
+import {
+  ConsoleMetaDisabledError,
+  disenrollConsole,
+  enrollConsole,
+  getConsoleStatus,
+} from './crowdsec-console.js';
+import {
+  crowdsecConsoleEnrollRequestSchema,
+  crowdsecConsoleMetaPatchSchema,
+} from '@k8s-hosting/api-contracts';
 import { sql } from 'drizzle-orm';
+
+const CONSOLE_VISIBLE_KEY = 'security.crowdsec.console_visible';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readConsoleMetaEnabled(db: any): Promise<boolean> {
+  // platform_settings is a key/value table; default is TRUE so freshly-
+  // installed clusters get the surface visible. Airgapped operators
+  // explicitly insert `false` to hide.
+  const result = await db.execute(sql`
+    SELECT value FROM platform_settings WHERE key = ${CONSOLE_VISIBLE_KEY}
+  `);
+  const rows = (result.rows ?? result) as { value: string }[];
+  const raw = rows[0]?.value;
+  if (raw === undefined) return true;
+  return raw.toLowerCase() !== 'false';
+}
 
 interface AuthedRequest {
   readonly user?: { readonly sub?: string };
@@ -550,6 +576,106 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
           }
           throw err;
         }
+      },
+    );
+
+    // ─── F5 — CrowdSec Console enrollment (opt-in) ────────────────────
+    //
+    // super_admin only. Every endpoint reads the platform_settings
+    // meta-flag (security.crowdsec.console_visible, default true);
+    // when false, enroll/disenroll return 403 and status returns a
+    // synthetic "meta-disabled" payload. Airgapped operators can
+    // set the meta-flag to false via PATCH (also super_admin) to hide
+    // the surface entirely.
+
+    app.get(
+      '/admin/security/crowdsec/console',
+      { preHandler: requireRole('super_admin') },
+      async (_req: FastifyRequest, reply: FastifyReply) => {
+        try {
+          const meta = await readConsoleMetaEnabled(deps.db);
+          const status = await getConsoleStatus(kubeconfigPath, meta);
+          return success(status);
+        } catch (err) {
+          return reply.status(502).send({
+            error: 'CROWDSEC_CONSOLE_STATUS_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.post(
+      '/admin/security/crowdsec/console/enroll',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecConsoleEnrollRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const meta = await readConsoleMetaEnabled(deps.db);
+        const actor = userOf(req as AuthedRequest);
+        // Audit-log with the key REDACTED.
+        app.log.warn({ actor, name: parsed.data.name }, 'crowdsec: console enroll requested (key REDACTED)');
+        try {
+          const result = await enrollConsole(kubeconfigPath, meta, parsed.data, actor);
+          return success(result);
+        } catch (err) {
+          if (err instanceof ConsoleMetaDisabledError) {
+            return reply.status(403).send({ error: 'CONSOLE_META_DISABLED', message: err.message });
+          }
+          return reply.status(502).send({
+            error: 'CROWDSEC_CONSOLE_ENROLL_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.post(
+      '/admin/security/crowdsec/console/disenroll',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const meta = await readConsoleMetaEnabled(deps.db);
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor }, 'crowdsec: console disenroll requested');
+        try {
+          const result = await disenrollConsole(kubeconfigPath, meta, actor);
+          return success(result);
+        } catch (err) {
+          if (err instanceof ConsoleMetaDisabledError) {
+            return reply.status(403).send({ error: 'CONSOLE_META_DISABLED', message: err.message });
+          }
+          return reply.status(502).send({
+            error: 'CROWDSEC_CONSOLE_DISENROLL_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.patch(
+      '/admin/security/crowdsec/console/meta',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecConsoleMetaPatchSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor, visible: parsed.data.visible }, 'crowdsec: console meta flag changed');
+        await deps.db.execute(sql`
+          INSERT INTO platform_settings (key, value, updated_at)
+          VALUES (${CONSOLE_VISIBLE_KEY}, ${String(parsed.data.visible)}, NOW())
+          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        `);
+        return success({ visible: parsed.data.visible });
       },
     );
 

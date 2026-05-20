@@ -18,6 +18,9 @@ import type {
   CrowdsecAddBanRequest,
   CrowdsecAddBanResponse,
   CrowdsecAddStaticBanRequest,
+  CrowdsecConsoleEnrollRequest,
+  CrowdsecConsoleMetaPatch,
+  CrowdsecConsoleStatus,
   CrowdsecDeleteByIdResponse,
   CrowdsecListAllowlistResponse,
   CrowdsecListDecisionsQuery,
@@ -132,6 +135,58 @@ export function useAddCrowdsecStaticBan() {
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['crowdsec', 'decisions'] });
+    },
+  });
+}
+
+// ─── F5 — CrowdSec Console enrollment hooks ─────────────────────────
+
+const CONSOLE_KEY = ['crowdsec', 'console'] as const;
+
+export function useCrowdsecConsoleStatus() {
+  return useQuery<Envelope<CrowdsecConsoleStatus>>({
+    queryKey: CONSOLE_KEY,
+    queryFn: () => apiFetch('/api/v1/admin/security/crowdsec/console'),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useEnrollCrowdsecConsole() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<CrowdsecConsoleStatus>, Error, CrowdsecConsoleEnrollRequest>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/security/crowdsec/console/enroll', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONSOLE_KEY });
+    },
+  });
+}
+
+export function useDisenrollCrowdsecConsole() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<CrowdsecConsoleStatus>, Error, void>({
+    mutationFn: () =>
+      apiFetch('/api/v1/admin/security/crowdsec/console/disenroll', { method: 'POST' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONSOLE_KEY });
+    },
+  });
+}
+
+export function usePatchCrowdsecConsoleMeta() {
+  const qc = useQueryClient();
+  return useMutation<Envelope<{ visible: boolean }>, Error, CrowdsecConsoleMetaPatch>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/security/crowdsec/console/meta', {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: CONSOLE_KEY });
     },
   });
 }

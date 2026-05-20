@@ -102,4 +102,5 @@ export * from './dr-drill.js';
 export * from './waf-events.js';
 export * from './crowdsec.js';
 export * from './crowdsec-autoban.js';
+export * from './crowdsec-console.js';
 export * from './waf-rule-exclusions.js';
