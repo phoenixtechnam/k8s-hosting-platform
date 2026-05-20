@@ -61,6 +61,16 @@ spec:
       # the traefik namespace (key `bouncer-key`). The plugin supports
       # loading from a file via this special path.
       crowdsecLapiKeyFile: /var/run/secrets/crowdsec/bouncer-key
+      # Use stream mode (NOT the v1.6.0 default `live`). Live mode
+      # queries LAPI per-request when an IP isn't cached — fine for a
+      # small allowlist but unusable with the community blocklist (~6M
+      # IPs) because every cache miss is a round-trip. Stream mode
+      # makes one periodic /v1/decisions/stream call that pulls ALL
+      # active decisions in bulk; per-request checks then hit the local
+      # in-memory cache. As a side benefit, `last_pull` on each bouncer
+      # updates every `updateIntervalSeconds`, which is what the
+      # Banned-IPs UI uses as a freshness signal.
+      crowdsecMode: stream
       # Refresh decision cache every 60s. Lower = faster reaction to
       # new bans, higher = less LAPI traffic. 60s is the plugin default.
       updateIntervalSeconds: 60
