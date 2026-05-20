@@ -6129,6 +6129,27 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
     --from-literal=STALWART_EXTERNAL_IP="${stalwart_external_ip}" \
     --dry-run=client -o yaml | kctl apply -f -
 
+  # 2026-05-20: seed platform_settings.k3s_{pod,svc}_cidr with the
+  # values bootstrap actually passed to k3s. The cluster-trusted-
+  # proxies reconciler reads these and inserts matching bootstrap-
+  # source rows into cluster_trusted_proxy_ranges, so the operator
+  # UI shows the cluster's real CIDRs (not just the RFC1918 baseline).
+  # Idempotent — ON CONFLICT updates the existing row so re-running
+  # bootstrap with a different --cluster-cidr propagates the change.
+  if [[ -n "${cluster_cidr_arg:-}" || -n "${service_cidr_arg:-}" ]]; then
+    # Write to a stable ConfigMap (platform namespace) that the backend
+    # reads at reconcile time. DB-write here would require credentials
+    # we may not have yet; the reconciler bridges into platform_settings.
+    local pod_cidr_value="${cluster_cidr_arg:-10.42.0.0/16}"
+    local svc_cidr_value="${service_cidr_arg:-10.43.0.0/16}"
+    log "Seeding platform-cluster-cidrs ConfigMap (pod=${pod_cidr_value}, svc=${svc_cidr_value})..."
+    kctl create configmap platform-cluster-cidrs \
+      -n platform \
+      --from-literal=POD_CIDR="${pod_cidr_value}" \
+      --from-literal=SVC_CIDR="${svc_cidr_value}" \
+      --dry-run=client -o yaml | kctl apply -f -
+  fi
+
   # Dex config injection — only for overlays that ship Dex (dev/staging).
   # Replace any leftover PLACEHOLDER URLs and the generated oauth2-proxy
   # client secret. The ${DOMAIN}-bearing lines are left as placeholders

@@ -83,6 +83,27 @@ spec:
               path: /health
               port: 80
             periodSeconds: 10
+          volumeMounts:
+            # Operator-managed trusted-proxy CIDRs (Nodes & Storage →
+            # Trusted Proxies tab). Reconciled into the cluster-trusted-
+            # proxies ConfigMap by platform-api's cluster-trusted-proxies
+            # reconciler. nginx.conf.template includes
+            # /etc/nginx/conf.d/trusted-proxies.d/*.conf as a glob; the
+            # ConfigMap key 'trusted-proxies.conf' lands at that path.
+            - name: trusted-proxies
+              mountPath: /etc/nginx/conf.d/trusted-proxies.d
+              readOnly: true
+      volumes:
+        - name: trusted-proxies
+          configMap:
+            # Created on first reconciler tick; pod tolerates the absence
+            # of the ConfigMap via optional:true so cold-start works even
+            # before the reconciler has run.
+            name: cluster-trusted-proxies
+            optional: true
+            items:
+              - key: trusted-proxies.conf
+                path: trusted-proxies.conf
 ---
 apiVersion: v1
 kind: Service

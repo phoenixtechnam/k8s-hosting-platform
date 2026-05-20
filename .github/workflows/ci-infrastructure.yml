@@ -79,6 +79,14 @@ jobs:
       - name: Verify bootstrap.sh firewall rules
         run: ./scripts/ci-firewall-check.sh
 
+  nginx-real-ip-check:
+    name: Nginx real_ip template guardrail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify admin/tenant panel nginx.conf.template has real_ip directives
+        run: ./scripts/ci-nginx-real-ip-check.sh
+
   system-tenant-guard:
     name: SYSTEM tenant protection guardrail (ADR-040)
     runs-on: ubuntu-latest

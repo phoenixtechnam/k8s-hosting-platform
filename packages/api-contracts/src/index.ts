@@ -15,6 +15,7 @@
 
 export * from './shared.js';
 export * from './cluster-network.js';
+export * from './cluster-trusted-proxies.js';
 export * from './operator-error.js';
 export * from './auth.js';
 export * from './step-up.js';

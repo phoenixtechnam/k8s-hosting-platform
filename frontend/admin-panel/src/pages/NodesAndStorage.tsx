@@ -1,13 +1,14 @@
 import { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Server, HardDrive, Layers } from 'lucide-react';
+import { Server, HardDrive, Layers, Shield } from 'lucide-react';
 import clsx from 'clsx';
 import ClusterNodes from '@/pages/ClusterNodes';
 import StorageSettings from '@/pages/StorageSettings';
 import PlatformStoragePolicyCard from '@/components/PlatformStoragePolicyCard';
 import NodeDefaultsCard from '@/components/NodeDefaultsCard';
+import TrustedProxiesCard from '@/components/TrustedProxiesCard';
 
-type TabKey = 'nodes' | 'storage' | 'ha';
+type TabKey = 'nodes' | 'storage' | 'ha' | 'trusted-proxies';
 
 const TABS: ReadonlyArray<{
   readonly key: TabKey;
@@ -33,9 +34,15 @@ const TABS: ReadonlyArray<{
     icon: Layers,
     hint: 'Node defaults + platform storage replication tier (Local ↔ HA)',
   },
+  {
+    key: 'trusted-proxies',
+    label: 'Trusted Proxies',
+    icon: Shield,
+    hint: 'CDN/LB/floating-IP CIDRs whose X-Forwarded-For chain is honored',
+  },
 ];
 
-const VALID_TABS: ReadonlySet<TabKey> = new Set(['nodes', 'storage', 'ha']);
+const VALID_TABS: ReadonlySet<TabKey> = new Set(['nodes', 'storage', 'ha', 'trusted-proxies']);
 
 /**
  * Combined "Nodes & Storage" admin page.
@@ -144,6 +151,16 @@ export default function NodesAndStorage() {
           <span data-testid="cluster-settings-tab" className="sr-only" aria-hidden="true" />
           <PlatformStoragePolicyCard />
           <NodeDefaultsCard />
+        </div>
+      )}
+      {activeTab === 'trusted-proxies' && (
+        <div
+          role="tabpanel"
+          id="nodes-and-storage-panel-trusted-proxies"
+          aria-labelledby="nodes-and-storage-tab-trusted-proxies"
+          data-testid="trusted-proxies-tab"
+        >
+          <TrustedProxiesCard />
         </div>
       )}
     </div>

@@ -21,6 +21,7 @@ resources:
   - backend-deployment.yaml
   - admin-deployment.yaml
   - tenant-deployment.yaml
+  - cluster-trusted-proxies-cm.yaml
   - platform-suspended.yaml
   # k8s/base/ingress.yaml was REMOVED in the Traefik migration. The
   # platform-ingress is no longer a static placeholder Kustomize resource —

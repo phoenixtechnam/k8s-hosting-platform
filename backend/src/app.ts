@@ -83,6 +83,7 @@ import { systemBackupWalArchiveRoutes } from './modules/system-backup/wal-archiv
 import { systemPvcRoutes } from './modules/system-backup/system-pvc-routes.js';
 import { clusterNetworkRoutes } from './modules/cluster-network/routes.js';
 import { buildSecurityHardeningRoutes } from './modules/security-hardening/routes.js';
+import { buildClusterTrustedProxiesRoutes } from './modules/cluster-trusted-proxies/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { snapshotClassesRoutes } from './modules/snapshot-classes/routes.js';
@@ -478,6 +479,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(systemPvcRoutes, { prefix: '/api/v1' });
   await app.register(clusterNetworkRoutes, { prefix: '/api/v1' });
   await app.register(buildSecurityHardeningRoutes({ db: deps.db }), { prefix: '/api/v1' });
+  await app.register(buildClusterTrustedProxiesRoutes({ db: deps.db }), { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(taskCenterRoutes, { prefix: '/api/v1' });
@@ -867,6 +869,30 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn(
             { err },
             'webmail-feature-css: scheduler start failed (non-blocking)',
+          );
+        }
+
+        // 2026-05-20: cluster-trusted-proxies reconciler. Reads
+        // cluster_trusted_proxy_ranges + platform_settings (k3s pod/svc
+        // CIDRs) → materialises ConfigMap `platform/cluster-trusted-
+        // proxies` (nginx snippet + CSV) + JSON-patches Traefik DS
+        // forwardedHeaders.trustedIPs args + stamps admin/tenant panel
+        // pod-template hash annotation for rolling restart. 5-min tick;
+        // POST/DELETE routes also fire inline. Non-blocking on failure.
+        try {
+          const { startClusterTrustedProxiesReconciler } = await import(
+            './modules/cluster-trusted-proxies/scheduler.js'
+          );
+          const trustedProxiesHandle = startClusterTrustedProxiesReconciler(
+            app.db,
+            { core: k8sForImapsync.core, apps: k8sForImapsync.apps },
+            app.log,
+          );
+          app.addHook('onClose', () => trustedProxiesHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'cluster-trusted-proxies: scheduler start failed (non-blocking)',
           );
         }
 

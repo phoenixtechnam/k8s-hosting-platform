@@ -136,6 +136,10 @@ PARALLEL=(
   # CronJob → restic Secret) plus dry-run of all three restore scripts.
   # Cleans up after itself via trap. ~2 minutes on a healthy cluster.
   "dr-drill-shim:integration-dr-drill-shim.sh"
+  # Operator-managed trusted upstream proxy CIDRs (Nodes & Storage →
+  # Trusted Proxies). Adds + verifies + deletes a test CIDR; checks
+  # ConfigMap, Traefik DS args, and admin-panel pod mount. ~30s.
+  "trusted-proxies:integration-cluster-trusted-proxies.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).

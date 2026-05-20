@@ -3191,3 +3191,25 @@ export const nodeHealthState = pgTable('node_health_state', {
 
 export type NodeHealthState = typeof nodeHealthState.$inferSelect;
 export type NewNodeHealthState = typeof nodeHealthState.$inferInsert;
+
+// ─── Operator-managed trusted upstream proxies (migration 0020) ──────────────
+//
+// CIDRs whose X-Forwarded-For chain is honored by nginx (admin-panel +
+// tenant-panel) and Traefik (entryPoints forwardedHeaders.trustedIPs).
+// Materialised by cluster-trusted-proxy-reconciler — see
+// backend/src/modules/cluster-trusted-proxies/reconciler.ts.
+export const clusterTrustedProxyRanges = pgTable('cluster_trusted_proxy_ranges', {
+  // The migration uses uuid + gen_random_uuid() at the DB layer; the
+  // Drizzle column is varchar(36) (codebase convention — see users.id,
+  // tenants.id, etc.) so callers receive the canonical text form.
+  id: varchar('id', { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  cidr: text('cidr').notNull(),
+  description: text('description').notNull().default(''),
+  // 'system' | 'bootstrap' | 'operator' — see migration 0020 comment.
+  source: text('source').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy: varchar('created_by', { length: 36 }),
+});
+
+export type ClusterTrustedProxyRange = typeof clusterTrustedProxyRanges.$inferSelect;
+export type NewClusterTrustedProxyRange = typeof clusterTrustedProxyRanges.$inferInsert;

@@ -53,6 +53,21 @@ spec:
               path: /health
               port: 80
             periodSeconds: 10
+          volumeMounts:
+            # See admin-deployment.yaml for the operator-managed
+            # trusted-proxy CIDRs mount rationale (Nodes & Storage →
+            # Trusted Proxies tab → cluster-trusted-proxies ConfigMap).
+            - name: trusted-proxies
+              mountPath: /etc/nginx/conf.d/trusted-proxies.d
+              readOnly: true
+      volumes:
+        - name: trusted-proxies
+          configMap:
+            name: cluster-trusted-proxies
+            optional: true
+            items:
+              - key: trusted-proxies.conf
+                path: trusted-proxies.conf
 ---
 apiVersion: v1
 kind: Service
