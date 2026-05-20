@@ -79,7 +79,7 @@ spec:
               # image. We pin the upstream rclone/rclone tag here
               # because the platform-api never edits this manifest at
               # runtime; the reconciler only toggles spec.suspend.
-              image: rclone/rclone:1.66
+              image: rclone/rclone:1.74.1
               imagePullPolicy: IfNotPresent
               env:
                 # Shim S3 endpoint. ClusterIP + Service.internalTraffic
