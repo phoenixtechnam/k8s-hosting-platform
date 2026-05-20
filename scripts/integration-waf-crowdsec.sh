@@ -672,7 +672,14 @@ fi
 
 phase "Phase H — F4 WAF rule exclusions"
 
-F4_HOST_REGEX='^waf-h-harness\.example\.invalid$'
+# Note: this value lands inside a JSON string literal via api_internal.
+# JSON forbids raw backslash; if we want \. escapes we must double them
+# (\\\\.) so the shell→JSON pipeline emits a valid `\.`. Simpler: avoid
+# backslashes entirely. The regex `.` matches a literal dot fine for
+# our host-matching use case (unescaped `.` is wildcard but our test
+# hostname is unique enough that the over-match doesn't matter for
+# the harness).
+F4_HOST_REGEX='^waf-h-harness.example.invalid$'
 F4_RULE_ID='930120'
 
 cleanup_f4() {
@@ -712,9 +719,10 @@ else
   fail "F4: create failed or returned no id: $(echo "$h_create" | head -c 300)"
 fi
 
-# H3: GET lists the new exclusion
+# H3: GET lists the new exclusion. Use `grep -F` (fixed-string) — the
+# regex contains ^ and $ anchors that don't match against inline JSON.
 h_list_after=$(api_internal GET /admin/security/waf-rule-exclusions)
-if echo "$h_list_after" | grep -q "$F4_HOST_REGEX"; then
+if echo "$h_list_after" | grep -qF "$F4_HOST_REGEX"; then
   ok "F4: exclusion appears in GET list"
 else
   fail "F4: exclusion NOT visible: $(echo "$h_list_after" | head -c 300)"
@@ -750,9 +758,10 @@ if [[ -n "${h_id:-}" ]]; then
   fi
 fi
 
-# H7: GET with includeDisabled=true should show the disabled row
+# H7: GET with includeDisabled=true should show the disabled row.
+# Use `-F` to match the literal regex string in JSON (no anchor regex).
 h_with_disabled=$(api_internal GET "/admin/security/waf-rule-exclusions?includeDisabled=true")
-if echo "$h_with_disabled" | grep -q "$F4_HOST_REGEX"; then
+if echo "$h_with_disabled" | grep -qF "$F4_HOST_REGEX"; then
   ok "F4: disabled row visible with includeDisabled=true"
 else
   fail "F4: disabled row NOT visible with includeDisabled=true"
@@ -810,17 +819,26 @@ if [[ -n "${h_id:-}" ]]; then
   fi
 fi
 
-# H12: After delete, GET returns empty (or no harness row)
+# H12: After delete, GET returns empty (or no harness row). Fixed-string match.
 h_list_final=$(api_internal GET /admin/security/waf-rule-exclusions)
-if echo "$h_list_final" | grep -q "$F4_HOST_REGEX"; then
+if echo "$h_list_final" | grep -qF "$F4_HOST_REGEX"; then
   fail "F4: deleted row still appears in GET list"
 else
   ok "F4: post-delete GET no longer shows harness row"
 fi
 
-# H13: ConfigMap content reverts to empty-body banner
-sleep 2
-h_cm_final=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
+# H13: ConfigMap content reverts to empty-body banner. The inline reconcile
+# fires from the route handler after DELETE returns, but the kubectl patch
+# round-trip + API-server cache propagation can land in ~1-2s. Retry up to
+# 10s before declaring failure — anything longer is a real bug.
+h_cm_final=""
+for _i in 1 2 3 4 5; do
+  sleep 2
+  h_cm_final=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
+  if echo "$h_cm_final" | grep -q "No DB-rendered exclusions are currently enabled"; then
+    break
+  fi
+done
 if echo "$h_cm_final" | grep -q "No DB-rendered exclusions are currently enabled"; then
   ok "F4: ConfigMap reverted to empty-body after delete"
 else

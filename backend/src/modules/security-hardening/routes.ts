@@ -73,14 +73,14 @@ const CONSOLE_VISIBLE_KEY = 'security.crowdsec.console_visible';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function readConsoleMetaEnabled(db: any): Promise<boolean> {
-  // platform_settings is a key/value table; default is TRUE so freshly-
-  // installed clusters get the surface visible. Airgapped operators
-  // explicitly insert `false` to hide.
+  // platform_settings: PK column is `setting_key` (not `key`), value is
+  // `setting_value`. The Drizzle schema aliases these (.key/.value) but
+  // raw SQL must use the actual column names.
   const result = await db.execute(sql`
-    SELECT value FROM platform_settings WHERE key = ${CONSOLE_VISIBLE_KEY}
+    SELECT setting_value FROM platform_settings WHERE setting_key = ${CONSOLE_VISIBLE_KEY}
   `);
-  const rows = (result.rows ?? result) as { value: string }[];
-  const raw = rows[0]?.value;
+  const rows = (result.rows ?? result) as { setting_value: string }[];
+  const raw = rows[0]?.setting_value;
   if (raw === undefined) return true;
   return raw.toLowerCase() !== 'false';
 }
@@ -449,9 +449,9 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         if (p.includeTenantRoutes !== undefined) entries.push([AUTOBAN_SETTING_KEYS.includeTenantRoutes, String(p.includeTenantRoutes)]);
         for (const [key, value] of entries) {
           await deps.db.execute(sql`
-            INSERT INTO platform_settings (key, value, updated_at)
+            INSERT INTO platform_settings (setting_key, setting_value, updated_at)
             VALUES (${key}, ${value}, NOW())
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
           `);
         }
         const final = await loadAutobanConfig(deps.db);
@@ -671,9 +671,9 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         const actor = userOf(req as AuthedRequest);
         app.log.warn({ actor, visible: parsed.data.visible }, 'crowdsec: console meta flag changed');
         await deps.db.execute(sql`
-          INSERT INTO platform_settings (key, value, updated_at)
+          INSERT INTO platform_settings (setting_key, setting_value, updated_at)
           VALUES (${CONSOLE_VISIBLE_KEY}, ${String(parsed.data.visible)}, NOW())
-          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+          ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
         `);
         return success({ visible: parsed.data.visible });
       },

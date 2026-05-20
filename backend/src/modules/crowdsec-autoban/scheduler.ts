@@ -72,12 +72,16 @@ const SETTING_KEYS = {
 
 async function loadSettings(db: Db): Promise<Map<string, string>> {
   const keys = [...Object.values(SETTING_KEYS), SETTING_WATERMARK];
+  // platform_settings column names are setting_key/setting_value, not
+  // key/value — the Drizzle schema aliases them but raw SQL must use
+  // the actual DB names. This was the source of the F3 autoban
+  // scheduler log spam: `Failed query: column "key" does not exist`.
   const rows = await db.execute(sql`
-    SELECT key, value FROM platform_settings WHERE key = ANY(${keys}::text[])
+    SELECT setting_key, setting_value FROM platform_settings WHERE setting_key = ANY(${keys}::text[])
   `);
   const map = new Map<string, string>();
-  for (const r of ((rows as unknown as { rows?: { key: string; value: string }[] }).rows) ?? []) {
-    map.set(r.key, r.value);
+  for (const r of ((rows as unknown as { rows?: { setting_key: string; setting_value: string }[] }).rows) ?? []) {
+    map.set(r.setting_key, r.setting_value);
   }
   return map;
 }
@@ -106,9 +110,9 @@ async function loadWatermark(db: Db): Promise<string | null> {
 
 async function saveWatermark(db: Db, id: string): Promise<void> {
   await db.execute(sql`
-    INSERT INTO platform_settings (key, value, updated_at)
+    INSERT INTO platform_settings (setting_key, setting_value, updated_at)
     VALUES (${SETTING_WATERMARK}, ${id}, NOW())
-    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
   `);
 }
 
