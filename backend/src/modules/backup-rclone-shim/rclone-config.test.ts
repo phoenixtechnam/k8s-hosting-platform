@@ -114,10 +114,16 @@ describe('renderShimConfig — single S3 class', () => {
     expect(out.rcloneConf).toContain('type = alias');
   });
 
-  it('does NOT include the plaintext S3 secret_key', () => {
-    expect(out.rcloneConf).not.toContain('secretpass');
-    // The obscured form should be present, base64url-encoded.
-    expect(out.rcloneConf).toMatch(/secret_access_key = [A-Za-z0-9_-]+/);
+  it('renders the S3 secret_access_key as PLAINTEXT (rclone S3 backend requires plaintext)', () => {
+    // rclone's S3 backend does NOT obscure secret_access_key — it reads
+    // the value as-is and uses it for SigV4 signing. Earlier versions of
+    // this renderer wrongly called rcloneObscure() here, which made
+    // every shim-routed S3 call fail with SignatureDoesNotMatch from
+    // upstream. The plaintext is fine because the rendered conf only
+    // lives inside a Kubernetes Secret (encrypted at rest by kube-apiserver)
+    // and is mounted into the shim pod via a projected volume. See
+    // https://rclone.org/s3/#standard-options for the field semantics.
+    expect(out.rcloneConf).toContain('secret_access_key = secretpass');
   });
 
   it('uses force_path_style + no_check_bucket for S3 compatibility', () => {

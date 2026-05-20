@@ -320,7 +320,16 @@ function renderS3Section(remoteName: string, t: BackupTargetConfig): string {
     `provider = Other`,
     `endpoint = ${t.s3Endpoint}`,
     `access_key_id = ${t.s3AccessKey}`,
-    `secret_access_key = ${rcloneObscure(t.s3SecretKey)}`,
+    // rclone's S3 backend stores secret_access_key as PLAINTEXT, NOT obscured.
+    // Only crypt's password/password2 and sftp's `pass` go through obscure.
+    // We previously called rcloneObscure() here, which made rclone sign every
+    // upstream request with the literal obscured string — upstream Ceph
+    // returned SignatureDoesNotMatch (403) on every shim-routed call.
+    // The secret only lives in a Kubernetes Secret (kubectl-encrypted at
+    // rest), so the obscure step gave zero confidentiality anyway. See
+    // https://rclone.org/s3/#standard-options — `secret_access_key` is a
+    // plain string field.
+    `secret_access_key = ${t.s3SecretKey}`,
     `force_path_style = true`,
     `no_check_bucket = true`,
     `acl = private`,
