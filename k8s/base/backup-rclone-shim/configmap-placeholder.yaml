@@ -104,11 +104,12 @@ data:
         *[!a-z0-9:-]*) log "FATAL: buckets.txt contains forbidden char in: '$LINE'"; exit 2 ;;
       esac
       # Flux postBuild substituteFrom uses envsubst-style expansion
-      # on the ConfigMap content. `${BUCKETS_OK}` and `${LINE}` would
-      # otherwise be eaten (substituted to "" because they're not in
-      # the platform-config envFrom). Escape as `$${...}` so the
-      # rendered shell sees `${...}` literally. See
-      # [feedback_flux_postbuild_escape] + ci-flux-escape-check.sh.
+      # on the ConfigMap content. The two refs below would otherwise
+      # be eaten (substituted to "" because they're not in the
+      # platform-config envFrom). The $$ escape tells Flux to leave
+      # them as literal ${...} for the runtime shell.
+      # Memory rule [feedback_flux_postbuild_escape] documents this
+      # trap; ci-flux-escape-check.sh enforces.
       BUCKETS_OK="$${BUCKETS_OK}$${LINE} "
     done < "$BUCKETS_FILE"
 
