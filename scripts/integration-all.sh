@@ -131,6 +131,11 @@ PARALLEL=(
   # pre-existing S3 target on staging); CREATEs and DELETEs cleanly.
   # ~30s when the shim has no inflight tasks.
   "backup-rclone-shim:integration-backup-rclone-shim.sh"
+  # R-X12: full DR drill — exercises the SYSTEM + MAIL shim round-trip
+  # (assignment → ObjectStore → ScheduledBackup → CNPG plugin → etcd
+  # CronJob → restic Secret) plus dry-run of all three restore scripts.
+  # Cleans up after itself via trap. ~2 minutes on a healthy cluster.
+  "dr-drill-shim:integration-dr-drill-shim.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).

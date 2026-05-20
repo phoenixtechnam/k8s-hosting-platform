@@ -79,14 +79,21 @@ log "Pre-flight: kubectl reachable + plugin-barman-cloud installed"
 if ! kubectl version --client=true >/dev/null 2>&1; then
   fail "kubectl not in PATH"
 fi
-if ! kubectl -n cnpg-system get deployment barman-cloud >/dev/null 2>&1; then
-  fail "plugin-barman-cloud Deployment not found in cnpg-system. Run apply k8s/base/cnpg-system/ via Flux or manually."
-fi
-if ! kubectl -n "$PLATFORM_NS" get objectstore system-postgres-objectstore >/dev/null 2>&1; then
-  fail "ObjectStore CR not present. Operator must bind SYSTEM shim class to a target first (PUT /api/v1/admin/backup-rclone-shim/assignments/system)."
-fi
-if ! kubectl -n "$PLATFORM_NS" get secret backup-rclone-shim-creds >/dev/null 2>&1; then
-  fail "backup-rclone-shim-creds Secret missing. Reconciler not yet run; check platform-api logs."
+# In dry-run mode, the cluster doesn't need to be fully set up — we
+# just print the manifest. Skip the live checks but warn so the
+# operator knows they need real state for an actual restore.
+if [[ $DRY_RUN -eq 1 ]]; then
+  log "DRY-RUN: skipping plugin/ObjectStore/Secret pre-flight (target manifest will be rendered without cluster validation)"
+else
+  if ! kubectl -n cnpg-system get deployment barman-cloud >/dev/null 2>&1; then
+    fail "plugin-barman-cloud Deployment not found in cnpg-system. Run apply k8s/base/cnpg-system/ via Flux or manually."
+  fi
+  if ! kubectl -n "$PLATFORM_NS" get objectstore system-postgres-objectstore >/dev/null 2>&1; then
+    fail "ObjectStore CR not present. Operator must bind SYSTEM shim class to a target first (PUT /api/v1/admin/backup-rclone-shim/assignments/system)."
+  fi
+  if ! kubectl -n "$PLATFORM_NS" get secret backup-rclone-shim-creds >/dev/null 2>&1; then
+    fail "backup-rclone-shim-creds Secret missing. Reconciler not yet run; check platform-api logs."
+  fi
 fi
 log "Pre-flight: OK"
 
