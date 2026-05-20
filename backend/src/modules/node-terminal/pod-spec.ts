@@ -247,17 +247,47 @@ export function buildNsenterArgv(sessionId: string): readonly string[] {
     + 'exec /bin/sh -l';
   const innerShellQuoted = innerShell.replace(/'/g, `'\\''`);
 
+  // tmux config — applied via `-f <file>` so options take effect on
+  // EVERY attach (idempotent: set-option is a no-op when the value
+  // already matches). Per-session config path scoped to the sessionId
+  // so concurrent operators don't share a config and an admin can
+  // inspect it.
+  //
+  // - mouse on: tmux captures wheel events natively. Without this,
+  //   wheel events pass through to the alt-screen-active terminal,
+  //   which xterm.js translates to up/down arrow keys → bash history.
+  //   With mouse on, tmux scrolls its OWN scrollback buffer on wheel
+  //   (matches every other terminal emulator). In full-screen apps
+  //   (vim, less, htop), tmux still passes wheel events through as
+  //   arrow keys — natural app-specific behaviour.
+  // - history-limit 50000: 50k lines of scrollback per pane (default
+  //   2000 is short for ops). ~5MB RAM upper bound per session.
+  // - status off: hide tmux's bottom status bar — we're not multi-
+  //   pane, so the green bar just wastes a line of screen space and
+  //   confuses operators who aren't tmux users.
+  const tmuxConfPath = `/tmp/.nt-tmux-${sessionId}.conf`;
+  const tmuxConfBody =
+    'set -g mouse on\\n'
+    + 'set -g history-limit 50000\\n'
+    + 'set -g status off\\n';
+  // shell-level: write the config (idempotent, mode 0600 via umask),
+  // then invoke tmux with -f. The config write is cheap (~50 bytes)
+  // and only happens once per cluster-node + sessionId combination.
+  const writeConf = `printf '%b' '${tmuxConfBody}' > '${tmuxConfPath}' && chmod 0600 '${tmuxConfPath}'`;
+
   const nsenterShellCmd =
     // 1. Host tmux (production path — bootstrap.sh installs it).
     'if command -v tmux >/dev/null 2>&1; then '
-    +   `exec tmux new-session -A -s '${tmuxName}' /bin/sh -c '${innerShellQuoted}'; `
+    +   `${writeConf}; `
+    +   `exec tmux -f '${tmuxConfPath}' new-session -A -s '${tmuxName}' /bin/sh -c '${innerShellQuoted}'; `
     + 'fi; '
     // 2. Pod-bundled tmux fallback for dev. Only fires if the Pod
     //    mounted its tmux to a host-visible path AND host tmux is
     //    absent. The dev overlay can wire this up via a hostPath +
     //    initContainer; production doesn't need it.
     + 'if [ -x /opt/node-terminal/tmux ]; then '
-    +   `exec /opt/node-terminal/tmux new-session -A -s '${tmuxName}' /bin/sh -c '${innerShellQuoted}'; `
+    +   `${writeConf}; `
+    +   `exec /opt/node-terminal/tmux -f '${tmuxConfPath}' new-session -A -s '${tmuxName}' /bin/sh -c '${innerShellQuoted}'; `
     + 'fi; '
     // 3. No tmux anywhere — degrade to plain bash with on-disk
     //    history. Continuity is HISTORY-ONLY in this mode (no

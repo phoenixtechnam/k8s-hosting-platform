@@ -157,7 +157,21 @@ describe('buildNsenterArgv (per-session, host-tmux first)', () => {
     const cmd = argv[argv.length - 1] as string;
     // -A = "attach if exists, else create" — load-bearing for reconnects
     // landing in the SAME shell process with history + scrollback intact.
-    expect(cmd).toMatch(/tmux new-session -A -s 'nt-11111111-2222-3333-4444-555555555555'/);
+    // tmux is invoked with `-f <conf>` (mouse-on + history-limit + status off);
+    // assert the session-create flag/name are present without pinning the
+    // exact -f arg position.
+    expect(cmd).toMatch(/tmux -f [^ ]+ new-session -A -s 'nt-11111111-2222-3333-4444-555555555555'/);
+  });
+
+  it('writes a tmux config enabling mouse + scrollback before invoking tmux', () => {
+    const argv = buildNsenterArgv(VALID);
+    const cmd = argv[argv.length - 1] as string;
+    // mouse on: tmux captures wheel events, scrolls its own scrollback
+    // instead of letting xterm.js translate wheel to arrow-keys → bash history.
+    expect(cmd).toMatch(/set -g mouse on/);
+    // history-limit 50000: more than the 2000-line default so ops can
+    // scroll back through long command output.
+    expect(cmd).toMatch(/set -g history-limit 50000/);
   });
 
   it('inside the host shell, sets HISTFILE scoped to this sessionId (in /root, mode 0600 via umask)', () => {
