@@ -369,21 +369,35 @@ export async function pruneStaleBouncers(
   }
   const kc = createKubeConfig(kubeconfigPath);
   const podName = await findCrowdsecPodName(kc);
+
+  // Count BEFORE → run prune → count AFTER. cscli's prune output
+  // format varies across versions ("No bouncers to prune.", a TABLE
+  // of pruned bouncers, "Successfully deleted N bouncers" suffix
+  // line, etc.) and the count can land beyond the 500-char message
+  // slice. The before/after diff is bulletproof and version-agnostic.
+  const beforeCount = await countBouncers(kc, podName);
   const duration = `${olderThanSeconds}s`;
   const { stdout, stderr } = await cscliExec(kc, podName, ['bouncers', 'prune', '-d', duration, '--force']);
+  const afterCount = await countBouncers(kc, podName);
+  const pruned = Math.max(0, beforeCount - afterCount);
+
   const combined = (stdout + stderr).trim();
-  // cscli output examples (varies by version):
-  //   "23 bouncers pruned successfully" (v1.6+)
-  //   "Deleted 23 bouncers"             (v1.5)
-  //   "No bouncers to prune."           (no-op)
-  let pruned = 0;
-  const match = combined.match(/(\d+)\s+bouncers?\s+(?:pruned|deleted)/i);
-  if (match) {
-    pruned = Number(match[1]);
-  } else if (/no bouncers to prune/i.test(combined)) {
-    pruned = 0;
-  }
   return { message: combined.slice(0, 500), pruned, olderThanSeconds };
+}
+
+/**
+ * Helper for pruneStaleBouncers: returns the total bouncer count
+ * regardless of staleness. Used to compute pruned-count via before/after
+ * diff (more reliable than parsing cscli's variable output format).
+ */
+async function countBouncers(kc: k8s.KubeConfig, podName: string): Promise<number> {
+  try {
+    const { stdout } = await cscliExec(kc, podName, ['bouncers', 'list', '-o', 'json']);
+    const parsed = JSON.parse(stdout) as unknown;
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 // ─── Status / coverage ─────────────────────────────────────────────────
