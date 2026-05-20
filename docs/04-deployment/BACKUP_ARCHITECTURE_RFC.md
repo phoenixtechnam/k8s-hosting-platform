@@ -1,11 +1,13 @@
-# RFC: Backup Architecture Simplification (Path A++)
+# RFC: Backup Architecture Simplification (Path D-final)
 
-**Status**: LOCKED — operator-approved 2026-05-19. Ready for implementation in Phase R1+.
+**Status**: LOCKED — operator-approved 2026-05-20. Ready for implementation in Phase R-X1+.
 **Owner**: Phoenix Tech
-**Supersedes**: the multi-target / 4-class / restic-only proposals explored during round 2-3 of the design discussion.
-**Related ADRs**: ADR-042 (Stalwart logical export, deferred), ADR-043 (rclone-serve-s3 shim, **WITHDRAWN — superseded by pgBackRest + etcd CronJob, see §12/§13**).
+**Supersedes**: the multi-target / 4-class / restic-only proposals (round 2-3); the round-5 `cnpg-plugin-pgbackrest` path (the plugin does not exist).
+**Related ADRs**: ADR-042 (Stalwart logical export, deferred), ADR-043 (rclone-serve-s3 shim, **ACCEPTED — universal backup mediator**).
 
-> **Revision 2026-05-19 (late round-5)**: `SYSTEM.postgres` swaps from barman-cloud to the **`cnpg-plugin-pgbackrest`** plugin; `SYSTEM.etcd` swaps from k3s `--etcd-s3` to a small **`backup-rclone-etcd` CronJob** (`k3s etcd-snapshot save` + rclone upload). Both mechanisms now natively support S3, SFTP, CIFS, and NFS (via in-pod kernel mount for posix-backed paths). **The "graceful per-subsystem degradation badges" concept becomes obsolete** — SYSTEM is now universal across all target types. PITR + incremental backups are preserved (pgBackRest is the v2 storage path the CNPG project itself is moving toward). The empirical eval in [`RCLONE_SHIM_EVALUATION`](./RCLONE_SHIM_EVALUATION.md) showed the rclone-serve-s3 shim *could* work; we chose pgBackRest anyway because it eliminates the always-on shim component AND keeps PITR. Net effort impact: roughly neutral (+12 h pgBackRest/CronJob, -10 h degradation-badge UI).
+> **Correction 2026-05-20**: The 2026-05-19 revision asserted `cnpg-plugin-pgbackrest` exists as an official CNPG sub-project. **It does not.** Verified via `gh search repos cloudnative-pg pgbackrest` — the only CNPG backup plugin is `cloudnative-pg/plugin-barman-cloud` (S3/GCS/Azure-only per its source). The "pgBackRest plugin keeps PITR + supports SFTP" claim was unfounded. The R-X0 commit corrects the record.
+>
+> **Revision 2026-05-20 (round-6, Path D-final)**: The `rclone serve s3` shim (originally proposed in ADR-043) is adopted as the **universal backup mediator**. Every caller — `plugin-barman-cloud` (which IS the supported CNPG plugin), `k3s etcd-snapshot save`, every restic CronJob, every rclone-push job — talks to a per-node shim DaemonSet via S3. The shim's per-class buckets route to the operator-selected upstream backend. **First-class operator-selectable target types: S3, SFTP, CIFS, NFS** (see §13a-ii). **One global `BACKUP_TARGET_KEY`** (Tier-1 in secrets bundle) underpins all encryption: rclone `crypt` + restic `RESTIC_PASSWORD` + shim's local S3 creds via HKDF. `internalTrafficPolicy: Local` keeps the data path on-node. Eval-validated: 173 MiB/s @ 16× SFTP concurrency, 671 MiB peak RSS under CIFS stress.
 
 ---
 
@@ -14,7 +16,7 @@
 1. **One operator mental model**: 3 backup classes (SYSTEM, TENANT, MAIL); each class is one card with a single target picker; per-subsystem coverage status visible inline.
 2. **Two backup layers with distinct vocabulary**: **Fast rollback** (Longhorn snapshots, automatic, opt-in subsystems, retain=6, 1h cadence) and **Disaster recovery** (remote backups, operator-configured, optional).
 3. **Remote backup purely optional**: a cluster with no target rows still runs fast-rollback for opted-in subsystems. Strict-gating fires only for remote-upload schedules.
-4. ~~**Graceful per-subsystem degradation**: when an operator picks a target that some subsystems can't use (e.g. SFTP for SYSTEM which contains postgres), the unsupported subsystems show as disabled-with-reason. No partial enablement is hidden.~~ **OBSOLETE per revision 2026-05-19** — pgBackRest + etcd-CronJob make SYSTEM universal across S3/SFTP/CIFS/NFS, no degradation states needed. The class-target compatibility validator still exists but its job collapses to "is this target reachable?" rather than per-subsystem capability matching.
+4. ~~**Graceful per-subsystem degradation**: when an operator picks a target that some subsystems can't use…~~ **OBSOLETE per revision 2026-05-20** — the universal shim makes every subsystem work on every target type (S3, SFTP, CIFS, NFS). No degradation states. The class-target validator collapses to "is this target reachable?" (a lightweight probe).
 5. **Tenant PVCs are on-demand-only** — no automatic snapshot or DR layer for tenant PVCs; the tenant bundle is the canonical tenant DR artefact.
 6. **Dedup/compression by default** wherever the mechanism supports it (restic dedup, barman zstd, rclone tar compression).
 
@@ -42,28 +44,35 @@ Backfill from existing rows:
 
 Compatibility matrix used by the class-target validator:
 
-| Subsystem | Mechanism | Required target capability |
-|---|---|---|
-| `SYSTEM.postgres` | **`cnpg-plugin-pgbackrest`** (CNPG plugin) | **S3 / SFTP / posix (CIFS/NFS via in-pod kernel mount)** |
-| `SYSTEM.etcd` | **`backup-rclone-etcd` CronJob** (k3s `etcd-snapshot save` + rclone) | **any rclone backend** |
-| `SYSTEM.secrets-bundle` | rclone push (age-encrypted file) | any |
-| `SYSTEM.bulwark` | restic | any |
-| `SYSTEM.crowdsec` | restic | any |
-| `SYSTEM.monitoring` | restic (optional) | any |
-| `TENANT.tenant-bundle` | rclone composite | any |
-| `MAIL.stalwart-rocksdb` | restic (path A) | any |
-| `MAIL.stalwart-rocksdb` | Longhorn native backup (path B) | S3 + NFS |
+**Revised 2026-05-20 (Path D-final)**: every caller talks to the local-node `backup-rclone-shim` DaemonSet via the S3 protocol; the shim's per-class buckets route to the operator-selected upstream backend. **Operator-selectable target types: S3, SFTP, CIFS, NFS** (see §13a-ii) — all first-class, all uniformly supported by every backup caller.
 
-Every SYSTEM subsystem now accepts every target type. No degradation badges. UI per class card:
+| Subsystem | Mechanism | Shim bucket | Target capability |
+|---|---|---|---|
+| `SYSTEM.postgres` | `plugin-barman-cloud` (CNPG plugin v0.12.0) | `s3://system` (rclone crypt) | **any backend via shim** |
+| `SYSTEM.etcd` | `etcd-snap-via-shim` CronJob (`k3s etcd-snapshot save` + rclone S3 client) | `s3://system` (rclone crypt) | **any backend via shim** |
+| `SYSTEM.secrets-bundle` | rclone push (age-encrypted file) | `s3://system-raw` (passthrough — already age-encrypted) | any |
+| `SYSTEM.bulwark` | restic (`RESTIC_PASSWORD = BACKUP_TARGET_KEY`) | `s3://system-raw` (passthrough — restic encrypts itself) | any |
+| `SYSTEM.crowdsec` | restic | `s3://system-raw` | any |
+| `SYSTEM.monitoring` | restic (optional) | `s3://system-raw` | any |
+| `TENANT.tenant-bundle` | rclone composite | `s3://tenant` (rclone crypt) | any |
+| `MAIL.stalwart-rocksdb` | restic (path A) | `s3://mail-raw` | any |
+| `MAIL.stalwart-rocksdb` | Longhorn native backup (path B, deferred R11) | n/a (Longhorn writes direct) | S3 + NFS |
+
+**Encryption rules**:
+- Callers without their own encryption use `<class>` bucket (rclone crypt wraps upstream).
+- Callers with their own native encryption (restic, age-encrypted secrets-bundle) use `<class>-raw` bucket (passthrough — avoids double-encryption).
+- One platform-wide `BACKUP_TARGET_KEY` (see §13b) drives ALL encryption — single secret to back up offline.
+
+Every SYSTEM subsystem accepts every target type. No degradation badges. UI per class card:
 
 ```
 SYSTEM   target: hetzner-sftp         [Change target…]
-├─ ✓ postgres      pgBackRest plugin → SFTP (full + WAL archiving, PITR on)  [Backup | Restore PITR]
-├─ ✓ etcd          k3s snapshot + rclone → SFTP (hourly)                     [Backup | Restore]
-├─ ✓ secrets       rclone push on rotation                                   [Restore]
-├─ ✓ bulwark       restic backup nightly                                     [Trigger | Restore]
-├─ ✓ crowdsec      restic backup weekly                                      [Trigger | Restore]
-└─ ✓ monitoring    restic backup weekly (disabled by default)                [Configure]
+├─ ✓ postgres      plugin-barman-cloud → shim → SFTP (WAL, PITR)              [Backup | Restore PITR]
+├─ ✓ etcd          k3s snapshot → shim → SFTP (hourly)                        [Backup | Restore]
+├─ ✓ secrets       rclone push (age-encrypted) → shim raw → SFTP              [Restore]
+├─ ✓ bulwark       restic → shim raw → SFTP (nightly)                         [Trigger | Restore]
+├─ ✓ crowdsec      restic → shim raw → SFTP (weekly)                          [Trigger | Restore]
+└─ ✓ monitoring    restic → shim raw → SFTP (weekly, disabled by default)     [Configure]
 ```
 
 ---
@@ -210,84 +219,162 @@ Expected outcome: cleaner mechanism story, same DR coverage as today, fast-rollb
 
 ## §12 CNPG postgres backup (SYSTEM.postgres subsystem)
 
-**Revised 2026-05-19** — barman-cloud retired; uses the official [`cnpg-plugin-pgbackrest`](https://github.com/cloudnative-pg/plugin-pgbackrest) plugin.
-
-The plugin is installed cluster-wide once (Flux manifest). The CNPG `Cluster` CR declares pgBackRest as the backup engine via the plugin CR; barman-cloud lines are removed from `spec.backup`:
+**Revised 2026-05-20 (Path D-final)** — uses the official [`cloudnative-pg/plugin-barman-cloud`](https://github.com/cloudnative-pg/plugin-barman-cloud) v0.12.0; barman-cloud talks S3 to the local-node `backup-rclone-shim` DaemonSet, which translates to whatever upstream the operator's SYSTEM target points at.
 
 ```yaml
 # CNPG Cluster CR
 spec:
   plugins:
-    - name: barman-cloud.cloudnative-pg.io   # leave for migration; remove after first new full
-      isWALArchiver: false
-    - name: pgbackrest.cloudnative-pg.io
+    - name: barman-cloud.cloudnative-pg.io
       isWALArchiver: true
       parameters:
-        configurationRef: system-postgres-backup   # PluginConfiguration CR (per-target)
+        objectStoreName: system-postgres-objectstore   # ObjectStore CR
   backup:
     retentionPolicy: "30d"
     volumeSnapshot:
       className: longhorn
       online: true
 ---
-# PluginConfiguration CR materialised by platform-api from the SYSTEM target
-apiVersion: pgbackrest.cloudnative-pg.io/v1
-kind: PluginConfiguration
+# ObjectStore CR materialised by platform-api from BACKUP_TARGET_KEY + shim service
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
 metadata:
-  name: system-postgres-backup
+  name: system-postgres-objectstore
   namespace: cnpg-system
 spec:
-  repo:
-    type: s3        # or "sftp" or "posix" depending on target
-    s3:             # populated only when target.storage_type == s3
-      endpoint: "<from SYSTEM target>"
-      bucket: "<from SYSTEM target>"
-      region: "<from SYSTEM target>"
-    sftp:           # populated only when target.storage_type == sftp
-      host: "<from SYSTEM target>"
-      user: "<from SYSTEM target>"
-      keySecret: { name: system-backup-target, key: ssh_key }
-    posix:          # populated when target.storage_type == cifs|nfs (initContainer mounts the share)
-      path: "/mnt/backup-target"
-  compression: zst
-  retention: { full: 4, diff: 7, archive: 7d }
+  configuration:
+    destinationPath: "s3://system/postgres"
+    endpointURL: "https://backup-rclone-shim.platform.svc:443"
+    s3Credentials:
+      accessKeyId: { name: backup-rclone-shim-creds, key: access_key }
+      secretAccessKey: { name: backup-rclone-shim-creds, key: secret_key }
+    wal: { compression: zstd, maxParallel: 8 }
+    data: { compression: zstd }
+  retentionPolicy: "30d"
 ```
 
-For CIFS / NFS targets, the CNPG instance pods get an `initContainer` that mounts the share to `/mnt/backup-target` (kernel `mount.cifs` / `mount.nfs4`, no privileged caps required on modern kernels).
+The shim's `s3://system` bucket is an `rclone crypt` wrapper around the operator-selected upstream (S3 / SFTP / CIFS / NFS). The shim's local S3 access/secret are HKDF-derived from `BACKUP_TARGET_KEY` and live in the `backup-rclone-shim-creds` Secret (read by both CNPG and the shim itself).
 
-A reconciler in `platform-api` maintains the `system-backup-target` Secret + the `PluginConfiguration` CR + the CNPG `Cluster` patch whenever the SYSTEM target changes. **No target-type gating** — works the same for S3, SFTP, CIFS, NFS.
+A reconciler in `platform-api` (`backend/src/modules/backup-rclone-shim/postgres-objectstore.ts`) maintains the `ObjectStore` CR + ensures the CNPG `Cluster` references it whenever SYSTEM's target changes. **No target-type gating** — the shim handles upstream variability; CNPG always speaks S3 to localhost.
 
-**Both layers kept**: pgBackRest (off-cluster DR + WAL archiving + PITR) and `volumeSnapshot` (in-cluster fast clone).
+**Both layers kept**: barman-cloud (off-cluster DR + WAL archiving + PITR) + `volumeSnapshot` (in-cluster fast clone).
 
-**Restore**: single wizard at `/backups/system → Restore Postgres`. Operator picks target time T; orchestrator selects fastest path (volumeSnapshot if recent enough, else pgBackRest base + WAL replay via the plugin's restore flow); spawns new Cluster with `bootstrap.recovery` pointing at the plugin's repo. Mechanism hidden from operator.
+**Restore**: single wizard at `/backups/system → Restore Postgres`. Operator picks target time T; orchestrator selects fastest path (volumeSnapshot if recent enough, else barman-cloud base + WAL replay); spawns new Cluster with `bootstrap.recovery` referencing the same `ObjectStore`. Mechanism hidden from operator.
 
-**Migration** (existing clusters running barman-cloud): plugin and barman-cloud co-exist for one full pgBackRest cycle, then barman-cloud is removed and its bucket aged out. Operator runbook covers the migration step-by-step.
+**Cold cluster restore** (no shim running yet): `bootstrap.sh` detects "restoring from backup" mode, deploys shim DaemonSet *before* CNPG attempts recovery, restores `BACKUP_TARGET_KEY` from the secrets bundle. Documented in `BACKUP_RESTORE.md`.
 
 ---
 
 ## §13 k3s etcd (SYSTEM.etcd subsystem)
 
-**Revised 2026-05-19** — `--etcd-s3` retired in favor of a small CronJob that runs `k3s etcd-snapshot save` (always available, target-agnostic) and uploads the file via rclone (any backend).
+**Revised 2026-05-20 (Path D-final)** — `--etcd-s3` retired; the new CronJob's rclone client talks S3 to the local-node shim (zero cross-node hop via `internalTrafficPolicy: Local`).
 
 `bootstrap.sh` defaults:
-- `--etcd-snapshot-schedule-cron "0 * * * *"` (hourly; local snapshots only)
-- `--etcd-snapshot-retention 24` (local thin layer)
-- Local snapshots in `/var/lib/rancher/k3s/server/db/snapshots/` retained always (independent of any operator config)
-- `--etcd-s3` flags are **NOT** rendered (the `backup-rclone-etcd` CronJob handles remote upload)
+- `--etcd-snapshot-schedule-cron "0 * * * *"` (hourly; local thin snapshots)
+- `--etcd-snapshot-retention 24` (local thin layer, always-on)
+- Local snapshots in `/var/lib/rancher/k3s/server/db/snapshots/` retained regardless of any operator config
+- `--etcd-s3` flags **NOT** rendered (the `etcd-snap-via-shim` CronJob handles remote upload)
 
-Remote backup is handled by a Kubernetes `CronJob` (`platform/backup-rclone-etcd`):
-- `nodeSelector: node-role.kubernetes.io/control-plane`, `tolerations` to land on a control-plane node
-- Schedule `0 * * * *` (configurable from `/settings/remote-storage-targets?tab=classes`)
-- Image: `backup-rclone-etcd:<digest>` (alpine + rclone + k3s-binary; ~30 MiB)
-- Steps: discover newest local snapshot under `/var/lib/rancher/k3s/server/db/snapshots/` (mounted via hostPath, read-only) → `rclone copy <snapshot> <target>:/etcd/` → write a per-snapshot `.meta` sidecar (timestamp + sha256) → enforce retention via `rclone delete` on entries older than the policy
-- Reads upstream creds from the SYSTEM target's Secret (envFrom)
+Remote backup is handled by a Kubernetes `CronJob` (`platform/etcd-snap-via-shim`):
+- `nodeSelector: node-role.kubernetes.io/control-plane`, control-plane tolerations
+- Schedule `0 * * * *` (configurable per target)
+- Image: `ghcr.io/phoenixtechnam/backup-rclone:<digest>` (same image as the shim; ~25 MiB)
+- Steps: pick newest snapshot under `/var/lib/rancher/k3s/server/db/snapshots/` (hostPath ro) → `rclone --s3-endpoint=https://backup-rclone-shim.platform.svc:443 copy <snapshot> s3://system/etcd-<ts>.db.zst` → write `.meta` sidecar (timestamp, sha256, source node) → enforce retention via `rclone delete`
+- `envFrom: backup-rclone-shim-creds` Secret
 - `restartPolicy: OnFailure`, `backoffLimit: 2`, `ttlSecondsAfterFinished: 3600`
 
-A reconciler in `platform-api` materialises the CronJob whenever the SYSTEM target changes. **No target-type gating** — works the same for S3, SFTP, CIFS, NFS, B2, GCS, etc.
+A reconciler in `platform-api` materialises the CronJob whenever the SYSTEM target changes (re-renders the schedule + suspends when SYSTEM has no target). **No target-type gating.**
 
 New `make etcd-snapshot-list` CLI for operators.
 
-**Restore**: download the snapshot via rclone (using the same creds), run `k3s etcd-snapshot restore <file>` on a fresh control-plane node. Runbook in `BACKUP_RESTORE.md`.
+**Restore**: `scripts/restore-etcd.sh` brings up shim → pulls snapshot via `s3://system` → runs `k3s etcd-snapshot restore` on a fresh control-plane node. Runbook in `BACKUP_RESTORE.md`.
+
+---
+
+## §13a Universal `backup-rclone-shim` (the mediator)
+
+**New 2026-05-20** — the single component that makes every other backup target-agnostic.
+
+**Topology**: a `DaemonSet` in `platform` namespace (one pod per node), fronted by a `Service` with `internalTrafficPolicy: Local` so every client's S3 request routes to its own node's shim pod (zero cross-node data hops).
+
+**Configuration**: a single ConfigMap (`backup-rclone-shim-config`) renders one rclone config section per assigned class (× two: encrypted bucket + raw bucket alias). Re-rendered by platform-api when:
+- Operator adds/removes a `backup_target` row
+- Operator changes a class → target assignment
+- `BACKUP_TARGET_KEY` is rotated
+- Posix-backed target's mount config changes (Pod-spec changes too — triggers DaemonSet roll)
+
+Bucket layout (when all three classes have targets assigned):
+
+| Bucket | Backing |
+|---|---|
+| `s3://system` | rclone `crypt` (key = BACKUP_TARGET_KEY) → SYSTEM upstream |
+| `s3://system-raw` | passthrough → SYSTEM upstream |
+| `s3://tenant` | rclone `crypt` → TENANT upstream |
+| `s3://tenant-raw` | passthrough → TENANT upstream |
+| `s3://mail` | rclone `crypt` → MAIL upstream |
+| `s3://mail-raw` | passthrough → MAIL upstream |
+
+An unassigned class has NO buckets — clients fail with S3 `NoSuchBucket` (the documented "no target configured" signal).
+
+**Performance tuning**: `--vfs-cache-mode off`, `--no-checksum`, `--s3-chunk-size 16M`, `--s3-upload-concurrency 4`, crypt cipher XChaCha20-Poly1305 (hardware-fast on x86 + arm64).
+
+**Resource sizing** (validated by R-X14): request 64 MiB / 200m CPU; limit 1 GiB / 1 CPU. HWM observed in eval: 671 MiB (CIFS 16× concurrency).
+
+**Health + observability**: Liveness `pgrep rclone`; Readiness TCP :443; Metrics via rclone `--rc` on :5572 (scraped by ServiceMonitor); alert on `backup_rclone_shim_up == 0` for >60s on any node.
+
+**Drain on target change**: platform-api polls task-center for in-flight backups; waits up to 5 min (configurable per target); on timeout emits admin event banner + force-restarts.
+
+**Security**: ClusterIP-only (never exposed); TLS terminated in-pod via cert-manager; NetworkPolicy allows ingress from `platform`, `cnpg-system`, `kube-system` (etcd CronJob), `mail`, tenant namespaces; deny all else. Shim runs non-root, drops ALL caps, read-only root FS, writes to `emptyDir(memory)` only.
+
+**Failure mode**: local-node shim pod down → that node's callers retry on next schedule. Per-node failure scope only.
+
+---
+
+## §13a-ii Supported target types
+
+The shim sits in front of any rclone-supported backend. R-X4 (config renderer) ships with first-class operator-selectable support for:
+
+| Target type | Mechanism | UI form fields | Notes |
+|---|---|---|---|
+| **S3 / S3-compatible** | rclone `s3` backend | endpoint URL, region, bucket, access key, secret key | AWS S3, Hetzner Object Storage, Backblaze B2, MinIO, Wasabi |
+| **SFTP** | rclone `sftp` backend | host, port, user, auth method (password / ssh-key), key/password Secret | Hetzner Storage Box, self-hosted; eval baseline tested |
+| **CIFS / SMB** | k8s `smb.csi.k8s.io` CSI driver mounts the share; rclone `local` backend | host, share, user, password, version (default `vers=3.1.1`) | Hetzner Storage Box CIFS, Windows shares |
+| **NFS** | k8s `volumes[].nfs` mounts the share (built-in NFSv3) or `csi.nfs.k8s.io` (NFSv4); rclone `local` backend | server, export path, version (default `nfsvers=4.2`), options whitelist | Standard NFSv4; no Kerberos in v1 |
+| Future | rclone native (`webdav`, `gcs`, `azureblob`, `b2`, etc.) | per-backend fields | Renderer architecture is open-ended; adding a new backend type ≈ 20-30 LOC + a UI form |
+
+**CIFS + NFS specifics**: both kernel-mount the share via the Pod's `volumes[]` field. The shim DaemonSet manifest carries one mount per assigned posix-backed class (re-rendered when assignments change). The rclone config for these targets uses `type = local, path = /mnt/backup-<class>-<storage>, copy_links = false, no_check_updated = true`.
+
+**Why kernel-mount for posix backends**: rclone has no native NFS *client* backend (its `nfs` is a server-side feature). For SMB, rclone has a native client, but kernel-mount unifies the operational pattern (one POSIX path per backend, one `type = local` recipe) and offloads protocol negotiation to the battle-tested host kernel. Operator-visible difference: zero. The platform-api abstracts the wiring entirely.
+
+---
+
+## §13b `BACKUP_TARGET_KEY` — the single root of backup encryption
+
+**New 2026-05-20** — one 32-byte key underpins every encryption operation on the backup path.
+
+**Lifecycle**:
+1. **First boot**: `bootstrap.sh` generates 32 cryptographically-random bytes (via `openssl rand`); base64-encoded; written to Secret `platform/backup-target-key` (`key` field).
+2. **Inclusion in Tier-1 secrets bundle**: extends existing `bundle-everything` mechanism (no separate bundle).
+3. **Operator off-cluster custody**: `make secrets-fetch` exports bundle; operator must store offline.
+4. **Rotation**: `make backup-target-key-rotate` — 3-step confirmation gate (current key fingerprint + "I have offline backups" checkbox + final confirm). Deletes upstream `s3://*` prefixes per assigned target. Re-renders shim ConfigMap, drains, restarts. **Existing backups become unrecoverable.**
+
+**Consumers** (all derived from the same Secret):
+- rclone `crypt` backends — password from `rclone obscure` of base64-encoded key
+- restic — `RESTIC_PASSWORD = base64(key)`
+- Shim's local S3 access/secret — HKDF-SHA256-derived from key (deterministic)
+
+**HKDF derivation** (in platform-api's config renderer):
+```
+shim_access_key  = HKDF-SHA256(key, info="shim-s3-access", length=20)
+shim_secret_key  = HKDF-SHA256(key, info="shim-s3-secret", length=40)
+crypt_password   = rclone-obscure(base64(key))
+crypt_salt       = HKDF-SHA256(key, info="rclone-crypt-salt", length=32)
+restic_password  = base64(key)
+```
+
+Deterministic derivation means the cluster can recreate all derived keys from `BACKUP_TARGET_KEY` alone — the only artefact the operator must guard.
+
+**Rationale for single key vs per-target**: ONE secret to back up offline; ONE rotation workflow; simpler DR ("restore the bundle, all backups become readable"). Trade-off: leaked key compromises all backups across all targets. Mitigated by Tier-1 bundle storage discipline + the platform's existing age-encryption of the bundle itself + offline operator custody.
 
 ---
 
@@ -302,14 +389,14 @@ Two phrases, two layers, one meaning each:
 
 | Subsystem | Fast rollback | Disaster recovery | Last DR | Actions |
 |---|---|---|---|---|
-| Postgres (system-db) | 6/6 snaps, 84 MiB | **pgBackRest + CSI snap** → `<target>` | 2 min ago | Trigger / Restore PITR |
-| Stalwart RocksDB | 6/6 snaps, 1.4 GiB (path B) / n/a (path A) | restic → `<target>` | 10 min ago | Trigger / Restore |
-| Bulwark | (off — toggle on) | restic → `<target>` | yesterday | Trigger / Restore |
-| Crowdsec | (off — toggle on) | restic → `<target>` | last week | Restore |
+| Postgres (system-db) | 6/6 snaps, 84 MiB | **`plugin-barman-cloud` → shim → `<target>`** | 2 min ago | Trigger / Restore PITR |
+| Stalwart RocksDB | 6/6 snaps, 1.4 GiB (path B) / n/a (path A) | restic → shim raw → `<target>` | 10 min ago | Trigger / Restore |
+| Bulwark | (off — toggle on) | restic → shim raw → `<target>` | yesterday | Trigger / Restore |
+| Crowdsec | (off — toggle on) | restic → shim raw → `<target>` | last week | Restore |
 | Monitoring | (off — toggle on) | (off — toggle on) | — | Configure |
-| etcd | k3s local (auto) | **`backup-rclone-etcd` CronJob** → `<target>` | 1 hour ago | Restore |
-| Secrets bundle | local file (canonical) | rclone push → `<target>` | on rotation | Restore |
-| Tenant bundles | n/a | rclone composite → `<target>` | nightly | Per tenant |
+| etcd | k3s local (auto) | **`etcd-snap-via-shim` CronJob → shim → `<target>`** | 1 hour ago | Restore |
+| Secrets bundle | local file (canonical) | rclone push → shim raw → `<target>` | on rotation | Restore |
+| Tenant bundles | n/a | rclone composite → shim → `<target>` | nightly | Per tenant |
 
 Same flat shape on `/backups/tenants/:id` (per-tenant subsystems: tenant-bundle + on-demand PVC snapshots).
 
@@ -317,36 +404,40 @@ Same flat shape on `/backups/tenants/:id` (per-tenant subsystems: tenant-bundle 
 
 ---
 
-## §15 Implementation phases (revised — Path A++, late round-5 revision 2026-05-19)
+## §15 Implementation phases (Path D-final, revision 2026-05-20)
 
 | # | Phase | Scope | Hours | Risk |
 |---|---|---|---|---|
-| R1 | Schema migration 0012: 4→3 class enum + single-target table + backfill | 4 | L |
-| R2 | bootstrap.sh adds 1× `RecurringJob local-thin-1h` (retain=6) default; label opt-in volumes (system-db + Stalwart-conditional) | 3 | L |
-| R3 | Adaptive housekeeper CronJob (10% cap with 500 MiB floor + disk-pressure handling + audit log) | 4 | L |
+| R1 | Schema migration 0012: 4→3 class enum + single-target-per-class table + backfill | 4 | L |
+| R2 | bootstrap.sh adds 1× `RecurringJob local-thin-1h` (retain=6) default; label opt-in volumes | 3 | L |
+| R3 | Adaptive housekeeper CronJob (10% / 500 MiB floor + disk-pressure handling + audit log) | 4 | L |
 | R4 | New storage classes `longhorn-ha` + `longhorn-local`; deprecate old four | 6 | M |
-| ~~R5~~ | ~~Soften strict-gate: per-subsystem graceful degradation; UI status badges; class-target compatibility validator~~ **OBSOLETE** — no degradation states post-pgBackRest. Collapses to a trivial "is target reachable?" validator (~1h, folded into R-S2). | ~~4~~ 0 | n/a |
-| R6 | Drop tenant PVC automatic backup; on-demand snapshot endpoint + UI affordance (admin + tenant panel); TTL housekeeper; per-tenant quota | 6 | M |
-| **R-S1** | **NEW** — Install `cnpg-plugin-pgbackrest` (Flux manifest, pinned by digest); verify against pinned CNPG version; smoke-test default S3 path | 2 | L |
-| **R-S2** | **NEW** — platform-api wiring: SYSTEM target picker → materialise `PluginConfiguration` CR + target Secret + CNPG `Cluster` plugin block patch; handles S3/SFTP/CIFS/NFS paths; CIFS/NFS injects initContainer kernel mount | 5 | M |
-| ~~R7~~ | ~~CNPG `spec.backup` reconciler (gated on SYSTEM target = S3) + Postgres restore wizard~~ **SUPERSEDED by R-S1 + R-S2**; restore wizard work moves to R-S3 | ~~9~~ 0 | n/a |
-| R8 | Secrets bundle multi-target upload + UI card; modify `make secrets-fetch` | 4 | L |
-| **R-S3** | **NEW** — `backup-rclone-etcd` CronJob: build image (alpine + rclone + k3s-binary, ~30 MiB, pinned digest); CronJob manifest with `nodeSelector: control-plane`, hourly upload + retention; platform-api reconciler materialises CronJob from SYSTEM target | 3 | L |
-| ~~R9~~ | ~~k3s `--etcd-s3` defaults in bootstrap.sh (gated on SYSTEM target = S3) + UI surfacing~~ **SUPERSEDED by R-S3** | ~~3~~ 0 | n/a |
-| **R-S4** | **NEW** — Restore procedures: `BACKUP_RESTORE.md` operator runbook + `scripts/restore-postgres.sh` (drives pgBackRest plugin restore CR) + `scripts/restore-etcd.sh` (rclone download + `k3s etcd-snapshot restore`); unified restore wizard at `/backups/system` | 5 | M |
-| R10 | Drop tar+gzip+rclone tenant_snapshot path entirely (now unused — tenant DR is bundles only) | 4 | L |
-| R11 | **DEFERRED** — Stalwart-on-Longhorn migration. Not in initial scope; will be a follow-up RFC once v1 is soaking. See "Mail storage visibility on local-path" below. | n/a | n/a |
-| R12 | Flat per-subsystem UI on `/backups/system` and `/backups/tenants/:id`; rename `/settings/backup-infrastructure` → `/settings/remote-storage-targets` | 6 | L |
-| R13 | Drop dead code (legacy WalArchiveTab, multi-target paths, tenant_snapshot scheduler, barman-cloud reconciler after migration window) | 3 | L |
-| R14 | **Mail storage visibility on local-path**: surface Stalwart RocksDB usage (bytes used / available, growth rate, last-restic-run size) on `/backups/system` MAIL subsystem card. Required because R11 is deferred and operator must monitor disk pressure on the local-path PVC. | 3 | L |
-| **R-S5** | **NEW** — Migration runbook for existing clusters running barman-cloud: keep both engines for one full pgBackRest cycle, then strip barman-cloud + age out its bucket. Smoke against staging before merging. | 3 | M |
-| **R-S6** | **NEW** — E2E DR drill: backup → simulated cluster loss → restore from each of (S3, SFTP, CIFS, NFS) targets; PITR test (restore to specific timestamp); etcd restore on fresh control-plane node | 4 | M |
+| ~~R5~~ | ~~Degradation badges~~ **OBSOLETE** — shim eliminates degradation states | ~~4~~ 0 | n/a |
+| R6 | Drop tenant PVC automatic backup; on-demand snapshot endpoint + UI; global quotas | 6 | M |
+| **R-X0** | **Correct prior misleading docs commit** — this commit | 2 | L |
+| **R-X1** | **`backup-rclone` image** — alpine + rclone + tini, multi-arch, signed, `ghcr.io/phoenixtechnam/backup-rclone:<sha>` pinned by digest | 3 | L |
+| **R-X2** | **`BACKUP_TARGET_KEY` lifecycle** — bootstrap generates; Tier-1 in secrets bundle; `make backup-target-key-rotate` with 3-step confirm | 4 | M |
+| **R-X3** | **Shim DaemonSet manifests** — DaemonSet + Service (`internalTrafficPolicy: Local`) + cert + NetworkPolicy + PDB; SMB CSI driver install for CIFS support | 5 | L |
+| **R-X4** | **Multi-bucket config renderer + target schema** — supports S3 / SFTP / CIFS / NFS; emits rclone.conf per-class crypt + raw buckets; CIFS/NFS via Pod-volume mounts + `type=local` | 7 | M |
+| **R-X5** | **Drain orchestration** — task-center polling; 5-min default; force-restart on timeout | 3 | M |
+| **R-X6** | **Postgres `plugin-barman-cloud` wiring** — install plugin v0.12.0; `ObjectStore` CR points at shim ClusterIP; ScheduledBackup CR | 4 | M |
+| **R-X7** | **`etcd-snap-via-shim` CronJob** — `k3s etcd-snapshot save` + zstd + rclone-to-shim | 3 | L |
+| **R-X8** | **Restic callers via shim raw bucket** — bulwark/crowdsec/monitoring/mail-restic; CI guard rejects non-raw | 3 | M |
+| **R-X9** | **rclone-push callers via shim** — secrets-bundle (raw), tenant-bundle (encrypted), snapshot-storage streaming-store (encrypted) | 4 | M |
+| **R-X10** | **UI updates** — 3-class card preserved; target picker per type (S3/SFTP/CIFS/NFS); drain progress; encryption-key page | 5 | M |
+| R8 | Secrets bundle multi-target upload + UI; modify `make secrets-fetch` for any shim raw bucket | 4 | L |
+| **R-X11** | **Restore tooling** — `restore-postgres.sh`, `restore-etcd.sh`, `restore-tenant-bundle.sh`, `restore-secrets-bundle.sh`, `restore-mail.sh`; cold-cluster sequence in `BACKUP_RESTORE.md` | 6 | M |
+| R10 | Drop tar+gzip+rclone tenant_snapshot path entirely | 4 | L |
+| R11 | **DEFERRED** — Stalwart-on-Longhorn migration | n/a | n/a |
+| R12 | Flat per-subsystem UI on `/backups/system` + `/backups/tenants/:id`; rename `/settings/backup-infrastructure` → `/settings/remote-storage-targets` | 6 | L |
+| **R-X12** | **E2E DR drill** — 3 classes × 3 different upstreams (S3 + SFTP + NFS or CIFS); PITR; key-loss; drain; mid-backup restart | 6 | M |
+| **R-X13** | **Archive legacy paths** (NOT delete) — move to `legacy/` subdirectories with deprecation README; CI guard | 3 | L |
+| R14 | Mail storage visibility on local-path | 3 | L |
+| **R-X14** | **Perf benchmark vs eval baseline** — re-run `rclone-shim-eval/` against production-config shim; verify ≥80% baseline | 3 | L |
 
-**Total: ~58 hours / ~7-8 working days.** Critical path: R1 → R2 → R3 → R-S1 → R-S2 → R-S3 → R-S4 → R12 (~32 h, the user-visible simplification + working S3-free backups — can ship as v1 baseline before the deeper polish work).
+**Total: ~75 hours / ~9-10 working days** (R1-R14 baseline + R-X0..R-X14). **R-X-only critical path: ~36 h** (R-X0 → R-X1 → R-X2 → R-X3 → R-X4 → R-X6 → R-X7 → R-X11 → R-X12) delivers functional postgres + etcd + tenant + mail backups on any target type with a DR drill.
 
-**Net effort change vs prior locked plan**: was 56 h with R5+R7+R9 totaling 16 h of degradation-badge / barman-cloud reconciler / etcd-s3 plumbing; now those are 0 h, replaced by R-S1..R-S6 totaling 22 h of pgBackRest + etcd-CronJob + restore + migration + DR-drill work. Net **+6 h** for a meaningfully simpler operator model (universal target compatibility, PITR preserved, S3 dependency eliminated).
-
-**R11 deferred** to a follow-up RFC. Until that RFC ships, Stalwart stays on `local-path` and uses restic for DR. Mail data has no fast-rollback layer (no CSI snapshot capability on local-path). Operator visibility via R14 covers monitoring disk pressure.
+**R11 deferred** to a follow-up RFC. Stalwart stays on `local-path` + restic. Operator visibility via R14 covers monitoring disk pressure.
 
 ---
 
@@ -364,11 +455,13 @@ All previously open questions resolved during the round-2/3/4 discussion:
 | Tenant snapshot UI exposure | admin panel + tenant panel both — create / list / delete / restore |
 | Monitoring PVC backup default | include in SYSTEM with default-off opt-in toggle |
 | R11 (Stalwart-on-Longhorn) | deferred to follow-up RFC; R14 covers visibility on local-path until then |
-| CNPG methods (revision 2026-05-19) | **`cnpg-plugin-pgbackrest`** (PITR + universal target support) + `volumeSnapshot` (in-cluster fast clone) |
-| etcd backup mechanism (revision 2026-05-19) | **`backup-rclone-etcd` CronJob** — `k3s etcd-snapshot save` + rclone upload, any rclone backend |
-| Multi-target | dropped; single target per class |
-| rclone-serve-s3 shim | **WITHDRAWN** per ADR-043 — pgBackRest + etcd CronJob make it unnecessary |
-| Degradation badges for SYSTEM | **OBSOLETE** — SYSTEM is now universal across target types |
+| CNPG methods (revision 2026-05-20) | **`plugin-barman-cloud` v0.12.0** speaking S3 to local-node shim (shim translates to any backend); `volumeSnapshot` retained for in-cluster fast clone; PITR preserved via barman WAL archiving |
+| etcd backup mechanism (revision 2026-05-20) | **`etcd-snap-via-shim` CronJob** — `k3s etcd-snapshot save` + zstd + `rclone copy --s3-endpoint=<shim>` |
+| Multi-target | dropped; single target per class; classes can share or differ |
+| rclone-serve-s3 shim | **ACCEPTED-EXTENDED** as universal mediator per ADR-043; DaemonSet, `internalTrafficPolicy: Local` |
+| Degradation badges for SYSTEM | **OBSOLETE** — every subsystem works on every target via the shim |
+| Supported target types | **S3, SFTP, CIFS, NFS** all first-class (operator-selectable); future-extensible to any rclone backend |
+| Backup encryption key | **single platform-wide `BACKUP_TARGET_KEY`** in Tier-1 secrets bundle; drives rclone crypt + restic + shim S3 creds (HKDF-derived) |
 | Stalwart logical export | deferred per ADR-042 |
 | UI vocabulary | "Fast rollback" + "Disaster recovery" canonical |
 
@@ -377,4 +470,10 @@ All previously open questions resolved during the round-2/3/4 discussion:
 ## §17 Related ADRs
 
 - **ADR-042**: Stalwart logical DB export via `stalwart -e` — deferred follow-up if path B ships (R11) and a corruption-survivable backup ever becomes a requirement
-- **ADR-043**: `rclone serve s3` shim for non-S3 SYSTEM-class backends — **WITHDRAWN 2026-05-19**, superseded by §12 (`cnpg-plugin-pgbackrest`) + §13 (`backup-rclone-etcd` CronJob). The empirical eval ([`RCLONE_SHIM_EVALUATION`](./RCLONE_SHIM_EVALUATION.md)) showed the shim *could* work; pgBackRest was chosen anyway because it eliminates the always-on shim component while keeping PITR + incremental backups.
+- **ADR-043**: `rclone serve s3` shim — **ACCEPTED-EXTENDED 2026-05-20** as universal backup mediator. Original scope (postgres + etcd escape) extended to ALL backup callers. Eval data ([`RCLONE_SHIM_EVALUATION`](./RCLONE_SHIM_EVALUATION.md)) confirms stability + performance + memory profile; R-X14 validates production-config performance.
+
+---
+
+## §18 Why this isn't the round-5 pgBackRest plan
+
+For anyone reading old commit messages: the 2026-05-19 commit (`6d85c512` on main) referenced "`cnpg-plugin-pgbackrest`" as the postgres mechanism. **That plugin does not exist** (`gh search repos cloudnative-pg pgbackrest` returns only `cloudnative-pg/plugin-barman-cloud`, which is S3/GCS/Azure-only per its `BarmanObjectStoreConfiguration` source). The R-X0 commit corrects that mistake by adopting the rclone shim as the universal mediator — the path the empirical eval already validated. No code was written between the two commits — only docs — so the impact is limited to the doc correction.

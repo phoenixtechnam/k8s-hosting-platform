@@ -1,19 +1,40 @@
-# ADR-043: `rclone serve s3` shim for SYSTEM-class non-S3 backends
+# ADR-043: `rclone serve s3` shim — universal backup mediator
 
-**Status**: **WITHDRAWN 2026-05-19** — superseded by [BACKUP_ARCHITECTURE_RFC §12](../04-deployment/BACKUP_ARCHITECTURE_RFC.md) (`cnpg-plugin-pgbackrest` for postgres) + [§13](../04-deployment/BACKUP_ARCHITECTURE_RFC.md) (`backup-rclone-etcd` CronJob for etcd). Both eliminate S3 dependency from SYSTEM-class backups *without* the shim's always-on overhead, and the pgBackRest path additionally preserves PITR + incremental backups (which the shim path did not).
-**Original decision date (DEFERRED)**: 2026-05-19
-**Withdrawal date**: 2026-05-19 (same day; subsequent design round adopted pgBackRest instead)
+**Status**: **ACCEPTED-EXTENDED 2026-05-20** — the shim is adopted as the universal mediator for ALL platform backups, not just postgres + etcd. See [BACKUP_ARCHITECTURE_RFC §13a](../04-deployment/BACKUP_ARCHITECTURE_RFC.md) for topology.
+**Original decision (DEFERRED)**: 2026-05-19
+**Withdrawn (incorrectly)**: 2026-05-19 — based on a false assertion that `cnpg-plugin-pgbackrest` exists
+**Accepted + extended**: 2026-05-20 (corrects the round-5 mistake)
 
-**Empirical validation**: [RCLONE_SHIM_EVALUATION](../04-deployment/RCLONE_SHIM_EVALUATION.md) — 45/45 measurements ok across throughput / 16× concurrency / 200 small files / 180 s sustained / kill+recover, against real Hetzner Storage Box SFTP+CIFS backends, with `--vfs-cache-mode off`. The shim is **technically viable** (no data-path defects, no memory leaks, 100+ MiB/s aggregate at 16× fanout, sub-second restart). **We chose pgBackRest anyway** because:
+## Why the 2026-05-19 withdrawal was wrong
 
-1. pgBackRest natively supports S3 + SFTP + GCS + Azure + posix (CIFS/NFS via in-pod kernel mount) — no shim required.
-2. pgBackRest keeps PITR + incremental backups; the shim path required dropping barman-cloud or wrapping it (and in the planned scope we'd have dropped it).
-3. No always-on cluster component to operate, monitor, patch, or fail over.
-4. The official CNPG project is moving its v2 storage backend to pgBackRest, so adopting it now is forward-aligned.
+The withdrawal claimed `cnpg-plugin-pgbackrest` is an official CNPG sub-project supporting SFTP. **Verified incorrect**: `gh search repos cloudnative-pg pgbackrest` returns only `cloudnative-pg/plugin-barman-cloud`, which supports only S3 / Azure Blob / GCS (per `BarmanObjectStoreConfiguration` source — comment: *"Barman against an S3-compatible object storage"*). The pgBackRest plugin does not exist. The 2026-05-19 docs commit (`6d85c512` on main) was based on this mistake. R-X0 corrects the record and extends the shim's scope to universal mediation.
 
-The shim design below remains documented for the historical record. The trigger conditions (operator on SFTP/CIFS-only AND explicit postgres + etcd remote requirement AND willing to accept a new always-on critical-path service) are now strictly weaker than "switch to pgBackRest" — there is no realistic scenario in which the shim is preferable.
+## Why the shim is now the *universal* mediator (not just SYSTEM)
 
-**If you are reading this trying to decide between the shim and pgBackRest, pick pgBackRest.**
+The original ADR scoped the shim to postgres + etcd (the only S3-locked callers). The round-6 design extends it to ALL backup callers (restic × N, rclone-push × N) for these reasons:
+
+1. **One operational component** instead of N caller-specific backend configs.
+2. **One target switch propagates everywhere** — change SYSTEM's target, postgres + etcd + secrets all follow.
+3. **Per-class buckets preserve isolation** — `s3://system`, `s3://tenant`, `s3://mail`, plus `-raw` variants for self-encrypting callers (restic, age).
+4. **One platform-wide `BACKUP_TARGET_KEY`** simplifies DR: restore the secrets bundle, all backups become readable. (See RFC §13b.)
+5. **Empirical eval validated** the shim's throughput + memory + stability profile at SYSTEM scale; extending to TENANT + MAIL traffic is bounded by upstream bandwidth, not the shim.
+
+## Supported backend types (operator-selectable per class)
+
+| Backend | rclone module | Pod-side requirements | Notes |
+|---|---|---|---|
+| **S3 / S3-compatible** | `s3` | none | Default for cost-aware operators (AWS S3, Hetzner Object Storage, Backblaze B2, MinIO, etc.) |
+| **SFTP** | `sftp` | none | Hetzner Storage Box, self-hosted; password or SSH-key auth |
+| **CIFS / SMB** | wrap `local` backend; share kernel-mounted via `smb.csi.k8s.io` CSI driver | SMB CSI driver installed (R-X3 provisions it) | Hetzner Storage Box CIFS, Windows shares |
+| **NFS** | wrap `local` backend; share kernel-mounted via k8s built-in `volumes[].nfs` | none for NFSv3; `csi.nfs.k8s.io` for NFSv4 features | Standard NFSv4 preferred; no Kerberos in v1 |
+| **WebDAV** | `webdav` | none | Optional later add — handled by rclone with no platform-api changes |
+| **GCS / Azure / Box / Dropbox / B2 / etc.** | rclone native | none | Optional later add |
+
+**Posix-mount backends (CIFS, NFS)** — both kernel-mount the share via the shim Pod's `volumes[]` field, mounted at `/mnt/backup-<class>-<storage>`. The rclone config for these targets uses `type = local, copy_links = false, no_check_updated = true, path = /mnt/backup-<class>-<storage>`. The crypt + passthrough buckets layer on top of that local backend exactly like for S3.
+
+**Why kernel-mount instead of rclone NFS client**: rclone has no NFS *client* backend (its `nfs` is a server-side feature). Kernel NFS mount via the Pod's `volumes[].nfs` field is the standard k8s pattern.
+
+**Why kernel-mount for CIFS instead of rclone's smb client**: rclone DOES have a `smb` client backend. Either works, but consolidating on kernel-mount unifies the operational pattern (one POSIX directory + `type = local` recipe) for both CIFS and NFS, simplifying the renderer and observability. We can flip to rclone-native SMB later — platform-api abstracts the difference.
 
 ## Context
 

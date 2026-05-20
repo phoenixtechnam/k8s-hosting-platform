@@ -53,25 +53,26 @@
 
 ---
 
-## Milestone: Backup Architecture Simplification (Path A++)
+## Milestone: Backup Architecture Simplification (Path D-final)
 
 **Driving RFC**: [`BACKUP_ARCHITECTURE_RFC.md`](./BACKUP_ARCHITECTURE_RFC.md) — locked design.
-**Related ADRs**: ADR-042 (Stalwart logical export, deferred), ADR-043 (rclone-serve-s3 shim, **WITHDRAWN 2026-05-19**).
-**Estimate**: ~58 hours (~7-8 working days).
-**Critical path**: R1 → R2 → R3 → R-S1 → R-S2 → R-S3 → R-S4 → R12 (~32 h — baseline ships the user-visible simplification *and* working S3-free SYSTEM backups).
+**Related ADRs**: ADR-042 (Stalwart logical export, deferred), ADR-043 (rclone-serve-s3 shim, **ACCEPTED-EXTENDED 2026-05-20** as universal backup mediator).
+**Estimate**: ~75 hours (~9-10 working days) including R1-R14 baseline.
+**Critical path**: R-X0 → R-X1 → R-X2 → R-X3 → R-X4 → R-X6 → R-X7 → R-X11 → R-X12 (~36 h — delivers functional postgres + etcd + tenant + mail backups on any target type with a working DR drill).
 
-> **Revision 2026-05-19 (late round-5)**: `SYSTEM.postgres` swaps from barman-cloud to **`cnpg-plugin-pgbackrest`**; `SYSTEM.etcd` swaps from k3s `--etcd-s3` to a small **`backup-rclone-etcd` CronJob**. **Eliminates S3 dependency from SYSTEM entirely** (every target type now fully covered, no degradation states). PITR + incremental backups preserved (pgBackRest is the v2 storage path CNPG itself is moving toward). The 'per-subsystem degradation badges' work-item (R5) is **OBSOLETE**, replaced by R-S1..R-S6 (pgBackRest plugin install, platform-api wiring, etcd CronJob, restore procedures, migration runbook, DR drill). Net effort change: +6 h vs the badge-based approach, for a meaningfully simpler operator model.
+> **Revision 2026-05-20 (round-6, Path D-final)**: The round-5 plan (`cnpg-plugin-pgbackrest` + per-mechanism shim escape) was based on a **plugin that does not exist**. Round-6 corrects this by adopting the `rclone serve s3` shim (originally proposed in ADR-043) as the **universal backup mediator** for ALL platform backups. Per-class targets preserved. One platform-wide `BACKUP_TARGET_KEY` underpins all encryption (rclone crypt + restic `RESTIC_PASSWORD`). DaemonSet topology + `internalTrafficPolicy: Local` keeps the data path on-node. First-class operator-selectable target types: **S3, SFTP, CIFS, NFS** (all uniformly supported by every backup caller).
 
-### Goals (verbatim from RFC §1, revision 2026-05-19)
+### Goals (verbatim from RFC §1, revision 2026-05-20)
 
 1. **One operator mental model**: 3 backup classes (SYSTEM, TENANT, MAIL); each is one card with a single target picker.
 2. **Two backup layers with distinct vocabulary**: **Fast rollback** (Longhorn snapshots, retain=6, 1h cadence, opt-in subsystems) and **Disaster recovery** (remote backups, operator-configured, optional).
 3. **Remote backup purely optional**: cluster with no target rows still runs fast-rollback for opted-in subsystems.
-4. **Universal target compatibility for SYSTEM** *(revised — was "graceful per-subsystem degradation")*: pgBackRest + etcd-CronJob support every target type (S3, SFTP, CIFS, NFS). No subsystem-disabled states.
-5. **Tenant PVCs on-demand-only** — automatic backup removed; tenant bundle is canonical DR; on-demand snapshots available in both admin and tenant panels.
+4. **Universal target compatibility** *(revised — via shim)*: every backup caller works on every target type (S3, SFTP, CIFS, NFS). No subsystem-disabled states. The shim is the single mediator.
+5. **Tenant PVCs on-demand-only** — automatic backup removed; tenant bundle is canonical DR; on-demand snapshots in both admin and tenant panels.
 6. **Dedup/compression by default** wherever mechanism supports it.
+7. **One backup encryption key** — platform-wide `BACKUP_TARGET_KEY`, Tier-1 in secrets bundle, drives rclone crypt + restic `RESTIC_PASSWORD` + shim S3 creds (HKDF-derived).
 
-### Implementation phases (revision 2026-05-19)
+### Implementation phases (revision 2026-05-20)
 
 | # | Phase | Hours | Risk |
 |---|---|---|---|
@@ -79,22 +80,28 @@
 | R2 | bootstrap.sh adds `RecurringJob local-thin-1h` retain=6 default; label opt-in volumes | 3 | L |
 | R3 | Adaptive housekeeper CronJob (10% cap with 500 MiB floor; disk-pressure handling; audit log) | 4 | L |
 | R4 | New storage classes `longhorn-ha` + `longhorn-local`; deprecate old four | 6 | M |
-| ~~R5~~ | ~~Soften strict-gate; per-subsystem graceful degradation badges~~ **OBSOLETE** — no degradation states post-pgBackRest. Trivial reachability validator folds into R-S2 | ~~4~~ 0 | n/a |
-| R6 | Drop tenant PVC automatic backup; on-demand snapshot endpoint + UI affordance (admin + tenant panel); TTL housekeeper; global quotas | 6 | M |
-| **R-S1** | **NEW** — Install `cnpg-plugin-pgbackrest` (Flux manifest, pinned by digest); verify against pinned CNPG version; smoke-test default S3 path | 2 | L |
-| **R-S2** | **NEW** — platform-api wiring: SYSTEM target → `PluginConfiguration` CR + target Secret + CNPG `Cluster` plugin patch; handles S3/SFTP/CIFS/NFS; CIFS/NFS injects initContainer kernel mount | 5 | M |
-| ~~R7~~ | ~~CNPG `spec.backup` reconciler (gated on SYSTEM = S3) + restore wizard~~ **SUPERSEDED by R-S1+R-S2**; restore wizard moves to R-S4 | ~~9~~ 0 | n/a |
-| R8 | Secrets bundle multi-target upload + UI card; modify `make secrets-fetch` | 4 | L |
-| **R-S3** | **NEW** — `backup-rclone-etcd` CronJob: image (alpine + rclone + k3s-binary, ~30 MiB, pinned digest); CronJob with `nodeSelector: control-plane`, hourly upload + retention; platform-api reconciler from SYSTEM target | 3 | L |
-| ~~R9~~ | ~~k3s `--etcd-s3` defaults in bootstrap.sh (gated on SYSTEM = S3) + UI surfacing~~ **SUPERSEDED by R-S3** | ~~3~~ 0 | n/a |
-| **R-S4** | **NEW** — Restore procedures: `BACKUP_RESTORE.md` runbook + `restore-postgres.sh` (drives pgBackRest restore CR) + `restore-etcd.sh` (rclone download + `k3s etcd-snapshot restore`); unified restore wizard at `/backups/system` | 5 | M |
+| ~~R5~~ | ~~Soften strict-gate; per-subsystem degradation badges~~ **OBSOLETE** — shim eliminates degradation states entirely | ~~4~~ 0 | n/a |
+| R6 | Drop tenant PVC automatic backup; on-demand snapshot endpoint + UI affordance; global quotas | 6 | M |
+| **R-X0** | **Correct prior misleading docs commit** — follow-up commit flipping ADR-043 from WITHDRAWN → ACCEPTED-EXTENDED, rewriting §12/§13 for the shim path | 2 | L |
+| **R-X1** | **`backup-rclone` image** — alpine 3.20 + rclone v1.68.2 + tini; multi-arch; cosign-signed; `ghcr.io/phoenixtechnam/backup-rclone:<sha>` pinned by digest. ~25 MiB | 3 | L |
+| **R-X2** | **`BACKUP_TARGET_KEY` lifecycle** — `bootstrap.sh` generates 32-byte key on first boot; Tier-1 in secrets bundle. `make backup-target-key-rotate` with 3-step confirm | 4 | M |
+| **R-X3** | **Shim DaemonSet manifests** — DaemonSet, Service (`internalTrafficPolicy: Local`), cert-manager Certificate, NetworkPolicy, PDB. Includes `smb.csi.k8s.io` driver install for CIFS support | 5 | L |
+| **R-X4** | **Multi-bucket config renderer + target schema** — supports S3 / SFTP / CIFS / NFS target rows; emits rclone.conf with per-class crypt + raw buckets; CIFS/NFS render as Pod-volume mounts + `type=local` | 7 | M |
+| **R-X5** | **Drain orchestration** — task-center polling; 5-min default; force-restart with admin banner on timeout | 3 | M |
+| **R-X6** | **Postgres `plugin-barman-cloud` wiring** — install plugin v0.12.0; `ObjectStore` CR points at shim ClusterIP; CNPG `Cluster` declares plugin; ScheduledBackup CR | 4 | M |
+| **R-X7** | **`etcd-snap-via-shim` CronJob** — replaces legacy upload; `k3s etcd-snapshot save` + zstd + rclone to `s3://system/etcd-*` | 3 | L |
+| **R-X8** | **Restic callers via shim raw bucket** — bulwark, crowdsec, monitoring, mail-restic switch repos; `RESTIC_PASSWORD = BACKUP_TARGET_KEY`. CI guard for raw-bucket | 3 | M |
+| **R-X9** | **rclone-push callers via shim** — secrets-bundle (raw), tenant-bundle (encrypted), snapshot-storage streaming-store (encrypted) | 4 | M |
+| **R-X10** | **UI updates** — preserve 3-class card layout. Each card: Target picker (S3/SFTP/CIFS/NFS forms), drain progress, "via shim → <target>" pill. New `Settings → Backup Encryption Key` page | 5 | M |
+| R8 | Secrets bundle multi-target upload + UI card; modify `make secrets-fetch` for any shim raw bucket | 4 | L |
+| **R-X11** | **Restore tooling** — `restore-postgres.sh`, `restore-etcd.sh`, `restore-tenant-bundle.sh`, `restore-secrets-bundle.sh`, `restore-mail.sh`. Cold-cluster sequence in `BACKUP_RESTORE.md` | 6 | M |
 | R10 | Drop tar+gzip+rclone tenant_snapshot path entirely (tenant DR = bundles only) | 4 | L |
 | **R11** | **DEFERRED** — Stalwart-on-Longhorn migration (follow-up RFC after v1 soak) | n/a | n/a |
 | R12 | Flat per-subsystem UI on `/backups/system` and `/backups/tenants/:id`; rename `/settings/backup-infrastructure` → `/settings/remote-storage-targets` | 6 | L |
-| R13 | Drop dead code (legacy WalArchiveTab, multi-target paths, tenant_snapshot scheduler, barman-cloud reconciler post-migration) | 3 | L |
-| R14 | Mail storage visibility on local-path (bytes used / available, growth rate, last-restic-run size on `/backups/system` MAIL card) — required because R11 is deferred | 3 | L |
-| **R-S5** | **NEW** — Migration runbook for existing clusters running barman-cloud: keep both engines for one full pgBackRest cycle, then strip barman-cloud + age out its bucket. Smoke against staging | 3 | M |
-| **R-S6** | **NEW** — E2E DR drill: backup → simulated cluster loss → restore from each of (S3, SFTP, CIFS, NFS) targets; PITR test (restore to specific timestamp); etcd restore on fresh control-plane node | 4 | M |
+| **R-X12** | **E2E DR drill** — 3 classes × 3 different upstreams (S3 + SFTP + NFS or CIFS). PITR. Key-loss. Drain timeout. Mid-backup restart | 6 | M |
+| **R-X13** | **Archive legacy paths** (NOT delete) — move to `legacy/` subdirectories with deprecation README; CI guard ensures not loaded | 3 | L |
+| R14 | Mail storage visibility on local-path | 3 | L |
+| **R-X14** | **Perf benchmark vs eval baseline** — re-run `rclone-shim-eval/` against production-config shim; verify ≥80% of round-5 baseline | 3 | L |
 
 ### On-demand tenant PVC snapshots — Admin + Tenant Panel
 
