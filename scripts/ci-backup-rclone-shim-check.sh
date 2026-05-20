@@ -255,4 +255,23 @@ if ! grep -q "STATE_LEGACY_TAKING_OVER" "$MAIL_RESTIC"; then
 fi
 pass "Invariant 14: mail-restic via shim wired"
 
-echo "[ci-backup-rclone-shim] All 14 invariants pass."
+# ─── 15. rclone-push via shim ─────────────────────────────────────
+RCLONE_PUSH="$ROOT/backend/src/modules/backup-rclone-shim/rclone-push.ts"
+SNAPSHOT_STORE="$ROOT/backend/src/modules/storage-lifecycle/snapshot-store.ts"
+if [[ ! -f "$RCLONE_PUSH" ]]; then
+  fail "Invariant 15: rclone-push helper module missing"
+fi
+# Class mapping must cover the documented translations.
+for legacy in 'tenant_snapshot' 'tenant_bundle' 'system_backup' 'system_mail'; do
+  if ! grep -qF "'$legacy'" "$RCLONE_PUSH"; then
+    fail "Invariant 15: rclone-push.ts shimClassFor missing legacy class '$legacy'"
+  fi
+done
+# storage-lifecycle/snapshot-store.ts must call isShimModeActive
+# BEFORE the legacy resolveTargetFor.
+if ! grep -q "isShimModeActive" "$SNAPSHOT_STORE"; then
+  fail "Invariant 15: snapshot-store.ts must check isShimModeActive before falling back to legacy resolver"
+fi
+pass "Invariant 15: rclone-push via shim wired"
+
+echo "[ci-backup-rclone-shim] All 15 invariants pass."

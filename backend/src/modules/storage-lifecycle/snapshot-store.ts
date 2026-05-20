@@ -494,6 +494,64 @@ export async function resolveSnapshotStoreForClass(
   const { decrypt } = await import('../oidc/crypto.js');
   const { ApiError } = await import('../../shared/errors.js');
 
+  // R-X9: when the new 3-class shim binding is set for the equivalent
+  // class, route through the shim's encrypted bucket. The shim handles
+  // upstream translation (S3 / SFTP / CIFS / NFS) — the caller only
+  // sees an S3 endpoint. Falls through to the legacy per-storage-type
+  // plumbing below when shim mode is NOT active.
+  {
+    const { isShimModeActive, buildShimStreamingStoreConfig } = await import(
+      '../backup-rclone-shim/rclone-push.js'
+    );
+    if (await isShimModeActive(db, snapshotClass)) {
+      const { loadBackupTargetKey, SHIM_NAMESPACE } = await import(
+        '../backup-rclone-shim/service.js'
+      );
+      if (opts?.k8sCtx) {
+        // We need CoreV1Api to read the BACKUP_TARGET_KEY Secret. The
+        // existing k8sCtx in this function uses k8s = K8sClients shape.
+        const k8sCtx = opts.k8sCtx as { k8s: { core: import('@kubernetes/client-node').CoreV1Api }; namespace: string };
+        const keyInput = await loadBackupTargetKey(
+          k8sCtx.k8s.core,
+          SHIM_NAMESPACE,
+        );
+        const cfgShim = buildShimStreamingStoreConfig(keyInput.rawKey, snapshotClass);
+        if (cfgShim) {
+          const { S3Store } = await import('./snapshot-store.js');
+          const { S3StreamingStore } = await import('./streaming-store.js');
+          const sdkStore = new S3Store({
+            bucket: cfgShim.bucket,
+            region: cfgShim.region,
+            endpoint: cfgShim.endpoint,
+            accessKeyId: cfgShim.accessKeyId,
+            secretAccessKey: cfgShim.secretAccessKey,
+            pathPrefix: cfgShim.pathPrefix,
+          });
+          const streamStore = new S3StreamingStore({
+            bucket: cfgShim.bucket,
+            region: cfgShim.region,
+            endpoint: cfgShim.endpoint,
+            accessKeyId: cfgShim.accessKeyId,
+            secretAccessKey: cfgShim.secretAccessKey,
+            pathPrefix: cfgShim.pathPrefix,
+          });
+          // We synthesise a targetId for forensic accounting — the
+          // shim itself doesn't have a backup_configurations row, so
+          // pin a stable sentinel string. The reverse-lookup in
+          // snapshot-store-by-target-id treats it as "use the shim
+          // resolver". R-X10 UI surfaces this via a "via shim" pill.
+          return {
+            store: composeStreamingStore(sdkStore, streamStore),
+            targetId: `shim:${snapshotClass}`,
+          };
+        }
+      }
+      // No k8sCtx (unit-test / non-k8s call path) → fall through to
+      // legacy resolver. Tests that need shim mode pass in k8sCtx
+      // with a stub CoreV1Api.
+    }
+  }
+
   const resolved = await resolveTargetFor(db, snapshotClass);
   const key = process.env.PLATFORM_ENCRYPTION_KEY;
   if (!key) {
