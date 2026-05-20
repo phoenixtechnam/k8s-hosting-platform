@@ -43,8 +43,11 @@ import {
   crowdsecAddAllowlistRequestSchema,
   crowdsecAddBanRequestSchema,
   crowdsecAddStaticBanRequestSchema,
+  crowdsecAutobanPatchConfigRequestSchema,
   crowdsecListDecisionsQuerySchema,
 } from '@k8s-hosting/api-contracts';
+import { listRecentRuns, loadConfig as loadAutobanConfig, SETTING_KEYS as AUTOBAN_SETTING_KEYS } from '../crowdsec-autoban/scheduler.js';
+import { sql } from 'drizzle-orm';
 
 interface AuthedRequest {
   readonly user?: { readonly sub?: string };
@@ -359,6 +362,92 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         } catch (err) {
           return reply.status(502).send({
             error: 'CROWDSEC_STATIC_BAN_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    // ─── F3 — WAF auto-ban config + runs ────────────────────────────────
+
+    app.get(
+      '/admin/security/crowdsec/autoban/config',
+      { preHandler: requireRole('super_admin') },
+      async (_req: FastifyRequest, reply: FastifyReply) => {
+        try {
+          const config = await loadAutobanConfig(deps.db);
+          return success(config);
+        } catch (err) {
+          return reply.status(500).send({
+            error: 'AUTOBAN_CONFIG_LOAD_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+    );
+
+    app.patch(
+      '/admin/security/crowdsec/autoban/config',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = crowdsecAutobanPatchConfigRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        const actor = userOf(req as AuthedRequest);
+        app.log.warn({ actor, patch: parsed.data }, 'crowdsec-autoban: config patched');
+        // Persist each provided key into platform_settings.
+        const entries: [string, string][] = [];
+        const p = parsed.data;
+        if (p.enabled !== undefined) entries.push([AUTOBAN_SETTING_KEYS.enabled, String(p.enabled)]);
+        if (p.windowSeconds !== undefined) entries.push([AUTOBAN_SETTING_KEYS.windowSeconds, String(p.windowSeconds)]);
+        if (p.eventThreshold !== undefined) entries.push([AUTOBAN_SETTING_KEYS.eventThreshold, String(p.eventThreshold)]);
+        if (p.minSeverity !== undefined) entries.push([AUTOBAN_SETTING_KEYS.minSeverity, p.minSeverity]);
+        if (p.initialBanDuration !== undefined) entries.push([AUTOBAN_SETTING_KEYS.initialBanDuration, p.initialBanDuration]);
+        if (p.repeatBackoffMultiplier !== undefined) entries.push([AUTOBAN_SETTING_KEYS.repeatBackoffMultiplier, String(p.repeatBackoffMultiplier)]);
+        if (p.maxBanDuration !== undefined) entries.push([AUTOBAN_SETTING_KEYS.maxBanDuration, p.maxBanDuration]);
+        if (p.excludedRuleIds !== undefined) entries.push([AUTOBAN_SETTING_KEYS.excludedRuleIds, p.excludedRuleIds.join(',')]);
+        if (p.includeTenantRoutes !== undefined) entries.push([AUTOBAN_SETTING_KEYS.includeTenantRoutes, String(p.includeTenantRoutes)]);
+        for (const [key, value] of entries) {
+          await deps.db.execute(sql`
+            INSERT INTO platform_settings (key, value, updated_at)
+            VALUES (${key}, ${value}, NOW())
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+          `);
+        }
+        const final = await loadAutobanConfig(deps.db);
+        return success(final);
+      },
+    );
+
+    app.get(
+      '/admin/security/crowdsec/autoban/runs',
+      { preHandler: requireRole('super_admin') },
+      async (req: FastifyRequest, reply: FastifyReply) => {
+        const limit = Number((req.query as { limit?: string }).limit ?? 50);
+        try {
+          const rows = await listRecentRuns(deps.db, limit);
+          return success({
+            runs: rows.map((r) => ({
+              id: r.id,
+              triggeredAt: r.triggeredAt instanceof Date ? r.triggeredAt.toISOString() : new Date(r.triggeredAt as unknown as string).toISOString(),
+              sourceIp: r.sourceIp,
+              hostname: r.hostname,
+              ruleIds: r.ruleIds ?? [],
+              eventCount: r.eventCount,
+              windowSeconds: r.windowSeconds,
+              banDuration: r.banDuration,
+              banId: r.banId,
+              outcome: r.outcome,
+              outcomeDetail: r.outcomeDetail,
+            })),
+          });
+        } catch (err) {
+          return reply.status(500).send({
+            error: 'AUTOBAN_RUNS_LOAD_FAILED',
             message: err instanceof Error ? err.message : String(err),
           });
         }

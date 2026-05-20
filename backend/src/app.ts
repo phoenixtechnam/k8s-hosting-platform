@@ -1094,6 +1094,24 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'WAF log scraper not started');
       }
 
+      // F3 — CrowdSec auto-ban scheduler. Reads new waf_logs rows since
+      // last watermark, groups by source_ip, evaluates threshold +
+      // severity + excluded-rule filters, issues auto-bans via cscli.
+      // Idempotent (LRU dedupe + watermark survives restart). Disabled-
+      // mode still advances watermark so re-enabling doesn't process
+      // a stale backlog.
+      try {
+        const { startCrowdsecAutobanScheduler } = await import('./modules/crowdsec-autoban/scheduler.js');
+        const autobanTimer = startCrowdsecAutobanScheduler({
+          db: app.db,
+          kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
+          log: app.log,
+        });
+        app.addHook('onClose', () => clearInterval(autobanTimer));
+      } catch (err) {
+        app.log.warn({ err }, 'crowdsec-autoban scheduler not started');
+      }
+
       // Daily prune of expired refresh tokens (Phase 3 split-token auth).
       // Keeps a 7-day forensic window after expiry; older rows are
       // hard-deleted to keep the table small. Failure is non-fatal.
