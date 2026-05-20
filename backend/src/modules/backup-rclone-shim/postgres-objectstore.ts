@@ -433,6 +433,23 @@ function buildObjectStoreSpec(): Record<string, unknown> {
       wal: { compression: 'gzip', maxParallel: 8 },
       data: { compression: 'gzip' },
     },
+    // Bump the sidecar memory ceiling. The default 384Mi limit OOM-kills
+    // the barman-cloud sidecar mid-base-backup: it streams the cluster's
+    // pgdata through Python boto3 multipart uploads (16Mi parts × upload
+    // concurrency) PLUS holds compression buffers PLUS plugin gRPC server
+    // state — peak RSS ~700-900Mi on a 1Gi-PGDATA cluster. 1Gi gives
+    // headroom for ~5Gi PGDATA before hitting the next ceiling.
+    // Surfaced during staging E2E round-trip 2026-05-20:
+    //   `kubectl describe pod` → Last State: Terminated  Reason: OOMKilled
+    //   `kubectl logs` →
+    //     "Backup failed uploading data (NoSuchUpload)" - the multipart
+    //     upload got abandoned when the sidecar was killed mid-stream.
+    instanceSidecarConfiguration: {
+      resources: {
+        requests: { cpu: '50m', memory: '128Mi' },
+        limits: { cpu: '1', memory: '1Gi' },
+      },
+    },
     // 30-day rolling retention (RFC §12).
     retentionPolicy: DEFAULT_RETENTION_POLICY,
   };
