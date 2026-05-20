@@ -1,10 +1,67 @@
 # Backup-rclone-shim operator runbook
 
-> **Status:** R-X1–R-X5 shipped. Postgres CNPG plugin (R-X6), etcd CronJob
+> **Status:** R-X1–R-X6 shipped. etcd CronJob
 > (R-X7), restic + rclone-push callers (R-X8/R-X9), UI (R-X10), restore
 > tooling (R-X11), DR drill (R-X12), legacy archive (R-X13), perf
 > benchmark (R-X14) follow. Operator-visible surfaces below are LIVE
 > from R-X5.
+
+## Postgres backups via the plugin (R-X6)
+
+The CNPG cluster `platform/system-db` ships with the
+`barman-cloud.cloudnative-pg.io` plugin attached. The plugin Deployment
+lives in `cnpg-system/` (`k8s/base/cnpg-system/plugin-barman-cloud-v0.12.0.yaml`,
+vendored from upstream v0.12.0). When the operator binds the SYSTEM
+shim class to a backup target, `platform-api`'s `postgres-objectstore`
+reconciler materialises:
+
+| Resource | Namespace | Purpose |
+|---|---|---|
+| `backup-rclone-shim-creds` Secret | `platform` | HKDF-derived `access_key` + `secret_key` the CNPG plugin sidecar uses to authenticate to the local-node shim |
+| `system-postgres-objectstore` ObjectStore CR | `platform` | barman-cloud config: `s3://system/postgres` via `http://backup-rclone-shim.platform.svc:9000`, zstd compression, 30-day retention |
+| `system-db-scheduled-backup` ScheduledBackup CR | `platform` | Daily 03:00 UTC base backup via plugin method; `suspend: true` when SYSTEM is unassigned |
+| `system-db.spec.plugins[0].isWALArchiver` patch | `platform` | Reconciler patches `true` when SYSTEM is bound, `false` when unbound — prevents pg_wal accumulation on an unassigned cluster |
+
+The Cluster CR in `database.yaml` declares the plugin entry but
+**intentionally omits** `isWALArchiver`. The reconciler owns that
+field (CI invariant 12 enforces this) — static `isWALArchiver: true`
+would cause WAL archive_command failures every checkpoint when SYSTEM
+is unassigned, silently filling `pg_wal/`. The reconciler toggles on
+when SYSTEM is bound and off when not.
+
+### Restoring postgres (preview — R-X11 ships the full tooling)
+
+The plugin supports two recovery modes:
+- **Volume snapshot bootstrap** — fastest path; CNPG creates a new
+  Cluster from a barman-cloud `VolumeSnapshot`. ~30 s.
+- **Backup recovery** — restore from base backup + WAL replay to a
+  point-in-time. RPO bounded by `archive_command` cadence (≤5 min in
+  steady state).
+
+R-X11 will ship `scripts/restore-postgres.sh` with both modes wired
+through a single wizard. Until then, manual recovery via:
+
+```bash
+kubectl -n platform get backups
+kubectl -n platform get objectstore system-postgres-objectstore -o yaml
+# Then create a new Cluster CR with spec.bootstrap.recovery.source set
+# to the ObjectStore. See plugin-barman-cloud README.
+```
+
+### Plugin RBAC — known accepted risk
+
+The upstream v0.12.0 manifest grants the `plugin-barman-cloud`
+ServiceAccount a ClusterRole with cluster-wide `secrets:
+[create, delete, get, list, watch]` and `roles + rolebindings:
+[create, get, list, patch, update, watch]`. Documented in
+`k8s/base/cnpg-system/kustomization.yaml`. Mitigations:
+
+- Plugin image is pinned by digest in the vendored manifest.
+- The plugin's only external trust is the operator-supplied ObjectStore
+  creds Secret (HKDF-derived from BACKUP_TARGET_KEY; reconciled each
+  tick).
+- Future tightening (filed as follow-up): replace ClusterRole with a
+  namespaced Role bound only to `platform`.
 
 The shim is a per-node `rclone serve s3` DaemonSet that mediates every
 backup pipeline’s upstream storage. Three buckets (`system`, `tenant`,

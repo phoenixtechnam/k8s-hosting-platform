@@ -63,6 +63,13 @@ resources:
   # translates to whatever upstream backend the operator configured.
   # See docs/04-deployment/BACKUP_ARCHITECTURE_RFC.md §13a.
   - backup-rclone-shim/
+  # cnpg-system — CNPG plugin-barman-cloud (R-X6). The plugin runs as
+  # a Deployment alongside the CNPG operator; CNPG Clusters reference
+  # it via spec.plugins[]. Reconciler at
+  # backend/src/modules/backup-rclone-shim/postgres-objectstore.ts
+  # materialises the per-Cluster ObjectStore CR + ScheduledBackup CR
+  # from the SYSTEM-class target binding.
+  - cnpg-system/
   - oauth2-proxy/
   # private-worker-tunnel — cluster-wide singletons for the Private
   # Worker feature: cert-manager Certificate for tunnels.${DOMAIN} and

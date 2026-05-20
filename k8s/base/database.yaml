@@ -184,6 +184,26 @@ spec:
   # by default; the existing postgres-dump cronjob still works
   # (connects via the postgres Service like any client) and
   # provides logical backup coverage in parallel.
+
+  # R-X6: barman-cloud plugin wiring. The plugin Deployment lives
+  # in cnpg-system (k8s/base/cnpg-system/), the ObjectStore +
+  # ScheduledBackup CRs are materialised by platform-api's
+  # postgres-objectstore reconciler based on the SYSTEM-class shim
+  # target binding. The plugin entry below activates the plugin for
+  # this Cluster — without it, the plugin is installed but inactive.
+  #
+  # `isWALArchiver` is INTENTIONALLY ABSENT here. The reconciler
+  # patches the Cluster CR's `spec.plugins[0]` to add
+  # `isWALArchiver: true` when SYSTEM is assigned, and removes it
+  # when SYSTEM is unassigned. Without this, an unassigned SYSTEM
+  # class would leave WAL archive_command failing every checkpoint
+  # — silently filling `pg_wal/` until the volume runs out of disk
+  # (review HIGH #1). Flux is in `ssa: merge` mode so absent fields
+  # in this manifest don't override the reconciler's patch.
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      parameters:
+        objectStoreName: system-postgres-objectstore
 ---
 # Stable Service alias. Keeps app connection strings unchanged
 # (postgres.platform.svc:5432) across CNPG instance scaling +
