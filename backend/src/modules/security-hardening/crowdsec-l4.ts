@@ -28,7 +28,7 @@
 import { isIP } from 'node:net';
 import * as k8s from '@kubernetes/client-node';
 import type { CrowdsecL4Mode, CrowdsecL4Status } from '@k8s-hosting/api-contracts';
-import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 const FIREWALL_RECONCILER_NAMESPACE = 'platform-system';
 const FIREWALL_RECONCILER_DS = 'firewall-reconciler';
@@ -337,13 +337,21 @@ export const setL4Mode = async (
     },
   };
 
+  // Strategic-merge (NOT plain merge) is required here: the env array
+  // merge-key is `name`, and the container array merge-key is also
+  // `name`. Plain merge-patch on the containers array would REPLACE it,
+  // and the new object only has `name` + `env` (no `image`), so the
+  // apiserver rejects with `spec.template.spec.containers[0].image:
+  // Required value`. Strategic-merge correctly recognises `name` as
+  // the merge key and patches in place. Caught during Stage D harness
+  // verification on 2026-05-20.
   await apps.patchNamespacedDaemonSet(
     {
       name: FIREWALL_RECONCILER_DS,
       namespace: FIREWALL_RECONCILER_NAMESPACE,
       body,
     } as unknown as Parameters<typeof apps.patchNamespacedDaemonSet>[0],
-    MERGE_PATCH,
+    STRATEGIC_MERGE_PATCH,
   );
 
   // Return the fresh status (mode will read as newMode once the patch
