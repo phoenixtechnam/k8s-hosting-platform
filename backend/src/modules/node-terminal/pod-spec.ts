@@ -179,6 +179,15 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): k8s.V1Po
  * distros; covers Alpine k3s images where tmux is not default).
  * That fallback only preserves bash HISTORY across reconnects, not
  * scrollback or running processes.
+ *
+ * @param sessionId — Used both as tmux session name suffix
+ *                    (`nt-<sessionId>`) AND HISTFILE filename. MUST
+ *                    match /^[a-zA-Z0-9_-]{1,64}$/. Production
+ *                    callers pass crypto.randomUUID() output (hex+`-`,
+ *                    36 chars) which always satisfies this.
+ * @throws if sessionId contains characters outside the allowed set —
+ *         defence-in-depth against future callers that bypass the
+ *         route-layer UUID validation.
  */
 export function buildNsenterArgv(sessionId: string): readonly string[] {
   // The sessionId is interpolated into a sh -c command, so we MUST
@@ -191,55 +200,82 @@ export function buildNsenterArgv(sessionId: string): readonly string[] {
     throw new Error(`buildNsenterArgv: invalid sessionId shape: ${sessionId}`);
   }
   const tmuxName = `nt-${sessionId}`;
-  // Architecture: tmux runs INSIDE the Pod's alpine container
-  // (where it's bundled). Each tmux pane spawns the actual host
-  // shell via nsenter. Tmux preserves the pane's process across
-  // detach/reattach cycles — so reconnecting hits the SAME nsenter'd
-  // shell with history, scrollback, and any running commands intact.
+  // Architecture: we nsenter into the HOST's PID 1 namespaces and run
+  // the host's tmux. Tmux preserves the pane's process across
+  // detach/reattach cycles — so reconnecting hits the SAME shell with
+  // history, scrollback, and any running commands intact.
   //
-  // Why tmux-in-Pod (not on host): tmux on the host would require
-  // tmux + dynamic libs installed there. Production hosts get this
-  // via bootstrap.sh (apt/dnf install tmux), but DinD/stripped k3s
-  // images don't have a package manager. Putting tmux INSIDE the
-  // alpine Pod (which we control) sidesteps the host-dep issue
-  // entirely — every cluster gets continuity for free.
+  // tmux MUST be installed on every cluster node — bootstrap.sh's
+  // apt/dnf install pulls it in. CI guard `ci-node-terminal-check.sh`
+  // enforces the package-list line. Operators upgrading from a
+  // pre-tmux release: `apt-get install tmux` or `dnf install tmux`.
   //
-  // The pane's shell is the nsenter command. When the user types
-  // commands, they hit the HOST's PID 1 namespaces — same root
-  // shell behaviour as before, just managed by tmux.
+  // Why host tmux (not Pod-bundled tmux): the goal is true host root
+  // continuity — running daemons (tail -f, top, vim) live in the host
+  // PID namespace. A Pod-bundled tmux would spawn its panes inside
+  // the Pod's PID/mount namespace by default; even if we nsenter from
+  // inside the pane, child processes (e.g. shell subshells) end up
+  // inheriting Pod-side namespaces which complicates host-tooling
+  // expectations and audit trails. Host tmux runs entirely in the
+  // host's namespaces — clean.
   //
-  // Fallback: if tmux ever goes missing from the Pod image (build
-  // regression), fall back to plain nsenter+bash. No continuity in
-  // that path; CI guard catches the omission.
-  const nsenterShellCmd =
-    // Inside the host's namespaces — prefer bash for history, fall
-    // back to sh. PROMPT_COMMAND keeps an on-disk history file in
-    // sync per session so even if tmux somehow loses the pane, the
-    // history file survives.
-    'export TERM=xterm-256color; '
-    + `export HISTFILE=/tmp/.bash_history-${sessionId}; `
+  // Fallback when tmux is missing (DinD local-dev, stripped images):
+  // plain bash with PROMPT_COMMAND='history -a' so at least history
+  // persists on disk. Pod-bundled tmux is ALSO available as a
+  // second fallback via PODFALLBACK env var (set on dev overlay) so
+  // local Unraid DinD can still demo full continuity.
+  const innerShell =
+    // Single-quoted into the outer sh -c, so its own single quotes
+    // are escaped at the call site below.
+    //
+    // - umask 0077 BEFORE setting HISTFILE so the file (and any
+    //   bash temp files it writes) is created mode 0600 — only root
+    //   can read it. /root is also 0700 by default. Belt+braces
+    //   against `/tmp` snooping if a future tweak moves it back.
+    // - HISTFILE lands in /root (not /tmp) so it's not exposed even
+    //   on hosts where /tmp permissions drift from convention.
+    // - Per-session filename (uuid-suffixed) means concurrent
+    //   sessions don't overwrite each other's history; reconnects
+    //   to the SAME sessionId pick up where they left off.
+    'umask 0077; '
+    + 'export TERM=xterm-256color; '
+    + `export HISTFILE=/root/.bash_history-${sessionId}; `
     + 'if [ -x /bin/bash ]; then '
     +   "export PROMPT_COMMAND='history -a'; "
     +   'exec /bin/bash -l; '
     + 'fi; '
     + 'exec /bin/sh -l';
+  const innerShellQuoted = innerShell.replace(/'/g, `'\\''`);
 
-  const tmuxLauncher =
+  const nsenterShellCmd =
+    // 1. Host tmux (production path — bootstrap.sh installs it).
     'if command -v tmux >/dev/null 2>&1; then '
-    +   `exec tmux new-session -A -s '${tmuxName}' `
-    +     `/usr/bin/nsenter -t 1 -m -u -i -n -p -- /bin/sh -c '${nsenterShellCmd.replace(/'/g, `'\\''`)}'; `
+    +   `exec tmux new-session -A -s '${tmuxName}' /bin/sh -c '${innerShellQuoted}'; `
     + 'fi; '
-    // tmux missing in the Pod image (shouldn't happen — CI guard
-    // catches it). Fall back to direct nsenter; no continuity.
-    + `exec /usr/bin/nsenter -t 1 -m -u -i -n -p -- /bin/sh -c '${nsenterShellCmd.replace(/'/g, `'\\''`)}'`;
+    // 2. Pod-bundled tmux fallback for dev. Only fires if the Pod
+    //    mounted its tmux to a host-visible path AND host tmux is
+    //    absent. The dev overlay can wire this up via a hostPath +
+    //    initContainer; production doesn't need it.
+    + 'if [ -x /opt/node-terminal/tmux ]; then '
+    +   `exec /opt/node-terminal/tmux new-session -A -s '${tmuxName}' /bin/sh -c '${innerShellQuoted}'; `
+    + 'fi; '
+    // 3. No tmux anywhere — degrade to plain bash with on-disk
+    //    history. Continuity is HISTORY-ONLY in this mode (no
+    //    scrollback, no running-command survival).
+    + innerShell;
 
   return [
-    // Run as /bin/sh INSIDE the Pod (alpine) so we can locate tmux
-    // and orchestrate the tmux+nsenter pipeline. The host shell
-    // proper still runs in PID 1's namespaces via tmux's pane process.
+    '/usr/bin/nsenter',
+    '-t', '1',
+    '-m', // mount namespace
+    '-u', // UTS namespace
+    '-i', // IPC namespace
+    '-n', // network namespace
+    '-p', // PID namespace
+    '--',
     '/bin/sh',
     '-c',
-    tmuxLauncher,
+    nsenterShellCmd,
   ];
 }
 

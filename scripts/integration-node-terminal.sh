@@ -843,6 +843,43 @@ fi
 if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
   phase "J. Shell continuity (tmux + history persistence)"
 
+  # Probe host capabilities ONCE — DinD k3s hosts (rancher/k3s image)
+  # have neither tmux nor bash, so continuity isn't possible there.
+  # Production hosts (Debian/Ubuntu/RHEL via bootstrap.sh) have both.
+  J_PROBE_CREATE="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
+  J_PROBE_SID="$(echo "$J_PROBE_CREATE" | jq -r '.data.sessionId')"
+  J_PROBE_WS="$(echo "$J_PROBE_CREATE" | jq -r '.data.websocketUrl')"
+  J_HAS_TMUX=0; J_HAS_BASH=0
+  if [[ -n "$J_PROBE_WS" ]]; then
+    # Use compact markers that won't appear in the echoed command
+    # text (TTY echos every keystroke). 'X1='+'1' is the truth signal;
+    # 'X1='+'0' from a false branch. Pin to a single line so awk-by-
+    # line works in any shell.
+    J_PROBE_OUT="$(ws_drive "$J_PROBE_WS" "
+      ws.on('message', (raw) => {
+        const f = JSON.parse(raw.toString());
+        if (f.type === 'connected') {
+          setTimeout(() => ws.send(JSON.stringify({ type:'stdin', data:'printf \"PROBE:%s:%s\\\\n\" \$(command -v tmux >/dev/null 2>&1 && echo T || echo n) \$([ -x /bin/bash ] && echo B || echo n)\\n' })), 800);
+          setTimeout(() => ws.close(), 2500);
+        }
+        if (f.type === 'stdout') process.stdout.write(f.data);
+      });
+    " 2>&1 || true)"
+    # PROBE:T:B = tmux+bash; PROBE:n:B = bash only; PROBE:T:n = tmux only; PROBE:n:n = neither
+    # Look only at lines starting with PROBE: (the actual stdout, not
+    # the echoed command line — TTY echoes whole command verbatim).
+    PROBE_LINE="$(echo "$J_PROBE_OUT" | grep -oE 'PROBE:[Tn]:[Bn]' | head -1)"
+    [[ "$PROBE_LINE" == *":T:"* ]] && J_HAS_TMUX=1
+    [[ "$PROBE_LINE" == *":B"* ]] && J_HAS_BASH=1
+    curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$J_PROBE_SID" >/dev/null 2>&1 || true
+  fi
+
+  if [[ $J_HAS_TMUX -eq 0 && $J_HAS_BASH -eq 0 ]]; then
+    warn "J skipped — host has neither tmux nor bash (e.g. stripped-down DinD k3s). Continuity needs bootstrap.sh's apt/dnf install on real hosts."
+    # Skip the rest of this phase entirely
+  else
+  echo "  host capabilities: tmux=$J_HAS_TMUX bash=$J_HAS_BASH"
+
   J_CREATE="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
   J_SESSION_ID="$(echo "$J_CREATE" | jq -r '.data.sessionId')"
   J_WS_URL="$(echo "$J_CREATE" | jq -r '.data.websocketUrl')"
@@ -898,6 +935,7 @@ if [[ $NEG_ONLY -eq 0 && -n "${NODE_NAME:-}" ]]; then
   fi
 
   curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$J_SESSION_ID" >/dev/null 2>&1 || true
+  fi  # end of "host has tmux or bash" branch
 fi
 
 # ── Phase I (optional): idle timeout — slow, opt-in via --idle ─────────

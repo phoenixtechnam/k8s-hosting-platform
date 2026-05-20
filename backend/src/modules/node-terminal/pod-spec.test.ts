@@ -141,45 +141,41 @@ describe('NSENTER_BASH_ARGV (deprecated; kept for fallback callers)', () => {
   });
 });
 
-describe('buildNsenterArgv (per-session, tmux-in-Pod)', () => {
+describe('buildNsenterArgv (per-session, host-tmux first)', () => {
   const VALID = '11111111-2222-3333-4444-555555555555';
 
-  it('runs /bin/sh inside the Pod (not nsenter directly) so it can find tmux', () => {
+  it("nsenters into PID 1's host namespaces (m,u,i,n,p) as the outer command", () => {
     const argv = buildNsenterArgv(VALID);
-    // The outer command runs inside the Pod's alpine container; that's
-    // where tmux is bundled. tmux's pane process is the nsenter command.
-    expect(argv[0]).toBe('/bin/sh');
-    expect(argv[1]).toBe('-c');
+    expect(argv.slice(0, 8)).toEqual(['/usr/bin/nsenter', '-t', '1', '-m', '-u', '-i', '-n', '-p']);
+    expect(argv[8]).toBe('--');
+    expect(argv[9]).toBe('/bin/sh');
+    expect(argv[10]).toBe('-c');
   });
 
-  it('uses tmux new-session -A to attach-or-create the per-session tmux', () => {
+  it('uses tmux new-session -A to attach-or-create the per-session tmux on the host', () => {
     const argv = buildNsenterArgv(VALID);
     const cmd = argv[argv.length - 1] as string;
     // -A = "attach if exists, else create" — load-bearing for reconnects
-    // landing in the SAME tmux pane = SAME nsenter'd host shell.
+    // landing in the SAME shell process with history + scrollback intact.
     expect(cmd).toMatch(/tmux new-session -A -s 'nt-11111111-2222-3333-4444-555555555555'/);
   });
 
-  it("tmux pane invokes nsenter into PID 1's host namespaces (m,u,i,n,p)", () => {
+  it('inside the host shell, sets HISTFILE scoped to this sessionId (in /root, mode 0600 via umask)', () => {
     const argv = buildNsenterArgv(VALID);
     const cmd = argv[argv.length - 1] as string;
-    // Same 5-namespace enter as the legacy direct path.
-    expect(cmd).toMatch(/nsenter -t 1 -m -u -i -n -p --/);
-  });
-
-  it('inside the host shell, sets HISTFILE scoped to this sessionId', () => {
-    const argv = buildNsenterArgv(VALID);
-    const cmd = argv[argv.length - 1] as string;
-    expect(cmd).toMatch(/HISTFILE=\/tmp\/\.bash_history-11111111-2222-3333-4444-555555555555/);
+    // Per security review (MEDIUM): HISTFILE must live in /root with
+    // umask 0077 so command history is not world-readable in /tmp.
+    expect(cmd).toMatch(/umask 0077/);
+    expect(cmd).toMatch(/HISTFILE=\/root\/\.bash_history-11111111-2222-3333-4444-555555555555/);
+    // Belt-and-braces: file path must NOT end up in /tmp.
+    expect(cmd).not.toMatch(/HISTFILE=\/tmp/);
   });
 
   it('prefers bash and flushes history on every prompt', () => {
     const argv = buildNsenterArgv(VALID);
     const cmd = argv[argv.length - 1] as string;
-    // The inner shell command is single-quoted INSIDE the outer
-    // sh -c, so its own single quotes are escaped as '\''. Match
-    // the semantic content (PROMPT_COMMAND + history -a) without
-    // pinning the exact escape sequence.
+    // The inner shell is single-quoted into tmux's argv; its own
+    // single quotes are escaped as '\''. Match the semantic content.
     expect(cmd).toMatch(/PROMPT_COMMAND=.*history -a/);
     expect(cmd).toMatch(/exec \/bin\/bash -l/);
   });
@@ -190,16 +186,18 @@ describe('buildNsenterArgv (per-session, tmux-in-Pod)', () => {
     expect(cmd).toMatch(/TERM=xterm-256color/);
   });
 
-  it('falls back to direct nsenter when tmux missing from the Pod image', () => {
+  it('falls back to /opt/node-terminal/tmux (dev overlay) when host tmux missing', () => {
     const argv = buildNsenterArgv(VALID);
     const cmd = argv[argv.length - 1] as string;
-    expect(cmd).toMatch(/if command -v tmux/);
-    // Both branches MUST end with an nsenter invocation. The tmux
-    // branch nsenter is inside `tmux new-session ... nsenter ...`;
-    // the fallback nsenter is at top level after `fi;`. Count
-    // occurrences: two distinct nsenter calls.
-    const nsenterCount = (cmd.match(/\/usr\/bin\/nsenter/g) ?? []).length;
-    expect(nsenterCount).toBeGreaterThanOrEqual(2);
+    expect(cmd).toMatch(/\/opt\/node-terminal\/tmux/);
+  });
+
+  it('final fallback (no tmux anywhere) is plain bash with on-disk history', () => {
+    const argv = buildNsenterArgv(VALID);
+    const cmd = argv[argv.length - 1] as string;
+    // After both tmux branches, the same inner shell runs directly.
+    // Check the cmd ends with the bash exec (no tmux wrapping).
+    expect(cmd).toMatch(/fi; .*HISTFILE=.*exec \/bin\/bash -l/);
   });
 
   it('rejects sessionId values containing shell metacharacters', () => {
