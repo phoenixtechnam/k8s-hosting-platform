@@ -69,6 +69,12 @@ resources:
   # mode is applied. NetworkPolicy locks the cache to redis-system /
   # mail / platform namespaces — tenant namespaces explicitly blocked.
   - valkey/
+  # R-X17 follow-up (2026-05-21): single-pod NFS server for the
+  # backup-rclone-shim bench harness. STAGING-ONLY — `nfs-test-server`
+  # never renders into the production overlay (enforced by
+  # scripts/ci-backup-rclone-shim-check.sh). Operators with real NFS
+  # backup targets point at their own appliance, not this pod.
+  - nfs-test-server/
   # Image promotion (was Flux Image Automation, removed 2026-05-09):
   # Now handled by the in-CI "Pin image tags in kustomization.yaml"
   # step in .github/workflows/build-deploy.yml. Build * jobs export

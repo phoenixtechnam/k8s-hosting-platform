@@ -63,6 +63,12 @@ const s3ConfigSchema = z.object({
   s3_access_key: s3AccessKey,
   s3_secret_key: s3SecretKey,
   s3_prefix: z.string().max(255).optional(),
+  // R-X17 follow-up (2026-05-21): path-style URLs (`endpoint/bucket/key`)
+  // vs virtual-hosted (`bucket.endpoint/key`). True is correct for
+  // Hetzner, Backblaze B2, Cloudflare R2, Wasabi, MinIO, Garage, Ceph RGW,
+  // SeaweedFS, and most S3-compatible providers. Set to false ONLY for
+  // AWS S3 with virtual-hosted addressing (newer AWS regions/buckets).
+  s3_use_path_style: z.boolean().default(true),
   retention_days: z.number().int().min(1).max(365).default(30),
   schedule_expression: z.string().default('0 2 * * *'),
   enabled: z.boolean().default(true),
@@ -108,6 +114,7 @@ export const updateBackupConfigSchema = z.object({
   s3_access_key: z.string().optional(),
   s3_secret_key: z.string().optional(),
   s3_prefix: z.string().optional(),
+  s3_use_path_style: z.boolean().optional(),
   // Phase 9: CIFS update fields.
   cifs_host: z.string().optional(),
   cifs_port: z.number().int().min(1).max(65535).optional(),
@@ -135,6 +142,10 @@ export const backupConfigResponseSchema = z.object({
   s3Bucket: z.string().nullable(),
   s3Region: z.string().nullable(),
   s3Prefix: z.string().nullable(),
+  // DB column is NOT NULL DEFAULT true (migration 0021), so the
+  // response is always boolean — never null. Front-ends can rely on
+  // the value being present.
+  s3UsePathStyle: z.boolean(),
   // Phase 9: CIFS fields (password redacted in responses).
   cifsHost: z.string().nullable(),
   cifsPort: z.number().nullable(),

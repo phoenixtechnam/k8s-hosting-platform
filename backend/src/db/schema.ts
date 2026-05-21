@@ -737,6 +737,10 @@ export const backupConfigurations = pgTable('backup_configurations', {
   s3AccessKeyEncrypted: varchar('s3_access_key_encrypted', { length: 500 }),
   s3SecretKeyEncrypted: varchar('s3_secret_key_encrypted', { length: 500 }),
   s3Prefix: varchar('s3_prefix', { length: 255 }),
+  // R-X17 follow-up (migration 0021): per-target path-style toggle.
+  // True for Hetzner/MinIO/B2/R2/Wasabi/Garage (the default). Flip to
+  // false for AWS S3 in regions that no longer accept path-style URLs.
+  s3UsePathStyle: boolean('s3_use_path_style').notNull().default(true),
   // Phase 9: CIFS/SMB target fields. rclone smb backend handles
   // SMB1/2/3 — works against Hetzner Storage Box, Samba, Windows,
   // TrueNAS, NetApp. Password is stored encrypted with PLATFORM_ENCRYPTION_KEY

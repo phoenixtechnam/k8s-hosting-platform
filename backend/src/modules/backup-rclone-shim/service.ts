@@ -388,6 +388,7 @@ function rowToTargetConfig(
           ? decrypt(row.s3SecretKeyEncrypted, encryptionKey)
           : null,
         s3Prefix: row.s3Prefix,
+        s3UsePathStyle: row.s3UsePathStyle,
       };
 
     case 'ssh':

@@ -36,6 +36,7 @@ function sanitizeConfig(row: typeof backupConfigurations.$inferSelect) {
     s3Bucket: row.s3Bucket ?? null,
     s3Region: row.s3Region ?? null,
     s3Prefix: row.s3Prefix ?? null,
+    s3UsePathStyle: row.s3UsePathStyle,
     // Phase 9: CIFS fields (password is NEVER returned — sanitize excludes it).
     cifsHost: row.cifsHost ?? null,
     cifsPort: row.cifsPort ?? null,
@@ -146,6 +147,9 @@ export async function createBackupConfig(db: Database, input: CreateBackupConfig
       s3AccessKeyEncrypted: encrypt(input.s3_access_key, encryptionKey),
       s3SecretKeyEncrypted: encrypt(input.s3_secret_key, encryptionKey),
       s3Prefix: input.s3_prefix ?? null,
+      // s3_use_path_style: defaults true at schema; pass through
+      // explicit operator-supplied values.
+      s3UsePathStyle: input.s3_use_path_style ?? true,
       retentionDays: input.retention_days ?? 30,
       scheduleExpression: input.schedule_expression ?? '0 2 * * *',
       enabled: input.enabled !== false ? 1 : 0,
@@ -173,6 +177,7 @@ export async function updateBackupConfig(db: Database, id: string, input: Update
   if (input.s3_access_key !== undefined) updateValues.s3AccessKeyEncrypted = encrypt(input.s3_access_key, encryptionKey);
   if (input.s3_secret_key !== undefined) updateValues.s3SecretKeyEncrypted = encrypt(input.s3_secret_key, encryptionKey);
   if (input.s3_prefix !== undefined) updateValues.s3Prefix = input.s3_prefix;
+  if (input.s3_use_path_style !== undefined) updateValues.s3UsePathStyle = input.s3_use_path_style;
   // Phase 9: CIFS update fields.
   if (input.cifs_host !== undefined) updateValues.cifsHost = input.cifs_host;
   if (input.cifs_port !== undefined) updateValues.cifsPort = input.cifs_port;

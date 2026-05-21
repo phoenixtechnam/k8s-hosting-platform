@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CI guard — rejects regressions on the universal backup-rclone-shim
-# architecture (R-X1 through R-X14). Wire into Infrastructure CI.
+# architecture (R-X1 through R-X17). Wire into Infrastructure CI.
 #
 # What this catches:
 #   1. backup-rclone-shim routes regressing from super_admin-only to
@@ -321,4 +321,35 @@ for file in $VIOLATIONS; do
 done
 pass "Invariant 16: no new legacy backup-credentials uses"
 
-echo "[ci-backup-rclone-shim] All 16 invariants pass."
+# ─── 17. R-X17 follow-up: NFS test server is staging-only ─────────
+# `nfs-test-server` is a Deployment + Service + NetworkPolicy added
+# in 2026-05-21 to exercise the shim's NFS upstream path during
+# benchmarks. It runs nfs-server-alpine privileged with an emptyDir
+# backing store — fine for staging, must NEVER ship to production.
+#
+# Enforcement: the manifests must live under k8s/overlays/staging/
+# only. Listing them in k8s/base/, k8s/overlays/production/, or any
+# overlay outside `staging/` is rejected.
+NFS_TEST_VIOLATIONS=""
+# Anchor the match to `name: nfs-test-server` so YAML comments (e.g.
+# "see nfs-test-server for an example") don't false-positive. The
+# manifest's resource name is the load-bearing pattern.
+while IFS= read -r f; do
+  rel="${f#$ROOT/}"
+  case "$rel" in
+    k8s/overlays/staging/*) ;;  # allowed
+    *) NFS_TEST_VIOLATIONS="$NFS_TEST_VIOLATIONS $rel" ;;
+  esac
+done < <(grep -rlPE --include='*.yaml' '^\s*name:\s*nfs-test-server\s*$' "$ROOT/k8s/" 2>/dev/null || true)
+if [[ -n "$NFS_TEST_VIOLATIONS" ]]; then
+  fail "Invariant 17: nfs-test-server referenced outside staging overlay:$NFS_TEST_VIOLATIONS"
+fi
+# And the kustomization itself must include it for staging — otherwise
+# the bench harness has no upstream to point at.
+STAGING_KUST="$ROOT/k8s/overlays/staging/kustomization.yaml"
+if [[ -f "$STAGING_KUST" ]] && ! grep -q "nfs-test-server" "$STAGING_KUST"; then
+  fail "Invariant 17: staging kustomization.yaml does not include nfs-test-server/ — bench harness expects it"
+fi
+pass "Invariant 17: nfs-test-server is staging-only"
+
+echo "[ci-backup-rclone-shim] All 17 invariants pass."

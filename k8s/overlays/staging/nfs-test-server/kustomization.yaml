@@ -1,0 +1,10 @@
+# STAGING-ONLY: NFS test server for backup-rclone-shim bench harness.
+# Must never render into the production overlay — enforced by
+# `scripts/ci-backup-rclone-shim-check.sh`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml

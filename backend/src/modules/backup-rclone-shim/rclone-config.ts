@@ -69,6 +69,11 @@ export interface BackupTargetConfig {
   readonly s3AccessKey?: string | null;
   readonly s3SecretKey?: string | null;
   readonly s3Prefix?: string | null;
+  /** When true (default), pass `--use-path-style` to versitygw. When
+   *  false, omit it so versitygw uses virtual-hosted-style URLs
+   *  (`bucket.endpoint`). Required for AWS S3 in regions that no longer
+   *  accept path-style. Null/undefined = legacy rows = treat as true. */
+  readonly s3UsePathStyle?: boolean | null;
   // SFTP (storage_type='ssh')
   readonly sshHost?: string | null;
   readonly sshPort?: number | null;
@@ -306,6 +311,10 @@ function renderS3Env(
   // their S3 provider (Hetzner / AWS / MinIO / etc.). versitygw does
   // not rewrite bucket names — the per-class isolation is operator-
   // managed via the upstream provider's bucket-level ACLs / policies.
+  // s3UsePathStyle: legacy rows (null/undefined) treated as true; only
+  // an explicit false suppresses --use-path-style. The launcher reads
+  // this env var; values not literally 'true' or 'false' are rejected.
+  const usePathStyle = t.s3UsePathStyle === false ? 'false' : 'true';
   return (
     [
       ...prefix,
@@ -314,6 +323,7 @@ function renderS3Env(
       shellQuote('UPSTREAM_ACCESS_KEY', t.s3AccessKey),
       shellQuote('UPSTREAM_SECRET_KEY', t.s3SecretKey),
       shellQuote('UPSTREAM_REGION', t.s3Region ?? 'us-east-1'),
+      shellQuote('UPSTREAM_USE_PATH_STYLE', usePathStyle),
       '',
     ].join('\n')
   );
@@ -473,6 +483,7 @@ export function computeInputHash(
       target.s3AccessKey,
       target.s3SecretKey,
       target.s3Prefix,
+      target.s3UsePathStyle === false ? 'pathstyle=false' : 'pathstyle=true',
       target.sshHost,
       String(target.sshPort ?? ''),
       target.sshUser,

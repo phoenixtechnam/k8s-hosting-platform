@@ -156,7 +156,30 @@ data:
           # In production operators should pre-populate /etc/shim/known_hosts
           # (deferred — staging uses StrictHostKeyChecking=accept-new which
           # auto-adds and locks).
-          SSHFS_OPTS="allow_other,reconnect,ServerAliveInterval=15,ServerAliveCountMax=4,StrictHostKeyChecking=accept-new,UserKnownHostsFile=/var/lib/versitygw/.ssh/known_hosts"
+          #
+          # Strict-consistency options (R-X17 follow-up 2026-05-21):
+          # versitygw POSIX backend writes each multipart part to the
+          # mount, then re-reads the file on CompleteMultipartUpload to
+          # compute the multipart ETag. Default sshfs flags allow the
+          # SFTP `close()` to return before the server has durably
+          # received the bytes — the readback then sees short/missing
+          # data → ETag mismatch → `InvalidPart` on Complete.
+          #
+          #   sshfs_sync       — synchronous writes: close() blocks until
+          #                      the SFTP server acks. Eliminates the
+          #                      write-then-read-back race.
+          #   sync_read        — synchronous reads (no readahead reorder).
+          #   direct_io        — bypass FUSE page cache; every read goes
+          #                      to the SFTP server.
+          #   cache=no         — disable sshfs's stat/dir cache so the
+          #                      Complete-side stat() sees the final size.
+          #   no_readahead     — disable client-side readahead.
+          #
+          # Trade-off: throughput drops vs the default async mode. The
+          # bench confirms ~5-15 MiB/s for 1 GiB multipart on Hetzner
+          # Storage Box (vs ~40 MiB/s on CIFS), which is fine for
+          # cold-backup workloads where correctness > throughput.
+          SSHFS_OPTS="allow_other,reconnect,ServerAliveInterval=15,ServerAliveCountMax=4,StrictHostKeyChecking=accept-new,UserKnownHostsFile=/var/lib/versitygw/.ssh/known_hosts,sshfs_sync,sync_read,direct_io,cache=no,no_readahead"
           [ -n "$${UPSTREAM_SFTP_KEYFILE:-}" ] && SSHFS_OPTS="$${SSHFS_OPTS},IdentityFile=$${UPSTREAM_SFTP_KEYFILE}"
           mkdir -p /var/lib/versitygw/.ssh && touch /var/lib/versitygw/.ssh/known_hosts
           log "  sshfs $${UPSTREAM_SFTP_USER}@$${UPSTREAM_SFTP_HOST}:$${UPSTREAM_SFTP_PORT:+(port $${UPSTREAM_SFTP_PORT})}"
@@ -190,9 +213,23 @@ data:
     # by the reconciler — clients use these to authenticate TO the shim).
     if [ "$${UPSTREAM_TYPE}" = "s3" ]; then
       log "launching versitygw s3 → $${UPSTREAM_ENDPOINT}"
-      # --use-path-style for Hetzner/MinIO compatibility (virtual-hosted
-      # style requires DNS wildcards on the upstream domain). --disable-data-integrity-check
-      # because barman-cloud computes its own checksums.
+      # --use-path-style for Hetzner/MinIO/Backblaze/R2/Wasabi/Garage
+      # compatibility (virtual-hosted style requires DNS wildcards on
+      # the upstream domain). Operators flip UPSTREAM_USE_PATH_STYLE=false
+      # for AWS S3 with virtual-hosted addressing (newer AWS regions).
+      # --disable-data-integrity-check because barman-cloud computes its
+      # own checksums.
+      #
+      # Strict allowlist: the env var must be literally 'true' or 'false'.
+      # Defaults to 'true' (legacy rows / unset) for back-compat.
+      case "$${UPSTREAM_USE_PATH_STYLE:-true}" in
+        true)  USE_PATH_STYLE_FLAG=--use-path-style ;;
+        false) USE_PATH_STYLE_FLAG= ;;
+        *) log "FATAL: UPSTREAM_USE_PATH_STYLE='$${UPSTREAM_USE_PATH_STYLE}' must be 'true' or 'false'"; exit 2 ;;
+      esac
+      # Unquoted expansion of the optional flag: a quoted "" would pass
+      # an empty positional arg to versitygw and break flag parsing.
+      # shellcheck disable=SC2086
       exec versitygw \
         --port "$ADDR" \
         --access "$${ROOT_ACCESS_KEY}" \
@@ -203,7 +240,7 @@ data:
         --access "$${UPSTREAM_ACCESS_KEY}" \
         --secret "$${UPSTREAM_SECRET_KEY}" \
         --region "$${UPSTREAM_REGION:-us-east-1}" \
-        --use-path-style \
+        $${USE_PATH_STYLE_FLAG} \
         --disable-data-integrity-check
     else
       log "launching versitygw posix → $${VGW_ROOT}"

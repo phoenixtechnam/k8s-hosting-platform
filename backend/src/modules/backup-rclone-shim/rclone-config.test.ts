@@ -138,6 +138,29 @@ describe('renderShimConfig — single S3 class', () => {
     expect(r.upstreamEnv).toContain("UPSTREAM_REGION='us-east-1'");
   });
 
+  it('emits UPSTREAM_USE_PATH_STYLE=true by default (s3UsePathStyle undefined)', () => {
+    expect(out.upstreamEnv).toContain("UPSTREAM_USE_PATH_STYLE='true'");
+  });
+
+  it('emits UPSTREAM_USE_PATH_STYLE=true when s3UsePathStyle explicitly true', () => {
+    const t: BackupTargetConfig = { ...s3Target, s3UsePathStyle: true };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', t)]);
+    expect(r.upstreamEnv).toContain("UPSTREAM_USE_PATH_STYLE='true'");
+  });
+
+  it('emits UPSTREAM_USE_PATH_STYLE=false when s3UsePathStyle explicitly false', () => {
+    const t: BackupTargetConfig = { ...s3Target, s3UsePathStyle: false };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', t)]);
+    expect(r.upstreamEnv).toContain("UPSTREAM_USE_PATH_STYLE='false'");
+    expect(r.upstreamEnv).not.toContain("UPSTREAM_USE_PATH_STYLE='true'");
+  });
+
+  it('treats s3UsePathStyle=null (legacy row) as true', () => {
+    const t: BackupTargetConfig = { ...s3Target, s3UsePathStyle: null };
+    const r = renderShimConfig(FIXED_KEY, [assign('system', t)]);
+    expect(r.upstreamEnv).toContain("UPSTREAM_USE_PATH_STYLE='true'");
+  });
+
   it('rejects S3 target missing endpoint', () => {
     const t: BackupTargetConfig = { ...s3Target, s3Endpoint: null };
     expect(() => renderShimConfig(FIXED_KEY, [assign('system', t)])).toThrow(
@@ -384,6 +407,22 @@ describe('computeInputHash', () => {
     const mutated: BackupTargetConfig = { ...s3Target, s3AccessKey: 'AKIA_DIFFERENT' };
     expect(computeInputHash(FIXED_KEY, [assign('system', s3Target)])).not.toBe(
       computeInputHash(FIXED_KEY, [assign('system', mutated)]),
+    );
+  });
+
+  it('changes when s3UsePathStyle toggles (reconciler must re-render)', () => {
+    const a: BackupTargetConfig = { ...s3Target, s3UsePathStyle: true };
+    const b: BackupTargetConfig = { ...s3Target, s3UsePathStyle: false };
+    expect(computeInputHash(FIXED_KEY, [assign('system', a)])).not.toBe(
+      computeInputHash(FIXED_KEY, [assign('system', b)]),
+    );
+  });
+
+  it('treats s3UsePathStyle=undefined and =true identically (legacy compatibility)', () => {
+    const legacy: BackupTargetConfig = { ...s3Target }; // s3UsePathStyle undefined
+    const explicit: BackupTargetConfig = { ...s3Target, s3UsePathStyle: true };
+    expect(computeInputHash(FIXED_KEY, [assign('system', legacy)])).toBe(
+      computeInputHash(FIXED_KEY, [assign('system', explicit)]),
     );
   });
 

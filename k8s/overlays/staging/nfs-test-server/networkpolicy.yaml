@@ -1,0 +1,37 @@
+# Restrict NFS test-server traffic to the backup-rclone-shim DaemonSet
+# (the only legitimate client) + bench probe pod. Defence-in-depth on
+# top of the staging-only manifest gate.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nfs-test-server
+  namespace: platform
+  labels:
+    app: nfs-test-server
+    platform.phoenix-host.net/staging-only: "true"
+spec:
+  podSelector:
+    matchLabels:
+      app: nfs-test-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backup-rclone-shim
+        - podSelector:
+            matchLabels:
+              app: bench-shim
+      ports:
+        - port: 2049
+          protocol: TCP
+        - port: 20048
+          protocol: TCP
+        - port: 111
+          protocol: TCP
+  # The NFS server is a pure receive-side process. Deny all egress so
+  # a compromised privileged container can't exfiltrate or beacon out.
+  # An empty egress list under policyTypes=[Egress] denies everything.
+  egress: []

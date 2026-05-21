@@ -1,0 +1,84 @@
+# NFS test server — STAGING ONLY.
+#
+# Single-pod nfs-server-alpine for exercising the backup-rclone-shim's
+# NFS upstream code path. The shim DaemonSet kernel-mounts this server
+# at /mnt/upstream when an operator creates an NFS-storage_type backup
+# target pointing at `nfs-test-server.platform.svc.cluster.local`.
+#
+# Backing storage is an emptyDir — data is lost on Pod restart. That is
+# the intended behaviour: this is a probe target, not a durable store.
+# For real NFS workloads operators point at their own production-grade
+# NFS server (Hetzner NetCup-style appliance, on-prem NetApp, etc.).
+#
+# CI guard `scripts/ci-backup-rclone-shim-check.sh` enforces that this
+# manifest never renders into the production overlay.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-test-server
+  namespace: platform
+  labels:
+    app: nfs-test-server
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: bench
+    platform.phoenix-host.net/staging-only: "true"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nfs-test-server
+  template:
+    metadata:
+      labels:
+        app: nfs-test-server
+        platform.phoenix-host.net/staging-only: "true"
+    spec:
+      containers:
+        - name: nfsd
+          # Pinned tag — never use :latest. itsthenetwork/nfs-server-alpine
+          # is unmaintained upstream but the 12-2.4.0 image is the de-
+          # facto standard for ephemeral NFS test servers in k8s.
+          image: itsthenetwork/nfs-server-alpine:12-2.4.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SHARED_DIRECTORY
+              value: /nfsshare
+            # Permit access from anywhere (NetworkPolicy below restricts
+            # this to the shim DaemonSet at the network layer).
+            - name: PERMITTED
+              value: "*"
+          ports:
+            - containerPort: 2049
+              protocol: TCP
+              name: nfs
+            - containerPort: 20048
+              protocol: TCP
+              name: mountd
+            - containerPort: 111
+              protocol: TCP
+              name: rpcbind
+          securityContext:
+            # nfsd kernel module needs CAP_SYS_ADMIN + NET_BIND_SERVICE.
+            # privileged: true is the simplest way to satisfy both —
+            # acceptable for a staging-only probe target.
+            privileged: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - NET_BIND_SERVICE
+          volumeMounts:
+            - name: share
+              mountPath: /nfsshare
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: share
+          emptyDir:
+            sizeLimit: 4Gi

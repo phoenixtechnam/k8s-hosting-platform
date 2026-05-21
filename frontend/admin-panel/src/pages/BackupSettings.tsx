@@ -87,6 +87,9 @@ export default function BackupSettings() {
     s3_access_key: '',
     s3_secret_key: '',
     s3_prefix: '',
+    // Path-style addressing — default true (works for Hetzner, Backblaze,
+    // R2, Wasabi, MinIO, Garage, Ceph). Operators uncheck for AWS S3.
+    s3_use_path_style: true,
     // Phase 9: CIFS form fields.
     cifs_host: '',
     cifs_port: '445',
@@ -103,7 +106,7 @@ export default function BackupSettings() {
     setForm({
       name: '', ssh_host: '', ssh_port: '22', ssh_user: '', ssh_key: '', ssh_password: '', ssh_path: '/backups',
       s3_endpoint: '', s3_bucket: '', s3_region: 'us-east-1', s3_access_key: '', s3_secret_key: '',
-      s3_prefix: '',
+      s3_prefix: '', s3_use_path_style: true,
       cifs_host: '', cifs_port: '445', cifs_share: '', cifs_user: '', cifs_password: '',
       cifs_domain: '', cifs_path: '',
       retention_days: '30', schedule_expression: '0 2 * * *',
@@ -132,6 +135,10 @@ export default function BackupSettings() {
       s3_access_key: '', // blank; server redacts
       s3_secret_key: '', // blank; server redacts
       s3_prefix: config.s3Prefix ?? '',
+      // Server always returns boolean (DB column NOT NULL DEFAULT true).
+      // The ?? is belt-and-braces for older clients still on the response
+      // schema where this was nullable.
+      s3_use_path_style: config.s3UsePathStyle ?? true,
       // Phase 9: CIFS fields.
       cifs_host: config.cifsHost ?? '',
       cifs_port: String(config.cifsPort ?? 445),
@@ -189,7 +196,7 @@ export default function BackupSettings() {
         cifs_path: form.cifs_path || undefined,
       };
     }
-    return { ...base, storage_type: 's3' as const, s3_endpoint: form.s3_endpoint, s3_bucket: form.s3_bucket, s3_region: form.s3_region, s3_access_key: form.s3_access_key, s3_secret_key: form.s3_secret_key, s3_prefix: form.s3_prefix || undefined };
+    return { ...base, storage_type: 's3' as const, s3_endpoint: form.s3_endpoint, s3_bucket: form.s3_bucket, s3_region: form.s3_region, s3_access_key: form.s3_access_key, s3_secret_key: form.s3_secret_key, s3_prefix: form.s3_prefix || undefined, s3_use_path_style: form.s3_use_path_style };
   };
 
   // PATCH payload for edit mode. Strictly omits secrets unless the
@@ -226,6 +233,7 @@ export default function BackupSettings() {
       payload.s3_bucket = form.s3_bucket;
       payload.s3_region = form.s3_region;
       payload.s3_prefix = form.s3_prefix || undefined;
+      payload.s3_use_path_style = form.s3_use_path_style;
       if (changeSecret && form.s3_access_key.trim().length > 0) {
         payload.s3_access_key = form.s3_access_key;
       }
@@ -434,6 +442,22 @@ export default function BackupSettings() {
               <div>
                 <label htmlFor="bc-s3-prefix" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Prefix <span className="text-xs text-gray-400">(optional)</span></label>
                 <input id="bc-s3-prefix" className={INPUT_CLASS + ' mt-1'} value={form.s3_prefix} onChange={(e) => setForm({ ...form, s3_prefix: e.target.value })} data-testid="bc-s3-prefix" />
+              </div>
+              <div className="flex items-start gap-2">
+                <input
+                  id="bc-s3-use-path-style"
+                  type="checkbox"
+                  className="mt-1"
+                  checked={form.s3_use_path_style}
+                  onChange={(e) => setForm({ ...form, s3_use_path_style: e.target.checked })}
+                  data-testid="bc-s3-use-path-style"
+                />
+                <label htmlFor="bc-s3-use-path-style" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Use path-style URLs
+                  <span className="block text-xs font-normal text-gray-500 dark:text-gray-400">
+                    Default for Hetzner, Backblaze B2, Cloudflare R2, Wasabi, MinIO, Garage. Uncheck for AWS S3 with virtual-hosted addressing.
+                  </span>
+                </label>
               </div>
               <div>
                 <label htmlFor="bc-s3-access" className="block text-sm font-medium text-gray-700 dark:text-gray-300">

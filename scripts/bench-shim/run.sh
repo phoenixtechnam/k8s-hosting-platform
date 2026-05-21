@@ -10,12 +10,26 @@ set -euo pipefail
 BACKEND="${1:?backend required}"
 shift || true
 
+case "$BACKEND" in
+  s3|sftp|cifs|nfs) ;;
+  *) echo "unsupported backend '$BACKEND'; expected one of s3|sftp|cifs|nfs" >&2; exit 2 ;;
+esac
+
 SSH="ssh -i $HOME/hosting-platform.key -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@staging1.phoenix-host.net"
 RESULTS=/tmp/bench-shim-results
 mkdir -p "$RESULTS"
 OUT="$RESULTS/${BACKEND}-$(date +%Y%m%dT%H%M%S).jsonl"
 
 log() { printf '[bench-driver %s] %s\n' "$BACKEND" "$*" >&2; }
+
+# ── 0. NFS: seed the staging in-cluster test target (idempotent) ──────
+# Other backends require the operator to have already configured the
+# target via the admin panel; NFS bench targets nfs-test-server in
+# the platform namespace so we seed it here.
+if [[ "$BACKEND" == "nfs" ]]; then
+  HERE="$(cd "$(dirname "$0")" && pwd)"
+  "$HERE/seed-nfs-target.sh"
+fi
 
 # ── 1. shim ready? class bound to backend? ────────────────────────────
 log "checking shim DaemonSet state…"

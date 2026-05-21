@@ -13,6 +13,10 @@ interface BackupConfig {
   readonly s3Bucket: string | null;
   readonly s3Region: string | null;
   readonly s3Prefix: string | null;
+  // R-X17 follow-up: path-style addressing toggle. Always present
+  // (DB column is NOT NULL DEFAULT true). False = virtual-hosted
+  // (AWS S3 with newer regions).
+  readonly s3UsePathStyle: boolean;
   // Phase 9: CIFS/SMB fields. Password is never returned.
   readonly cifsHost: string | null;
   readonly cifsPort: number | null;
