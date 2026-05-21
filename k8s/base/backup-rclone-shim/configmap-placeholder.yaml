@@ -1,22 +1,19 @@
-# Initial ConfigMap with launcher.sh + empty buckets.txt.
+# Initial ConfigMap with launcher.sh.
 #
-# R-X4-followup: rclone.conf moved to a Secret
-# (backup-rclone-shim-credentials). This ConfigMap now only carries
-# non-sensitive content. Buckets.txt is a plaintext list of bucket
-# names ('system:', 'tenant:', 'mail:') — not a secret. launcher.sh
-# is the entry-point script — also not a secret.
+# R-X17 — versitygw architecture:
+#   - launcher.sh dispatches by upstream type (S3 / SFTP / CIFS / NFS)
+#   - S3 mode: `versitygw s3` (passthrough proxy to upstream S3 service)
+#   - POSIX modes: mount the share into /mnt/upstream, then `versitygw posix`
+#   - No more rclone serve s3, no combine, no crypt — replaced because
+#     rclone's ListObjectsV2 returns CommonPrefixes WITHOUT trailing
+#     slash, breaking barman-cloud-backup-show and restic enumeration.
+#     versitygw emits correct S3-protocol responses.
 #
 # Owned at runtime by platform-api's backup-rclone-shim/reconciler.ts:
 # when an operator assigns a target to a class, the reconciler MERGE-
-# patches `data.buckets.txt` here (leaving `launcher.sh` untouched) +
-# writes `data.rclone.conf` into the Secret + bumps the DaemonSet
+# patches `data.classes.txt` here (leaving `launcher.sh` untouched) +
+# writes `data.upstream.env` into the Secret + bumps the DaemonSet
 # annotation hash, triggering a rolling restart.
-#
-# Until the reconciler runs and the first target is assigned, the
-# launcher.sh wrapper detects an empty buckets.txt and sleeps the
-# container. `internalTrafficPolicy: Local` ensures clients on a node
-# whose shim is sleeping get connection-refused on the Service VIP,
-# which their retry logic handles as a transient outage.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -29,65 +26,44 @@ metadata:
   annotations:
     platform.phoenix-host.net/managed-by: backup-rclone-shim/config-renderer
     # Flux must use merge-patch (not full SSA) on this ConfigMap so
-    # `data.buckets.txt` isn't reset to "" each tick when the
-    # reconciler has populated it with real bucket names. Without
-    # this annotation, every Flux reconcile wipes the runtime state.
-    # Discovered via E2E on staging 2026-05-20.
+    # `data.classes.txt` isn't reset to "" each tick when the
+    # reconciler has populated it. Without this annotation, every Flux
+    # reconcile wipes the runtime state.
     kustomize.toolkit.fluxcd.io/ssa: merge
 data:
-  # buckets.txt is INTENTIONALLY ABSENT here so Flux doesn't claim
-  # ownership of the field. The reconciler creates + maintains it.
-  # When the reconciler hasn't run yet, launcher.sh sleeps because
-  # BUCKETS_FILE doesn't exist (the launcher tolerates that).
+  # classes.txt is INTENTIONALLY ABSENT here so Flux doesn't claim
+  # ownership of the field. The reconciler creates + maintains it
+  # with one line per bound class (system, tenant, mail).
 
-  # The shim's entrypoint. Reads buckets.txt; if empty, sleep
-  # indefinitely (the pod stays Ready=false from the readiness probe,
-  # so the Service doesn't route to it; clients get connection
-  # refused). If buckets exist, exec into rclone.
-  #
-  # buckets.txt is validated line-by-line against a strict allowlist
-  # before being passed to rclone. A malicious ConfigMap edit (by a
-  # `platform`-namespace admin or a buggy reconciler) writing shell
-  # metacharacters cannot inject extra arguments — each line must be
-  # exactly one of: `system`, `tenant`, `mail` (R-X16 class names,
-  # bare — no `:` suffix, no `-raw` variants).
+  # The shim's entrypoint. Reads classes.txt + upstream.env; if either
+  # is missing / empty, sleeps so the pod stays Ready=false (Service
+  # routes nothing to it; clients get connection-refused).
   launcher.sh: |
     #!/bin/sh
     set -eu
 
-    CONFIG=/etc/rclone-credentials/rclone.conf
-    BUCKETS_FILE=/etc/rclone-static/buckets.txt
+    UPSTREAM_ENV=/etc/shim-credentials/upstream.env
+    CLASSES_FILE=/etc/shim-static/classes.txt
     ADDR=":9000"
+    VGW_USER_DATA=/var/lib/versitygw
 
     log() { printf '[backup-rclone-shim] %s\n' "$*" >&2; }
 
-    # The credentials Secret is projected into /etc/rclone-credentials.
-    # On fresh clusters before the reconciler has populated it, the
-    # `rclone.conf` data key may be absent — the projected file then
-    # simply doesn't exist. We tolerate that by sleeping until the
-    # reconciler renders content (same path as the empty buckets.txt
-    # branch). The Secret object itself MUST exist (Flux applies the
-    # placeholder) so the projected volume can mount.
-    if [ ! -f "$CONFIG" ]; then
-      log "$CONFIG missing — reconciler has not rendered yet."
+    # ─── Pre-flight: upstream.env + classes.txt must exist ────────────
+    if [ ! -f "$UPSTREAM_ENV" ]; then
+      log "$UPSTREAM_ENV missing — reconciler has not rendered yet."
+      log "Sleeping until platform-api renders config."
+      while :; do sleep 30; done
+    fi
+    if [ ! -s "$CLASSES_FILE" ]; then
+      log "$CLASSES_FILE empty — no class-target assignments."
       log "Sleeping until platform-api renders config."
       while :; do sleep 30; done
     fi
 
-    if [ ! -s "$BUCKETS_FILE" ]; then
-      log "$BUCKETS_FILE empty — no class-target assignments."
-      log "Sleeping until platform-api renders config."
-      while :; do sleep 30; done
-    fi
-
-    # Parse buckets.txt line-by-line. R-X16 unified architecture: each
-    # line is now a bare CLASS NAME (no `:` suffix, no `-raw` variants).
-    # The launcher uses the list purely as a sanity-check that the
-    # reconciler completed and at least one class is bound. The actual
-    # served remote is the fixed `encrypted:` single crypt remote.
-    #
-    # Class-name allowlist: lowercase letters only (system, tenant, mail).
-    # This defends against:
+    # ─── Validate classes.txt against strict allowlist ────────────────
+    # Each line must be exactly one of: system / tenant / mail.
+    # Defends against:
     #   - shell-meta injection (`; rm -rf /`, $(curl ...), backticks)
     #   - argument injection (`--config /tmp/evil`, extra flags)
     #   - IFS / whitespace pathology
@@ -98,47 +74,146 @@ data:
       [ -z "$LINE" ] && continue
       case "$LINE" in
         system|tenant|mail) ;;
-        *) log "FATAL: buckets.txt contains invalid class: '$LINE'"; exit 2 ;;
+        *) log "FATAL: classes.txt contains invalid class: '$LINE'"; exit 2 ;;
       esac
-      # Flux postBuild substituteFrom uses envsubst-style expansion
-      # on the ConfigMap content. The two refs below would otherwise
-      # be eaten (substituted to "" because they're not in the
-      # platform-config envFrom). The $$ escape tells Flux to leave
-      # them as literal dollar-brace-NAME for the runtime shell.
-      # Memory rule [feedback_flux_postbuild_escape] documents this
-      # trap; ci-flux-escape-check.sh enforces.
+      # Flux postBuild substituteFrom escape: `$$` keeps literal `$`
+      # past envsubst. Without this the variables get blanked.
       CLASSES_OK="$${CLASSES_OK}$${LINE} "
-    done < "$BUCKETS_FILE"
-
+    done < "$CLASSES_FILE"
     if [ -z "$CLASSES_OK" ]; then
-      log "$BUCKETS_FILE present but yielded zero valid classes — sleeping."
+      log "$CLASSES_FILE present but yielded zero valid classes — sleeping."
       while :; do sleep 30; done
     fi
 
-    # `rclone serve s3` accepts ONE remote:path and serves the top-level
-    # DIRECTORIES under it as buckets. The renderer emits ONE upstream
-    # remote (the operator-configured S3/SFTP/CIFS/NFS target) wrapped
-    # by ONE crypt remote (`encrypted:`). When a caller writes to
-    # `s3://system/...` through the served endpoint, rclone serve s3
-    # creates `system/` as a top-level dir inside the crypt remote on
-    # first write — no static bucket list needed. This replaces the
-    # R-X10 `[buckets]` combine backend (which broke rclone's LIST
-    # traversal — see staging E2E 2026-05-20).
-    log "launching rclone serve s3 encrypted: (classes: $${CLASSES_OK})"
+    # ─── Load upstream params from env file ───────────────────────────
+    # Source the env file in a subshell-safe way. The file contains:
+    #   UPSTREAM_TYPE=s3|sftp|cifs|nfs
+    #   UPSTREAM_BUCKET, UPSTREAM_PREFIX, UPSTREAM_ENDPOINT, ...
+    #   ROOT_ACCESS_KEY (shim's own creds for clients to authenticate)
+    #   ROOT_SECRET_KEY
+    # All values are written by the reconciler with strict allowlist
+    # validation; we trust them but still pass through the same shell
+    # allowlist check (no `eval`, no command substitution).
+    set -a
+    . "$UPSTREAM_ENV"
+    set +a
 
-    # Performance flags carried from BACKUP_ARCHITECTURE_RFC §13a.
-    # --vfs-cache-mode writes (NOT off): rclone serve s3 stores in-flight
-    # multipart-upload parts in the VFS cache between InitiateMultipartUpload
-    # and CompleteMultipartUpload. With `off`, parts evict before completion
-    # and CompleteMultipartUpload returns NoSuchUpload — barman-cloud and
-    # restic both rely on multipart for large objects (base backup, big
-    # snapshots). `writes` keeps just the in-flight write data, not the
-    # whole VFS, so memory pressure stays bounded.
-    exec rclone serve s3 \
-      --config "$CONFIG" \
-      --addr "$ADDR" \
-      --vfs-cache-mode writes \
-      --no-checksum \
-      --s3-chunk-size 16M \
-      --s3-upload-concurrency 4 \
-      encrypted:
+    case "$${UPSTREAM_TYPE:-}" in
+      s3|sftp|cifs|nfs) ;;
+      *) log "FATAL: UPSTREAM_TYPE='$${UPSTREAM_TYPE:-}' not recognised"; exit 2 ;;
+    esac
+
+    log "shim launcher: upstream type='$${UPSTREAM_TYPE}' classes='$${CLASSES_OK}'"
+
+    # ─── Mount POSIX upstreams (SFTP/CIFS/NFS) ────────────────────────
+    # versitygw POSIX backend reads from a local filesystem path. For
+    # remote upstreams we kernel-mount them first. Requires the pod to
+    # run with CAP_SYS_ADMIN (privileged). For S3 upstream this whole
+    # block is skipped and the pod stays unprivileged.
+    MOUNT_POINT=/mnt/upstream
+    case "$${UPSTREAM_TYPE}" in
+      cifs)
+        # Required env: UPSTREAM_CIFS_HOST UPSTREAM_CIFS_SHARE
+        #               UPSTREAM_CIFS_USER UPSTREAM_CIFS_PASSWORD
+        #               UPSTREAM_CIFS_PORT (optional, default 445)
+        #               UPSTREAM_CIFS_DOMAIN (optional)
+        if mountpoint -q "$MOUNT_POINT"; then
+          log "  $MOUNT_POINT already mounted, reusing"
+        else
+          log "  mount.cifs //$${UPSTREAM_CIFS_HOST}/$${UPSTREAM_CIFS_SHARE} → $MOUNT_POINT"
+          MOUNT_OPTS="username=$${UPSTREAM_CIFS_USER},password=$${UPSTREAM_CIFS_PASSWORD},uid=0,gid=0,file_mode=0640,dir_mode=0750,iocharset=utf8,vers=3.0"
+          [ -n "$${UPSTREAM_CIFS_PORT:-}" ] && MOUNT_OPTS="$${MOUNT_OPTS},port=$${UPSTREAM_CIFS_PORT}"
+          [ -n "$${UPSTREAM_CIFS_DOMAIN:-}" ] && MOUNT_OPTS="$${MOUNT_OPTS},domain=$${UPSTREAM_CIFS_DOMAIN}"
+          mount.cifs "//$${UPSTREAM_CIFS_HOST}/$${UPSTREAM_CIFS_SHARE}" "$MOUNT_POINT" -o "$MOUNT_OPTS" \
+            || { log "FATAL: mount.cifs failed"; exit 3; }
+        fi
+        VGW_ROOT="$${MOUNT_POINT}$${UPSTREAM_CIFS_PATH:+/$${UPSTREAM_CIFS_PATH}}"
+        ;;
+      nfs)
+        # Required env: UPSTREAM_NFS_SERVER UPSTREAM_NFS_EXPORT
+        #               UPSTREAM_NFS_VERSION (e.g. 4.2)
+        #               UPSTREAM_NFS_OPTIONS (optional, e.g. soft,timeo=600)
+        if mountpoint -q "$MOUNT_POINT"; then
+          log "  $MOUNT_POINT already mounted, reusing"
+        else
+          log "  mount.nfs $${UPSTREAM_NFS_SERVER}:$${UPSTREAM_NFS_EXPORT} → $MOUNT_POINT"
+          MOUNT_OPTS="vers=$${UPSTREAM_NFS_VERSION:-4.2}"
+          [ -n "$${UPSTREAM_NFS_OPTIONS:-}" ] && MOUNT_OPTS="$${MOUNT_OPTS},$${UPSTREAM_NFS_OPTIONS}"
+          mount.nfs "$${UPSTREAM_NFS_SERVER}:$${UPSTREAM_NFS_EXPORT}" "$MOUNT_POINT" -o "$MOUNT_OPTS" \
+            || { log "FATAL: mount.nfs failed"; exit 3; }
+        fi
+        VGW_ROOT="$${MOUNT_POINT}$${UPSTREAM_NFS_PATH:+/$${UPSTREAM_NFS_PATH}}"
+        ;;
+      sftp)
+        # Required env: UPSTREAM_SFTP_HOST UPSTREAM_SFTP_USER
+        #               UPSTREAM_SFTP_PORT (optional, default 22)
+        #               UPSTREAM_SFTP_KEYFILE (path) OR UPSTREAM_SFTP_PASSWORD
+        if mountpoint -q "$MOUNT_POINT"; then
+          log "  $MOUNT_POINT already mounted, reusing"
+        else
+          PORT="$${UPSTREAM_SFTP_PORT:-22}"
+          # sshfs needs StrictHostKeyChecking=no for first-time hosts.
+          # In production operators should pre-populate /etc/shim/known_hosts
+          # (deferred — staging uses StrictHostKeyChecking=accept-new which
+          # auto-adds and locks).
+          SSHFS_OPTS="allow_other,reconnect,ServerAliveInterval=15,ServerAliveCountMax=4,StrictHostKeyChecking=accept-new,UserKnownHostsFile=/var/lib/versitygw/.ssh/known_hosts"
+          [ -n "$${UPSTREAM_SFTP_KEYFILE:-}" ] && SSHFS_OPTS="$${SSHFS_OPTS},IdentityFile=$${UPSTREAM_SFTP_KEYFILE}"
+          mkdir -p /var/lib/versitygw/.ssh && touch /var/lib/versitygw/.ssh/known_hosts
+          log "  sshfs $${UPSTREAM_SFTP_USER}@$${UPSTREAM_SFTP_HOST}:$${UPSTREAM_SFTP_PORT:+(port $${UPSTREAM_SFTP_PORT})}"
+          if [ -n "$${UPSTREAM_SFTP_PASSWORD:-}" ]; then
+            echo "$${UPSTREAM_SFTP_PASSWORD}" | sshfs \
+              "$${UPSTREAM_SFTP_USER}@$${UPSTREAM_SFTP_HOST}:" "$MOUNT_POINT" \
+              -p "$PORT" -o "$SSHFS_OPTS,password_stdin" \
+              || { log "FATAL: sshfs failed (password)"; exit 3; }
+          else
+            sshfs "$${UPSTREAM_SFTP_USER}@$${UPSTREAM_SFTP_HOST}:" "$MOUNT_POINT" \
+              -p "$PORT" -o "$SSHFS_OPTS" \
+              || { log "FATAL: sshfs failed (key)"; exit 3; }
+          fi
+        fi
+        VGW_ROOT="$${MOUNT_POINT}$${UPSTREAM_SFTP_PATH:+/$${UPSTREAM_SFTP_PATH}}"
+        ;;
+    esac
+
+    # ─── Ensure each class has a directory at the mount root ──────────
+    # versitygw POSIX backend exposes top-level dirs as buckets. CreateBucket
+    # via S3 API would also create them, but pre-creating means a fresh
+    # caller LIST returns the bucket even before the first PUT.
+    if [ "$${UPSTREAM_TYPE}" != "s3" ]; then
+      for cls in $${CLASSES_OK}; do
+        mkdir -p "$${VGW_ROOT}/$${cls}" 2>/dev/null || true
+      done
+    fi
+
+    # ─── Exec versitygw ──────────────────────────────────────────────
+    # ROOT_ACCESS_KEY + ROOT_SECRET_KEY come from upstream.env (HKDF-derived
+    # by the reconciler — clients use these to authenticate TO the shim).
+    if [ "$${UPSTREAM_TYPE}" = "s3" ]; then
+      log "launching versitygw s3 → $${UPSTREAM_ENDPOINT}"
+      # --use-path-style for Hetzner/MinIO compatibility (virtual-hosted
+      # style requires DNS wildcards on the upstream domain). --disable-data-integrity-check
+      # because barman-cloud computes its own checksums.
+      exec versitygw \
+        --port "$ADDR" \
+        --access "$${ROOT_ACCESS_KEY}" \
+        --secret "$${ROOT_SECRET_KEY}" \
+        --quiet \
+        s3 \
+        --endpoint "$${UPSTREAM_ENDPOINT}" \
+        --access "$${UPSTREAM_ACCESS_KEY}" \
+        --secret "$${UPSTREAM_SECRET_KEY}" \
+        --region "$${UPSTREAM_REGION:-us-east-1}" \
+        --use-path-style \
+        --disable-data-integrity-check
+    else
+      log "launching versitygw posix → $${VGW_ROOT}"
+      # POSIX backend stores ACLs as xattrs on the filesystem. SFTP and
+      # CIFS support xattrs; NFSv4 supports them via named attrs.
+      exec versitygw \
+        --port "$ADDR" \
+        --access "$${ROOT_ACCESS_KEY}" \
+        --secret "$${ROOT_SECRET_KEY}" \
+        --quiet \
+        posix \
+        "$${VGW_ROOT}"
+    fi

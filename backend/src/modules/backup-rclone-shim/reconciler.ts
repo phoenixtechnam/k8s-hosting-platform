@@ -59,14 +59,14 @@ import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import {
-  BUCKETS_TXT_KEY,
+  CLASSES_TXT_KEY,
   CONFIG_HASH_ANNOTATION,
   FIELD_MANAGER,
   INPUT_HASH_ANNOTATION,
   loadBackupTargetKey,
   loadShimAssignments,
   logAssignmentDiagnostics,
-  RCLONE_CONF_KEY,
+  UPSTREAM_ENV_KEY,
   SHIM_CONFIG_CM_NAME,
   SHIM_CREDENTIALS_SECRET_NAME,
   SHIM_DAEMONSET_NAME,
@@ -187,10 +187,10 @@ export async function reconcileBackupRcloneShim(
 
   // ─── 3. No assignments → empty config ───────────────────────────
   if (loaded.assignments.length === 0) {
-    // Emit empty rclone.conf + empty buckets.txt → shim sleeps.
+    // Emit empty upstream.env + empty classes.txt → shim sleeps.
     const emptyRendered: RenderedShimConfig = {
-      rcloneConf: emptyRcloneConfHeader(keyInput.fingerprint),
-      bucketsTxt: '',
+      upstreamEnv: emptyUpstreamEnvHeader(keyInput.fingerprint),
+      classesTxt: '',
       configHash: hashForEmpty(keyInput.fingerprint),
       shimAccessKey: '',
       shimSecretKey: '',
@@ -289,24 +289,24 @@ async function materializeAndWriteStatus(
   keyFingerprint: string,
 ): Promise<ShimReconcileResult> {
   try {
-    // 6a. ConfigMap merge-patch — non-sensitive data only (buckets.txt).
+    // 6a. ConfigMap merge-patch — non-sensitive data only (classes.txt).
     // launcher.sh is owned by the static placeholder; merge-patch leaves
     // it untouched.
     await mergePatchConfigMapData(clients.core, log, SHIM_CONFIG_CM_NAME, {
-      [BUCKETS_TXT_KEY]: rendered.bucketsTxt,
+      [CLASSES_TXT_KEY]: rendered.classesTxt,
     });
 
-    // 6b. Credentials Secret — holds the rendered rclone.conf. rclone-
-    // obscure is reversible by anyone with the rclone binary, so the
-    // rendered conf is effectively a credential bundle: ConfigMap
-    // would let any cluster principal with `get configmap` in
-    // `platform` exfiltrate upstream provider keys. Secret is the
-    // correct object kind here (covered by EncryptionConfiguration
-    // when operators enable it; treated more carefully by tooling).
+    // 6b. Credentials Secret — holds the rendered upstream.env. Contains
+    // the upstream provider's plaintext access_key + secret_key plus the
+    // shim's own HKDF-derived ROOT_ACCESS_KEY/ROOT_SECRET_KEY. ConfigMap
+    // would let any cluster principal with `get configmap` in `platform`
+    // exfiltrate upstream provider keys, so we use a Secret (covered by
+    // EncryptionConfiguration when operators enable it; treated more
+    // carefully by tooling).
     await materializeCredentialsSecret(
       clients.core,
       log,
-      rendered.rcloneConf,
+      rendered.upstreamEnv,
     );
 
     // 6c. SSH-keys Secret. If empty → ensure Secret has no data.
@@ -542,10 +542,10 @@ async function writeStatus(
 async function materializeCredentialsSecret(
   core: k8s.CoreV1Api,
   log: Pick<Logger, 'info' | 'warn'>,
-  rcloneConf: string,
+  upstreamEnv: string,
 ): Promise<void> {
   const dataB64 = {
-    [RCLONE_CONF_KEY]: Buffer.from(rcloneConf, 'utf8').toString('base64'),
+    [UPSTREAM_ENV_KEY]: Buffer.from(upstreamEnv, 'utf8').toString('base64'),
   };
 
   let exists = false;
@@ -751,9 +751,9 @@ async function patchDaemonSetAnnotations(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function emptyRcloneConfHeader(fingerprint: string): string {
+function emptyUpstreamEnvHeader(fingerprint: string): string {
   return [
-    '# rclone.conf — backup-rclone-shim (no class assignments)',
+    '# upstream.env — backup-rclone-shim (no class assignments)',
     `# key-fingerprint = ${fingerprint}`,
     '# AUTO-GENERATED. Operators assign targets via the admin panel.',
     '',

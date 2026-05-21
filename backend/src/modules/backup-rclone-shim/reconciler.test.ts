@@ -202,17 +202,18 @@ describe('reconcileBackupRcloneShim — STATE_NO_ASSIGNMENTS', () => {
     });
   });
 
-  it('merge-patches an empty buckets.txt + bumps DS annotation', async () => {
+  it('merge-patches an empty classes.txt + bumps DS annotation', async () => {
     const env = mkClients();
     const result = await reconcileBackupRcloneShim({} as never, env.clients, 'enc-key', env.log);
     expect(result.state).toBe('STATE_NO_ASSIGNMENTS');
     expect(result.skipped).toBe(false);
-    // ConfigMap: only buckets.txt is written (rclone.conf moved to Secret).
-    expect(env.cmStore['backup-rclone-shim-config'].data['buckets.txt']).toBe('');
+    // R-X17: ConfigMap carries classes.txt (not buckets.txt; not rclone.conf).
+    expect(env.cmStore['backup-rclone-shim-config'].data['classes.txt']).toBe('');
+    expect(env.cmStore['backup-rclone-shim-config'].data['buckets.txt']).toBeUndefined();
     expect(env.cmStore['backup-rclone-shim-config'].data['rclone.conf']).toBeUndefined();
-    // Credentials Secret carries the header-only rclone.conf.
+    // Credentials Secret carries the header-only upstream.env.
     const credData = env.secretStore['backup-rclone-shim-credentials'].data;
-    const decoded = Buffer.from(credData['rclone.conf'], 'base64').toString('utf8');
+    const decoded = Buffer.from(credData['upstream.env'], 'base64').toString('utf8');
     expect(decoded).toContain('key-fingerprint = 630dcd2966c43366');
     // DaemonSet annotation patched.
     expect(env.dsPatched).toHaveLength(1);
@@ -250,26 +251,30 @@ describe('reconcileBackupRcloneShim — STATE_OK first run', () => {
     expect(result.skipped).toBe(false);
     expect(result.assignedClasses).toEqual(['system', 'tenant']);
 
-    // R-X16: buckets.txt lists bare class names — no `:` suffix, no `-raw`.
-    const buckets = env.cmStore['backup-rclone-shim-config'].data['buckets.txt'];
-    const bucketLines = buckets.split('\n').filter(Boolean);
-    expect(bucketLines).toEqual(['system', 'tenant']);
-    // Legacy `:` and `-raw` forms must be gone.
-    expect(buckets).not.toContain(':');
-    expect(buckets).not.toContain('-raw');
-    // ConfigMap does NOT carry rclone.conf (moved to Secret).
+    // R-X17: classes.txt lists bare class names — no `:` suffix, no `-raw`.
+    const classes = env.cmStore['backup-rclone-shim-config'].data['classes.txt'];
+    const classLines = classes.split('\n').filter(Boolean);
+    expect(classLines).toEqual(['system', 'tenant']);
+    // Legacy bucket-suffix forms must be gone.
+    expect(classes).not.toContain(':');
+    expect(classes).not.toContain('-raw');
+    // ConfigMap does NOT carry buckets.txt or rclone.conf any more.
+    expect(env.cmStore['backup-rclone-shim-config'].data['buckets.txt']).toBeUndefined();
     expect(env.cmStore['backup-rclone-shim-config'].data['rclone.conf']).toBeUndefined();
 
-    // Credentials Secret carries the rendered rclone.conf with the
-    // single shared [upstream] + [encrypted] sections.
+    // Credentials Secret carries the rendered upstream.env with
+    // UPSTREAM_TYPE + the shim's ROOT_ACCESS_KEY/ROOT_SECRET_KEY.
     const credData = env.secretStore['backup-rclone-shim-credentials'].data;
-    expect(credData['rclone.conf']).toBeDefined();
-    const decoded = Buffer.from(credData['rclone.conf'], 'base64').toString('utf8');
-    expect(decoded).toContain('[upstream]');
-    expect(decoded).toContain('[encrypted]');
-    expect(decoded).not.toContain('[system-upstream]');
-    expect(decoded).not.toContain('[tenant-upstream]');
-    expect(decoded).not.toContain('[buckets]'); // no combine layer
+    expect(credData['upstream.env']).toBeDefined();
+    expect(credData['rclone.conf']).toBeUndefined();
+    const decoded = Buffer.from(credData['upstream.env'], 'base64').toString('utf8');
+    expect(decoded).toMatch(/^UPSTREAM_TYPE=s3$/m);
+    expect(decoded).toMatch(/^ROOT_ACCESS_KEY='[0-9a-f]+'$/m);
+    expect(decoded).toMatch(/^ROOT_SECRET_KEY='[0-9a-f]+'$/m);
+    // Legacy rclone.conf sections must be gone.
+    expect(decoded).not.toContain('[upstream]');
+    expect(decoded).not.toContain('[encrypted]');
+    expect(decoded).not.toContain('[buckets]');
 
     // SSH-keys Secret created (empty for S3-only targets but the Secret
     // still exists so the DaemonSet's projected volume can mount it).

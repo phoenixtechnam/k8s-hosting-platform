@@ -61,13 +61,17 @@ export const SHIM_SSH_KEYS_SECRET_NAME = 'backup-rclone-shim-ssh-keys';
 export const SHIM_STATUS_CM_NAME = 'backup-rclone-shim-status';
 export const SHIM_DAEMONSET_NAME = 'backup-rclone-shim';
 
-/** ConfigMap data key for the buckets.txt content (reconciler-managed).
+/** ConfigMap data key for the bound-classes list (one class per line).
  *  The `launcher.sh` key in the same ConfigMap is owned by the static
  *  placeholder manifest — the reconciler uses merge-patch which leaves
- *  unmentioned keys alone. */
-export const BUCKETS_TXT_KEY = 'buckets.txt';
-/** Secret data key for the rendered rclone.conf. */
-export const RCLONE_CONF_KEY = 'rclone.conf';
+ *  unmentioned keys alone. R-X17 renamed from `buckets.txt` because
+ *  versitygw doesn't have static buckets; the file is now just an
+ *  operator-visible list of which classes the shim is bound for. */
+export const CLASSES_TXT_KEY = 'classes.txt';
+/** Secret data key for the rendered upstream.env (R-X17 — replaces
+ *  the old `rclone.conf` key). Sourced by the shim launcher.sh as
+ *  `set -a; . upstream.env; set +a`. */
+export const UPSTREAM_ENV_KEY = 'upstream.env';
 
 /** Annotation on the DaemonSet `spec.template.metadata.annotations` —
  *  changing it triggers a rolling pod restart. Value is the renderer's
