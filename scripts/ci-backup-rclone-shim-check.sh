@@ -352,59 +352,69 @@ if [[ -f "$STAGING_KUST" ]] && ! grep -q "nfs-test-server" "$STAGING_KUST"; then
 fi
 pass "Invariant 17: nfs-test-server is staging-only"
 
-# ─── 18. R-X17 follow-up: DS pod-spec supports POSIX modes ────────
-# The universal shim runs ONE versitygw process per pod against ONE
-# upstream (S3 / SFTP / CIFS / NFS). For POSIX modes the launcher
-# kernel-mounts the upstream into /mnt/upstream then runs
-# `versitygw posix --sidecar ... /mnt/upstream`. That requires:
-#   - CAP_SYS_ADMIN (mount(2) syscall)
-#   - runAsUser: 0 (sshfs/mount require root inside the container)
-#   - /dev/fuse access (sshfs FUSE driver)
-#   - emptyDir at /var/lib/versitygw (sshfs known_hosts + versitygw
-#     --sidecar multipart metadata)
-#   - /mnt/upstream mount point
-#
-# Without these, the canonical DaemonSet cannot serve any non-S3
-# upstream — bench results would silently come from a hot-patched
-# DS instead of the merged one (a real misconfiguration we hit in
-# 2026-05-21).
+# ─── 18. R-X19 — DaemonSet is fully unprivileged (no kernel mounts) ──
+# The R-X19 architecture serves all four upstream types (S3, SFTP,
+# CIFS, Local-PVC) through rclone serve s3 with native userspace
+# clients. NO kernel mounts. NO CAP_SYS_ADMIN. NO /dev/fuse. NO
+# runAsUser:0. A regression to any of these means we've slipped back
+# into the R-X17/R-X18 POSIX-mode design that requires elevated
+# privileges in EVERY shim pod regardless of upstream type.
 DS_MANIFEST="$ROOT/k8s/base/backup-rclone-shim/daemonset.yaml"
 if [[ ! -f "$DS_MANIFEST" ]]; then
   fail "Invariant 18: DaemonSet manifest not found at $DS_MANIFEST"
 fi
-if ! grep -q "SYS_ADMIN" "$DS_MANIFEST"; then
-  fail "Invariant 18: DaemonSet missing CAP_SYS_ADMIN capability (POSIX modes won't mount)"
+if grep -E "^\s*-\s*SYS_ADMIN\s*$" "$DS_MANIFEST" >/dev/null; then
+  fail "Invariant 18: DaemonSet adds CAP_SYS_ADMIN — R-X19 must be fully unprivileged"
 fi
-if ! grep -qE "^\s*runAsUser:\s*0\s*$" "$DS_MANIFEST"; then
-  fail "Invariant 18: DaemonSet runAsUser is not 0 (sshfs/mount(2) needs root inside container)"
+if grep -E "^\s*-\s*name:\s*fuse-device\s*$" "$DS_MANIFEST" >/dev/null; then
+  fail "Invariant 18: DaemonSet mounts /dev/fuse — R-X19 uses native rclone backends, no FUSE"
 fi
-if ! grep -q "versitygw-state" "$DS_MANIFEST"; then
-  fail "Invariant 18: DaemonSet missing versitygw-state volume (sidecar metadata + sshfs known_hosts)"
+if grep -E "^\s*hostPath:\s*$" "$DS_MANIFEST" >/dev/null | grep -q "fuse"; then
+  fail "Invariant 18: DaemonSet has /dev/fuse hostPath — R-X19 forbids host devices"
 fi
-if ! grep -q "upstream-mountpoint" "$DS_MANIFEST"; then
-  fail "Invariant 18: DaemonSet missing upstream-mountpoint volume at /mnt/upstream"
+if grep -E "^\s*runAsUser:\s*0\s*$" "$DS_MANIFEST" >/dev/null; then
+  fail "Invariant 18: DaemonSet runAsUser:0 — R-X19 must run as 65534 (nobody)"
 fi
-if ! grep -q "fuse-device" "$DS_MANIFEST"; then
-  fail "Invariant 18: DaemonSet missing fuse-device hostPath /dev/fuse"
+if ! grep -qE "^\s*runAsUser:\s*65534\s*$" "$DS_MANIFEST"; then
+  fail "Invariant 18: DaemonSet missing runAsUser:65534"
 fi
-# Launcher must invoke versitygw POSIX with --sidecar — without it,
-# multipart ETag tracking races on read-back through FUSE.
-CONFIGMAP="$ROOT/k8s/base/backup-rclone-shim/configmap-placeholder.yaml"
-if ! grep -q "\-\-sidecar" "$CONFIGMAP"; then
-  fail "Invariant 18: launcher.sh missing --sidecar flag on versitygw posix (multipart ETag tracking broken)"
-fi
-pass "Invariant 18: DaemonSet supports POSIX modes (SYS_ADMIN + state volume + /dev/fuse + --sidecar)"
-
-# ─── 19. POSIX-mode security boundary: NOT fully privileged ────────
-# Defense in depth — we use CAP_SYS_ADMIN (narrower) instead of
-# privileged: true (broader). If a future PR flips this, that's a
-# real security regression worth a CI failure.
 if grep -E "^\s*privileged:\s*true\s*$" "$DS_MANIFEST" >/dev/null; then
-  fail "Invariant 19: DaemonSet uses privileged: true — should use CAP_SYS_ADMIN + /dev/fuse instead"
+  fail "Invariant 18: DaemonSet uses privileged:true — must be fully unprivileged"
 fi
 if ! grep -qE "^\s*readOnlyRootFilesystem:\s*true\s*$" "$DS_MANIFEST"; then
-  fail "Invariant 19: DaemonSet readOnlyRootFilesystem must remain true (writable state goes to named volumes)"
+  fail "Invariant 18: DaemonSet missing readOnlyRootFilesystem:true"
 fi
-pass "Invariant 19: DaemonSet uses minimum-privilege POSIX config (no privileged: true)"
+pass "Invariant 18: DaemonSet is fully unprivileged (no SYS_ADMIN, no /dev/fuse, no runAsUser:0)"
 
-echo "[ci-backup-rclone-shim] All 19 invariants pass."
+# ─── 19. R-X19 — memory tuning env vars present ─────────────────────
+# GOGC=20 + GOMEMLIMIT=200MiB is the v3-tuned config from the
+# 2026-05-21 bench. Without these, rclone serve s3 RSS grows to
+# ~470 MiB peak under multipart load (vs ~284 MiB with the tuning).
+if ! grep -qE 'name:\s*GOGC' "$DS_MANIFEST"; then
+  fail "Invariant 19: DaemonSet missing GOGC env var (memory tuning regressed)"
+fi
+if ! grep -qE 'name:\s*GOMEMLIMIT' "$DS_MANIFEST"; then
+  fail "Invariant 19: DaemonSet missing GOMEMLIMIT env var (memory tuning regressed)"
+fi
+pass "Invariant 19: DaemonSet has GOGC + GOMEMLIMIT memory tuning"
+
+# ─── 20. R-X19 — launcher uses rclone serve s3 (not versitygw) ──────
+CONFIGMAP="$ROOT/k8s/base/backup-rclone-shim/configmap-placeholder.yaml"
+if ! grep -q "rclone serve s3" "$CONFIGMAP"; then
+  fail "Invariant 20: launcher.sh missing 'rclone serve s3' — R-X19 must use rclone"
+fi
+if grep -E '^\s*exec\s+versitygw\s' "$CONFIGMAP" >/dev/null; then
+  fail "Invariant 20: launcher.sh exec's versitygw — R-X19 uses rclone serve s3 only"
+fi
+if grep -E '(sshfs |mount\.cifs |mount\.nfs )' "$CONFIGMAP" >/dev/null; then
+  fail "Invariant 20: launcher.sh invokes kernel-mount tools — R-X19 uses native rclone clients"
+fi
+if ! grep -q "\-\-s3-disable-http2" "$CONFIGMAP"; then
+  fail "Invariant 20: launcher.sh missing --s3-disable-http2 (throughput regression)"
+fi
+if ! grep -q "GOMEMLIMIT" "$CONFIGMAP"; then
+  fail "Invariant 20: launcher.sh missing GOMEMLIMIT export (memory tuning regressed)"
+fi
+pass "Invariant 20: launcher uses rclone serve s3 with v3-tuned flags"
+
+echo "[ci-backup-rclone-shim] All 20 invariants pass."

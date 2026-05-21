@@ -1,19 +1,26 @@
 # Initial ConfigMap with launcher.sh.
 #
-# R-X17 — versitygw architecture:
-#   - launcher.sh dispatches by upstream type (S3 / SFTP / CIFS / NFS)
-#   - S3 mode: `versitygw s3` (passthrough proxy to upstream S3 service)
-#   - POSIX modes: mount the share into /mnt/upstream, then `versitygw posix`
-#   - No more rclone serve s3, no combine, no crypt — replaced because
-#     rclone's ListObjectsV2 returns CommonPrefixes WITHOUT trailing
-#     slash, breaking barman-cloud-backup-show and restic enumeration.
-#     versitygw emits correct S3-protocol responses.
+# R-X19 — rclone-serve-s3 unified architecture (2026-05-21):
+#   - One `rclone serve s3` per pod
+#   - Native rclone backends for all upstream types:
+#       S3      → rclone s3 backend (passthrough proxy)
+#       SFTP    → rclone sftp backend (native userspace SSH client)
+#       CIFS    → rclone smb backend (native userspace SMB client)
+#       Local   → rclone local backend (against PVC-mounted dir)
+#   - NO kernel mounts. NO FUSE. NO CAP_SYS_ADMIN. NO /dev/fuse.
+#   - Pod runs fully unprivileged: runAsUser:65534, drop ALL caps.
+#
+# Memory tuning (v3-tuned per 2026-05-21 bench):
+#   - GOGC=20 + GOMEMLIMIT=200MiB (aggressive Go GC + soft cap)
+#   - --s3-disable-http2 (HTTP/1.1 = parallel TCP, no HoL blocking)
+#   - --s3-upload-concurrency 2 (upstream is the bottleneck)
+#   - --buffer-size 2M (smaller per-file read buffer)
+#   - --s3-memory-pool-flush-time 30s (idle pool returns memory faster)
 #
 # Owned at runtime by platform-api's backup-rclone-shim/reconciler.ts:
-# when an operator assigns a target to a class, the reconciler MERGE-
-# patches `data.classes.txt` here (leaving `launcher.sh` untouched) +
-# writes `data.upstream.env` into the Secret + bumps the DaemonSet
-# annotation hash, triggering a rolling restart.
+# operator assigns a target to a class → reconciler MERGE-patches
+# `data.classes.txt` here + writes `data.upstream.env` into the Secret +
+# bumps DaemonSet annotation hash → rolling restart.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -44,8 +51,8 @@ data:
 
     UPSTREAM_ENV=/etc/rclone-credentials/upstream.env
     CLASSES_FILE=/etc/rclone-static/classes.txt
+    RCLONE_CONF=/tmp/rclone.conf
     ADDR=":9000"
-    VGW_USER_DATA=/var/lib/versitygw
 
     log() { printf '[backup-rclone-shim] %s\n' "$*" >&2; }
 
@@ -86,219 +93,170 @@ data:
     fi
 
     # ─── Load upstream params from env file ───────────────────────────
-    # Source the env file in a subshell-safe way. The file contains:
-    #   UPSTREAM_TYPE=s3|sftp|cifs|nfs
-    #   UPSTREAM_BUCKET, UPSTREAM_PREFIX, UPSTREAM_ENDPOINT, ...
-    #   ROOT_ACCESS_KEY (shim's own creds for clients to authenticate)
+    # The env file contains:
+    #   UPSTREAM_TYPE=s3|sftp|cifs|local
+    #   UPSTREAM_<TYPE>_<FIELD>=...  (type-specific)
+    #   ROOT_ACCESS_KEY (shim's HKDF-derived creds for clients)
     #   ROOT_SECRET_KEY
     # All values are written by the reconciler with strict allowlist
-    # validation; we trust them but still pass through the same shell
-    # allowlist check (no `eval`, no command substitution).
+    # validation (rclone-config.ts shellQuote — no NUL, no newline).
     set -a
     . "$UPSTREAM_ENV"
     set +a
 
     case "$${UPSTREAM_TYPE:-}" in
-      s3|sftp|cifs|nfs) ;;
+      s3|sftp|cifs|local) ;;
       *) log "FATAL: UPSTREAM_TYPE='$${UPSTREAM_TYPE:-}' not recognised"; exit 2 ;;
     esac
 
     log "shim launcher: upstream type='$${UPSTREAM_TYPE}' classes='$${CLASSES_OK}'"
 
-    # ─── Mount POSIX upstreams (SFTP/CIFS/NFS) ────────────────────────
-    # versitygw POSIX backend reads from a local filesystem path. For
-    # remote upstreams we kernel-mount them first. Requires the pod to
-    # run with CAP_SYS_ADMIN (privileged). For S3 upstream this whole
-    # block is skipped and the pod stays unprivileged.
-    MOUNT_POINT=/mnt/upstream
+    # ─── Go runtime memory tuning ─────────────────────────────────────
+    # Per 2026-05-21 bench: aggressive GC + soft memory cap keeps RSS
+    # bounded under multipart workloads without sacrificing throughput.
+    # GOMEMLIMIT is a SOFT cap — Go will exceed it but trigger more
+    # frequent GC, so we tolerate peaks above the limit during heavy
+    # bursts. The pod's memory limit is the hard ceiling.
+    export GOGC="$${GOGC:-20}"
+    export GOMEMLIMIT="$${GOMEMLIMIT:-200MiB}"
+    export HOME=/tmp
+
+    # ─── Render rclone.conf per upstream type ─────────────────────────
+    # Each backend produces an [upstream] section in rclone.conf with
+    # the operator-supplied credentials. Passwords are obscured at
+    # render time (rclone refuses plaintext passwords in config).
+    : > "$RCLONE_CONF"
+    chmod 0600 "$RCLONE_CONF"
+
     case "$${UPSTREAM_TYPE}" in
-      cifs)
-        # Required env: UPSTREAM_CIFS_HOST UPSTREAM_CIFS_SHARE
-        #               UPSTREAM_CIFS_USER UPSTREAM_CIFS_PASSWORD
-        #               UPSTREAM_CIFS_PORT (optional, default 445)
-        #               UPSTREAM_CIFS_DOMAIN (optional)
-        if mountpoint -q "$MOUNT_POINT"; then
-          log "  $MOUNT_POINT already mounted, reusing"
-        else
-          log "  mount.cifs //$${UPSTREAM_CIFS_HOST}/$${UPSTREAM_CIFS_SHARE} → $MOUNT_POINT"
-          MOUNT_OPTS="username=$${UPSTREAM_CIFS_USER},password=$${UPSTREAM_CIFS_PASSWORD},uid=0,gid=0,file_mode=0640,dir_mode=0750,iocharset=utf8,vers=3.0"
-          [ -n "$${UPSTREAM_CIFS_PORT:-}" ] && MOUNT_OPTS="$${MOUNT_OPTS},port=$${UPSTREAM_CIFS_PORT}"
-          [ -n "$${UPSTREAM_CIFS_DOMAIN:-}" ] && MOUNT_OPTS="$${MOUNT_OPTS},domain=$${UPSTREAM_CIFS_DOMAIN}"
-          mount.cifs "//$${UPSTREAM_CIFS_HOST}/$${UPSTREAM_CIFS_SHARE}" "$MOUNT_POINT" -o "$MOUNT_OPTS" \
-            || { log "FATAL: mount.cifs failed"; exit 3; }
-        fi
-        VGW_ROOT="$${MOUNT_POINT}$${UPSTREAM_CIFS_PATH:+/$${UPSTREAM_CIFS_PATH}}"
-        ;;
-      nfs)
-        # Required env: UPSTREAM_NFS_SERVER UPSTREAM_NFS_EXPORT
-        #               UPSTREAM_NFS_VERSION (e.g. 4.2)
-        #               UPSTREAM_NFS_OPTIONS (optional, e.g. soft,timeo=600)
-        if mountpoint -q "$MOUNT_POINT"; then
-          log "  $MOUNT_POINT already mounted, reusing"
-        else
-          log "  mount.nfs $${UPSTREAM_NFS_SERVER}:$${UPSTREAM_NFS_EXPORT} → $MOUNT_POINT"
-          MOUNT_OPTS="vers=$${UPSTREAM_NFS_VERSION:-4.2}"
-          # R-X17 follow-up security: strict allowlist on
-          # UPSTREAM_NFS_OPTIONS. Otherwise a malicious DB row could
-          # inject `addr=1.2.3.4` which redirects the NFS mount to
-          # an attacker-controlled server (MITM on all backup data).
-          # Allowed: soft|hard|ro|rw|timeo=\d+|retrans=\d+|rsize=\d+|
-          #          wsize=\d+|nfsvers=N(.N)?|nolock|sync|async|intr|nointr
-          # Rejected: addr=*, proto=*, mountport=*, port=*, bg, fg,
-          #          ip=*, clientaddr=*, mountaddr=*, sec=*
-          if [ -n "$${UPSTREAM_NFS_OPTIONS:-}" ]; then
-            FILTERED_OPTS=""
-            IFS=','
-            for opt in $${UPSTREAM_NFS_OPTIONS}; do
-              # Trim whitespace
-              opt=$(printf '%s' "$opt" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-              [ -z "$opt" ] && continue
-              case "$opt" in
-                soft|hard|ro|rw|nolock|sync|async|intr|nointr|noatime|nodiratime|tcp|udp)
-                  FILTERED_OPTS="$${FILTERED_OPTS},$${opt}" ;;
-                timeo=[0-9]*|retrans=[0-9]*|rsize=[0-9]*|wsize=[0-9]*|nfsvers=[0-9]*|nfsvers=[0-9]*.[0-9]*|vers=[0-9]*|vers=[0-9]*.[0-9]*|actimeo=[0-9]*|acregmin=[0-9]*|acregmax=[0-9]*|acdirmin=[0-9]*|acdirmax=[0-9]*)
-                  FILTERED_OPTS="$${FILTERED_OPTS},$${opt}" ;;
-                *)
-                  log "FATAL: UPSTREAM_NFS_OPTIONS rejected option '$opt' (not on allowlist; addr=/proto=/port=/bg/fg are NEVER permitted)"
-                  exit 2 ;;
-              esac
-            done
-            unset IFS
-            MOUNT_OPTS="$${MOUNT_OPTS}$${FILTERED_OPTS}"
-          fi
-          mount.nfs "$${UPSTREAM_NFS_SERVER}:$${UPSTREAM_NFS_EXPORT}" "$MOUNT_POINT" -o "$MOUNT_OPTS" \
-            || { log "FATAL: mount.nfs failed"; exit 3; }
-        fi
-        VGW_ROOT="$${MOUNT_POINT}$${UPSTREAM_NFS_PATH:+/$${UPSTREAM_NFS_PATH}}"
+      s3)
+        # S3 backend = pure passthrough proxy. Client bucket name
+        # flows through to upstream. Operator must pre-create the
+        # bucket on the upstream provider matching their class names
+        # (or use a shared bucket and rely on per-class prefixes —
+        # see docs/02-operations/BACKUP_RCLONE_SHIM.md).
+        cat >> "$RCLONE_CONF" <<EOF
+    [upstream]
+    type = s3
+    provider = Other
+    endpoint = $${UPSTREAM_ENDPOINT}
+    region = $${UPSTREAM_REGION:-us-east-1}
+    access_key_id = $${UPSTREAM_ACCESS_KEY}
+    secret_access_key = $${UPSTREAM_SECRET_KEY}
+    force_path_style = $${UPSTREAM_USE_PATH_STYLE:-true}
+    EOF
+        # rclone serve s3 with path "upstream:" → serves the upstream
+        # S3 endpoint's bucket namespace verbatim. boto3 PUT to
+        # bucket=system maps to upstream bucket=system.
+        REMOTE_PATH="upstream:"
+        VFS_CACHE_MODE="off"
         ;;
       sftp)
-        # Required env: UPSTREAM_SFTP_HOST UPSTREAM_SFTP_USER
-        #               UPSTREAM_SFTP_PORT (optional, default 22)
-        #               UPSTREAM_SFTP_KEYFILE (path) OR UPSTREAM_SFTP_PASSWORD
-        if mountpoint -q "$MOUNT_POINT"; then
-          log "  $MOUNT_POINT already mounted, reusing"
-        else
-          PORT="$${UPSTREAM_SFTP_PORT:-22}"
-          # sshfs needs StrictHostKeyChecking=no for first-time hosts.
-          # In production operators should pre-populate /etc/shim/known_hosts
-          # (deferred — staging uses StrictHostKeyChecking=accept-new which
-          # auto-adds and locks).
-          #
-          # Strict-consistency options (R-X17 follow-up 2026-05-21):
-          # versitygw POSIX backend writes each multipart part to the
-          # mount, then re-reads the file on CompleteMultipartUpload to
-          # compute the multipart ETag. Default sshfs flags allow the
-          # SFTP `close()` to return before the server has durably
-          # received the bytes — the readback then sees short/missing
-          # data → ETag mismatch → `InvalidPart` on Complete.
-          #
-          #   sshfs_sync     — synchronous writes: close() blocks until
-          #                    the SFTP server acks. Eliminates the
-          #                    write-then-read-back race.
-          #   direct_io      — bypass FUSE page cache; every read goes
-          #                    to the SFTP server.
-          #   cache=no       — disable sshfs's stat/dir cache so the
-          #                    Complete-side stat() sees the final size.
-          #   no_readahead   — disable client-side readahead.
-          #
-          # NB: `sync_read` is a FUSE-2-only option; sshfs builds linked
-          # against libfuse3 reject it as unknown. Same for fuse-version-
-          # specific options — keep this list to the four above, which
-          # work on both libfuse2 and libfuse3.
-          #
-          # Trade-off: throughput drops vs the default async mode —
-          # fine for cold-backup workloads where correctness > throughput.
-          SSHFS_OPTS="allow_other,reconnect,ServerAliveInterval=15,ServerAliveCountMax=4,StrictHostKeyChecking=accept-new,UserKnownHostsFile=/var/lib/versitygw/.ssh/known_hosts,sshfs_sync,direct_io,cache=no,no_readahead"
-          [ -n "$${UPSTREAM_SFTP_KEYFILE:-}" ] && SSHFS_OPTS="$${SSHFS_OPTS},IdentityFile=$${UPSTREAM_SFTP_KEYFILE}"
-          mkdir -p /var/lib/versitygw/.ssh && touch /var/lib/versitygw/.ssh/known_hosts
-          log "  sshfs $${UPSTREAM_SFTP_USER}@$${UPSTREAM_SFTP_HOST}:$${UPSTREAM_SFTP_PORT:+(port $${UPSTREAM_SFTP_PORT})}"
-          if [ -n "$${UPSTREAM_SFTP_PASSWORD:-}" ]; then
-            echo "$${UPSTREAM_SFTP_PASSWORD}" | sshfs \
-              "$${UPSTREAM_SFTP_USER}@$${UPSTREAM_SFTP_HOST}:" "$MOUNT_POINT" \
-              -p "$PORT" -o "$SSHFS_OPTS,password_stdin" \
-              || { log "FATAL: sshfs failed (password)"; exit 3; }
-          else
-            sshfs "$${UPSTREAM_SFTP_USER}@$${UPSTREAM_SFTP_HOST}:" "$MOUNT_POINT" \
-              -p "$PORT" -o "$SSHFS_OPTS" \
-              || { log "FATAL: sshfs failed (key)"; exit 3; }
-          fi
+        # SFTP backend = rclone's native pkg/sftp client. No FUSE.
+        # No kernel mount. No SYS_ADMIN. Pure userspace.
+        if [ -z "$${UPSTREAM_SFTP_HOST:-}" ] || [ -z "$${UPSTREAM_SFTP_USER:-}" ]; then
+          log "FATAL: SFTP requires UPSTREAM_SFTP_HOST + UPSTREAM_SFTP_USER"
+          exit 2
         fi
-        VGW_ROOT="$${MOUNT_POINT}$${UPSTREAM_SFTP_PATH:+/$${UPSTREAM_SFTP_PATH}}"
+        cat >> "$RCLONE_CONF" <<EOF
+    [upstream]
+    type = sftp
+    host = $${UPSTREAM_SFTP_HOST}
+    user = $${UPSTREAM_SFTP_USER}
+    port = $${UPSTREAM_SFTP_PORT:-22}
+    shell_type = unix
+    EOF
+        if [ -n "$${UPSTREAM_SFTP_KEYFILE:-}" ]; then
+          echo "key_file = $${UPSTREAM_SFTP_KEYFILE}" >> "$RCLONE_CONF"
+        elif [ -n "$${UPSTREAM_SFTP_PASSWORD:-}" ]; then
+          # rclone refuses plaintext passwords in config — obscure now.
+          OBS=$(printf '%s' "$${UPSTREAM_SFTP_PASSWORD}" | rclone obscure -)
+          echo "pass = $OBS" >> "$RCLONE_CONF"
+        else
+          log "FATAL: SFTP requires UPSTREAM_SFTP_KEYFILE or UPSTREAM_SFTP_PASSWORD"
+          exit 2
+        fi
+        # PATH from the target → served as the root. Top-level dirs
+        # under it become buckets in the served S3 view.
+        REMOTE_PATH="upstream:$${UPSTREAM_SFTP_PATH:-}"
+        VFS_CACHE_MODE="writes"
+        ;;
+      cifs)
+        # SMB/CIFS backend = rclone's native pkg/smb2 client. No FUSE.
+        # No mount.cifs. No SYS_ADMIN.
+        if [ -z "$${UPSTREAM_CIFS_HOST:-}" ] || [ -z "$${UPSTREAM_CIFS_USER:-}" ] || [ -z "$${UPSTREAM_CIFS_PASSWORD:-}" ]; then
+          log "FATAL: CIFS requires UPSTREAM_CIFS_HOST + UPSTREAM_CIFS_USER + UPSTREAM_CIFS_PASSWORD"
+          exit 2
+        fi
+        OBS=$(printf '%s' "$${UPSTREAM_CIFS_PASSWORD}" | rclone obscure -)
+        cat >> "$RCLONE_CONF" <<EOF
+    [upstream]
+    type = smb
+    host = $${UPSTREAM_CIFS_HOST}
+    user = $${UPSTREAM_CIFS_USER}
+    pass = $OBS
+    EOF
+        [ -n "$${UPSTREAM_CIFS_DOMAIN:-}" ] && echo "domain = $${UPSTREAM_CIFS_DOMAIN}" >> "$RCLONE_CONF"
+        [ -n "$${UPSTREAM_CIFS_PORT:-}" ] && echo "port = $${UPSTREAM_CIFS_PORT}" >> "$RCLONE_CONF"
+        # SMB share goes in the path: upstream:<share>/[path]
+        if [ -z "$${UPSTREAM_CIFS_SHARE:-}" ]; then
+          log "FATAL: CIFS requires UPSTREAM_CIFS_SHARE"
+          exit 2
+        fi
+        REMOTE_PATH="upstream:$${UPSTREAM_CIFS_SHARE}$${UPSTREAM_CIFS_PATH:+/$${UPSTREAM_CIFS_PATH}}"
+        VFS_CACHE_MODE="writes"
+        ;;
+      local)
+        # Local backend = filesystem at /mnt/upstream, which the
+        # reconciler bind-mounts from the operator-specified PVC.
+        # No kernel mount inside the pod (Kubernetes mounted it at
+        # pod startup, before the launcher runs).
+        cat >> "$RCLONE_CONF" <<EOF
+    [upstream]
+    type = local
+    EOF
+        if [ ! -d /mnt/upstream ]; then
+          log "FATAL: /mnt/upstream not mounted (Local target requires PVC)"
+          exit 2
+        fi
+        REMOTE_PATH="upstream:/mnt/upstream"
+        VFS_CACHE_MODE="writes"
         ;;
     esac
 
-    # ─── Ensure each class has a directory at the mount root ──────────
-    # versitygw POSIX backend exposes top-level dirs as buckets. CreateBucket
-    # via S3 API would also create them, but pre-creating means a fresh
-    # caller LIST returns the bucket even before the first PUT.
-    if [ "$${UPSTREAM_TYPE}" != "s3" ]; then
-      for cls in $${CLASSES_OK}; do
-        mkdir -p "$${VGW_ROOT}/$${cls}" 2>/dev/null || true
-      done
-    fi
+    # Strip the awkward heredoc indentation
+    sed -i 's/^    //' "$RCLONE_CONF"
+    log "rclone.conf rendered (creds redacted):"
+    grep -vE '^(secret_access_key|pass|password)' "$RCLONE_CONF" >&2 || true
 
-    # ─── Exec versitygw ──────────────────────────────────────────────
-    # ROOT_ACCESS_KEY + ROOT_SECRET_KEY come from upstream.env (HKDF-derived
-    # by the reconciler — clients use these to authenticate TO the shim).
-    if [ "$${UPSTREAM_TYPE}" = "s3" ]; then
-      log "launching versitygw s3 → $${UPSTREAM_ENDPOINT}"
-      # --use-path-style for Hetzner/MinIO/Backblaze/R2/Wasabi/Garage
-      # compatibility (virtual-hosted style requires DNS wildcards on
-      # the upstream domain). Operators flip UPSTREAM_USE_PATH_STYLE=false
-      # for AWS S3 with virtual-hosted addressing (newer AWS regions).
-      # --disable-data-integrity-check because barman-cloud computes its
-      # own checksums.
-      #
-      # Strict allowlist: the env var must be literally 'true' or 'false'.
-      # Defaults to 'true' (legacy rows / unset) for back-compat.
-      case "$${UPSTREAM_USE_PATH_STYLE:-true}" in
-        true)  USE_PATH_STYLE_FLAG=--use-path-style ;;
-        false) USE_PATH_STYLE_FLAG= ;;
-        *) log "FATAL: UPSTREAM_USE_PATH_STYLE='$${UPSTREAM_USE_PATH_STYLE}' must be 'true' or 'false'"; exit 2 ;;
-      esac
-      # Unquoted expansion of the optional flag: a quoted "" would pass
-      # an empty positional arg to versitygw and break flag parsing.
-      # shellcheck disable=SC2086
-      exec versitygw \
-        --port "$ADDR" \
-        --access "$${ROOT_ACCESS_KEY}" \
-        --secret "$${ROOT_SECRET_KEY}" \
-        --quiet \
-        s3 \
-        --endpoint "$${UPSTREAM_ENDPOINT}" \
-        --access "$${UPSTREAM_ACCESS_KEY}" \
-        --secret "$${UPSTREAM_SECRET_KEY}" \
-        --region "$${UPSTREAM_REGION:-us-east-1}" \
-        $${USE_PATH_STYLE_FLAG} \
-        --disable-data-integrity-check
-    else
-      log "launching versitygw posix → $${VGW_ROOT}"
-      # POSIX backend stores ACLs as xattrs on the filesystem. SFTP and
-      # CIFS support xattrs; NFSv4 supports them via named attrs.
-      #
-      # --sidecar /var/lib/versitygw/meta — keeps multipart upload state
-      # (part ETags, multipart-IDs, in-flight CompleteMultipartUpload
-      # bookkeeping) in pod-local storage NOT on the upstream POSIX
-      # share. Three reasons:
-      #   1. Avoids the sshfs/CIFS async-close race (the very bug that
-      #      strict sshfs options fix on the data side — sidecar metadata
-      #      is small and stays local so even if the data race recurs,
-      #      multipart bookkeeping is safe).
-      #   2. Keeps the upstream share clean of versitygw-internal files.
-      #   3. Sidecar is rebuilt fresh on pod restart — in-flight multiparts
-      #      at restart time are correctly aborted, clients retry. The
-      #      versitygw-state volume is emptyDir, so pod restart = sidecar
-      #      reset = automatic cleanup of any orphaned multipart state.
-      #
-      # The launcher pre-creates the sidecar dir so versitygw doesn't
-      # exit on startup with a "sidecar path does not exist" error.
-      mkdir -p "$VGW_USER_DATA/meta"
-      exec versitygw \
-        --port "$ADDR" \
-        --access "$${ROOT_ACCESS_KEY}" \
-        --secret "$${ROOT_SECRET_KEY}" \
-        --quiet \
-        posix \
-        --sidecar "$VGW_USER_DATA/meta" \
-        "$${VGW_ROOT}"
-    fi
+    # ─── VFS cache dir (only used when --vfs-cache-mode != off) ───────
+    # Mounted at /var/cache/rclone-shim from the daemonset's
+    # rclone-cache emptyDir volume. Disk-backed (not tmpfs) because
+    # multipart parts can total GiBs in flight.
+    CACHE_DIR=/var/cache/rclone-shim
+    mkdir -p "$CACHE_DIR"
+
+    # ─── Common rclone serve s3 flags ─────────────────────────────────
+    # ROOT_ACCESS_KEY + ROOT_SECRET_KEY are the shim's own creds —
+    # clients use these to authenticate TO the shim, NOT to upstream.
+    log "launching rclone serve s3 ($${UPSTREAM_TYPE} backend)"
+    exec rclone serve s3 \
+      --config "$RCLONE_CONF" \
+      --addr "$ADDR" \
+      --auth-key "$${ROOT_ACCESS_KEY},$${ROOT_SECRET_KEY}" \
+      --vfs-cache-mode "$VFS_CACHE_MODE" \
+      --vfs-cache-max-size 512M \
+      --vfs-cache-max-age 24h \
+      --vfs-cache-poll-interval 1m \
+      --vfs-write-back 0s \
+      --vfs-read-ahead 0 \
+      --buffer-size 2M \
+      --no-modtime \
+      --no-checksum \
+      --s3-chunk-size 5M \
+      --s3-upload-concurrency 2 \
+      --s3-memory-pool-flush-time 30s \
+      --s3-disable-http2 \
+      --cache-dir "$CACHE_DIR" \
+      --log-level NOTICE \
+      "$REMOTE_PATH"
