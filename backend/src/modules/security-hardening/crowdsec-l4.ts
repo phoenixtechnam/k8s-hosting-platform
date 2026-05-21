@@ -35,8 +35,16 @@ const FIREWALL_RECONCILER_DS = 'firewall-reconciler';
 const CROWDSEC_L4_ENV = 'CROWDSEC_L4_MODE';
 
 // CTR + CPP GVRs match what the firewall-reconciler Go code uses.
-const CTR_GVR = { group: 'platform.phoenix-host.net', version: 'v1alpha1', plural: 'clustertrustedranges' } as const;
-const CPP_GVR = { group: 'platform.phoenix-host.net', version: 'v1alpha1', plural: 'clusterpendingpeers' } as const;
+// The CRDs live under `networking.platform.phoenix-host.net` — see
+// k8s/base/cluster-network/ + backend/src/modules/cluster-network/
+// k8s-client.ts CRD_GROUP. Until 2026-05-21 these constants were
+// wrong (`platform.phoenix-host.net`), every listClusterCustomObject
+// returned 404, and the silent catch below left the trust lists
+// EMPTY — so every operator IP failed the trust check, even when
+// covered by a ClusterTrustedRange CR. Lockout warning showed on
+// every panel load.
+const CTR_GVR = { group: 'networking.platform.phoenix-host.net', version: 'v1alpha1', plural: 'clustertrustedranges' } as const;
+const CPP_GVR = { group: 'networking.platform.phoenix-host.net', version: 'v1alpha1', plural: 'clusterpendingpeers' } as const;
 
 export class OperatorIpNotTrustedError extends Error {
   constructor(public readonly operatorIp: string | null, message: string) {
@@ -164,8 +172,12 @@ export const resolveTrustSources = async (
         else if (ver === 6) clusterPeersV6.push(addr.address);
       }
     }
-  } catch {
+  } catch (err) {
     // Don't throw — empty list still flows through the fail-CLOSED check.
+    console.warn(
+      '[crowdsec-l4] Node list failed:',
+      err instanceof Error ? err.message : String(err),
+    );
   }
 
   // 2. ClusterPendingPeer → clusterPeers (active only is too much state
@@ -186,8 +198,15 @@ export const resolveTrustSources = async (
       if (ver === 4) clusterPeersV4.push(ip);
       else if (ver === 6) clusterPeersV6.push(ip);
     }
-  } catch {
-    // Empty list is fine.
+  } catch (err) {
+    // List failures (404 on wrong GVR, RBAC denial, kube down) leave
+    // the list empty and the operator-IP check falls back to other
+    // trust sources. Log so a misconfig surfaces (the silent catch
+    // hid a GVR-group typo for several weeks pre-2026-05-21).
+    console.warn(
+      '[crowdsec-l4] ClusterPendingPeer list failed:',
+      err instanceof Error ? err.message : String(err),
+    );
   }
 
   // 3. ClusterTrustedRange → trustedRanges (CIDRs)
@@ -207,8 +226,14 @@ export const resolveTrustSources = async (
       if (ver === 4) trustedRangesV4.push(cidr);
       else if (ver === 6) trustedRangesV6.push(cidr);
     }
-  } catch {
-    // Empty list is fine.
+  } catch (err) {
+    // See ClusterPendingPeer comment above — empty list here means
+    // every operator IP fails the trust check, so a silent failure
+    // is dangerous. Surface to logs.
+    console.warn(
+      '[crowdsec-l4] ClusterTrustedRange list failed:',
+      err instanceof Error ? err.message : String(err),
+    );
   }
 
   return {
