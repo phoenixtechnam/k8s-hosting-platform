@@ -1,21 +1,21 @@
 /**
- * Cluster Networking — Settings → Cluster Networking
+ * Network Trust — Security Hub → Network Trust (2026-05-21).
  *
- * Two tabs:
- *   1. Trusted Ranges  — CRUD ClusterTrustedRange CRs
- *   2. Pending Peers   — CRUD ClusterPendingPeer CRs + bootstrap command
+ * Renamed from `ClusterNetworkingSettings.tsx`. Three tabs:
+ *   1. Trusted Ranges   — CRUD ClusterTrustedRange CRs (host firewall trust)
+ *   2. Pending Peers    — CRUD ClusterPendingPeer CRs + bootstrap command
+ *   3. Trusted Proxies  — operator-managed upstream-proxy CIDRs for the
+ *                          nginx + Traefik reverse-proxy layer (moved from
+ *                          /nodes-and-storage's Trusted Proxies tab)
  *
- * Both tabs poll on a short interval (5–30s) so the operator sees the
- * reconciler's status writes (Synced / Failed / Claimed) live.
- *
- * Phase 6 (PRIVATE NODE) will add a third tab for per-node exposure
- * toggles. Phase 7 (migration) is documentation-only.
+ * Both reconciler-backed tabs (trusted-ranges, pending-peers) poll on
+ * a short interval (5–30s) so the operator sees the reconciler's
+ * status writes (Synced / Failed / Claimed) live.
  */
 
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
-  ChevronLeft,
   Network,
   Plus,
   Trash2,
@@ -37,29 +37,37 @@ import {
   fetchBootstrapCommand,
 } from '@/hooks/use-cluster-network';
 import type { TrustedRange, PendingPeer, BootstrapCommandResponse } from '@k8s-hosting/api-contracts';
+import TrustedProxiesCard from '@/components/TrustedProxiesCard';
 
-type TabId = 'trusted-ranges' | 'pending-peers';
+type TabId = 'trusted-ranges' | 'pending-peers' | 'trusted-proxies';
 
-export default function ClusterNetworkingSettings() {
-  const [activeTab, setActiveTab] = useState<TabId>('trusted-ranges');
+const VALID_TABS: ReadonlySet<TabId> = new Set(['trusted-ranges', 'pending-peers', 'trusted-proxies']);
+
+export default function NetworkTrustPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requested = searchParams.get('tab');
+  const activeTab: TabId = useMemo(() => {
+    if (requested && VALID_TABS.has(requested as TabId)) return requested as TabId;
+    return 'trusted-ranges';
+  }, [requested]);
+  const setActiveTab = (id: TabId): void => {
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', id);
+    setSearchParams(next, { replace: true });
+  };
 
   return (
     <div className="space-y-6">
-      <Link to="/settings" className="inline-flex items-center gap-1 text-sm text-gray-600 hover:text-brand-600 dark:text-gray-400 dark:hover:text-brand-400">
-        <ChevronLeft size={16} />
-        Back to Settings
-      </Link>
-
       <header className="space-y-2">
         <div className="flex items-center gap-3">
           <Network size={24} className="text-brand-600 dark:text-brand-400" />
-          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Cluster Networking</h1>
+          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Network Trust</h1>
         </div>
         <p className="text-sm text-gray-600 dark:text-gray-400 max-w-3xl">
-          Manage host firewall trust for the always-on set-mode cluster. <strong>Trusted ranges</strong> open
-          full TCP/UDP from operator-blessed IPs/CIDRs (workstations, private LANs, monitoring scrapers).
-          <strong> Pending peers</strong> pre-authorise a node's IP on every existing peer so its k3s join
-          handshake reaches :6443 before kube-API knows it exists.
+          Manage trust for the always-on set-mode cluster firewall + the reverse-proxy layer.
+          <strong> Trusted ranges</strong> open full TCP/UDP from operator-blessed IPs/CIDRs (workstations, private LANs, monitoring scrapers).
+          <strong> Pending peers</strong> pre-authorise a node's IP on every existing peer so its k3s join handshake reaches :6443 before kube-API knows it exists.
+          <strong> Trusted proxies</strong> tell nginx + Traefik which upstream CIDRs (CDN, L7 LB, floating-IP gateway) may set <code>X-Forwarded-For</code>, so the real client IP propagates to CrowdSec / audit logs / rate limiting.
         </p>
       </header>
 
@@ -69,6 +77,7 @@ export default function ClusterNetworkingSettings() {
             [
               { id: 'trusted-ranges' as const, label: 'Trusted Ranges' },
               { id: 'pending-peers' as const, label: 'Pending Peers' },
+              { id: 'trusted-proxies' as const, label: 'Trusted Proxies' },
             ]
           ).map((t) => {
             const isActive = activeTab === t.id;
@@ -93,6 +102,7 @@ export default function ClusterNetworkingSettings() {
 
       {activeTab === 'trusted-ranges' && <TrustedRangesTab />}
       {activeTab === 'pending-peers' && <PendingPeersTab />}
+      {activeTab === 'trusted-proxies' && <TrustedProxiesCard />}
     </div>
   );
 }

@@ -1,14 +1,13 @@
-import { useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Server, HardDrive, Layers, Shield } from 'lucide-react';
+import { useEffect, useMemo } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Server, HardDrive, Layers } from 'lucide-react';
 import clsx from 'clsx';
 import ClusterNodes from '@/pages/ClusterNodes';
 import StorageSettings from '@/pages/StorageSettings';
 import PlatformStoragePolicyCard from '@/components/PlatformStoragePolicyCard';
 import NodeDefaultsCard from '@/components/NodeDefaultsCard';
-import TrustedProxiesCard from '@/components/TrustedProxiesCard';
 
-type TabKey = 'nodes' | 'storage' | 'ha' | 'trusted-proxies';
+type TabKey = 'nodes' | 'storage' | 'ha';
 
 const TABS: ReadonlyArray<{
   readonly key: TabKey;
@@ -34,15 +33,9 @@ const TABS: ReadonlyArray<{
     icon: Layers,
     hint: 'Node defaults + platform storage replication tier (Local ↔ HA)',
   },
-  {
-    key: 'trusted-proxies',
-    label: 'Trusted Proxies',
-    icon: Shield,
-    hint: 'CDN/LB/floating-IP CIDRs whose X-Forwarded-For chain is honored',
-  },
 ];
 
-const VALID_TABS: ReadonlySet<TabKey> = new Set(['nodes', 'storage', 'ha', 'trusted-proxies']);
+const VALID_TABS: ReadonlySet<TabKey> = new Set(['nodes', 'storage', 'ha']);
 
 /**
  * Combined "Nodes & Storage" admin page.
@@ -62,7 +55,18 @@ const VALID_TABS: ReadonlySet<TabKey> = new Set(['nodes', 'storage', 'ha', 'trus
  */
 export default function NodesAndStorage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const requested = searchParams.get('tab');
+
+  // Bookmark-compat: the old `?tab=trusted-proxies` URL moved to the
+  // Security Hub → Network Trust page on 2026-05-21. Redirect any
+  // surviving bookmark.
+  useEffect(() => {
+    if (requested === 'trusted-proxies') {
+      navigate('/security/network-trust?tab=trusted-proxies', { replace: true });
+    }
+  }, [requested, navigate]);
+
   const activeTab: TabKey = useMemo(() => {
     if (requested && VALID_TABS.has(requested as TabKey)) return requested as TabKey;
     return 'nodes';
@@ -151,16 +155,6 @@ export default function NodesAndStorage() {
           <span data-testid="cluster-settings-tab" className="sr-only" aria-hidden="true" />
           <PlatformStoragePolicyCard />
           <NodeDefaultsCard />
-        </div>
-      )}
-      {activeTab === 'trusted-proxies' && (
-        <div
-          role="tabpanel"
-          id="nodes-and-storage-panel-trusted-proxies"
-          aria-labelledby="nodes-and-storage-tab-trusted-proxies"
-          data-testid="trusted-proxies-tab"
-        >
-          <TrustedProxiesCard />
         </div>
       )}
     </div>

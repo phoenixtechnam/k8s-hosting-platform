@@ -230,21 +230,10 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/cluster-network" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="cluster-network-link">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-cyan-50 dark:bg-cyan-900/20 text-cyan-600 dark:text-cyan-400"><Network size={20} /></div>
-          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Cluster Networking</h2><p className="text-sm text-gray-500 dark:text-gray-400">Trusted source ranges + pre-enroll new cluster nodes (always-on set-mode firewall)</p></div>
-        </div>
-        <ChevronRight size={20} className="text-gray-400" />
-      </Link>
-
-      <Link to="/settings/security-hardening" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="security-hardening-link">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400"><Shield size={20} /></div>
-          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Security &amp; Hardening</h2><p className="text-sm text-gray-500 dark:text-gray-400">SSH lockdown, mesh status, CIS-style hardening checks, security event feed</p></div>
-        </div>
-        <ChevronRight size={20} className="text-gray-400" />
-      </Link>
+      {/* Cluster Networking + Security Hardening cards removed
+          2026-05-21 — both surfaces live under the new Security Hub
+          sidebar group (/security/network-trust + /security/posture).
+          Keeping links here would create duplicate navigation. */}
 
       <Link to="/settings/oidc" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="oidc-settings-link">
         <div className="flex items-center gap-3">
@@ -262,13 +251,9 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/users" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="admin-users-link">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-cyan-50 dark:bg-cyan-900/20 text-cyan-600 dark:text-cyan-400"><Users size={20} /></div>
-          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Admin Users</h2><p className="text-sm text-gray-500 dark:text-gray-400">Manage admin, support, billing, and read-only users</p></div>
-        </div>
-        <ChevronRight size={20} className="text-gray-400" />
-      </Link>
+      {/* Admin Users card removed 2026-05-21 — moved to Security Hub
+          → Identity & Sessions (/security/identity). Single navigation
+          path keeps the operator from hopping between Settings + Hub. */}
 
       <Link to="/monitoring/health" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="health-settings-link">
         <div className="flex items-center gap-3">

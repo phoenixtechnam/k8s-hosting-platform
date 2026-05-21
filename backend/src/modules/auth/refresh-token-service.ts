@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { and, eq, gt, isNull, lt } from 'drizzle-orm';
+import { and, eq, gt, isNull, lt, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { refreshTokens } from '../../db/schema.js';
 
@@ -165,20 +165,104 @@ export async function revokeAllUserRefreshTokens(
   db: Database,
   userId: string,
   reason: RevokedReason,
+  options: { exceptSessionId?: string } = {},
 ): Promise<void> {
+  // The bulk-revoke admin endpoint passes `exceptSessionId` so a
+  // super_admin revoking their OWN sessions doesn't kill the browser
+  // tab they're operating from. Password-change + admin-disable flows
+  // do NOT pass it — those WANT full revocation.
+  const conds = [eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)];
+  if (options.exceptSessionId) {
+    conds.push(sql`${refreshTokens.id} <> ${options.exceptSessionId}`);
+  }
   await db.update(refreshTokens).set({
     revokedAt: new Date(),
     revokedReason: reason,
-  }).where(and(
-    eq(refreshTokens.userId, userId),
-    isNull(refreshTokens.revokedAt),
-  ));
+  }).where(and(...conds));
 }
 
 /**
  * Daily cleanup job: hard-delete tokens that expired more than 7 days
  * ago. Keeps a short forensic window after expiry for audit.
  */
+/** Active-session row shape for the admin sessions UI (Security Hub
+ *  → Identity & Sessions). Columns chosen to avoid leaking secrets:
+ *  the token hash is never returned. */
+export interface ActiveSessionRow {
+  readonly id: string;
+  readonly userId: string;
+  readonly panel: 'admin' | 'tenant';
+  readonly tenantId: string | null;
+  readonly userAgent: string | null;
+  readonly ipAddress: string | null;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+  readonly lastUsedAt: string | null;
+}
+
+/** List currently-active (not revoked, not expired) refresh tokens
+ *  for one user, newest-issued first. Used by the Identity & Sessions
+ *  drill-down panel. */
+export async function listActiveSessionsForUser(
+  db: Database,
+  userId: string,
+): Promise<ActiveSessionRow[]> {
+  const now = new Date();
+  const rows = await db
+    .select({
+      id: refreshTokens.id,
+      userId: refreshTokens.userId,
+      panel: refreshTokens.panel,
+      tenantId: refreshTokens.tenantId,
+      userAgent: refreshTokens.userAgent,
+      ipAddress: refreshTokens.ipAddress,
+      issuedAt: refreshTokens.issuedAt,
+      expiresAt: refreshTokens.expiresAt,
+      lastUsedAt: refreshTokens.lastUsedAt,
+    })
+    .from(refreshTokens)
+    .where(and(
+      eq(refreshTokens.userId, userId),
+      isNull(refreshTokens.revokedAt),
+      gt(refreshTokens.expiresAt, now),
+    ))
+    .orderBy(refreshTokens.issuedAt);
+  return rows.map((r) => ({
+    id: r.id,
+    userId: r.userId,
+    panel: r.panel as 'admin' | 'tenant',
+    tenantId: r.tenantId,
+    userAgent: r.userAgent,
+    ipAddress: r.ipAddress,
+    issuedAt: r.issuedAt.toISOString(),
+    expiresAt: r.expiresAt.toISOString(),
+    lastUsedAt: r.lastUsedAt ? r.lastUsedAt.toISOString() : null,
+  })).reverse(); // newest first
+}
+
+/** Lookup a single ACTIVE session-by-hash so the GET /me/sessions
+ *  endpoint can mark the caller's own session as "current — cannot
+ *  revoke". Matches the active-row filter used by
+ *  listActiveSessionsForUser (revokedAt IS NULL + not expired) so a
+ *  stale hash match doesn't return a sessionId that's invisible in
+ *  the UI, which would silently disable the self-lockout guard. */
+export async function findSessionIdByHash(
+  db: Database,
+  tokenHash: string,
+): Promise<string | null> {
+  const now = new Date();
+  const rows = await db
+    .select({ id: refreshTokens.id })
+    .from(refreshTokens)
+    .where(and(
+      eq(refreshTokens.tokenHash, tokenHash),
+      isNull(refreshTokens.revokedAt),
+      gt(refreshTokens.expiresAt, now),
+    ))
+    .limit(1);
+  return rows[0]?.id ?? null;
+}
+
 export async function pruneExpiredRefreshTokens(db: Database): Promise<number> {
   const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const result = await db.delete(refreshTokens)

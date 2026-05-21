@@ -18,7 +18,15 @@ const ROLES = [
   { value: 'read_only', label: 'Read Only', desc: 'View-only access' },
 ] as const;
 
-export default function AdminUsers() {
+/** Row selection contract — when present, rows become click-targetable
+ *  and the parent receives the user id. The visual cue (cursor-pointer)
+ *  is only applied when this prop is supplied, so the standalone
+ *  AdminUsers mount doesn't suggest a non-existent interaction. */
+export interface AdminUsersProps {
+  readonly onSelectUser?: (userId: string) => void;
+}
+
+export default function AdminUsers({ onSelectUser }: AdminUsersProps = {}) {
   const { data: response, isLoading } = useAdminUsers();
   const createUser = useCreateAdminUser();
   const deleteUser = useDeleteAdminUser();
@@ -145,13 +153,24 @@ export default function AdminUsers() {
                 <SortableHeader label="Name" sortKey="fullName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                 <SortableHeader label="Role" sortKey="roleName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                 <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="MFA" sortKey="passkeyCount" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                 <SortableHeader label="Last Login" sortKey="lastLoginAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+                <SortableHeader label="Last IP" sortKey="lastLoginIp" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                 <th className="px-5 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {sortedUsers.map((user) => (
-                <tr key={user.id} className={`transition-colors ${
+                <tr
+                  key={user.id}
+                  data-row-userid={onSelectUser ? user.id : undefined}
+                  onClick={(e) => {
+                    if (!onSelectUser) return;
+                    // Don't hijack clicks on action buttons / inputs / links.
+                    if ((e.target as HTMLElement).closest('button, input, a')) return;
+                    onSelectUser(user.id);
+                  }}
+                  className={`transition-colors ${onSelectUser ? 'cursor-pointer' : ''} ${
                   selection.isSelected(user.id)
                     ? 'bg-brand-50 dark:bg-brand-900/20'
                     : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
@@ -172,8 +191,22 @@ export default function AdminUsers() {
                   <td className="px-5 py-3.5">
                     <StatusBadge status={user.status === 'active' ? 'active' : 'suspended'} />
                   </td>
+                  <td className="hidden px-5 py-3.5 text-sm md:table-cell" data-testid={`au-mfa-${user.id}`}>
+                    {user.passkeyCount > 0 ? (
+                      <span className="inline-flex items-center gap-1 rounded bg-green-100 dark:bg-green-900/40 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-300">
+                        ✓ {user.passkeyCount}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300" title="No passkey registered">
+                        ⚠ none
+                      </span>
+                    )}
+                  </td>
                   <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 md:table-cell">
                     {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}
+                  </td>
+                  <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell font-mono">
+                    {user.lastLoginIp ?? <span className="opacity-50">—</span>}
                   </td>
                   <td className="px-5 py-3.5 text-right">
                     {deleteConfirmId === user.id ? (
@@ -190,7 +223,7 @@ export default function AdminUsers() {
                 </tr>
               ))}
               {users.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No admin users found.</td></tr>
+                <tr><td colSpan={8} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No admin users found.</td></tr>
               )}
             </tbody>
           </table>

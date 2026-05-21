@@ -1,13 +1,19 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
-interface AdminUser {
+export interface AdminUser {
   readonly id: string;
   readonly email: string;
   readonly fullName: string;
   readonly roleName: string;
   readonly status: string;
   readonly lastLoginAt: string | null;
+  /** IP of the most-recent refresh-token issuance — derived (no
+   *  schema change). Null when the user has never logged in. */
+  readonly lastLoginIp: string | null;
+  /** Number of registered passkey credentials. Surfaced as an MFA
+   *  indicator column in the admin-users table. */
+  readonly passkeyCount: number;
   readonly createdAt: string;
 }
 

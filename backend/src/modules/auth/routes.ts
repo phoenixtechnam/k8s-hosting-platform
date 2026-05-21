@@ -5,10 +5,14 @@ import { authenticateUser, verifyPassword, hashNewPassword } from './service.js'
 import { deleteAdminSeedSecret } from './seed-cleanup.js';
 import { isLocalAuthDisabled } from '../oidc/service.js';
 import { ApiError, invalidToken } from '../../shared/errors.js';
+import { success } from '../../shared/response.js';
 import { users } from '../../db/schema.js';
 import { extractPlatformSessionCookie, PLATFORM_SESSION_COOKIE, type JwtPayload } from '../../middleware/auth.js';
 import {
+  findSessionIdByHash,
+  hashRefreshToken,
   issueRefreshToken,
+  listActiveSessionsForUser,
   validateRefreshToken,
   revokeRefreshTokenById,
   revokeAllUserRefreshTokens,
@@ -481,6 +485,37 @@ export async function authRoutes(app: FastifyInstance) {
         seedSecretCleared,
       },
     });
+  });
+
+  // GET /auth/me/sessions — list the caller's own active sessions
+  // and mark which one is the CURRENT (i.e. issued by the same
+  // refresh token they're presenting). The Security Hub Identity
+  // page uses this so the operator can see "this is my laptop"
+  // alongside other devices, and so the revoke-row button can be
+  // disabled for the current session (revoking it would lock the
+  // operator out of the open tab).
+  //
+  // Returns `{ sessions: ActiveSessionRow[], currentSessionId: string|null }`.
+  // currentSessionId is null when the caller authenticated with a
+  // Bearer-only flow (no refresh cookie present) — e.g. CI scripts.
+  app.get('/auth/me/sessions', async (request) => {
+    // Explicit jwtVerify call — consistent with /auth/me, /auth/profile,
+    // /auth/password. Don't rely on ambient `request.user` because the
+    // authRoutes plugin doesn't register a module-level authenticate
+    // hook (a future plugin-registration reorder could leave us
+    // unauthenticated, and a missing `request.user` would 401 — safe,
+    // but the explicit verify is the documented contract).
+    await request.jwtVerify();
+    const user = (request as unknown as { user?: { sub?: string } }).user;
+    if (!user?.sub) {
+      throw new ApiError('AUTH_REQUIRED', 'Sign in required', 401);
+    }
+    const sessions = await listActiveSessionsForUser(app.db, user.sub);
+    const presented = pickRefreshToken(request);
+    const currentSessionId = presented
+      ? await findSessionIdByHash(app.db, hashRefreshToken(presented))
+      : null;
+    return success({ sessions, currentSessionId });
   });
 
   // POST /auth/logout — revoke the refresh token + clear cookies.
