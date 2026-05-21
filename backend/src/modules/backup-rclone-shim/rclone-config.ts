@@ -17,7 +17,7 @@
  *   - `posixMounts` — one entry when the upstream is CIFS/NFS/SFTP;
  *     drives the DaemonSet's privileged-mode + volume layout.
  *   - `sshKeyMaterializations` — SFTP PEM material to project into a
- *     Secret-backed volume (file mounted at /etc/shim/ssh-keys/upstream.pem).
+ *     Secret-backed volume (file mounted at /etc/rclone/ssh-keys/upstream.pem).
  *
  * Pure functions over the inputs — no I/O. The caller (reconciler.ts)
  * reads the Secret + DB rows, calls render(), writes the resulting
@@ -131,7 +131,7 @@ export interface RenderedShimConfig {
    *  iff this array is non-empty. */
   readonly posixMounts: ReadonlyArray<PosixMount>;
   /** PEM-format SSH private keys to project into a Secret volume at
-   *  /etc/shim/ssh-keys/upstream.pem. Empty when SFTP target uses
+   *  /etc/rclone/ssh-keys/upstream.pem. Empty when SFTP target uses
    *  password auth, or the upstream is not SFTP. */
   readonly sshKeyMaterializations: ReadonlyArray<SshKeyMaterialization>;
 }
@@ -347,9 +347,9 @@ function renderSftpEnv(
   if (t.sshPath) lines.push(shellQuote('UPSTREAM_SFTP_PATH', stripSlashes(t.sshPath)));
   let sshKey: SshKeyMaterialization | undefined;
   if (t.sshKey) {
-    // PEM file is projected at /etc/shim/ssh-keys/upstream.pem by
+    // PEM file is projected at /etc/rclone/ssh-keys/upstream.pem by
     // the reconciler-materialised Secret.
-    lines.push('UPSTREAM_SFTP_KEYFILE=/etc/shim/ssh-keys/upstream.pem');
+    lines.push('UPSTREAM_SFTP_KEYFILE=/etc/rclone/ssh-keys/upstream.pem');
     sshKey = { pemContent: t.sshKey };
   } else if (t.sshPassword) {
     lines.push(shellQuote('UPSTREAM_SFTP_PASSWORD', t.sshPassword));

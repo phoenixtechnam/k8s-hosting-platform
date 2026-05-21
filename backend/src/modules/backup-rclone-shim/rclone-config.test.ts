@@ -169,7 +169,7 @@ describe('renderShimConfig — SFTP (key auth)', () => {
 
   it('references the projected key file (PEM NOT inlined into env)', () => {
     expect(out.upstreamEnv).toContain(
-      'UPSTREAM_SFTP_KEYFILE=/etc/shim/ssh-keys/upstream.pem',
+      'UPSTREAM_SFTP_KEYFILE=/etc/rclone/ssh-keys/upstream.pem',
     );
     expect(out.upstreamEnv).not.toContain('BEGIN OPENSSH');
   });

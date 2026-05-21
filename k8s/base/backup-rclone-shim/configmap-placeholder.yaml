@@ -42,8 +42,8 @@ data:
     #!/bin/sh
     set -eu
 
-    UPSTREAM_ENV=/etc/shim-credentials/upstream.env
-    CLASSES_FILE=/etc/shim-static/classes.txt
+    UPSTREAM_ENV=/etc/rclone-credentials/upstream.env
+    CLASSES_FILE=/etc/rclone-static/classes.txt
     ADDR=":9000"
     VGW_USER_DATA=/var/lib/versitygw
 
