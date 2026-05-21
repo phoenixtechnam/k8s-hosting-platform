@@ -38,9 +38,11 @@ spec:
       containers:
         - name: nfsd
           # Pinned tag — never use :latest. itsthenetwork/nfs-server-alpine
-          # is unmaintained upstream but the 12-2.4.0 image is the de-
-          # facto standard for ephemeral NFS test servers in k8s.
-          image: itsthenetwork/nfs-server-alpine:12-2.4.0
+          # is unmaintained upstream but the :12 image (2019-05-08, alpine
+          # 3.9 + kernel-nfsd) is the de-facto standard for ephemeral NFS
+          # test servers in k8s. Available tags listed on Docker Hub:
+          # https://hub.docker.com/v2/repositories/itsthenetwork/nfs-server-alpine/tags
+          image: itsthenetwork/nfs-server-alpine:12
           imagePullPolicy: IfNotPresent
           env:
             - name: SHARED_DIRECTORY
