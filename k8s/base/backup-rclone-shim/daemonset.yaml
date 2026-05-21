@@ -130,16 +130,54 @@ spec:
               cpu: "1"
               memory: 1Gi
 
-          # Container security context: drop everything, read-only
-          # root, no privilege escalation.
+          # Container security context — minimum-privilege POSIX-mode-capable.
+          #
+          # R-X17 follow-up (2026-05-21): the shim's universal-mediator
+          # design supports four upstream kinds (S3 / SFTP-via-POSIX /
+          # CIFS-via-POSIX / NFS-via-POSIX). POSIX modes require:
+          #   - CAP_SYS_ADMIN — to call mount(2) for sshfs/mount.cifs/mount.nfs
+          #   - /dev/fuse access — for the sshfs FUSE userspace filesystem
+          #   - runAsUser: 0 — sshfs and mount(2) require root inside
+          #     the container (CAP_SYS_ADMIN alone is not enough — fuse
+          #     also checks UID for non-allow_other mounts)
+          #   - allowPrivilegeEscalation: true — required when SYS_ADMIN
+          #     is added (kernel enforces no-new-privs vs cap-add)
+          #
+          # We do NOT use `privileged: true`. CAP_SYS_ADMIN alone
+          # (+ /dev/fuse + readOnlyRootFilesystem) gives the shim the
+          # mount(2) syscall plus FUSE — meaningfully narrower than
+          # privileged: true (which grants ~40 caps, disables seccomp,
+          # disables AppArmor, and exposes all host devices).
+          #
+          # NB: CAP_SYS_ADMIN is broad on its own — sometimes called
+          # "the new root" — but the combination with runAsUser:0 +
+          # no setuid binaries in the image + ReadOnlyRootFilesystem +
+          # pod-level RuntimeDefault seccomp keeps it bounded.
+          #
+          # allowPrivilegeEscalation: false works alongside cap-add at
+          # container creation time. The kernel's no-new-privs flag
+          # blocks setuid execve() AFTER container start; capabilities
+          # granted via pod spec are applied BEFORE this. Setting it
+          # false defence-in-depth against a future setuid binary
+          # being added to the image or written into /tmp.
+          #
+          # seccompProfile pinned at container level (not just pod
+          # level) so a future sidecar addition can't accidentally
+          # widen the syscall surface for THIS container.
+          #
+          # readOnlyRootFilesystem stays true. Writable state lives in
+          # named emptyDir mounts (/var/lib/versitygw, /mnt/upstream).
+          # /tmp is the tmpfs HOME scratch.
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 65534
-            runAsGroup: 65534
+            runAsUser: 0
+            runAsGroup: 0
             capabilities:
               drop: [ALL]
+              add: [SYS_ADMIN]
+            seccompProfile:
+              type: RuntimeDefault
 
           volumeMounts:
             # R-X4-followup: three separate mounts so the rendered
@@ -161,6 +199,38 @@ spec:
             - name: scratch
               mountPath: /var/run/backup-rclone
               subPath: rclone-run
+            # R-X17 follow-up: writable state for versitygw POSIX mode.
+            # Holds:
+            #   /var/lib/versitygw/.ssh/known_hosts — sshfs first-host trust
+            #   /var/lib/versitygw/meta            — versitygw --sidecar
+            #                                       multipart ETag metadata
+            # Disk-backed (not tmpfs) because multipart sidecar can grow
+            # to part-size × concurrent-uploads before Complete cleans up.
+            # Lost on pod restart — which is correct: in-flight multiparts
+            # are aborted on restart, clients retry.
+            - name: versitygw-state
+              mountPath: /var/lib/versitygw
+            # Mount point for sshfs/mount.cifs/mount.nfs upstream. Empty
+            # by default; launcher mounts the upstream into it for POSIX
+            # modes; for S3 mode this volume is unused but mounted anyway
+            # so the launcher's `mountpoint -q $MOUNT_POINT` check is safe.
+            #
+            # mountPropagation: HostToContainer — the kernel mount inside
+            # the container must be visible to processes within the same
+            # mount namespace (versitygw posix reads from it). The
+            # propagation type doesn't leak the mount to the host
+            # because the mount itself happens inside the container's
+            # mount namespace (sshfs/mount.cifs/mount.nfs called from
+            # inside the container with CAP_SYS_ADMIN).
+            - name: upstream-mountpoint
+              mountPath: /mnt/upstream
+              mountPropagation: HostToContainer
+            # /dev/fuse — required for sshfs's FUSE driver. Other POSIX
+            # mount tools (mount.cifs, mount.nfs) call mount(2) directly
+            # without FUSE so don't need this device. Mounted unconditionally
+            # for the SFTP case.
+            - name: fuse-device
+              mountPath: /dev/fuse
 
           # No livenessProbe. Two states this pod can be in:
           #   1. buckets.txt empty → launcher.sh enters a sleep loop;
@@ -238,3 +308,29 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 64Mi
+
+        # R-X17 follow-up: writable state for versitygw POSIX mode.
+        # Disk-backed emptyDir (not tmpfs) because the --sidecar
+        # multipart metadata grows with concurrent uploads × part size
+        # and a 1 GiB upload at 16 MiB parts is 64 entries plus the
+        # part files themselves (versitygw stages parts to the sidecar
+        # before writing through to the POSIX backend on Complete).
+        # 4 GiB ceiling matches the largest realistic single-object
+        # backup (postgres base-backup).
+        - name: versitygw-state
+          emptyDir:
+            sizeLimit: 4Gi
+
+        # POSIX-mode mount point. Empty until the launcher's sshfs /
+        # mount.cifs / mount.nfs call populates it; for S3-mode pods
+        # this stays empty (versitygw S3 backend ignores filesystem).
+        - name: upstream-mountpoint
+          emptyDir: {}
+
+        # /dev/fuse host device. CharDevice type — kubelet validates
+        # the kind. Required for sshfs (FUSE-based); harmless for the
+        # other POSIX modes (mount.cifs / mount.nfs / S3 don't open it).
+        - name: fuse-device
+          hostPath:
+            path: /dev/fuse
+            type: CharDevice

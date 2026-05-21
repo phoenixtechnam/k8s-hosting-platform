@@ -352,4 +352,59 @@ if [[ -f "$STAGING_KUST" ]] && ! grep -q "nfs-test-server" "$STAGING_KUST"; then
 fi
 pass "Invariant 17: nfs-test-server is staging-only"
 
-echo "[ci-backup-rclone-shim] All 17 invariants pass."
+# ─── 18. R-X17 follow-up: DS pod-spec supports POSIX modes ────────
+# The universal shim runs ONE versitygw process per pod against ONE
+# upstream (S3 / SFTP / CIFS / NFS). For POSIX modes the launcher
+# kernel-mounts the upstream into /mnt/upstream then runs
+# `versitygw posix --sidecar ... /mnt/upstream`. That requires:
+#   - CAP_SYS_ADMIN (mount(2) syscall)
+#   - runAsUser: 0 (sshfs/mount require root inside the container)
+#   - /dev/fuse access (sshfs FUSE driver)
+#   - emptyDir at /var/lib/versitygw (sshfs known_hosts + versitygw
+#     --sidecar multipart metadata)
+#   - /mnt/upstream mount point
+#
+# Without these, the canonical DaemonSet cannot serve any non-S3
+# upstream — bench results would silently come from a hot-patched
+# DS instead of the merged one (a real misconfiguration we hit in
+# 2026-05-21).
+DS_MANIFEST="$ROOT/k8s/base/backup-rclone-shim/daemonset.yaml"
+if [[ ! -f "$DS_MANIFEST" ]]; then
+  fail "Invariant 18: DaemonSet manifest not found at $DS_MANIFEST"
+fi
+if ! grep -q "SYS_ADMIN" "$DS_MANIFEST"; then
+  fail "Invariant 18: DaemonSet missing CAP_SYS_ADMIN capability (POSIX modes won't mount)"
+fi
+if ! grep -qE "^\s*runAsUser:\s*0\s*$" "$DS_MANIFEST"; then
+  fail "Invariant 18: DaemonSet runAsUser is not 0 (sshfs/mount(2) needs root inside container)"
+fi
+if ! grep -q "versitygw-state" "$DS_MANIFEST"; then
+  fail "Invariant 18: DaemonSet missing versitygw-state volume (sidecar metadata + sshfs known_hosts)"
+fi
+if ! grep -q "upstream-mountpoint" "$DS_MANIFEST"; then
+  fail "Invariant 18: DaemonSet missing upstream-mountpoint volume at /mnt/upstream"
+fi
+if ! grep -q "fuse-device" "$DS_MANIFEST"; then
+  fail "Invariant 18: DaemonSet missing fuse-device hostPath /dev/fuse"
+fi
+# Launcher must invoke versitygw POSIX with --sidecar — without it,
+# multipart ETag tracking races on read-back through FUSE.
+CONFIGMAP="$ROOT/k8s/base/backup-rclone-shim/configmap-placeholder.yaml"
+if ! grep -q "\-\-sidecar" "$CONFIGMAP"; then
+  fail "Invariant 18: launcher.sh missing --sidecar flag on versitygw posix (multipart ETag tracking broken)"
+fi
+pass "Invariant 18: DaemonSet supports POSIX modes (SYS_ADMIN + state volume + /dev/fuse + --sidecar)"
+
+# ─── 19. POSIX-mode security boundary: NOT fully privileged ────────
+# Defense in depth — we use CAP_SYS_ADMIN (narrower) instead of
+# privileged: true (broader). If a future PR flips this, that's a
+# real security regression worth a CI failure.
+if grep -E "^\s*privileged:\s*true\s*$" "$DS_MANIFEST" >/dev/null; then
+  fail "Invariant 19: DaemonSet uses privileged: true — should use CAP_SYS_ADMIN + /dev/fuse instead"
+fi
+if ! grep -qE "^\s*readOnlyRootFilesystem:\s*true\s*$" "$DS_MANIFEST"; then
+  fail "Invariant 19: DaemonSet readOnlyRootFilesystem must remain true (writable state goes to named volumes)"
+fi
+pass "Invariant 19: DaemonSet uses minimum-privilege POSIX config (no privileged: true)"
+
+echo "[ci-backup-rclone-shim] All 19 invariants pass."

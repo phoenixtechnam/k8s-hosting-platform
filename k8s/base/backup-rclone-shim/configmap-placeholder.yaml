@@ -138,7 +138,34 @@ data:
         else
           log "  mount.nfs $${UPSTREAM_NFS_SERVER}:$${UPSTREAM_NFS_EXPORT} → $MOUNT_POINT"
           MOUNT_OPTS="vers=$${UPSTREAM_NFS_VERSION:-4.2}"
-          [ -n "$${UPSTREAM_NFS_OPTIONS:-}" ] && MOUNT_OPTS="$${MOUNT_OPTS},$${UPSTREAM_NFS_OPTIONS}"
+          # R-X17 follow-up security: strict allowlist on
+          # UPSTREAM_NFS_OPTIONS. Otherwise a malicious DB row could
+          # inject `addr=1.2.3.4` which redirects the NFS mount to
+          # an attacker-controlled server (MITM on all backup data).
+          # Allowed: soft|hard|ro|rw|timeo=\d+|retrans=\d+|rsize=\d+|
+          #          wsize=\d+|nfsvers=N(.N)?|nolock|sync|async|intr|nointr
+          # Rejected: addr=*, proto=*, mountport=*, port=*, bg, fg,
+          #          ip=*, clientaddr=*, mountaddr=*, sec=*
+          if [ -n "$${UPSTREAM_NFS_OPTIONS:-}" ]; then
+            FILTERED_OPTS=""
+            IFS=','
+            for opt in $${UPSTREAM_NFS_OPTIONS}; do
+              # Trim whitespace
+              opt=$(printf '%s' "$opt" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+              [ -z "$opt" ] && continue
+              case "$opt" in
+                soft|hard|ro|rw|nolock|sync|async|intr|nointr|noatime|nodiratime|tcp|udp)
+                  FILTERED_OPTS="$${FILTERED_OPTS},$${opt}" ;;
+                timeo=[0-9]*|retrans=[0-9]*|rsize=[0-9]*|wsize=[0-9]*|nfsvers=[0-9]*|nfsvers=[0-9]*.[0-9]*|vers=[0-9]*|vers=[0-9]*.[0-9]*|actimeo=[0-9]*|acregmin=[0-9]*|acregmax=[0-9]*|acdirmin=[0-9]*|acdirmax=[0-9]*)
+                  FILTERED_OPTS="$${FILTERED_OPTS},$${opt}" ;;
+                *)
+                  log "FATAL: UPSTREAM_NFS_OPTIONS rejected option '$opt' (not on allowlist; addr=/proto=/port=/bg/fg are NEVER permitted)"
+                  exit 2 ;;
+              esac
+            done
+            unset IFS
+            MOUNT_OPTS="$${MOUNT_OPTS}$${FILTERED_OPTS}"
+          fi
           mount.nfs "$${UPSTREAM_NFS_SERVER}:$${UPSTREAM_NFS_EXPORT}" "$MOUNT_POINT" -o "$MOUNT_OPTS" \
             || { log "FATAL: mount.nfs failed"; exit 3; }
         fi
@@ -248,11 +275,30 @@ data:
       log "launching versitygw posix → $${VGW_ROOT}"
       # POSIX backend stores ACLs as xattrs on the filesystem. SFTP and
       # CIFS support xattrs; NFSv4 supports them via named attrs.
+      #
+      # --sidecar /var/lib/versitygw/meta — keeps multipart upload state
+      # (part ETags, multipart-IDs, in-flight CompleteMultipartUpload
+      # bookkeeping) in pod-local storage NOT on the upstream POSIX
+      # share. Three reasons:
+      #   1. Avoids the sshfs/CIFS async-close race (the very bug that
+      #      strict sshfs options fix on the data side — sidecar metadata
+      #      is small and stays local so even if the data race recurs,
+      #      multipart bookkeeping is safe).
+      #   2. Keeps the upstream share clean of versitygw-internal files.
+      #   3. Sidecar is rebuilt fresh on pod restart — in-flight multiparts
+      #      at restart time are correctly aborted, clients retry. The
+      #      versitygw-state volume is emptyDir, so pod restart = sidecar
+      #      reset = automatic cleanup of any orphaned multipart state.
+      #
+      # The launcher pre-creates the sidecar dir so versitygw doesn't
+      # exit on startup with a "sidecar path does not exist" error.
+      mkdir -p "$VGW_USER_DATA/meta"
       exec versitygw \
         --port "$ADDR" \
         --access "$${ROOT_ACCESS_KEY}" \
         --secret "$${ROOT_SECRET_KEY}" \
         --quiet \
         posix \
+        --sidecar "$VGW_USER_DATA/meta" \
         "$${VGW_ROOT}"
     fi
