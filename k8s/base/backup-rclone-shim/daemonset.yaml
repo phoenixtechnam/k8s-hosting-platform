@@ -63,15 +63,18 @@ spec:
       hostPID: false
       hostIPC: false
 
-      # Pod-level security context: non-root, drop everything.
-      # The container runs as the image's USER 65534 (nobody) by
-      # default; overriding here makes it explicit + future-proof
-      # against image regressions.
+      # Pod-level security context — R-X17 follow-up (POSIX-mode-capable):
+      # runs as root inside the container because sshfs + mount(2)
+      # require it. The container's own securityContext narrows further
+      # (CAP_SYS_ADMIN only, allowPrivilegeEscalation:false,
+      # readOnlyRootFilesystem:true, seccomp=RuntimeDefault).
+      #
+      # fsGroup unset — the writable named volumes (versitygw-state,
+      # upstream-mountpoint, scratch) inherit root ownership which
+      # is what the launcher expects.
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
-        runAsGroup: 65534
-        fsGroup: 65534
+        runAsUser: 0
+        runAsGroup: 0
         seccompProfile:
           type: RuntimeDefault
 
