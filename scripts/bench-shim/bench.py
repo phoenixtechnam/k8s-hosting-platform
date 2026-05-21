@@ -53,11 +53,11 @@ def make_payload(size, seed=b'x'):
     # Deterministic, low-overhead payload. Use a sha256-extended
     # pattern so the byte stream isn't all-zeros (some S3 backends
     # special-case sparse uploads).
-    if size <= 1024 * 1024:
+    if size <= 64 * 1024 * 1024:  # up to 64 MiB: keep in RAM
         h = hashlib.sha256(seed).digest()
         n = (size // len(h)) + 1
         return (h * n)[:size]
-    # Larger: stream via generator to avoid 1 GiB allocations
+    # Larger: stream via multipart upload to avoid huge allocations
     return None
 
 def put_once(c, key, size, payload):
@@ -202,21 +202,33 @@ def main():
     for size_name, size in SIZES.items():
         payload = make_payload(size)
         key = f'{PREFIX}/{size_name}.bin'
-        put_t = put_once(c, key, size, payload)
-        get_t, get_size = get_once(c, key)
-        c.delete_object(Bucket=BUCKET, Key=key)
-        put_mbps = (size / put_t) / (1024*1024)
-        get_mbps = (get_size / get_t) / (1024*1024)
-        emit({
-            'backend': BACKEND, 'op': 'put', 'size': size_name,
-            'bytes': size, 'wall_s': round(put_t, 3),
-            'throughput_MiBps': round(put_mbps, 2),
-        })
-        emit({
-            'backend': BACKEND, 'op': 'get', 'size': size_name,
-            'bytes': size, 'wall_s': round(get_t, 3),
-            'throughput_MiBps': round(get_mbps, 2),
-        })
+        try:
+            put_t = put_once(c, key, size, payload)
+            put_mbps = (size / put_t) / (1024 * 1024)
+            emit({
+                'backend': BACKEND, 'op': 'put', 'size': size_name,
+                'bytes': size, 'wall_s': round(put_t, 3),
+                'throughput_MiBps': round(put_mbps, 2),
+            })
+        except Exception as e:
+            emit({'backend': BACKEND, 'op': 'put', 'size': size_name,
+                  'bytes': size, 'error': str(e)[:200]})
+            continue  # can't GET something we didn't PUT
+        try:
+            get_t, get_size = get_once(c, key)
+            get_mbps = (get_size / get_t) / (1024 * 1024)
+            emit({
+                'backend': BACKEND, 'op': 'get', 'size': size_name,
+                'bytes': size, 'wall_s': round(get_t, 3),
+                'throughput_MiBps': round(get_mbps, 2),
+            })
+        except Exception as e:
+            emit({'backend': BACKEND, 'op': 'get', 'size': size_name,
+                  'bytes': size, 'error': str(e)[:200]})
+        try:
+            c.delete_object(Bucket=BUCKET, Key=key)
+        except Exception:
+            pass
 
     # ─── LIST latency ────────────────────────────────────────────────
     for n in (100, 1000):
