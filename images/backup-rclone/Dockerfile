@@ -48,14 +48,6 @@ ARG RCLONE_SHA256_ARM64=c816ed0e568de4dd1bba1a4d0cd47523d3dd54337dd5fde73f1b0688
 
 RUN apk add --no-cache curl unzip ca-certificates
 
-# ---- stage 1b: copy versitygw binary from upstream image ------------
-# versitygw is the S3 gateway used by the shim DaemonSet (replaces
-# `rclone serve s3` whose ListObjectsV2 returns CommonPrefixes without
-# trailing slash — incompatible with barman-cloud + boto3). versitygw
-# emits trailing slashes correctly, supports POSIX + S3 backends, and
-# is ~half the RSS footprint of rclone in serve mode.
-FROM versity/versitygw:v1.4.1 AS versitygw-fetch
-
 WORKDIR /work
 RUN set -eux; \
     # TARGETARCH is injected by `docker buildx` for multi-arch builds.
@@ -83,6 +75,15 @@ RUN set -eux; \
     mv rclone-v${RCLONE_RELEASE}-linux-${ARCH}/rclone /usr/local/bin/rclone; \
     chmod +x /usr/local/bin/rclone; \
     /usr/local/bin/rclone version
+
+# ---- stage 1b: pull versitygw binary from upstream image ------------
+# versitygw replaces `rclone serve s3` as the shim's S3 server.
+# rclone's ListObjectsV2 returns CommonPrefixes WITHOUT a trailing
+# slash, which breaks barman-cloud-backup-show + restic enumeration.
+# versitygw emits trailing slashes correctly, supports POSIX + S3
+# backends, ~half RSS of rclone in serve mode. Apache 2.0 license,
+# multi-arch (amd64 + arm64) confirmed via `docker buildx imagetools`.
+FROM versity/versitygw:v1.4.1 AS versitygw-fetch
 
 # ---- stage 2: runtime image ------------------------------------------
 # alpine pinned by digest (same trust-anchor argument as stage 1).
