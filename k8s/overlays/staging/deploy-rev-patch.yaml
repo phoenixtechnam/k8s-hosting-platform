@@ -12,7 +12,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.0.0-9c1130b"
+        platform.phoenix-host.net/deploy-rev: "0.0.0-bacc184"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,7 +23,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.0.0-9c1130b"
+        platform.phoenix-host.net/deploy-rev: "0.0.0-bacc184"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,7 +34,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.0.0-9c1130b"
+        platform.phoenix-host.net/deploy-rev: "0.0.0-bacc184"
 ---
 # firewall-reconciler — :latest-tagged DaemonSet that needs
 # rolling on every push so the new image SHA is picked up
@@ -48,4 +48,4 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.0.0-9c1130b"
+        platform.phoenix-host.net/deploy-rev: "0.0.0-bacc184"
